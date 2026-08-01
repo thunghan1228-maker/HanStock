@@ -13,8 +13,7 @@ def main() -> None:
     group_name = sys.argv[1].strip()
     stocks = get_group(group_name)
 
-    passed_results = []
-    not_passed_results = []
+    results = []
     failed_results = []
 
     print(f"＝＝＝＝ 掃描「{group_name}」族群 Rule1 ＝＝＝＝")
@@ -42,18 +41,18 @@ def main() -> None:
             )
 
             result["stock_name"] = stock_name
+            result["passed_count"] = sum(
+                result["conditions"].values()
+            )
+
+            results.append(result)
 
             if result["passed"]:
-                passed_results.append(result)
                 print("  ✅ 符合 Rule1")
             else:
-                not_passed_results.append(result)
-                passed_count = sum(
-                    result["conditions"].values()
-                )
                 print(
                     f"  ❌ 不符合 "
-                    f"（符合 {passed_count}/4 項）"
+                    f"（符合 {result['passed_count']}/4 項）"
                 )
 
         except Exception as error:
@@ -62,10 +61,26 @@ def main() -> None:
             )
             print(f"  ⚠️ 無法判斷：{error}")
 
-    passed_results.sort(
-        key=lambda item: item["change_rate"],
+    # 先依符合條件數排序，再依漲跌幅排序
+    results.sort(
+        key=lambda item: (
+            item["passed_count"],
+            item["change_rate"],
+        ),
         reverse=True,
     )
+
+    passed_results = [
+        result
+        for result in results
+        if result["passed"]
+    ]
+
+    not_passed_results = [
+        result
+        for result in results
+        if not result["passed"]
+    ]
 
     print()
     print(
@@ -74,11 +89,11 @@ def main() -> None:
     print(f"符合：{len(passed_results)} 檔")
     print(f"不符合：{len(not_passed_results)} 檔")
     print(f"無法判斷：{len(failed_results)} 檔")
+
     print()
+    print("＝＝＝＝ 符合 Rule1 ＝＝＝＝")
 
     if passed_results:
-        print("符合 Rule1 的股票：")
-
         for result in passed_results:
             print(
                 f"{result['stock_code']} "
@@ -90,9 +105,33 @@ def main() -> None:
     else:
         print(f"「{group_name}」目前沒有符合 Rule1 的股票。")
 
+    print()
+    print("＝＝＝＝ 最接近符合的股票 ＝＝＝＝")
+
+    for result in not_passed_results:
+        failed_conditions = [
+            condition_name
+            for condition_name, passed
+            in result["conditions"].items()
+            if not passed
+        ]
+
+        print(
+            f"{result['stock_code']} "
+            f"{result['stock_name']}｜"
+            f"符合 {result['passed_count']}/4｜"
+            f"漲跌幅 {result['change_rate']:+.2f}%｜"
+            f"價差 {result['price_change']:+.2f}"
+        )
+
+        print(
+            "  尚未符合："
+            + "、".join(failed_conditions)
+        )
+
     if failed_results:
         print()
-        print("無法判斷的股票：")
+        print("＝＝＝＝ 無法判斷 ＝＝＝＝")
 
         for stock_code, stock_name, error in failed_results:
             print(f"{stock_code} {stock_name}：{error}")
