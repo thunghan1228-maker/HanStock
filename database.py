@@ -10,6 +10,7 @@ DATABASE_PATH = DATA_DIR / "hanstock.db"
 ALLOWED_BAR_TABLES = {
     "bars_1m",
     "bars_5m",
+    "bars_1d",
 }
 
 
@@ -47,6 +48,17 @@ def initialize_database() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS bars_5m (
+                stock_code TEXT NOT NULL,
+                bar_time TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume INTEGER NOT NULL,
+                PRIMARY KEY (stock_code, bar_time)
+            );
+
+            CREATE TABLE IF NOT EXISTS bars_1d (
                 stock_code TEXT NOT NULL,
                 bar_time TEXT NOT NULL,
                 open REAL NOT NULL,
@@ -99,7 +111,7 @@ def save_bars(
     stock_code: str,
     bars: Iterable[dict],
 ) -> int:
-    """新增或更新一分鐘或五分鐘K線。"""
+    """新增或更新一分鐘、五分鐘或日K線。"""
     if table_name not in ALLOWED_BAR_TABLES:
         raise ValueError(f"不允許的資料表：{table_name}")
 
