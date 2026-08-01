@@ -1,30 +1,29 @@
-import os
-
 import shioaji as sj
-from dotenv import load_dotenv
+
+from config import (
+    SHIOAJI_API_KEY,
+    SHIOAJI_SECRET_KEY,
+    validate_settings,
+)
 
 
-# 讀取同一個資料夾裡的 .env
-load_dotenv()
-
-api_key = os.getenv("SHIOAJI_API_KEY")
-secret_key = os.getenv("SHIOAJI_SECRET_KEY")
-
-# 確認金鑰存在，但不會把金鑰印在畫面上
-if not api_key or not secret_key:
-    raise RuntimeError("找不到 API Key 或 Secret Key，請檢查 .env 檔案。")
+# 確認 .env 裡的金鑰存在
+validate_settings()
 
 api = sj.Shioaji()
+logged_in = False
 
 try:
     accounts = api.login(
-        api_key=api_key,
-        secret_key=secret_key,
+        api_key=SHIOAJI_API_KEY,
+        secret_key=SHIOAJI_SECRET_KEY,
     )
+    logged_in = True
 
     print("永豐 Shioaji API 登入成功！")
     print(f"讀取到的帳戶數量：{len(accounts)}")
 
 finally:
-    api.logout()
-    print("已安全登出。")
+    if logged_in:
+        api.logout()
+        print("已安全登出。")
