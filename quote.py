@@ -1,26 +1,7 @@
-import shioaji as sj
-
-from config import (
-    SHIOAJI_API_KEY,
-    SHIOAJI_SECRET_KEY,
-    validate_settings,
-)
+from shioaji_client import shioaji_session
 
 
-validate_settings()
-
-api = sj.Shioaji()
-logged_in = False
-
-try:
-    api.login(
-        api_key=SHIOAJI_API_KEY,
-        secret_key=SHIOAJI_SECRET_KEY,
-    )
-    logged_in = True
-
-    print("永豐 API 登入成功！")
-
+with shioaji_session() as api:
     contract = api.Contracts.Stocks["2330"]
 
     if contract is None:
@@ -44,11 +25,3 @@ try:
     print(f"總成交量：{snapshot.total_volume}")
     print(f"最佳買價：{snapshot.buy_price}")
     print(f"最佳賣價：{snapshot.sell_price}")
-
-except Exception as error:
-    print(f"行情讀取失敗：{error}")
-
-finally:
-    if logged_in:
-        api.logout()
-        print("已安全登出。")
