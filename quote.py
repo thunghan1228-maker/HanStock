@@ -1,18 +1,9 @@
+from market_data import get_snapshot
 from shioaji_client import shioaji_session
 
 
 with shioaji_session() as api:
-    contract = api.Contracts.Stocks["2330"]
-
-    if contract is None:
-        raise RuntimeError("找不到股票代號 2330。")
-
-    snapshots = api.snapshots([contract])
-
-    if not snapshots:
-        raise RuntimeError("沒有取得 2330 的行情資料。")
-
-    snapshot = snapshots[0]
+    snapshot = get_snapshot(api, "2330")
 
     print("＝＝＝＝ 2330 台積電行情 ＝＝＝＝")
     print(f"股票代號：{snapshot.code}")
