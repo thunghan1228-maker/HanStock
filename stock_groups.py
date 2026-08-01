@@ -29,3 +29,38 @@ def get_group(group_name: str) -> list[tuple[str, str]]:
         raise ValueError(f"找不到股票族群：{group_name}")
 
     return STOCK_GROUPS[group_name]
+
+
+def find_groups_by_stock_code(stock_code: str) -> list[str]:
+    """找出股票代號所屬的全部族群。"""
+    matched_groups = []
+
+    for group_name, stocks in STOCK_GROUPS.items():
+        for code, _stock_name in stocks:
+            if code == stock_code:
+                matched_groups.append(group_name)
+                break
+
+    return matched_groups
+
+
+def resolve_group_names(keyword: str) -> list[str]:
+    """
+    輸入族群名稱或股票代號，
+    回傳符合的族群名稱。
+    """
+    keyword = keyword.strip()
+
+    # 使用者直接輸入族群名稱
+    if keyword in STOCK_GROUPS:
+        return [keyword]
+
+    # 使用者輸入股票代號
+    matched_groups = find_groups_by_stock_code(keyword)
+
+    if not matched_groups:
+        raise ValueError(
+            f"找不到族群名稱或股票代號：{keyword}"
+        )
+
+    return matched_groups
