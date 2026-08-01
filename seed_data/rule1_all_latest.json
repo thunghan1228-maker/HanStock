@@ -1,0 +1,40 @@
+{
+  "strategy": "Rule1",
+  "generated_at": "2026-08-01T22:04:37+08:00",
+  "summary": {
+    "total_groups": 69,
+    "groups_with_results": 1,
+    "total_passed_records": 2,
+    "unavailable_records": 0
+  },
+  "groups": [
+    {
+      "group_name": "股期標的",
+      "stock_count": 247,
+      "passed_count": 2,
+      "passed_stocks": [
+        {
+          "stock_code": "1477",
+          "stock_name": "聚陽",
+          "today_close": 219.5,
+          "yesterday_close": 221.0,
+          "price_change": -1.5,
+          "change_rate": -0.6787330316742082,
+          "ma5_today": 217.9,
+          "ma5_yesterday": 217.0
+        },
+        {
+          "stock_code": "1476",
+          "stock_name": "儒鴻",
+          "today_close": 346.0,
+          "yesterday_close": 352.0,
+          "price_change": -6.0,
+          "change_rate": -1.7045454545454544,
+          "ma5_today": 343.4,
+          "ma5_yesterday": 341.1
+        }
+      ]
+    }
+  ],
+  "unavailable_results": []
+}

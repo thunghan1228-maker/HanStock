@@ -6,6 +6,7 @@ from typing import Any
 from paths import DATA_DIR
 
 RESULT_PATH = DATA_DIR / "rule1_all_latest.json"
+FALLBACK_RESULT_PATH = Path(__file__).resolve().parent / "seed_data" / "rule1_all_latest.json"
 
 
 def load_rule1_results(
@@ -13,9 +14,12 @@ def load_rule1_results(
 ) -> dict[str, Any]:
     """讀取最新的 Rule1 全族群掃描結果。"""
     if not result_path.exists():
-        raise RuntimeError(
-            "找不到 Rule1 結果檔，請先在 HanStock 輸入 r1all。"
-        )
+        if result_path == RESULT_PATH and FALLBACK_RESULT_PATH.exists():
+            result_path = FALLBACK_RESULT_PATH
+        else:
+            raise RuntimeError(
+                "找不到 Rule1 結果檔，請先在 HanStock 輸入 r1all。"
+            )
 
     try:
         content = result_path.read_text(encoding="utf-8")
