@@ -1,25 +1,25 @@
-import os
 from datetime import datetime, timezone
 
 import shioaji as sj
-from dotenv import load_dotenv
+
+from config import (
+    SHIOAJI_API_KEY,
+    SHIOAJI_SECRET_KEY,
+    validate_settings,
+)
 
 
-load_dotenv()
-
-api_key = os.getenv("SHIOAJI_API_KEY")
-secret_key = os.getenv("SHIOAJI_SECRET_KEY")
-
-if not api_key or not secret_key:
-    raise RuntimeError("找不到 API Key 或 Secret Key，請檢查 .env。")
+validate_settings()
 
 api = sj.Shioaji()
+logged_in = False
 
 try:
     api.login(
-        api_key=api_key,
-        secret_key=secret_key,
+        api_key=SHIOAJI_API_KEY,
+        secret_key=SHIOAJI_SECRET_KEY,
     )
+    logged_in = True
 
     print("永豐 API 登入成功！")
 
@@ -27,7 +27,7 @@ try:
     kbars = api.kbars(contract=contract)
 
     if not kbars.ts:
-        raise RuntimeError("沒有取得K線資料。")
+        raise RuntimeError("沒有取得 K 線資料。")
 
     print("＝＝＝＝ 2330 最近10筆一分鐘K線 ＝＝＝＝")
 
@@ -35,9 +35,9 @@ try:
 
     for i in range(start_index, len(kbars.ts)):
         dt = datetime.fromtimestamp(
-    kbars.ts[i] / 1_000_000_000,
-    tz=timezone.utc,
-)
+            kbars.ts[i] / 1_000_000_000,
+            tz=timezone.utc,
+        )
 
         print(
             f"{dt:%Y-%m-%d %H:%M}｜"
@@ -52,5 +52,6 @@ except Exception as error:
     print(f"K線讀取失敗：{error}")
 
 finally:
-    api.logout()
-    print("已安全登出。")
+    if logged_in:
+        api.logout()
+        print("已安全登出。")
