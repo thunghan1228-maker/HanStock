@@ -1,0 +1,22 @@
+HanStock 整包更新內容
+====================
+
+1. 新增 read_rule1_results.py
+   - 可直接讀取 data/rule1_all_latest.json
+   - 不需重新掃描、不需登入永豐 API
+
+2. 更新 main.py
+   - 新增 latest 指令
+   - latest / result / results 都可查看最新 Rule1 結果
+   - Ctrl+C 或 Ctrl+Z/EOF 可安全結束
+   - groups 會顯示分類總數
+
+3. 更新 README.md
+   - 整理目前已完成功能
+   - 補上主要操作與常用指令
+   - 補上安全注意事項
+
+安全處理
+--------
+新版 ZIP 已排除：.env、data、*.db、*.log、__pycache__、.git。
+請保留你原本電腦中的 .env 與 data 資料夾。
