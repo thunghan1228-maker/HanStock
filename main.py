@@ -1,3 +1,4 @@
+from scan_rule1_all import scan_all_groups
 from scan_rule1_group import scan_group
 from stock_groups import STOCK_GROUPS, resolve_group_names
 
@@ -9,6 +10,7 @@ def show_help() -> None:
     print("輸入族群名稱，例如：記憶體")
     print("輸入族群內股票代號，例如：2344")
     print("輸入 groups：查看目前所有族群")
+    print("輸入 r1all：掃描全部族群 Rule1")
     print("輸入 help：查看操作說明")
     print("輸入 q：結束程式")
     print()
@@ -35,16 +37,22 @@ def main() -> None:
         if not keyword:
             continue
 
-        if keyword.lower() in {"q", "quit", "exit"}:
+        command = keyword.lower()
+
+        if command in {"q", "quit", "exit"}:
             print("HanStock 已結束。")
             break
 
-        if keyword.lower() == "help":
+        if command == "help":
             show_help()
             continue
 
-        if keyword.lower() == "groups":
+        if command == "groups":
             show_groups()
+            continue
+
+        if command == "r1all":
+            scan_all_groups()
             continue
 
         try:
