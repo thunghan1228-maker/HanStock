@@ -1,10 +1,10 @@
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 from typing import Iterable
 
 
-DATA_DIR = Path(__file__).parent / "data"
+from paths import DATA_DIR
+
 DATABASE_PATH = DATA_DIR / "hanstock.db"
 
 ALLOWED_BAR_TABLES = {

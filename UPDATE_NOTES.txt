@@ -20,3 +20,22 @@ HanStock 整包更新內容
 --------
 新版 ZIP 已排除：.env、data、*.db、*.log、__pycache__、.git。
 請保留你原本電腦中的 .env 與 data 資料夾。
+
+2026-08-01 網站 API 更新
+- 新增 api_server.py：FastAPI 網站 API
+- 新增 run_api.py：一鍵啟動 API
+- 新增 api_smoke_test.py：API 基本測試
+- 新增族群、Rule1 最新結果與健康檢查端點
+- requirements.txt 加入 FastAPI 與 Uvicorn
+
+2026-08-01 控制台更新
+- 新增 web/index.html 圖形化控制台。
+- 首頁可查看 Rule1 符合股票、統計、族群與股票代號查詢。
+- 新增 start_hanstock_api.bat，可雙擊啟動 API。
+
+2026-08-01 雲端部署版
+- 新增 Railway Docker 部署設定
+- 新增安全 Rule1 同步 API：POST /api/rule1/sync
+- 新增本機同步工具 sync_rule1_results.py
+- 支援 HANSTOCK_DATA_DIR 持久化資料路徑
+- run_api.py 支援 Railway PORT 環境變數

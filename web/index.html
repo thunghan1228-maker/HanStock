@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HanStock 控制台</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1020;--card:#151c30;--muted:#9aa6bf;--line:#2a3554;--good:#46d59a;--bad:#ff6b7a;--accent:#6ea8fe}
+    *{box-sizing:border-box} body{margin:0;background:linear-gradient(140deg,#0b1020,#11172a);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#eef3ff}
+    main{max-width:1100px;margin:0 auto;padding:28px 18px 60px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}
+    h1{margin:0;font-size:34px}.sub{color:var(--muted);margin-top:8px}.pill{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:24px 0}.card{background:rgba(21,28,48,.9);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 35px rgba(0,0,0,.18)}
+    .metric{font-size:30px;font-weight:800;margin-top:6px}.label{color:var(--muted);font-size:14px}.section{margin-top:18px}.section h2{font-size:20px;margin:0 0 14px}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap}.toolbar input{flex:1;min-width:220px;background:#0c1325;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:16px}
+    button,a.btn{background:var(--accent);color:#07101f;border:0;border-radius:10px;padding:12px 16px;font-weight:800;cursor:pointer;text-decoration:none}.secondary{background:#25304d!important;color:#fff!important}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:13px}.down{color:#7db7ff}.up{color:#ff7b88}
+    .empty{color:var(--muted);padding:18px 0}.groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.group{padding:12px;border:1px solid var(--line);border-radius:10px;background:#10172a}
+    .status-ok{color:var(--good)}.status-bad{color:var(--bad)}pre{white-space:pre-wrap;color:#dfe7fa}.hidden{display:none}
+    @media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.groups{grid-template-columns:1fr 1fr}}
+    @media(max-width:520px){.grid,.groups{grid-template-columns:1fr}h1{font-size:28px}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>HanStock 控制台</h1><div class="sub">台灣股票族群與 Rule1 最新掃描結果</div></div>
+    <div class="pill">本機 API：<span id="healthText">檢查中…</span></div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="label">族群總數</div><div class="metric" id="groupCount">—</div></div>
+    <div class="card"><div class="label">有符合股票的族群</div><div class="metric" id="matchedGroups">—</div></div>
+    <div class="card"><div class="label">符合 Rule1 紀錄</div><div class="metric" id="passedCount">—</div></div>
+    <div class="card"><div class="label">最新產生時間</div><div class="metric" style="font-size:17px" id="generatedAt">—</div></div>
+  </div>
+
+  <section class="card section">
+    <h2>符合 Rule1 的股票</h2>
+    <div id="passedEmpty" class="empty hidden">目前沒有符合 Rule1 的股票。</div>
+    <div style="overflow:auto"><table id="passedTable"><thead><tr><th>族群</th><th>代號</th><th>名稱</th><th>漲跌幅</th><th>價差</th><th>收盤</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card section">
+    <h2>查詢族群或股票代號</h2>
+    <div class="toolbar"><input id="keyword" placeholder="例如：記憶體、2344"><button id="searchBtn">查詢</button><button class="secondary" id="showAllBtn">查看全部族群</button></div>
+    <div id="searchResult" style="margin-top:16px"></div>
+  </section>
+
+  <section class="card section">
+    <h2>工具</h2>
+    <div class="toolbar"><a class="btn secondary" href="/docs" target="_blank">API 文件</a><a class="btn secondary" href="/api/rule1/latest" target="_blank">原始 Rule1 JSON</a><button id="refreshBtn">重新整理</button></div>
+  </section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+function fmtTime(v){if(!v)return '—';try{return new Date(v).toLocaleString('zh-TW')}catch{return v}}
+async function json(url){const r=await fetch(url);if(!r.ok){const t=await r.text();throw new Error(t||`HTTP ${r.status}`)}return r.json()}
+async function load(){
+  try{const h=await json('/api/health');$('#healthText').textContent='正常';$('#healthText').className='status-ok';$('#groupCount').textContent=h.group_count}
+  catch(e){$('#healthText').textContent='異常';$('#healthText').className='status-bad'}
+  try{const d=await json('/api/rule1/passed');$('#passedCount').textContent=d.count;$('#generatedAt').textContent=fmtTime(d.generated_at);
+    const tbody=$('#passedTable tbody');tbody.innerHTML='';const stocks=d.stocks||[];$('#passedTable').classList.toggle('hidden',!stocks.length);$('#passedEmpty').classList.toggle('hidden',!!stocks.length);
+    stocks.forEach(s=>{const tr=document.createElement('tr');const cls=s.price_change>0?'up':s.price_change<0?'down':'';tr.innerHTML=`<td>${s.group_name}</td><td>${s.stock_code}</td><td>${s.stock_name}</td><td class="${cls}">${Number(s.change_rate).toFixed(2)}%</td><td class="${cls}">${Number(s.price_change).toFixed(2)}</td><td>${Number(s.today_close).toFixed(2)}</td>`;tbody.appendChild(tr)})
+  }catch(e){$('#passedEmpty').textContent='尚無 Rule1 結果，請先在 HanStock 執行 r1all。';$('#passedEmpty').classList.remove('hidden');$('#passedTable').classList.add('hidden')}
+  try{const d=await json('/api/rule1/latest?passed_only=true');$('#matchedGroups').textContent=d.summary?.groups_with_results??'—'}catch{}
+}
+async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await json('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<div class="group">${s.stock_code} ${s.stock_name}</div>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
+async function showAll(){const box=$('#searchResult');box.textContent='載入中…';try{const d=await json('/api/groups');box.innerHTML=`<div class="groups">${d.groups.map(g=>`<div class="group"><strong>${g.group_name}</strong><br><span class="label">${g.stock_count} 檔</span></div>`).join('')}</div>`}catch(e){box.textContent='載入失敗'}}
+$('#searchBtn').onclick=search;$('#showAllBtn').onclick=showAll;$('#refreshBtn').onclick=load;$('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')search()});load();
+</script>
+</body>
+</html>

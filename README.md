@@ -94,3 +94,66 @@ py -m pip install -r requirements.txt
 - 網站 API 與 HanStock 網站串接
 - LINE Bot 通知與查詢
 - 手機 App
+
+## 網站 API
+
+新版已加入 FastAPI，讓 hanstock.xyz、LINE Bot 或 App 能讀取 HanStock 資料。
+
+安裝套件後啟動：
+
+```powershell
+py -m pip install -r requirements.txt
+py run_api.py
+```
+
+啟動後可開啟：
+
+- 首頁：`http://127.0.0.1:8000`
+- API 文件：`http://127.0.0.1:8000/docs`
+- 健康檢查：`http://127.0.0.1:8000/api/health`
+- 最新 Rule1：`http://127.0.0.1:8000/api/rule1/latest`
+- 符合 Rule1：`http://127.0.0.1:8000/api/rule1/passed`
+- 全部族群：`http://127.0.0.1:8000/api/groups`
+- 以股票代號找族群：`http://127.0.0.1:8000/api/groups/2344`
+
+網站跨網域來源可用環境變數調整：
+
+```text
+HANSTOCK_CORS_ORIGINS=https://hanstock.xyz,https://www.hanstock.xyz
+```
+
+注意：本機 API 只能在這台電腦上存取。要讓公開網站存取，後續仍需部署到雲端或建立安全的反向代理。
+
+## 圖形化控制台
+
+執行 `py run_api.py`，或雙擊 `start_hanstock_api.bat`，再開啟：
+
+- 控制台：http://127.0.0.1:8000
+- API 文件：http://127.0.0.1:8000/docs
+
+控制台可顯示最新 Rule1 結果、查詢族群名稱或股票代號，以及查看全部族群。
+
+## Railway 雲端部署
+
+此版本已包含 `Dockerfile` 與 `railway.json`。
+
+Railway 需要設定：
+
+- `HANSTOCK_SYNC_TOKEN`：自行建立一組長密碼，用來保護 Rule1 上傳 API。
+- `HANSTOCK_DATA_DIR=/data`：搭配 Railway Volume，讓最新 Rule1 JSON 可持久保存。
+- `HANSTOCK_CORS_ORIGINS=https://hanstock.xyz,https://www.hanstock.xyz`
+
+Railway Volume 建議掛載到 `/data`。
+
+本機同步到雲端前，於本機 `.env` 增加：
+
+```text
+HANSTOCK_CLOUD_API_URL=https://你的-railway-網址
+HANSTOCK_SYNC_TOKEN=與 Railway 相同的同步金鑰
+```
+
+執行：
+
+```powershell
+py sync_rule1_results.py
+```

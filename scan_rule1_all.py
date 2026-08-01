@@ -1,12 +1,12 @@
 import json
 from datetime import datetime
-from pathlib import Path
 
 from rule1 import evaluate_rule1, load_daily_bars
 from stock_groups import STOCK_GROUPS
 
 
-DATA_DIR = Path(__file__).parent / "data"
+from paths import DATA_DIR
+
 RESULT_PATH = DATA_DIR / "rule1_all_latest.json"
 
 

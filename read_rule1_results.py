@@ -3,7 +3,8 @@ from pathlib import Path
 from typing import Any
 
 
-DATA_DIR = Path(__file__).parent / "data"
+from paths import DATA_DIR
+
 RESULT_PATH = DATA_DIR / "rule1_all_latest.json"
 
 
