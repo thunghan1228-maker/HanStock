@@ -1,29 +1,11 @@
-import shioaji as sj
-
-from config import (
-    SHIOAJI_API_KEY,
-    SHIOAJI_SECRET_KEY,
-    validate_settings,
-)
+from shioaji_client import shioaji_session
 
 
-# 確認 .env 裡的金鑰存在
-validate_settings()
+with shioaji_session() as api:
+    contract = api.Contracts.Stocks["2330"]
 
-api = sj.Shioaji()
-logged_in = False
+    if contract is None:
+        raise RuntimeError("找不到股票代號 2330。")
 
-try:
-    accounts = api.login(
-        api_key=SHIOAJI_API_KEY,
-        secret_key=SHIOAJI_SECRET_KEY,
-    )
-    logged_in = True
-
-    print("永豐 Shioaji API 登入成功！")
-    print(f"讀取到的帳戶數量：{len(accounts)}")
-
-finally:
-    if logged_in:
-        api.logout()
-        print("已安全登出。")
+    print("共用連線模組測試成功！")
+    print(f"測試股票代號：{contract.code}")
