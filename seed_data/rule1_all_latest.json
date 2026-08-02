@@ -9,6 +9,414 @@
   },
   "groups": [
     {
+      "group_name": "被動元件",
+      "stock_count": 25,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "記憶體",
+      "stock_count": 19,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "矽光子",
+      "stock_count": 25,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "摺疊手機",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "能源",
+      "stock_count": 3,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "綠能",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "口罩",
+      "stock_count": 8,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "矽晶圓",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "D電腦",
+      "stock_count": 9,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "化學",
+      "stock_count": 11,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "軍工",
+      "stock_count": 20,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "設備股",
+      "stock_count": 12,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "營建",
+      "stock_count": 13,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "玻璃基板",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "重電",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "塑膠",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "神盾",
+      "stock_count": 6,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "小電腦",
+      "stock_count": 8,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "PCB",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "小電組",
+      "stock_count": 21,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "特化",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "散熱",
+      "stock_count": 10,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "PA",
+      "stock_count": 3,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "二極體",
+      "stock_count": 9,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "石英",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "探針卡",
+      "stock_count": 6,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "低軌衛星",
+      "stock_count": 9,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "工具機",
+      "stock_count": 14,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "機器人",
+      "stock_count": 18,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "光電",
+      "stock_count": 19,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "功率半導體",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "光學鏡頭",
+      "stock_count": 13,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "小光電",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "上曜",
+      "stock_count": 6,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "生醫",
+      "stock_count": 8,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "資訊",
+      "stock_count": 12,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "機殼",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "遊戲",
+      "stock_count": 8,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "金融股",
+      "stock_count": 40,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "觀光",
+      "stock_count": 13,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "航運",
+      "stock_count": 10,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "空運",
+      "stock_count": 3,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "散裝",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "聯電股",
+      "stock_count": 3,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "電零組",
+      "stock_count": 12,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "汽車零",
+      "stock_count": 8,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "鴻家軍",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "台塑四寶",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "電纜",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "宇宙",
+      "stock_count": 2,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "AI",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "電通",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "三寶",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "彬彬",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "便宜電腦",
+      "stock_count": 6,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "電腦周邊",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "IP",
+      "stock_count": 8,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "黃金",
+      "stock_count": 2,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "AI眼鏡",
+      "stock_count": 6,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "面板",
+      "stock_count": 3,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "扇形封裝",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "千元",
+      "stock_count": 23,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "太陽能",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "土方",
+      "stock_count": 5,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "菱光",
+      "stock_count": 4,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "鋼鐵",
+      "stock_count": 13,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "化學二",
+      "stock_count": 7,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
+      "group_name": "鋰電池",
+      "stock_count": 2,
+      "passed_count": 0,
+      "passed_stocks": []
+    },
+    {
       "group_name": "股期標的",
       "stock_count": 247,
       "passed_count": 2,
