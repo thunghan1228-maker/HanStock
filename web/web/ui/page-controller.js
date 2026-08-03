@@ -5,15 +5,28 @@
   const cls = value => value == null || value === '' ? '' : (Number(value) >= 0 ? 'text-up' : 'text-down');
   const formatTime = value => {
     if (!value) return '—';
-    // 處理 nanosecond timestamp（如 1722678600000000000）
-    let ts = value;
-    if (typeof ts === 'number' && ts > 1e15) {
-      ts = ts / 1e6; // nanoseconds → milliseconds
-    } else if (typeof ts === 'number' && ts > 1e12) {
-      ts = ts / 1e3; // microseconds → milliseconds
+    // 將字串或數字統一轉成 milliseconds
+    let ms;
+    const raw = String(value).trim();
+    // 純數字字串（可能是 ns/us/ms/s timestamp）
+    if (/^\d{10,19}$/.test(raw)) {
+      // 用 BigInt 避免精度遺失（19 位數超過 Number.MAX_SAFE_INTEGER）
+      const big = BigInt(raw);
+      if (raw.length >= 19) {
+        ms = Number(big / 1000000n); // nanoseconds → ms
+      } else if (raw.length >= 16) {
+        ms = Number(big / 1000n);    // microseconds → ms
+      } else if (raw.length >= 13) {
+        ms = Number(big);            // milliseconds
+      } else {
+        ms = Number(big) * 1000;     // seconds → ms
+      }
+    } else {
+      // ISO 字串或其他格式，直接交給 Date 解析
+      ms = new Date(value).getTime();
     }
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) return String(value);
+    if (!ms || Number.isNaN(ms) || ms < 0) return '—';
+    const d = new Date(ms);
     // 台灣時間 YYYY/MM/DD HH:mm:ss
     return d.toLocaleString('zh-TW', {
       timeZone: 'Asia/Taipei',
