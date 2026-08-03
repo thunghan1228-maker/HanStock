@@ -282,12 +282,14 @@ def dashboard() -> str:
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
 def manifest() -> FileResponse:
-    return FileResponse(WEB_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+    _path = WEB_DIR / "manifest.webmanifest" if (WEB_DIR / "manifest.webmanifest").exists() else WEB_DIR / "web" / "manifest.webmanifest"
+    return FileResponse(_path, media_type="application/manifest+json")
 
 
 @app.get("/sw.js", include_in_schema=False)
 def service_worker() -> FileResponse:
-    response = FileResponse(WEB_DIR / "sw.js", media_type="application/javascript")
+    _path = WEB_DIR / "sw.js" if (WEB_DIR / "sw.js").exists() else WEB_DIR / "web" / "sw.js"
+    response = FileResponse(_path, media_type="application/javascript")
     response.headers["Cache-Control"] = "no-cache"
     response.headers["Service-Worker-Allowed"] = "/"
     return response
@@ -576,7 +578,10 @@ def sync_rule1(
 
 
 # 靜態目錄必須放在所有 API 路由之後，避免攔截 /api/*。
-if (WEB_DIR / "ui").exists():
-    app.mount("/ui", StaticFiles(directory=WEB_DIR / "ui"), name="ui")
-if (WEB_DIR / "icons").exists():
-    app.mount("/icons", StaticFiles(directory=WEB_DIR / "icons"), name="icons")
+# 相容兩種目錄結構：web/ui（正常）或 web/web/ui（套用更新時產生的巢狀）。
+_ui_dir = WEB_DIR / "ui" if (WEB_DIR / "ui").exists() else WEB_DIR / "web" / "ui" if (WEB_DIR / "web" / "ui").exists() else None
+_icons_dir = WEB_DIR / "icons" if (WEB_DIR / "icons").exists() else WEB_DIR / "web" / "icons" if (WEB_DIR / "web" / "icons").exists() else None
+if _ui_dir:
+    app.mount("/ui", StaticFiles(directory=_ui_dir), name="ui")
+if _icons_dir:
+    app.mount("/icons", StaticFiles(directory=_icons_dir), name="icons")
