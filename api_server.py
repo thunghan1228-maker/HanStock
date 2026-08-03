@@ -147,7 +147,24 @@ def dashboard() -> str:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    """服務健康檢查（含 Shioaji 即時行情狀態）。"""
+    """服務健康檢查（含 Shioaji 即時行情狀態）。
+
+    回傳欄位包含：
+    - api_status
+    - shioaji_initialized
+    - shioaji_logged_in
+    - certificate_active
+    - quote_connected
+    - subscribed
+    - last_quote_time
+    - quote_age_seconds
+    - quote_stale
+    - current_contract
+    - last_event
+    - data_source
+    - reconnect_count
+    - error_message
+    """
     now = datetime.now(TW_TZ).isoformat(timespec="seconds")
 
     base = {
@@ -173,7 +190,13 @@ def health() -> dict[str, Any]:
                 "quote_connected": False,
                 "subscribed": False,
                 "last_quote_time": None,
+                "quote_age_seconds": None,
+                "quote_stale": True,
+                "current_contract": None,
+                "last_event": None,
                 "data_source": "error",
+                "reconnect_count": 0,
+                "error_message": "無法取得行情服務狀態",
             })
     else:
         base.update({
@@ -183,7 +206,13 @@ def health() -> dict[str, Any]:
             "quote_connected": False,
             "subscribed": False,
             "last_quote_time": None,
+            "quote_age_seconds": None,
+            "quote_stale": False,
+            "current_contract": None,
+            "last_event": None,
             "data_source": "disabled",
+            "reconnect_count": 0,
+            "error_message": None,
         })
 
     return base
