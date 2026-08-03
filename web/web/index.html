@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HanStock v3.3 Preview</title>
+  <link rel="stylesheet" href="ui/design-system.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0b1020">
+  <link rel="icon" href="icons/icon-192.png">
+  <style>
+    .hero{padding:42px 0 26px}.hero h1{font-size:38px;margin:0 0 8px}.module-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.module{color:inherit;text-decoration:none;min-height:150px}.module h2{font-size:18px}.module p{color:var(--muted);line-height:1.6}.status-line{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 26px}.health-card{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}.health-card strong{display:block;margin-bottom:4px}.health-detail{color:var(--muted);font-size:13px}.health-indicator{white-space:nowrap}.health-error{color:var(--bad)}
+  </style>
+</head>
+<body>
+<main class="page">
+  <section class="hero">
+    <span class="pill">GitHub 預覽整合 v3.3</span>
+    <h1>HanStock 選股網</h1>
+    <p class="page-sub">沿用正式 69 族群與 Rule1 後端，加入新版操作介面、PWA 與部署健康檢查。</p>
+    <div class="status-line"><span class="pill source-badge--mock">目前資料模式由 API 決定</span><span class="pill">PWA</span><span class="pill">69 個正式族群</span><span class="pill">Rule2 預設停用</span></div>
+  </section>
+
+  <section class="card health-card" aria-live="polite">
+    <div><strong>網站服務檢查</strong><div id="healthDetail" class="health-detail">正在檢查前端與 API 是否同時可用…</div></div>
+    <span id="healthBadge" class="pill health-indicator">檢查中</span>
+  </section>
+
+  <section class="module-grid">
+    <a class="card module" href="ui/01-realtime.html"><h2>📊 即時行情</h2><p>5 秒自動更新、桌機表格、手機卡片與明確錯誤狀態。</p></a>
+    <a class="card module" href="ui/02-groups.html"><h2>📁 族群強弱</h2><p>族群漲跌排序與上漲／下跌數量比較。</p></a>
+    <a class="card module" href="ui/03-rule1.html"><h2>📈 Rule1</h2><p>依族群分組，並保留無符合股票族群。</p></a>
+    <a class="card module" href="ui/04-rule2.html"><h2>⏱ Rule2</h2><p>五分鐘K模組介面；正式條件尚未啟用。</p></a>
+    <a class="card module" href="ui/05-stock-detail.html?code=2344"><h2>🔎 個股詳情</h2><p>依股票代號顯示行情及所有已確認族群。</p></a>
+    <a class="card module" href="ui/06-system.html"><h2>🛠 系統狀態</h2><p>辨識正式 API、Mock 資料與尚未串接服務。</p></a>
+  </section>
+</main>
+<script>
+(async function(){
+  const badge=document.getElementById('healthBadge');
+  const detail=document.getElementById('healthDetail');
+  try{
+    const response=await fetch('/api/health',{cache:'no-store'});
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data=await response.json();
+    badge.textContent='API 正常'; badge.className='pill source-badge--live health-indicator';
+    detail.textContent=`版本 ${data.version}｜環境 ${data.environment}｜資料模式 ${data.data_mode}`;
+  }catch(error){
+    badge.textContent='API 未連線'; badge.className='pill health-indicator health-error';
+    detail.textContent='首頁可開啟，但 API 無法回應。請檢查部署 Start Command、PORT 與 /api/health。';
+  }
+})();
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>

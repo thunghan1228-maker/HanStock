@@ -1,0 +1,118 @@
+/**
+ * HanStock Design System
+ * 所有 UI 頁面共用的設計基礎
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --bg-gradient: linear-gradient(140deg, #0b1020, #11172a);
+  --card: #151c30;
+  --card-hover: #1a2340;
+  --muted: #9aa6bf;
+  --line: #2a3554;
+  --text: #eef3ff;
+  --good: #46d59a;
+  --bad: #ff6b7a;
+  --accent: #6ea8fe;
+  --warn: #ffc107;
+  --up: #ff7b88;
+  --down: #7db7ff;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 10px 35px rgba(0,0,0,.18);
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg-gradient);
+  font-family: var(--font);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Layout */
+.page { max-width: 1200px; margin: 0 auto; padding: 24px 20px 80px; }
+.page-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.page-title { margin: 0; font-size: 28px; }
+.page-sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+
+/* Cards */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); }
+.card:hover { border-color: rgba(110,168,254,0.3); }
+
+/* Grid */
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+
+/* Metrics */
+.metric { font-size: 28px; font-weight: 800; margin-top: 6px; }
+.label { color: var(--muted); font-size: 13px; }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-size: 12px; font-weight: 600; }
+tr:hover { background: rgba(110,168,254,0.04); }
+
+/* Status */
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: var(--good); }
+.dot-err { background: var(--bad); }
+.dot-warn { background: var(--warn); }
+
+/* Buttons */
+.btn { background: var(--accent); color: #07101f; border: 0; border-radius: var(--radius-sm); padding: 10px 16px; font-weight: 700; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.btn-secondary { background: #25304d; color: #fff; }
+.btn-danger { background: var(--bad); color: #fff; }
+
+/* Colors */
+.text-up { color: var(--up); }
+.text-down { color: var(--down); }
+.text-good { color: var(--good); }
+.text-bad { color: var(--bad); }
+.text-muted { color: var(--muted); }
+.text-accent { color: var(--accent); }
+
+/* States */
+.state-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(11,16,32,0.9); border-radius: var(--radius); z-index: 10; }
+.state-overlay.hidden { display: none; }
+
+.skeleton { background: linear-gradient(90deg, var(--line) 25%, rgba(42,53,84,0.5) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 6px; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* Tabs / Nav */
+.tabs { display: flex; gap: 4px; background: rgba(11,16,32,0.5); border-radius: 10px; padding: 4px; margin-bottom: 16px; overflow-x: auto; }
+.tab { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap; border: none; background: none; }
+.tab.active { background: var(--accent); color: #07101f; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .page { padding: 16px 12px 90px; }
+  .page-title { font-size: 22px; }
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: 1fr; }
+  .page-header { flex-direction: column; align-items: flex-start; }
+}
+@media (max-width: 480px) {
+  .grid-4, .grid-2 { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .metric { font-size: 22px; }
+}
+
+
+/* v3.1 application shell */
+.app-nav{position:sticky;top:0;z-index:1000;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:10px max(16px,calc((100vw - 1200px)/2 + 20px));background:rgba(11,16,32,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}
+.app-brand{display:flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;font-weight:800;white-space:nowrap}.app-brand small{font-size:10px;color:var(--muted);font-weight:600}.app-brand__mark{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:var(--accent);color:#07101f;font-weight:900}
+.app-nav__links{display:flex;gap:4px;overflow-x:auto}.app-nav__links a{padding:8px 10px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:13px;white-space:nowrap}.app-nav__links a:hover,.app-nav__links a.active{background:#25304d;color:var(--text)}
+.source-badge--mock{border-color:rgba(255,193,7,.45);color:var(--warn)}.source-badge--live{border-color:rgba(70,213,154,.45);color:var(--good)}
+.quote-link,.result-link{color:inherit;text-decoration:none}.quote-row.quote-link{display:grid}.result-card.result-link{display:grid}.signal-card.result-link{display:grid}
+.notice{padding:12px 14px;border:1px solid rgba(255,193,7,.35);border-radius:10px;background:rgba(255,193,7,.08);color:var(--warn);font-size:13px;margin-bottom:16px}
+.result-group{margin-bottom:18px}.result-group__header{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}.result-group--empty{padding:13px 14px;border:1px dashed var(--line);border-radius:10px;color:var(--muted)}
+@media(max-width:768px){.app-nav{align-items:flex-start;flex-direction:column;gap:8px;padding:8px 12px}.app-nav__links{width:100%}.app-brand small{display:none}}
