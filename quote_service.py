@@ -184,7 +184,6 @@ class QuoteService:
             self.api.login(
                 api_key=api_key,
                 secret_key=secret_key,
-                fetch_contract=True,
             )
             self.state.logged_in = True
             self.state.error_message = None
