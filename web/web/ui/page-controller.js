@@ -5,13 +5,13 @@
   const cls = value => value == null || value === '' ? '' : (Number(value) >= 0 ? 'text-up' : 'text-down');
   const formatTime = value => {
     if (!value) return '—';
-    // 將字串或數字統一轉成 milliseconds
-    let ms;
     const raw = String(value).trim();
-    // 純數字字串（可能是 ns/us/ms/s timestamp）
+    const pad = n => String(n).padStart(2, '0');
+    // 純數字字串（Shioaji ts 屬性：台灣本地時間的 naive epoch，不含時區 offset）
+    // 直接用 UTC 方法讀取即可得到正確的台灣時間，不需再轉換時區
     if (/^\d{10,19}$/.test(raw)) {
-      // 用 BigInt 避免精度遺失（19 位數超過 Number.MAX_SAFE_INTEGER）
       const big = BigInt(raw);
+      let ms;
       if (raw.length >= 19) {
         ms = Number(big / 1000000n); // nanoseconds → ms
       } else if (raw.length >= 16) {
@@ -21,13 +21,14 @@
       } else {
         ms = Number(big) * 1000;     // seconds → ms
       }
-    } else {
-      // ISO 字串或其他格式，直接交給 Date 解析
-      ms = new Date(value).getTime();
+      if (!ms || ms < 0) return '—';
+      const d = new Date(ms);
+      // Shioaji ts 已是台灣本地時間的 epoch，直接用 UTC 讀取即為台灣時間
+      return `${d.getUTCFullYear()}/${pad(d.getUTCMonth()+1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
     }
-    if (!ms || Number.isNaN(ms) || ms < 0) return '—';
-    const d = new Date(ms);
-    // 台灣時間 YYYY/MM/DD HH:mm:ss
+    // ISO 字串或其他格式：用 Asia/Taipei 時區轉換
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
     return d.toLocaleString('zh-TW', {
       timeZone: 'Asia/Taipei',
       year: 'numeric', month: '2-digit', day: '2-digit',
