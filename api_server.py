@@ -25,6 +25,7 @@ from read_rule1_results import RESULT_PATH, load_rule1_results
 from stock_groups import STOCK_GROUPS, resolve_group_names
 from market_data_hub import get_market_data_hub
 from ws_server import websocket_endpoint
+from reconnect_monitor import get_reconnect_monitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +44,7 @@ TW_TZ = timezone(timedelta(hours=8))
 async def lifespan(app: FastAPI):
     quote_svc = None
     hub = get_market_data_hub()
+    monitor = get_reconnect_monitor()
     if SHIOAJI_QUOTE_ENABLED:
         logger.info("＝＝＝＝ 啟動 Shioaji 即時行情服務 ＝＝＝＝")
         try:
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
 
             quote_svc = get_quote_service()
             quote_svc.startup()
+            monitor.start()
             logger.info("＝＝＝＝ Market Data Hub 已啟動 ＝＝＝＝")
         except Exception as exc:
             logger.error("Shioaji 即時行情啟動失敗（API 仍繼續運作）: %s", exc)
@@ -61,6 +64,7 @@ async def lifespan(app: FastAPI):
     if quote_svc is not None:
         logger.info("＝＝＝＝ 關閉 Shioaji 即時行情服務 ＝＝＝＝")
         try:
+            monitor.stop()
             quote_svc.shutdown()
         except Exception as exc:
             logger.warning("Shioaji 關閉時發生錯誤: %s", exc)
@@ -486,7 +490,12 @@ def sync_rule1(
 def get_hub_status() -> dict[str, Any]:
     """Market Data Hub 狀態摘要。"""
     hub = get_market_data_hub()
-    return {"status": "ok", "data": hub.get_hub_status()}
+    monitor = get_reconnect_monitor()
+    return {
+        "status": "ok",
+        "data": hub.get_hub_status(),
+        "reconnect": monitor.get_status(),
+    }
 
 
 @app.get("/api/hub/ticks")
