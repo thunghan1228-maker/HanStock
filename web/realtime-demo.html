@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HanStock 台股族群即時行情測試</title>
+  <style>
+    :root{color-scheme:dark;--bg:#080c14;--card:#121925;--line:#273142;--muted:#94a3b8;--up:#ff6b78;--down:#66a6ff;--good:#41d69b;--bad:#ff6070}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf2f7;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{max-width:1180px;margin:auto;padding:24px}.top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+    h1{font-size:26px;margin:0 auto 0 0}input,button,select{border:1px solid var(--line);background:#0d1420;color:#fff;border-radius:10px;padding:11px 13px;font-size:15px}
+    input{min-width:260px;flex:1}button{background:#d8a94d;color:#111827;font-weight:800;cursor:pointer}.status{color:var(--muted);font-size:14px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}table{width:100%;border-collapse:collapse}
+    th,td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+    th{color:var(--muted);font-size:13px}.up{color:var(--up)}.down{color:var(--down)}.empty{padding:40px;text-align:center;color:var(--muted)}
+    .badge{display:inline-flex;align-items:center;gap:7px}.dot{width:9px;height:9px;border-radius:50%;background:var(--good);box-shadow:0 0 7px var(--good)}
+    @media(max-width:760px){main{padding:14px}.table-wrap{overflow:auto}h1{width:100%}input{min-width:100%}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <h1>台股族群即時行情測試</h1>
+    <input id="keyword" value="記憶體" placeholder="輸入族群或股票代號">
+    <select id="sort"><option value="change_desc">漲跌幅排序</option><option value="code">代號排序</option><option value="group_order">族群順序</option></select>
+    <button id="start">開始連線</button>
+  </div>
+  <p class="status" id="status">尚未連線</p>
+  <div class="card table-wrap">
+    <table>
+      <thead><tr><th>排名</th><th>股票</th><th>最新價</th><th>漲跌</th><th>漲跌幅</th><th>累計量</th><th>行情時間</th><th>延遲</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">請輸入族群後開始連線</td></tr></tbody>
+    </table>
+  </div>
+</main>
+<script src="/assets/realtime-radar-client.js"></script>
+<script>
+  const rows = document.querySelector('#rows');
+  const status = document.querySelector('#status');
+  let stopPolling = null;
+  const fmt = (v,d=2) => v == null ? '—' : Number(v).toLocaleString('zh-TW',{maximumFractionDigits:d});
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  function render(payload){
+    const groups = payload.groups || [];
+    const all = groups.flatMap(group => group.stocks.map(stock => ({...stock,group_name:group.group_name})));
+    status.innerHTML = `<span class="badge"><span class="dot"></span>即時連線</span>・${esc(groups.map(g=>g.group_name).join('、'))}・有行情 ${all.filter(x=>x.quote_available).length}/${all.length}`;
+    rows.innerHTML = all.length ? all.map(item => {
+      const q=item.quote||{}; const cls=Number(q.price_chg)>0?'up':Number(q.price_chg)<0?'down':'';
+      return `<tr><td>${item.rank||'—'}</td><td>${esc(item.stock_code)} ${esc(item.stock_name||'')}</td><td class="${cls}">${fmt(q.close)}</td><td class="${cls}">${q.price_chg>0?'+':''}${fmt(q.price_chg)}</td><td class="${cls}">${q.pct_chg>0?'+':''}${fmt(q.pct_chg)}%</td><td>${fmt(q.total_volume,0)}</td><td>${esc(q.tick_time||'等待成交')}</td><td>${q.quote_age_seconds==null?'—':fmt(q.quote_age_seconds,1)+' 秒'}</td></tr>`;
+    }).join('') : '<tr><td colspan="8" class="empty">等待第一筆行情</td></tr>';
+  }
+
+  function start(){
+    if(stopPolling) stopPolling();
+    const keyword=document.querySelector('#keyword').value.trim();
+    if(!keyword) return;
+    status.textContent='正在訂閱並等待行情…';
+    stopPolling=HanStockRealtime.pollGroup(keyword,{
+      intervalMs:1500,
+      sort:document.querySelector('#sort').value,
+      onData:render,
+      onError:error=>{status.textContent=`連線異常：${error.message}`;status.style.color='var(--bad)';}
+    });
+  }
+  document.querySelector('#start').addEventListener('click',start);
+  document.querySelector('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')start();});
+  start();
+</script>
+</body>
+</html>
