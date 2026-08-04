@@ -1,12 +1,13 @@
 """HanStock 即時行情服務模組。
 
-負責 Shioaji 登入、憑證啟用、行情連線、台指期訂閱，
+負責 Shioaji 登入、台指期與台股即時行情訂閱、行情快取，
 以及斷線重連邏輯。設計為 FastAPI lifespan 內啟動的長駐服務。
 
 狀態設定原則：
-- subscribed = True：僅在收到 Event Code 16（SUBSCRIPTION_OK）或首筆 Tick 後設定
-- quote_connected = True：僅在收到 Event Code 0（SESSION_UP）或實際收到行情後設定
-- 不在 api.subscribe() 呼叫後立即設定任何連線狀態
+- futures subscribed = True：僅在收到期貨 Event Code 16 或首筆期貨 Tick 後設定
+- quote_connected = True：僅在收到 SESSION_UP 或實際行情後設定
+- 台股採動態訂閱：網站查詢股票或族群時才訂閱，使用 LRU 控制訂閱數
+- 不以 snapshots/ticks/kbars 輪詢取代盤中即時行情
 """
 
 from __future__ import annotations
@@ -15,26 +16,85 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Optional
 
 import shioaji as sj
 
 logger = logging.getLogger("hanstock.quote_service")
 
-# 台灣時區
 TW_TZ = timezone(timedelta(hours=8))
 
-# 重連設定
 MAX_RECONNECT_ATTEMPTS = 10
-RECONNECT_BASE_INTERVAL = 5  # 秒，指數退避基底
-RECONNECT_MAX_INTERVAL = 300  # 秒，最大間隔 5 分鐘
+RECONNECT_BASE_INTERVAL = 5
+RECONNECT_MAX_INTERVAL = 300
+DEFAULT_STALE_SECONDS = 60.0
+DEFAULT_STOCK_SUBSCRIPTION_LIMIT = 150  # 官方總上限 200，預留期貨與未來其他行情
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_tick_datetime(value: Any, fallback: str) -> str:
+    """把 Shioaji datetime（datetime 或 tuple）轉成含台灣時區的 ISO 字串。"""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=TW_TZ)
+        return value.astimezone(TW_TZ).isoformat()
+
+    if isinstance(value, (tuple, list)) and len(value) >= 6:
+        try:
+            microsecond = int(value[6]) if len(value) > 6 else 0
+            parsed = datetime(
+                int(value[0]), int(value[1]), int(value[2]),
+                int(value[3]), int(value[4]), int(value[5]), microsecond,
+                tzinfo=TW_TZ,
+            )
+            return parsed.isoformat()
+        except (TypeError, ValueError):
+            pass
+
+    if value:
+        return str(value)
+    return fallback
 
 
 @dataclass
 class QuoteState:
-    """即時行情狀態追蹤。"""
+    """台指期即時行情狀態追蹤。"""
 
     initialized: bool = False
     logged_in: bool = False
@@ -42,24 +102,22 @@ class QuoteState:
     quote_connected: bool = False
     subscribed: bool = False
     last_quote_time: Optional[str] = None
-    last_quote_timestamp: Optional[float] = None  # Unix timestamp for age calc
+    last_quote_timestamp: Optional[float] = None
     last_tick_data: Optional[dict[str, Any]] = None
     last_event: Optional[str] = None
     current_contract: Optional[str] = None
     error_message: Optional[str] = None
     data_source: str = "none"
     reconnect_count: int = 0
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _lock: threading.RLock = field(default_factory=threading.RLock)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, stale_seconds: float = DEFAULT_STALE_SECONDS) -> dict[str, Any]:
         with self._lock:
-            # 計算行情年齡
             quote_age_seconds: Optional[float] = None
             quote_stale = False
             if self.last_quote_timestamp is not None:
                 quote_age_seconds = round(time.time() - self.last_quote_timestamp, 1)
-                # 超過 60 秒沒有新行情視為 stale
-                quote_stale = quote_age_seconds > 60.0
+                quote_stale = quote_age_seconds > stale_seconds
 
             return {
                 "shioaji_initialized": self.initialized,
@@ -81,8 +139,7 @@ class QuoteState:
         with self._lock:
             self.last_quote_time = tick_time
             self.last_quote_timestamp = time.time()
-            self.last_tick_data = tick_data
-            # 收到實際行情 → 確認連線與訂閱
+            self.last_tick_data = dict(tick_data)
             self.quote_connected = True
             self.subscribed = True
 
@@ -92,30 +149,46 @@ class QuoteState:
 
 
 class QuoteService:
-    """Shioaji 即時行情長駐服務。"""
+    """Shioaji 即時行情長駐服務（台指期 + 動態台股）。"""
 
     def __init__(self) -> None:
         self.api: Optional[sj.Shioaji] = None
         self.state = QuoteState()
         self._shutdown_event = threading.Event()
         self._reconnect_thread: Optional[threading.Thread] = None
-        self._target_code: str = os.getenv("SHIOAJI_FUTURES_CODE", "TXFR1")
+        self._target_code = os.getenv("SHIOAJI_FUTURES_CODE", "TXFR1").strip() or "TXFR1"
+        self._resolved_futures_code: Optional[str] = None
+        self._stale_seconds = _env_float(
+            "SHIOAJI_QUOTE_STALE_SECONDS", DEFAULT_STALE_SECONDS, 5.0, 3600.0
+        )
+
+        self._callbacks_api_id: Optional[int] = None
+        self._stock_lock = threading.RLock()
+        self._stock_ticks: dict[str, dict[str, Any]] = {}
+        self._stock_tick_timestamps: dict[str, float] = {}
+        self._stock_contracts: dict[str, Any] = {}
+        self._stock_subscriptions: OrderedDict[str, float] = OrderedDict()
+        self._stock_errors: dict[str, str] = {}
+        self._stock_subscription_limit = _env_int(
+            "SHIOAJI_STOCK_MAX_SUBSCRIPTIONS",
+            DEFAULT_STOCK_SUBSCRIPTION_LIMIT,
+            1,
+            190,
+        )
 
     # ------------------------------------------------------------------
     # 公開方法
     # ------------------------------------------------------------------
 
     def startup(self) -> None:
-        """同步啟動：初始化 → 登入 → 憑證 → 訂閱。
-
-        任何步驟失敗都不會拋出例外，僅記錄錯誤狀態。
-        API 仍能正常運作。
-        """
+        """同步啟動：初始化 → 登入 → 憑證 → 設定回呼 → 訂閱台指期。"""
         try:
             self._initialize()
             self._login()
             self._activate_ca()
-            self._subscribe_futures()
+            self._setup_callbacks()
+            self._do_subscribe_futures()
+            self._subscribe_bootstrap_stocks()
         except Exception as exc:
             logger.error("即時行情啟動流程發生未預期錯誤: %s", exc)
             self.state.error_message = str(exc)
@@ -123,8 +196,6 @@ class QuoteService:
     def shutdown(self) -> None:
         """安全關閉 Shioaji 連線。"""
         self._shutdown_event.set()
-
-        # 等待重連執行緒結束
         if self._reconnect_thread and self._reconnect_thread.is_alive():
             self._reconnect_thread.join(timeout=5)
 
@@ -134,45 +205,132 @@ class QuoteService:
                 logger.info("Shioaji 已安全登出。")
             except Exception as exc:
                 logger.warning("登出時發生錯誤: %s", exc)
+
         self.state.logged_in = False
         self.state.quote_connected = False
         self.state.subscribed = False
 
     def get_health(self) -> dict[str, Any]:
-        """取得行情服務健康狀態。"""
-        return self.state.to_dict()
+        """取得台指期行情服務健康狀態。"""
+        return self.state.to_dict(self._stale_seconds)
 
     def get_latest_tick(self) -> Optional[dict[str, Any]]:
-        """取得最新一筆 tick 資料。"""
+        """取得最新一筆台指期 tick。"""
         with self.state._lock:
-            return self.state.last_tick_data
+            return dict(self.state.last_tick_data) if self.state.last_tick_data else None
+
+    def get_stock_health(self) -> dict[str, Any]:
+        """取得台股動態訂閱健康狀態。"""
+        with self._stock_lock:
+            timestamps = list(self._stock_tick_timestamps.values())
+            latest_ts = max(timestamps) if timestamps else None
+            age = round(time.time() - latest_ts, 1) if latest_ts else None
+            return {
+                "enabled": self.state.logged_in,
+                "active_subscription_count": len(self._stock_subscriptions),
+                "subscription_limit": self._stock_subscription_limit,
+                "cached_quote_count": len(self._stock_ticks),
+                "last_stock_quote_time": (
+                    datetime.fromtimestamp(latest_ts, TW_TZ).isoformat() if latest_ts else None
+                ),
+                "stock_quote_age_seconds": age,
+                "stock_quote_stale": age is not None and age > self._stale_seconds,
+                "active_codes": list(self._stock_subscriptions.keys()),
+                "errors": dict(self._stock_errors),
+            }
+
+    def get_active_stock_codes(self) -> list[str]:
+        with self._stock_lock:
+            return list(self._stock_subscriptions.keys())
+
+    def get_stock_quote(self, stock_code: str) -> Optional[dict[str, Any]]:
+        code = str(stock_code).strip().upper()
+        with self._stock_lock:
+            tick = self._stock_ticks.get(code)
+            if tick is None:
+                return None
+            result = dict(tick)
+            timestamp = self._stock_tick_timestamps.get(code)
+            age = round(time.time() - timestamp, 1) if timestamp else None
+            result["quote_age_seconds"] = age
+            result["quote_stale"] = age is not None and age > self._stale_seconds
+            result["subscribed"] = code in self._stock_subscriptions
+            return result
+
+    def get_stock_quotes(self, stock_codes: Iterable[str]) -> dict[str, Optional[dict[str, Any]]]:
+        return {str(code).strip().upper(): self.get_stock_quote(str(code)) for code in stock_codes}
+
+    def ensure_stock_subscriptions(self, stock_codes: Iterable[str]) -> dict[str, Any]:
+        """確保指定股票已訂閱 Tick 行情，並以 LRU 控制總訂閱數。"""
+        codes = []
+        seen: set[str] = set()
+        for raw in stock_codes:
+            code = str(raw).strip().upper()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            codes.append(code)
+
+        result: dict[str, Any] = {
+            "requested": codes,
+            "newly_subscribed": [],
+            "already_subscribed": [],
+            "evicted": [],
+            "failed": {},
+            "active_count": 0,
+            "capacity": self._stock_subscription_limit,
+        }
+
+        if not self.state.logged_in or self.api is None:
+            result["failed"] = {code: "Shioaji 尚未登入" for code in codes}
+            return result
+
+        requested_set = set(codes)
+        for code in codes:
+            with self._stock_lock:
+                if code in self._stock_subscriptions:
+                    self._stock_subscriptions[code] = time.time()
+                    self._stock_subscriptions.move_to_end(code)
+                    result["already_subscribed"].append(code)
+                    continue
+
+            evicted = self._evict_until_capacity(requested_set)
+            result["evicted"].extend(evicted)
+
+            with self._stock_lock:
+                capacity_full = len(self._stock_subscriptions) >= self._stock_subscription_limit
+            if capacity_full:
+                result["failed"][code] = "台股即時行情訂閱容量已滿"
+                continue
+
+            if self._subscribe_stock(code):
+                result["newly_subscribed"].append(code)
+            else:
+                with self._stock_lock:
+                    result["failed"][code] = self._stock_errors.get(code, "訂閱失敗")
+
+        with self._stock_lock:
+            result["active_count"] = len(self._stock_subscriptions)
+        return result
 
     # ------------------------------------------------------------------
-    # 內部方法：初始化流程
+    # 初始化與登入
     # ------------------------------------------------------------------
 
     def _initialize(self) -> None:
-        """建立 Shioaji 實例。"""
         logger.info("[Shioaji] 初始化中...")
-        try:
-            simulation = os.getenv("SHIOAJI_SIMULATION", "false").lower() == "true"
-            self.api = sj.Shioaji(simulation=simulation)
-            self.state.initialized = True
-            mode_str = "模擬模式" if simulation else "正式模式"
-            logger.info("[Shioaji] 初始化成功（%s）。", mode_str)
-        except Exception as exc:
-            logger.error("[Shioaji] 初始化失敗: %s", exc)
-            self.state.error_message = f"初始化失敗: {exc}"
-            raise
+        simulation = os.getenv("SHIOAJI_SIMULATION", "false").lower() == "true"
+        self.api = sj.Shioaji(simulation=simulation)
+        self._callbacks_api_id = None
+        self.state.initialized = True
+        logger.info("[Shioaji] 初始化成功（%s）。", "模擬模式" if simulation else "正式模式")
 
     def _login(self) -> None:
-        """登入永豐 Shioaji。"""
         if not self.state.initialized or self.api is None:
             return
 
         api_key = os.getenv("SHIOAJI_API_KEY", "")
         secret_key = os.getenv("SHIOAJI_SECRET_KEY", "")
-
         if not api_key or not secret_key:
             msg = "缺少 SHIOAJI_API_KEY 或 SHIOAJI_SECRET_KEY 環境變數。"
             logger.error("[Shioaji] %s", msg)
@@ -181,10 +339,7 @@ class QuoteService:
 
         logger.info("[Shioaji] 登入中...")
         try:
-            self.api.login(
-                api_key=api_key,
-                secret_key=secret_key,
-            )
+            self.api.login(api_key=api_key, secret_key=secret_key)
             self.state.logged_in = True
             self.state.error_message = None
             logger.info("[Shioaji] 登入成功。")
@@ -194,87 +349,37 @@ class QuoteService:
             self.state.logged_in = False
 
     def _activate_ca(self) -> None:
-        """啟用電子憑證（下單用，行情不一定需要，但若有設定就啟用）。"""
         if not self.state.logged_in or self.api is None:
             return
 
         ca_path = os.getenv("SHIOAJI_CA_PATH", "")
         ca_passwd = os.getenv("SHIOAJI_CA_PASSWD", "")
         person_id = os.getenv("SHIOAJI_PERSON_ID", "")
-
         if not ca_path or not ca_passwd or not person_id:
             logger.info("[Shioaji] 未設定憑證相關環境變數，跳過憑證啟用。")
             return
 
-        logger.info("[Shioaji] 啟用電子憑證中...")
         try:
             result = self.api.activate_ca(
                 ca_path=ca_path,
                 ca_passwd=ca_passwd,
                 person_id=person_id,
             )
+            self.state.certificate_active = bool(result)
             if result:
-                self.state.certificate_active = True
                 logger.info("[Shioaji] 電子憑證啟用成功。")
             else:
                 logger.warning("[Shioaji] 電子憑證啟用回傳 False。")
-                self.state.error_message = "憑證啟用回傳 False"
         except Exception as exc:
             logger.error("[Shioaji] 電子憑證啟用失敗: %s", exc)
             self.state.error_message = f"憑證啟用失敗: {exc}"
 
-    def _subscribe_futures(self) -> None:
-        """訂閱台指期近月合約即時行情。
-
-        注意：呼叫 api.subscribe() 後不立即設定 subscribed=True，
-        而是等待 Event Code 16 或首筆 Tick 回呼才確認。
-        """
-        if not self.state.logged_in or self.api is None:
-            return
-
-        # 設定事件回呼
-        self._setup_event_callback()
-        # 設定行情回呼
-        self._setup_quote_callback()
-
-        self._do_subscribe()
-
-    def _do_subscribe(self) -> None:
-        """執行訂閱動作（可被重連流程重複呼叫）。"""
-        if self.api is None:
-            return
-
-        logger.info("[Shioaji] 訂閱台指期行情: %s", self._target_code)
-
-        try:
-            contract = self.api.Contracts.Futures.TXF[self._target_code]
-            if contract is None:
-                logger.error("[Shioaji] 找不到合約: %s", self._target_code)
-                self.state.error_message = f"找不到合約: {self._target_code}"
-                return
-
-            self.state.current_contract = self._target_code
-            self.state.data_source = f"shioaji_realtime_{self._target_code}"
-
-            # 呼叫 subscribe，但不立即設定 subscribed/quote_connected
-            # 等待 Event Code 16 或首筆 Tick 確認
-            self.api.subscribe(
-                contract,
-                quote_type=sj.QuoteType.Tick,
-            )
-            logger.info("[Shioaji] subscribe() 已呼叫，等待確認...")
-        except Exception as exc:
-            logger.error("[Shioaji] 訂閱失敗: %s", exc)
-            self.state.error_message = f"訂閱失敗: {exc}"
-            self.state.subscribed = False
-
     # ------------------------------------------------------------------
-    # 內部方法：回呼
+    # 回呼與資料轉換
     # ------------------------------------------------------------------
 
-    def _setup_event_callback(self) -> None:
-        """設定 Solace 連線事件回呼。"""
-        if self.api is None:
+    def _setup_callbacks(self) -> None:
+        if self.api is None or self._callbacks_api_id == id(self.api):
             return
 
         @self.api.quote.on_event
@@ -282,98 +387,223 @@ class QuoteService:
             event_str = f"code={event_code}, resp={resp_code}, info={info}, event={event}"
             self.state.set_event(event_str)
             logger.info("[Shioaji][Event] %s", event_str)
+            info_upper = str(info).upper()
 
             if event_code == 0:
-                # SESSION_UP - 連線建立
                 self.state.quote_connected = True
-                logger.info("[Shioaji] 行情連線已建立（SESSION_UP）。")
-
-            elif event_code == 1:
-                # SESSION_DOWN - 連線斷開
+            elif event_code in (1, 2):
                 self.state.quote_connected = False
                 self.state.subscribed = False
-                logger.warning("[Shioaji] 行情連線已斷開（SESSION_DOWN）。")
                 self._trigger_reconnect()
-
-            elif event_code == 2:
-                # CONNECT_FAILED
-                self.state.quote_connected = False
-                self.state.subscribed = False
-                logger.error("[Shioaji] 行情連線失敗（CONNECT_FAILED）。")
-                self._trigger_reconnect()
-
             elif event_code == 12:
-                # RECONNECTING - Solace 自動重連中
                 self.state.quote_connected = False
                 self.state.subscribed = False
                 self.state.reconnect_count += 1
-                logger.warning(
-                    "[Shioaji] 行情連線重連中（RECONNECTING，第 %d 次）...",
-                    self.state.reconnect_count,
-                )
-
             elif event_code == 13:
-                # RECONNECTED - Solace 自動重連成功
                 self.state.quote_connected = True
-                logger.info("[Shioaji] 行情連線重連成功（RECONNECTED）。")
-                # 重連成功後重新訂閱
-                self._do_subscribe()
-
+                self._do_subscribe_futures()
+                self._resubscribe_stocks()
             elif event_code == 16:
-                # SUBSCRIPTION_OK - 訂閱確認成功
-                self.state.subscribed = True
-                logger.info("[Shioaji] 訂閱確認成功（SUBSCRIPTION_OK）。")
-
-    def _setup_quote_callback(self) -> None:
-        """設定台指期 Tick 行情回呼。"""
-        if self.api is None:
-            return
+                # 只把期貨訂閱確認寫入 futures subscribed；股票另由 active set 管理。
+                futures_markers = ("FOP", self._target_code.upper())
+                if self._resolved_futures_code:
+                    futures_markers += (self._resolved_futures_code.upper(),)
+                if any(marker and marker in info_upper for marker in futures_markers):
+                    self.state.subscribed = True
 
         @self.api.on_tick_fop_v1()
-        def _tick_callback(exchange: sj.Exchange, tick: sj.TickFOPv1):
-            now = datetime.now(TW_TZ).isoformat(timespec="seconds")
-
-            # 嘗試取得 tick 的時間
-            try:
-                tick_time = str(tick.datetime) if hasattr(tick, "datetime") else now
-            except Exception:
-                tick_time = now
-
+        def _futures_tick_callback(exchange: sj.Exchange, tick: sj.TickFOPv1):
+            now = datetime.now(TW_TZ).isoformat()
+            tick_time = _format_tick_datetime(getattr(tick, "datetime", None), now)
             tick_data = {
-                "code": tick.code,
-                "close": float(tick.close),
-                "volume": tick.volume,
-                "total_volume": tick.total_volume,
-                "tick_type": tick.tick_type,
-                "high": float(tick.high),
-                "low": float(tick.low),
-                "open": float(tick.open),
-                "price_chg": float(tick.price_chg),
-                "pct_chg": float(tick.pct_chg),
-                "bid_side_total_vol": tick.bid_side_total_vol,
-                "ask_side_total_vol": tick.ask_side_total_vol,
-                "simtrade": tick.simtrade,
+                "code": str(getattr(tick, "code", "")),
+                "close": _safe_float(getattr(tick, "close", None)),
+                "volume": _safe_int(getattr(tick, "volume", None)),
+                "total_volume": _safe_int(getattr(tick, "total_volume", None)),
+                "tick_type": _safe_int(getattr(tick, "tick_type", None)),
+                "high": _safe_float(getattr(tick, "high", None)),
+                "low": _safe_float(getattr(tick, "low", None)),
+                "open": _safe_float(getattr(tick, "open", None)),
+                "price_chg": _safe_float(getattr(tick, "price_chg", None)),
+                "pct_chg": _safe_float(getattr(tick, "pct_chg", None)),
+                "bid_side_total_vol": _safe_int(getattr(tick, "bid_side_total_vol", None)),
+                "ask_side_total_vol": _safe_int(getattr(tick, "ask_side_total_vol", None)),
+                "simtrade": bool(getattr(tick, "simtrade", False)),
                 "tick_time": tick_time,
                 "received_at": now,
             }
-
-            # 更新狀態（含確認 subscribed 和 quote_connected）
             self.state.update_tick(tick_time, tick_data)
 
+        @self.api.on_tick_stk_v1()
+        def _stock_tick_callback(exchange: sj.Exchange, tick: sj.TickSTKv1):
+            tick_data = self._stock_tick_to_dict(exchange, tick)
+            code = tick_data["code"]
+            with self._stock_lock:
+                self._stock_ticks[code] = tick_data
+                self._stock_tick_timestamps[code] = time.time()
+                self._stock_errors.pop(code, None)
+                if code in self._stock_subscriptions:
+                    self._stock_subscriptions[code] = time.time()
+            self.state.quote_connected = True
+
+        self._callbacks_api_id = id(self.api)
+
+    @staticmethod
+    def _stock_tick_to_dict(exchange: Any, tick: Any) -> dict[str, Any]:
+        now = datetime.now(TW_TZ).isoformat()
+        tick_time = _format_tick_datetime(getattr(tick, "datetime", None), now)
+        raw_pct = _safe_float(getattr(tick, "pct_chg", None))
+        # Shioaji TickSTKv1 的 pct_chg 為百分比的 1/100（例如 33 = 0.33%）。
+        pct_chg = round(raw_pct / 100.0, 4) if raw_pct is not None else None
+        exchange_value = getattr(exchange, "value", None) or str(exchange).split(".")[-1]
+
+        return {
+            "code": str(getattr(tick, "code", "")).upper(),
+            "exchange": str(exchange_value),
+            "close": _safe_float(getattr(tick, "close", None)),
+            "open": _safe_float(getattr(tick, "open", None)),
+            "high": _safe_float(getattr(tick, "high", None)),
+            "low": _safe_float(getattr(tick, "low", None)),
+            "avg_price": _safe_float(getattr(tick, "avg_price", None)),
+            "price_chg": _safe_float(getattr(tick, "price_chg", None)),
+            "pct_chg": pct_chg,
+            "volume": _safe_int(getattr(tick, "volume", None)),
+            "total_volume": _safe_int(getattr(tick, "total_volume", None)),
+            "amount": _safe_float(getattr(tick, "amount", None)),
+            "total_amount": _safe_float(getattr(tick, "total_amount", None)),
+            "tick_type": _safe_int(getattr(tick, "tick_type", None)),
+            "chg_type": _safe_int(getattr(tick, "chg_type", None)),
+            "bid_side_total_vol": _safe_int(getattr(tick, "bid_side_total_vol", None)),
+            "ask_side_total_vol": _safe_int(getattr(tick, "ask_side_total_vol", None)),
+            "bid_side_total_cnt": _safe_int(getattr(tick, "bid_side_total_cnt", None)),
+            "ask_side_total_cnt": _safe_int(getattr(tick, "ask_side_total_cnt", None)),
+            "suspend": bool(getattr(tick, "suspend", False)),
+            "simtrade": bool(getattr(tick, "simtrade", False)),
+            "intraday_odd": bool(getattr(tick, "intraday_odd", False)),
+            "tick_time": tick_time,
+            "received_at": now,
+            "data_source": "shioaji_realtime_stock",
+        }
+
     # ------------------------------------------------------------------
-    # 內部方法：斷線重連
+    # 訂閱管理
+    # ------------------------------------------------------------------
+
+    def _do_subscribe_futures(self) -> None:
+        if not self.state.logged_in or self.api is None:
+            return
+
+        logger.info("[Shioaji] 訂閱台指期行情: %s", self._target_code)
+        try:
+            contract = self.api.contracts.get(self._target_code)
+            if contract is None:
+                # 兼容 legacy Contracts 存取方式
+                contract = self.api.Contracts.Futures.TXF[self._target_code]
+            if contract is None:
+                raise ValueError(f"找不到合約: {self._target_code}")
+
+            self._resolved_futures_code = (
+                getattr(contract, "target_code", None) or getattr(contract, "code", None)
+            )
+            self.state.current_contract = self._target_code
+            self.state.data_source = f"shioaji_realtime_{self._target_code}"
+            self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
+            logger.info("[Shioaji] 台指期 subscribe() 已呼叫，等待 Event/Tick 確認。")
+        except Exception as exc:
+            logger.error("[Shioaji] 台指期訂閱失敗: %s", exc)
+            self.state.error_message = f"台指期訂閱失敗: {exc}"
+            self.state.subscribed = False
+
+    def _subscribe_bootstrap_stocks(self) -> None:
+        raw = os.getenv("SHIOAJI_STOCK_BOOTSTRAP_CODES", "")
+        codes = [item.strip() for item in raw.split(",") if item.strip()]
+        if codes:
+            self.ensure_stock_subscriptions(codes)
+
+    def _resolve_stock_contract(self, code: str) -> Any:
+        if self.api is None:
+            return None
+        contract = self.api.contracts.get(code)
+        if contract is None:
+            try:
+                contract = self.api.Contracts.Stocks[code]
+            except Exception:
+                contract = None
+        if contract is None:
+            return None
+
+        security_type = str(getattr(contract, "security_type", "")).upper()
+        if security_type and "STK" not in security_type and "STOCK" not in security_type:
+            return None
+        return contract
+
+    def _subscribe_stock(self, code: str) -> bool:
+        if self.api is None:
+            return False
+        try:
+            contract = self._resolve_stock_contract(code)
+            if contract is None:
+                raise ValueError(f"找不到股票合約：{code}")
+            self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
+            with self._stock_lock:
+                self._stock_contracts[code] = contract
+                self._stock_subscriptions[code] = time.time()
+                self._stock_subscriptions.move_to_end(code)
+                self._stock_errors.pop(code, None)
+            logger.info("[Shioaji] 已請求訂閱台股 Tick: %s", code)
+            return True
+        except Exception as exc:
+            message = str(exc)
+            with self._stock_lock:
+                self._stock_errors[code] = message
+            logger.warning("[Shioaji] 台股 %s 訂閱失敗: %s", code, exc)
+            return False
+
+    def _unsubscribe_stock(self, code: str) -> None:
+        contract = None
+        with self._stock_lock:
+            contract = self._stock_contracts.pop(code, None)
+            self._stock_subscriptions.pop(code, None)
+        if self.api is not None and contract is not None:
+            try:
+                self.api.unsubscribe(contract, quote_type=sj.QuoteType.Tick)
+                logger.info("[Shioaji] 已取消台股 Tick 訂閱: %s", code)
+            except Exception as exc:
+                logger.warning("[Shioaji] 取消 %s 訂閱失敗: %s", code, exc)
+
+    def _evict_until_capacity(self, protected_codes: set[str]) -> list[str]:
+        evicted: list[str] = []
+        while True:
+            with self._stock_lock:
+                if len(self._stock_subscriptions) < self._stock_subscription_limit:
+                    break
+                victim = next(
+                    (code for code in self._stock_subscriptions if code not in protected_codes),
+                    None,
+                )
+                if victim is None:
+                    break
+            self._unsubscribe_stock(victim)
+            evicted.append(victim)
+        return evicted
+
+    def _resubscribe_stocks(self) -> None:
+        with self._stock_lock:
+            codes = list(self._stock_subscriptions.keys())
+            self._stock_subscriptions.clear()
+            self._stock_contracts.clear()
+        for code in codes:
+            self._subscribe_stock(code)
+
+    # ------------------------------------------------------------------
+    # 斷線重連
     # ------------------------------------------------------------------
 
     def _trigger_reconnect(self) -> None:
-        """觸發斷線重連流程（在背景執行緒中）。"""
         if self._shutdown_event.is_set():
             return
-
-        # 避免重複啟動重連
         if self._reconnect_thread and self._reconnect_thread.is_alive():
-            logger.info("[Shioaji] 重連執行緒已在運行，跳過。")
             return
-
         self._reconnect_thread = threading.Thread(
             target=self._reconnect_loop,
             name="shioaji-reconnect",
@@ -382,36 +612,26 @@ class QuoteService:
         self._reconnect_thread.start()
 
     def _reconnect_loop(self) -> None:
-        """斷線重連迴圈：指數退避，有次數上限。"""
         attempt = 0
-
         while attempt < MAX_RECONNECT_ATTEMPTS and not self._shutdown_event.is_set():
             attempt += 1
-
-            # 指數退避間隔
             interval = min(
                 RECONNECT_BASE_INTERVAL * (2 ** (attempt - 1)),
                 RECONNECT_MAX_INTERVAL,
             )
             logger.info(
                 "[Shioaji] 重連嘗試 %d/%d，等待 %d 秒...",
-                attempt, MAX_RECONNECT_ATTEMPTS, interval,
+                attempt,
+                MAX_RECONNECT_ATTEMPTS,
+                interval,
             )
-
-            # 等待間隔（可被 shutdown 中斷）
             if self._shutdown_event.wait(timeout=interval):
-                logger.info("[Shioaji] 收到關閉信號，停止重連。")
                 return
-
-            # 如果 Solace 已自動重連成功，就不需要重新登入
             if self.state.quote_connected:
-                logger.info("[Shioaji] 連線已恢復，停止重連迴圈。")
                 return
 
-            # 嘗試重新登入
-            logger.info("[Shioaji] 嘗試重新登入...")
             try:
-                # 先嘗試登出舊連線
+                active_codes = self.get_active_stock_codes()
                 if self.api:
                     try:
                         self.api.logout()
@@ -421,40 +641,32 @@ class QuoteService:
                 self.state.logged_in = False
                 self.state.quote_connected = False
                 self.state.subscribed = False
+                with self._stock_lock:
+                    self._stock_subscriptions = OrderedDict((code, time.time()) for code in active_codes)
+                    self._stock_contracts.clear()
 
-                # 重新初始化
                 self._initialize()
                 self._login()
-
                 if not self.state.logged_in:
-                    logger.warning("[Shioaji] 重連登入失敗，繼續嘗試...")
                     continue
-
                 self._activate_ca()
+                self._setup_callbacks()
+                self._do_subscribe_futures()
+                self._resubscribe_stocks()
 
-                # 重新設定回呼並訂閱
-                self._setup_event_callback()
-                self._setup_quote_callback()
-                self._do_subscribe()
-
-                logger.info("[Shioaji] 重連流程完成，等待行情確認...")
-                # 等待一段時間看是否收到行情
                 time.sleep(10)
-                if self.state.subscribed or self.state.quote_connected:
-                    logger.info("[Shioaji] 重連成功！")
+                if self.state.quote_connected or self.state.subscribed:
                     return
-
             except Exception as exc:
                 logger.error("[Shioaji] 重連嘗試 %d 失敗: %s", attempt, exc)
-                self.state.error_message = f"重連失敗 ({attempt}/{MAX_RECONNECT_ATTEMPTS}): {exc}"
+                self.state.error_message = (
+                    f"重連失敗 ({attempt}/{MAX_RECONNECT_ATTEMPTS}): {exc}"
+                )
 
         if attempt >= MAX_RECONNECT_ATTEMPTS:
-            msg = f"已達重連上限 ({MAX_RECONNECT_ATTEMPTS} 次)，停止重連。"
-            logger.error("[Shioaji] %s", msg)
-            self.state.error_message = msg
+            self.state.error_message = f"已達重連上限 ({MAX_RECONNECT_ATTEMPTS} 次)，停止重連。"
 
 
-# 全域單例
 _service: Optional[QuoteService] = None
 
 
