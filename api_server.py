@@ -16,13 +16,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query
+from fastapi import Body, FastAPI, Header, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
 from config import SHIOAJI_QUOTE_ENABLED
 from read_rule1_results import RESULT_PATH, load_rule1_results
 from stock_groups import STOCK_GROUPS, resolve_group_names
+from market_data_hub import get_market_data_hub
+from ws_server import websocket_endpoint
+from reconnect_monitor import get_reconnect_monitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +43,8 @@ TW_TZ = timezone(timedelta(hours=8))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     quote_svc = None
+    hub = get_market_data_hub()
+    monitor = get_reconnect_monitor()
     if SHIOAJI_QUOTE_ENABLED:
         logger.info("＝＝＝＝ 啟動 Shioaji 即時行情服務 ＝＝＝＝")
         try:
@@ -47,6 +52,8 @@ async def lifespan(app: FastAPI):
 
             quote_svc = get_quote_service()
             quote_svc.startup()
+            monitor.start()
+            logger.info("＝＝＝＝ Market Data Hub 已啟動 ＝＝＝＝")
         except Exception as exc:
             logger.error("Shioaji 即時行情啟動失敗（API 仍繼續運作）: %s", exc)
     else:
@@ -57,6 +64,7 @@ async def lifespan(app: FastAPI):
     if quote_svc is not None:
         logger.info("＝＝＝＝ 關閉 Shioaji 即時行情服務 ＝＝＝＝")
         try:
+            monitor.stop()
             quote_svc.shutdown()
         except Exception as exc:
             logger.warning("Shioaji 關閉時發生錯誤: %s", exc)
@@ -472,3 +480,70 @@ def sync_rule1(
         "total_groups": payload.get("summary", {}).get("total_groups"),
         "total_passed_records": payload.get("summary", {}).get("total_passed_records"),
     }
+
+
+# ------------------------------------------------------------------
+# Market Data Hub API
+# ------------------------------------------------------------------
+
+@app.get("/api/hub/status")
+def get_hub_status() -> dict[str, Any]:
+    """Market Data Hub 狀態摘要。"""
+    hub = get_market_data_hub()
+    monitor = get_reconnect_monitor()
+    return {
+        "status": "ok",
+        "data": hub.get_hub_status(),
+        "reconnect": monitor.get_status(),
+    }
+
+
+@app.get("/api/hub/ticks")
+def get_hub_ticks(
+    codes: str | None = Query(default=None, description="逗號分隔股票代號"),
+) -> dict[str, Any]:
+    """從 Hub 取得最新 tick（REST 備援）。"""
+    hub = get_market_data_hub()
+    if codes:
+        code_list = [c.strip().upper() for c in codes.split(",") if c.strip()]
+        ticks = hub.get_ticks(code_list)
+    else:
+        ticks = hub.get_all_ticks()
+    return {"status": "ok", "count": len(ticks), "data": ticks}
+
+
+@app.get("/api/hub/bars/{stock_code}")
+def get_hub_bars(stock_code: str) -> dict[str, Any]:
+    """從 Hub 取得指定股票今日 5 分 K（供 intradayScan 使用）。"""
+    hub = get_market_data_hub()
+    code = stock_code.strip().upper()
+    bars = hub.get_live_bars(code)
+    return {"status": "ok", "code": code, "bar_count": len(bars), "bars": bars}
+
+
+@app.post("/api/hub/bars/batch")
+def get_hub_bars_batch(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """批次取得多檔今日 5 分 K（供 intradayScan 批次使用）。"""
+    hub = get_market_data_hub()
+    codes = payload.get("codes", [])
+    if not isinstance(codes, list):
+        raise HTTPException(status_code=422, detail="codes 必須為陣列")
+    codes = [str(c).strip().upper() for c in codes[:200] if c]
+    result = hub.get_live_bars_batch(codes)
+    return {
+        "status": "ok",
+        "requested_count": len(codes),
+        "data": result,
+    }
+
+
+# ------------------------------------------------------------------
+# WebSocket 端點
+# ------------------------------------------------------------------
+
+@app.websocket("/ws/market")
+async def ws_market(websocket: WebSocket):
+    """即時行情 WebSocket 端點。"""
+    await websocket_endpoint(websocket)

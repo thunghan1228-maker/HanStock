@@ -23,6 +23,8 @@ from typing import Any, Iterable, Optional
 
 import shioaji as sj
 
+from market_data_hub import get_market_data_hub
+
 logger = logging.getLogger("hanstock.quote_service")
 
 TW_TZ = timezone(timedelta(hours=8))
@@ -433,6 +435,11 @@ class QuoteService:
                 "received_at": now,
             }
             self.state.update_tick(tick_time, tick_data)
+            # 推送到 Market Data Hub
+            try:
+                get_market_data_hub().on_futures_tick(tick_data)
+            except Exception as exc:
+                logger.debug("[Hub] futures tick 推送失敗: %s", exc)
 
         @self.api.on_tick_stk_v1()
         def _stock_tick_callback(exchange: sj.Exchange, tick: sj.TickSTKv1):
@@ -445,6 +452,11 @@ class QuoteService:
                 if code in self._stock_subscriptions:
                     self._stock_subscriptions[code] = time.time()
             self.state.quote_connected = True
+            # 推送到 Market Data Hub（Tick Cache + 5 分 K 聚合 + WebSocket 廣播）
+            try:
+                get_market_data_hub().on_stock_tick(tick_data)
+            except Exception as exc:
+                logger.debug("[Hub] stock tick 推送失敗: %s", exc)
 
         self._callbacks_api_id = id(self.api)
 
