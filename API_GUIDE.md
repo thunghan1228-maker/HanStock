@@ -42,3 +42,14 @@ API 已加入 CORS 標頭，方便本機網站測試。
 ## 重要限制
 
 `127.0.0.1` 只允許這台電腦存取。要讓 `hanstock.xyz` 從網際網路讀取，後續還需要把 API 部署到雲端，並設定 HTTPS、網域及安全限制。
+
+## Market Data Hub K 棒 API
+
+| 功能 | 方法與路徑 |
+|---|---|
+| 單一股票 1 分 K | `GET /api/hub/bars1m/2330` |
+| 批次股票 1 分 K | `POST /api/hub/bars1m/batch` |
+| 單一股票 5 分 K | `GET /api/hub/bars/2330` |
+| 批次股票 5 分 K | `POST /api/hub/bars/batch` |
+
+開啟股票 K 線前，請先呼叫 `/api/realtime/{stock_code}?subscribe=true` 建立即時 tick 訂閱。完整說明請看 `HUB_1MIN_API.md`。

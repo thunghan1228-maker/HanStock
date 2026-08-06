@@ -3,7 +3,7 @@
 提供族群、Rule1、台指期及台股動態即時行情，供 hanstock.xyz、
 台股族群雷達、LINE Bot 或 App 使用。
 
-v1.2.0: 新增台股動態訂閱與族群即時行情 API。
+v1.3.0: 新增 Hub 盤中 1 分 K REST API。
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hanstock.api")
 
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 TW_TZ = timezone(timedelta(hours=8))
@@ -129,6 +129,14 @@ def _quote_service_or_503():
     if not svc.state.logged_in:
         raise HTTPException(status_code=503, detail="Shioaji 尚未登入。")
     return svc
+
+
+def _normalize_stock_code(raw: str) -> str:
+    """正規化並驗證單一股票代號。"""
+    code = str(raw).strip().upper()
+    if not code or len(code) > 12 or not code.replace("-", "").isalnum():
+        raise HTTPException(status_code=422, detail=f"股票代號格式不正確：{raw}")
+    return code
 
 
 def _split_codes(raw: str | None) -> list[str]:
@@ -512,13 +520,61 @@ def get_hub_ticks(
     return {"status": "ok", "count": len(ticks), "data": ticks}
 
 
+@app.get("/api/hub/bars1m/{stock_code}")
+def get_hub_bars_1m(stock_code: str) -> dict[str, Any]:
+    """從 Hub 取得指定股票今日 1 分 K（含進行中的 K 棒）。"""
+    hub = get_market_data_hub()
+    code = _normalize_stock_code(stock_code)
+    bars = hub.get_live_bars_1m(code)
+    return {
+        "status": "ok",
+        "code": code,
+        "interval": "1m",
+        "bar_count": len(bars),
+        "bars": bars,
+    }
+
+
+@app.post("/api/hub/bars1m/batch")
+def get_hub_bars_1m_batch(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """批次取得多檔今日 1 分 K，最多 200 檔。"""
+    raw_codes = payload.get("codes", [])
+    if not isinstance(raw_codes, list):
+        raise HTTPException(status_code=422, detail="codes 必須為陣列")
+
+    codes: list[str] = []
+    seen: set[str] = set()
+    for raw_code in raw_codes[:200]:
+        code = _normalize_stock_code(str(raw_code))
+        if code not in seen:
+            codes.append(code)
+            seen.add(code)
+
+    hub = get_market_data_hub()
+    result = hub.get_live_bars_1m_batch(codes)
+    return {
+        "status": "ok",
+        "interval": "1m",
+        "requested_count": len(codes),
+        "data": result,
+    }
+
+
 @app.get("/api/hub/bars/{stock_code}")
 def get_hub_bars(stock_code: str) -> dict[str, Any]:
     """從 Hub 取得指定股票今日 5 分 K（供 intradayScan 使用）。"""
     hub = get_market_data_hub()
-    code = stock_code.strip().upper()
+    code = _normalize_stock_code(stock_code)
     bars = hub.get_live_bars(code)
-    return {"status": "ok", "code": code, "bar_count": len(bars), "bars": bars}
+    return {
+        "status": "ok",
+        "code": code,
+        "interval": "5m",
+        "bar_count": len(bars),
+        "bars": bars,
+    }
 
 
 @app.post("/api/hub/bars/batch")

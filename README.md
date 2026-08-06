@@ -157,3 +157,12 @@ HANSTOCK_SYNC_TOKEN=與 Railway 相同的同步金鑰
 ```powershell
 py sync_rule1_results.py
 ```
+
+## Hub 1 分 K（API v1.3.0）
+
+已新增由 Shioaji 即時 tick 聚合的 1 分 K：
+
+- `GET /api/hub/bars1m/{stock_code}`
+- `POST /api/hub/bars1m/batch`
+
+原有 `GET /api/hub/bars/{stock_code}` 仍為 5 分 K。部署與盤中驗證步驟請看 `HUB_1MIN_API.md` 及 `HUB_1MIN_CHANGELOG.md`。

@@ -154,6 +154,39 @@ class RealtimeApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["stock_code"], "2330")
         self.assertTrue(payload["data"]["quote_available"])
 
+    def test_hub_one_minute_bars_endpoint(self):
+        hub = api_module.get_market_data_hub()
+        hub.on_stock_tick({
+            "code": "2330",
+            "close": 100.0,
+            "volume": 2,
+            "tick_time": "2026-08-06T09:00:01+08:00",
+        })
+        hub.on_stock_tick({
+            "code": "2330",
+            "close": 101.0,
+            "volume": 3,
+            "tick_time": "2026-08-06T09:01:01+08:00",
+        })
+        response = self.client.get("/api/hub/bars1m/2330")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["interval"], "1m")
+        self.assertEqual(payload["code"], "2330")
+        self.assertEqual(payload["bar_count"], 2)
+
+    def test_hub_one_minute_batch_endpoint_deduplicates(self):
+        response = self.client.post(
+            "/api/hub/bars1m/batch",
+            json={"codes": ["2330", "2330", "2344"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["interval"], "1m")
+        self.assertEqual(payload["requested_count"], 2)
+        self.assertIn("2330", payload["data"])
+        self.assertIn("2344", payload["data"])
+
 
 if __name__ == "__main__":
     unittest.main()

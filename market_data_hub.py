@@ -1,6 +1,6 @@
 """HanStock Market Data Hub — 即時行情核心。
 
-統一行情資料源：Shioaji Tick → 記憶體快取 → 5 分 K 聚合 → WebSocket 廣播。
+統一行情資料源：Shioaji Tick → 記憶體快取 → 1 分／5 分 K 聚合 → WebSocket 廣播。
 所有消費者（Rule1、Rule2、905 戰法、LINE Bot、族群排行、K 線、警示）
 都從此核心取得資料，不需要每增加一個功能就重新串一次 Shioaji。
 
@@ -9,7 +9,7 @@
        ↓ tick callback
   MarketDataHub（本模組）
        ├── Tick Cache（最新一筆 per code）
-       ├── Bar Aggregator（5 分 K 即時聚合）
+       ├── Bar Aggregator（1 分／5 分 K 即時聚合）
        ├── WebSocket Broadcaster（即時推送到前端/其他服務）
        └── REST Query（查詢與備援）
 """
@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -29,13 +29,18 @@ logger = logging.getLogger("hanstock.market_data_hub")
 
 TW_TZ = timezone(timedelta(hours=8))
 
-# 5 分 K 聚合間隔（毫秒）
-BAR_INTERVAL_MS = 5 * 60 * 1000
+# K 棒聚合間隔（毫秒）
+BAR_INTERVAL_1M_MS = 60 * 1000
+BAR_INTERVAL_5M_MS = 5 * 60 * 1000
+# 向下相容：既有程式若引用 BAR_INTERVAL_MS，仍代表 5 分 K。
+BAR_INTERVAL_MS = BAR_INTERVAL_5M_MS
 
 
-def _bar_start_ms(ts_ms: int) -> int:
-    """將 timestamp (ms) 對齊到 5 分鐘起始點。"""
-    return ts_ms - (ts_ms % BAR_INTERVAL_MS)
+def _bar_start_ms(ts_ms: int, interval_ms: int = BAR_INTERVAL_5M_MS) -> int:
+    """將 timestamp (ms) 對齊到指定 K 棒週期起始點。"""
+    if interval_ms <= 0:
+        raise ValueError("interval_ms 必須大於 0")
+    return ts_ms - (ts_ms % interval_ms)
 
 
 def _now_tw() -> datetime:
@@ -47,8 +52,8 @@ def _now_ms() -> int:
 
 
 @dataclass
-class Bar5m:
-    """5 分鐘 K 棒。"""
+class Bar:
+    """通用 OHLCV K 棒。"""
     ts: int  # bar 起始時間 (UTC ms)
     open: float
     high: float
@@ -81,32 +86,51 @@ class Bar5m:
         }
 
 
-class BarAggregator:
-    """Per-code 5 分 K 即時聚合器。保留當日所有已完成 bar + 當前進行中 bar。"""
+# 向下相容：保留舊類別名稱。
+Bar5m = Bar
 
-    def __init__(self) -> None:
+
+class BarAggregator:
+    """Per-code 即時 K 棒聚合器。保留當日所有已完成 bar + 當前進行中 bar。"""
+
+    def __init__(self, interval_ms: int = BAR_INTERVAL_5M_MS, interval_name: str = "5m") -> None:
+        if interval_ms <= 0:
+            raise ValueError("interval_ms 必須大於 0")
+        self.interval_ms = interval_ms
+        self.interval_name = interval_name
         self._lock = threading.RLock()
         # code → list of completed bars (today)
-        self._completed: dict[str, list[Bar5m]] = defaultdict(list)
+        self._completed: dict[str, list[Bar]] = defaultdict(list)
         # code → current (incomplete) bar
-        self._current: dict[str, Bar5m] = {}
+        self._current: dict[str, Bar] = {}
         # 當日日期（台北），用於跨日清理
         self._trade_date: str = _now_tw().strftime("%Y-%m-%d")
 
-    def on_tick(self, code: str, price: float, volume: int, tick_ts_ms: int) -> Optional[Bar5m]:
+    def on_tick(self, code: str, price: float, volume: int, tick_ts_ms: int) -> Optional[Bar]:
         """收到 tick 時更新 bar。若跨 bar 則回傳剛完成的 bar，否則回傳 None。"""
         self._check_day_rollover()
-        bar_start = _bar_start_ms(tick_ts_ms)
-        completed_bar: Optional[Bar5m] = None
+        bar_start = _bar_start_ms(tick_ts_ms, self.interval_ms)
+        completed_bar: Optional[Bar] = None
 
         with self._lock:
             current = self._current.get(code)
+            # 忽略比目前 K 棒更早的延遲 tick，避免時間倒退與 K 棒順序錯亂。
+            if current is not None and bar_start < current.ts:
+                logger.debug(
+                    "[%s] 忽略延遲 tick: code=%s tick_bar=%s current_bar=%s",
+                    self.interval_name,
+                    code,
+                    bar_start,
+                    current.ts,
+                )
+                return None
+
             if current is None or current.ts != bar_start:
                 # 新 bar 開始
                 if current is not None and current.tick_count > 0:
                     self._completed[code].append(current)
                     completed_bar = current
-                self._current[code] = Bar5m(ts=bar_start, open=price, high=price, low=price, close=price)
+                self._current[code] = Bar(ts=bar_start, open=price, high=price, low=price, close=price)
                 self._current[code].update(price, volume)
             else:
                 current.update(price, volume)
@@ -114,7 +138,7 @@ class BarAggregator:
         return completed_bar
 
     def get_bars(self, code: str, include_current: bool = True) -> list[dict[str, Any]]:
-        """取得指定股票今日所有 5 分 K（含或不含進行中 bar）。"""
+        """取得指定股票今日所有 K 棒（含或不含進行中 bar）。"""
         with self._lock:
             bars = [b.to_dict() for b in self._completed.get(code, [])]
             if include_current:
@@ -157,7 +181,7 @@ class MarketDataHub:
 
     接收 QuoteService 的 tick callback，維護：
     1. Tick Cache（最新一筆 per code）
-    2. 5 分 K 聚合（BarAggregator）
+    2. 1 分／5 分 K 聚合（BarAggregator）
     3. WebSocket 廣播（asyncio event loop）
     """
 
@@ -166,8 +190,9 @@ class MarketDataHub:
         # Tick Cache: code → latest tick dict
         self._tick_cache: dict[str, dict[str, Any]] = {}
         self._tick_timestamps: dict[str, float] = {}
-        # Bar Aggregator
-        self.bars = BarAggregator()
+        # Bar Aggregators：1 分 K 與既有 5 分 K 同時由同一份 tick 更新。
+        self.bars_1m = BarAggregator(BAR_INTERVAL_1M_MS, "1m")
+        self.bars = BarAggregator(BAR_INTERVAL_5M_MS, "5m")
         # WebSocket subscribers: set of asyncio.Queue (one per connected client)
         self._ws_subscribers: set[asyncio.Queue] = set()
         self._ws_lock = threading.Lock()
@@ -176,6 +201,7 @@ class MarketDataHub:
         # Stats
         self._total_ticks: int = 0
         self._total_bars_completed: int = 0
+        self._total_bars_1m_completed: int = 0
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """設定 asyncio event loop（WebSocket 廣播用）。"""
@@ -205,12 +231,24 @@ class MarketDataHub:
         # 計算 tick timestamp (ms)
         tick_ts_ms = self._extract_tick_ts_ms(tick_data)
 
-        # 更新 Bar Aggregator
+        # 更新 1 分 K Aggregator
+        completed_bar_1m = self.bars_1m.on_tick(code, price, volume, tick_ts_ms)
+        if completed_bar_1m:
+            self._total_bars_1m_completed += 1
+            self._broadcast({
+                "type": "bar1m_completed",
+                "interval": "1m",
+                "code": code,
+                "bar": completed_bar_1m.to_dict(),
+            })
+
+        # 更新既有 5 分 K Aggregator
         completed_bar = self.bars.on_tick(code, price, volume, tick_ts_ms)
         if completed_bar:
             self._total_bars_completed += 1
             self._broadcast({
                 "type": "bar_completed",
+                "interval": "5m",
                 "code": code,
                 "bar": completed_bar.to_dict(),
             })
@@ -267,6 +305,14 @@ class MarketDataHub:
                 result[code] = r
             return result
 
+    def get_live_bars_1m(self, code: str) -> list[dict[str, Any]]:
+        """取得指定股票今日 1 分 K（含進行中的 K 棒）。"""
+        return self.bars_1m.get_bars(code, include_current=True)
+
+    def get_live_bars_1m_batch(self, codes: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """批次取得多檔今日 1 分 K。"""
+        return {code: self.get_live_bars_1m(code) for code in codes}
+
     def get_live_bars(self, code: str) -> list[dict[str, Any]]:
         """取得指定股票今日 5 分 K（供 intradayScan 使用）。"""
         return self.bars.get_bars(code, include_current=True)
@@ -291,8 +337,10 @@ class MarketDataHub:
             "latest_tick_age_seconds": age,
             "total_ticks_received": self._total_ticks,
             "total_bars_completed": self._total_bars_completed,
+            "total_bars_1m_completed": self._total_bars_1m_completed,
             "websocket_clients": ws_count,
             "bar_aggregator_codes": len(self.bars._current),
+            "bar_aggregator_1m_codes": len(self.bars_1m._current),
         }
 
     # ------------------------------------------------------------------
