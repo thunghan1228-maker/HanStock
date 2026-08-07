@@ -41,7 +41,7 @@ def index_name_score(name: str, exchange: Any = "OTC") -> int:
         return 10_000
     if "櫃檯買賣" in compact and "發行量加權股價指數" in compact:
         return 9_500
-    if "櫃買指數" == compact:
+    if compact in {"櫃買指數", "上櫃指數"}:
         return 9_000
     if "櫃買" in compact and "發行量加權" in compact and "指數" in compact:
         return 8_500
@@ -52,10 +52,24 @@ def index_name_score(name: str, exchange: Any = "OTC") -> int:
     return 0
 
 
-def timestamp_to_ms(value: Any) -> Optional[int]:
-    """把 Shioaji / Python / numpy 常見 timestamp 轉成 Unix ms。
+def _numeric_time_to_ms(number: int) -> Optional[int]:
+    magnitude = abs(number)
+    if magnitude >= 100_000_000_000_000_000:  # ns
+        return number // 1_000_000
+    if magnitude >= 100_000_000_000_000:      # us
+        return number // 1_000
+    if magnitude >= 100_000_000_000:          # ms
+        return number
+    if magnitude >= 1_000_000_000:            # seconds
+        return number * 1000
+    return None
 
-    Shioaji KBars 的 ts 在不同介面可能是 datetime、秒、毫秒、微秒或奈秒整數。
+
+def timestamp_to_ms(value: Any) -> Optional[int]:
+    """把一般 datetime / Unix timestamp 轉成真正 UTC epoch ms。
+
+    此函式給即時 Quote 使用；Shioaji 歷史 Kbars 的 ts 是「台灣本地牆鐘時間」
+    的奈秒值，必須改用 shioaji_kbar_close_to_start_ms()。
     """
     if value is None:
         return None
@@ -66,12 +80,10 @@ def timestamp_to_ms(value: Any) -> Optional[int]:
             dt = dt.replace(tzinfo=TW_TZ)
         return int(dt.timestamp() * 1000)
 
-    # datetime.date 但不是 datetime：視為台北當日 00:00。
     if isinstance(value, date):
         dt = datetime.combine(value, dt_time.min, tzinfo=TW_TZ)
         return int(dt.timestamp() * 1000)
 
-    # numpy.datetime64 等通常可轉 int（多半是 ns）。
     try:
         number = int(value)
     except (TypeError, ValueError, OverflowError):
@@ -86,16 +98,58 @@ def timestamp_to_ms(value: Any) -> Optional[int]:
             dt = dt.replace(tzinfo=TW_TZ)
         return int(dt.timestamp() * 1000)
 
-    magnitude = abs(number)
-    if magnitude >= 100_000_000_000_000_000:  # ns
-        return number // 1_000_000
-    if magnitude >= 100_000_000_000_000:      # us
-        return number // 1_000
-    if magnitude >= 100_000_000_000:          # ms
-        return number
-    if magnitude >= 1_000_000_000:            # seconds
-        return number * 1000
-    return None
+    return _numeric_time_to_ms(number)
+
+
+def shioaji_kbar_close_to_start_ms(value: Any) -> Optional[int]:
+    """把 Shioaji Python KBars.ts 轉為 HanStock 的「1 分 K 起始時間」。
+
+    Shioaji 官方 1.7 範例：1779094860000000000 以 Datetime(ns) 顯示為
+    2026-05-18 09:01:00；這不是 UTC 17:01，而是台灣市場的本地牆鐘時間，
+    且 09:01 是 09:00~09:01 這根 K 的收棒標記。
+
+    因此：
+      1. 數值型 ts 先當成「無時區的台灣牆鐘時間」解讀。
+      2. 再減 1 分鐘，統一成 HanStock 所用的 bar-start timestamp。
+    ISO/datetime 輸入同樣視為 Kbar close time，再減 1 分鐘。
+    """
+    if value is None:
+        return None
+
+    close_ms: Optional[int]
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TW_TZ)
+        close_ms = int(dt.timestamp() * 1000)
+    elif isinstance(value, date):
+        dt = datetime.combine(value, dt_time.min, tzinfo=TW_TZ)
+        close_ms = int(dt.timestamp() * 1000)
+    else:
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError):
+            text = str(value).strip()
+            if not text:
+                return None
+            try:
+                dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TW_TZ)
+            close_ms = int(dt.timestamp() * 1000)
+        else:
+            wall_ms = _numeric_time_to_ms(number)
+            if wall_ms is None:
+                return None
+            # 將「Unix epoch 起算的數字」只當作牆鐘年月日時分來解碼，
+            # 再把同一組年月日時分指定成 Asia/Taipei (+08:00)。台灣無 DST。
+            wall_dt = datetime.fromtimestamp(wall_ms / 1000, timezone.utc).replace(tzinfo=None)
+            local_dt = wall_dt.replace(tzinfo=TW_TZ)
+            close_ms = int(local_dt.timestamp() * 1000)
+
+    return close_ms - ONE_MIN_MS if close_ms is not None else None
 
 
 def taipei_trade_date(ts_ms: int) -> str:
@@ -141,7 +195,7 @@ def normalize_kbars_1m(
     include_current: bool = False,
     now_ms: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """把 Shioaji KBars 物件正規化成正式交易時段 1 分 K。
+    """把 Shioaji KBars 物件正規化成正式交易時段、bar-start 1 分 K。
 
     支援物件屬性（kbars.ts / Open ...）或 Mapping。
     """
@@ -174,13 +228,11 @@ def normalize_kbars_1m(
     rows: dict[int, dict[str, Any]] = {}
 
     for i in range(size):
-        ts_ms = timestamp_to_ms(timestamps[i])
-        if ts_ms is None or not is_regular_otc_session(ts_ms):
+        minute_ts = shioaji_kbar_close_to_start_ms(timestamps[i])
+        if minute_ts is None or not is_regular_otc_session(minute_ts):
             continue
-        if trade_date and taipei_trade_date(ts_ms) != trade_date:
+        if trade_date and taipei_trade_date(minute_ts) != trade_date:
             continue
-
-        minute_ts = ts_ms - (ts_ms % ONE_MIN_MS)
         if not include_current and minute_ts >= current_minute_start:
             continue
 
@@ -213,7 +265,7 @@ def aggregate_1m_to_5m(
     include_current: bool = False,
     now_ms: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """將正式 1 分 K 聚合成 5 分 K。"""
+    """將 bar-start 正式 1 分 K 聚合成 bar-start 5 分 K。"""
     grouped: dict[int, list[Mapping[str, Any]]] = {}
     for raw in bars_1m:
         try:
