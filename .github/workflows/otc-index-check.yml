@@ -31,3 +31,19 @@ jobs:
         run: python -m py_compile otc_index.py otc_index_hub.py otc_index_service.py hanstock_app.py run_api.py
       - name: Run OTC index unit tests
         run: python -m unittest -v test_otc_index.py
+      - name: Import wrapped ASGI app and verify routes
+        run: |
+          python - <<'PY'
+          import hanstock_app
+
+          paths = {getattr(route, "path", "") for route in hanstock_app.app.routes}
+          expected = {
+              "/api/hub/index/otc/status",
+              "/api/hub/index/otc/bars",
+              "/api/hub/index/otc/bars1m",
+          }
+          missing = expected - paths
+          if missing:
+              raise SystemExit(f"Missing OTC Hub routes: {sorted(missing)}")
+          print("HanStock wrapped ASGI import OK; OTC routes registered:", sorted(expected))
+          PY
