@@ -36,8 +36,10 @@ if __name__ == "__main__":
         "已設定" if has_ca else "未設定",
     )
 
+    # hanstock_app 會先掛上 Shioaji 1.7 櫃買指數 Quote runtime，
+    # 再載入原 api_server:app；股票/期貨既有流程不變。
     uvicorn.run(
-        "api_server:app",
+        "hanstock_app:app",
         host=host,
         port=port,
         reload=False,
