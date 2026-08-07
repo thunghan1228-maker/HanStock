@@ -54,6 +54,7 @@ def _install_otc_index_patch() -> None:
     original_subscribe_futures = cls._do_subscribe_futures
 
     def patched_setup_callbacks(self: Any) -> None:
+        # 原本期貨/股票 callbacks 永遠先完成；OTC index 掛載失敗不得往外拋。
         original_setup_callbacks(self)
         api = self.api
         if api is None:
@@ -63,39 +64,53 @@ def _install_otc_index_patch() -> None:
         if getattr(self, "_otc_index_callback_api_id", None) == api_id:
             return
 
-        index_service = get_otc_index_service()
+        try:
+            index_service = get_otc_index_service()
 
-        @api.on_quote_idx_v1()
-        def _otc_index_quote_callback(quote: Any) -> None:
-            try:
-                if not index_service.accepts_quote(quote):
-                    return
-                quote_time = _quote_datetime_iso(getattr(quote, "datetime", None))
-                quote_data = {
-                    "hub_code": OTC_INDEX_HUB_CODE,
-                    "code": str(getattr(quote, "code", "") or "").strip().upper(),
-                    "exchange": exchange_text(getattr(quote, "exchange", "OTC")),
-                    "name": OTC_INDEX_DISPLAY_NAME,
-                    "reference": _safe_float(getattr(quote, "reference", None)),
-                    "open": _safe_float(getattr(quote, "open", None)),
-                    "high": _safe_float(getattr(quote, "high", None)),
-                    "low": _safe_float(getattr(quote, "low", None)),
-                    "close": _safe_float(getattr(quote, "close", None)),
-                    "volume": _safe_int(getattr(quote, "volume", None)),
-                    "vol_sum": _safe_int(getattr(quote, "vol_sum", None)),
-                    "amount_sum": _safe_float(getattr(quote, "amount_sum", None)),
-                    "quote_time": quote_time,
-                    "datetime": quote_time,
-                    "received_at": datetime.now(TW_TZ).isoformat(),
-                    "data_source": "shioaji_realtime_index",
-                }
-                get_otc_index_hub().on_quote(quote_data)
-                self.state.quote_connected = True
-            except Exception as exc:
-                logger.debug("[OTC Index] quote callback 處理失敗: %s", exc)
+            def _otc_index_quote_callback(quote: Any) -> None:
+                try:
+                    if not index_service.accepts_quote(quote):
+                        return
+                    quote_time = _quote_datetime_iso(getattr(quote, "datetime", None))
+                    quote_data = {
+                        "hub_code": OTC_INDEX_HUB_CODE,
+                        "code": str(getattr(quote, "code", "") or "").strip().upper(),
+                        "exchange": exchange_text(getattr(quote, "exchange", "OTC")),
+                        "name": OTC_INDEX_DISPLAY_NAME,
+                        "reference": _safe_float(getattr(quote, "reference", None)),
+                        "open": _safe_float(getattr(quote, "open", None)),
+                        "high": _safe_float(getattr(quote, "high", None)),
+                        "low": _safe_float(getattr(quote, "low", None)),
+                        "close": _safe_float(getattr(quote, "close", None)),
+                        "volume": _safe_int(getattr(quote, "volume", None)),
+                        "vol_sum": _safe_int(getattr(quote, "vol_sum", None)),
+                        "amount_sum": _safe_float(getattr(quote, "amount_sum", None)),
+                        "quote_time": quote_time,
+                        "datetime": quote_time,
+                        "received_at": datetime.now(TW_TZ).isoformat(),
+                        "data_source": "shioaji_realtime_index",
+                    }
+                    get_otc_index_hub().on_quote(quote_data)
+                    self.state.quote_connected = True
+                except Exception as exc:
+                    logger.debug("[OTC Index] quote callback 處理失敗: %s", exc)
 
-        self._otc_index_callback_api_id = api_id
-        logger.info("[OTC Index] QuoteIdxV1 callback 已掛載 (api_id=%s)", api_id)
+            # Shioaji 1.7 官方同時提供 setter 與 decorator；優先用 setter，
+            # 舊/差異版再退回 decorator。兩者都不可用時只停用 index，不影響股票期貨。
+            setter = getattr(api, "set_on_quote_idx_v1_callback", None)
+            if callable(setter):
+                setter(_otc_index_quote_callback)
+            else:
+                decorator_factory = getattr(api, "on_quote_idx_v1", None)
+                if not callable(decorator_factory):
+                    raise AttributeError("Shioaji API 不支援 QuoteIdxV1 callback")
+                decorator_factory()(_otc_index_quote_callback)
+
+            self._otc_index_callback_api_id = api_id
+            logger.info("[OTC Index] QuoteIdxV1 callback 已掛載 (api_id=%s)", api_id)
+        except Exception as exc:
+            get_otc_index_hub().set_subscribed(False, f"Index callback 掛載失敗: {exc}")
+            logger.warning("[OTC Index] callback 掛載失敗（原股票/期貨繼續）: %s", exc)
 
     def patched_subscribe_futures(self: Any) -> None:
         # 原本台指期流程永遠先跑；OTC index 失敗也不能影響期貨。
@@ -104,7 +119,16 @@ def _install_otc_index_patch() -> None:
         if api is None or not self.state.logged_in:
             return
         try:
-            get_otc_index_service().subscribe(api, bootstrap=True)
+            api_id = id(api)
+            previous_api_id = getattr(self, "_otc_index_subscription_api_id", None)
+            service = get_otc_index_service()
+            ok = service.subscribe(
+                api,
+                bootstrap=True,
+                force_resolve=previous_api_id is not None and previous_api_id != api_id,
+            )
+            if ok:
+                self._otc_index_subscription_api_id = api_id
         except Exception as exc:
             logger.warning("[OTC Index] 自動訂閱例外（不影響股票/期貨）: %s", exc)
 
