@@ -2,7 +2,8 @@
 
 不修改既有 quote_service.py / api_server.py 的穩定股票與期貨流程；
 在載入原 app 前，以極小 monkey patch 掛上 Shioaji 1.7 Index Quote 訂閱，
-並在原 FastAPI app 載入後增加 OTC index Hub REST 端點。
+並在原 FastAPI app 載入後增加 OTC index Hub REST 端點，以及可跨重啟
+自動補齊今日歷史 Kbars 的個股 1m/5m Hub 端點。
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import Query
+from fastapi import HTTPException, Query
 
 import quote_service as quote_module
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, exchange_text
@@ -142,6 +143,45 @@ _install_otc_index_patch()
 
 # patch 完成後才載入原 FastAPI app；其 lifespan 啟動 QuoteService 時即會自動套用。
 from api_server import app  # noqa: E402
+from stock_bar_bootstrap import get_resilient_stock_bars  # noqa: E402
+
+
+def _normalize_stock_code(raw: str) -> str:
+    code = str(raw).strip().upper()
+    if not code or len(code) > 12 or not code.replace("-", "").isalnum():
+        raise HTTPException(status_code=422, detail=f"股票代號格式不正確：{raw}")
+    return code
+
+
+def _remove_get_route(path: str) -> None:
+    """移除 api_server.py 舊的純記憶體 GET route，避免同路徑重複。"""
+    kept = []
+    for route in app.router.routes:
+        methods = getattr(route, "methods", None) or set()
+        if getattr(route, "path", None) == path and "GET" in methods:
+            continue
+        kept.append(route)
+    app.router.routes[:] = kept
+
+
+# Railway 重啟會清空 MarketDataHub 記憶體，因此正式 ASGI app 以同一 URL
+# 換成「Shioaji 今日歷史 Kbars + 即時 Hub」合併版。前端與既有消費者無需改 URL。
+_remove_get_route("/api/hub/bars1m/{stock_code}")
+_remove_get_route("/api/hub/bars/{stock_code}")
+
+
+@app.get("/api/hub/bars1m/{stock_code}")
+def get_resilient_hub_bars_1m(stock_code: str) -> dict[str, Any]:
+    """今日 1 分 K：重啟後自動歷史補齊，並接續即時 Tick。"""
+    code = _normalize_stock_code(stock_code)
+    return get_resilient_stock_bars(code, "1m")
+
+
+@app.get("/api/hub/bars/{stock_code}")
+def get_resilient_hub_bars_5m(stock_code: str) -> dict[str, Any]:
+    """今日 5 分 K：由已補齊 1 分 K 聚合並與即時 Hub 合併。"""
+    code = _normalize_stock_code(stock_code)
+    return get_resilient_stock_bars(code, "5m")
 
 
 @app.get("/api/hub/index/otc/status")

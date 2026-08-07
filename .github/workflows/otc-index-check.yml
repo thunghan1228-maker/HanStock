@@ -1,17 +1,20 @@
-name: OTC Index Hub Check
+name: HanStock Hub Check
 
 on:
   push:
     branches:
       - feat/otc-index-hub-20260807
+      - hotfix/stock-kbar-bootstrap-20260807
   pull_request:
     paths:
       - "otc_index.py"
       - "otc_index_hub.py"
       - "otc_index_service.py"
+      - "stock_bar_bootstrap.py"
       - "hanstock_app.py"
       - "run_api.py"
       - "test_otc_index.py"
+      - "test_stock_bar_bootstrap.py"
       - "requirements.txt"
       - ".github/workflows/otc-index-check.yml"
 
@@ -27,23 +30,31 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Compile changed Python modules
-        run: python -m py_compile otc_index.py otc_index_hub.py otc_index_service.py hanstock_app.py run_api.py
-      - name: Run OTC index unit tests
-        run: python -m unittest -v test_otc_index.py
+      - name: Compile Hub Python modules
+        run: python -m py_compile otc_index.py otc_index_hub.py otc_index_service.py stock_bar_bootstrap.py hanstock_app.py run_api.py
+      - name: Run Hub unit tests
+        run: python -m unittest -v test_otc_index.py test_stock_bar_bootstrap.py
       - name: Import wrapped ASGI app and verify routes
         run: |
           python - <<'PY'
           import hanstock_app
 
-          paths = {getattr(route, "path", "") for route in hanstock_app.app.routes}
+          paths = [getattr(route, "path", "") for route in hanstock_app.app.routes]
           expected = {
               "/api/hub/index/otc/status",
               "/api/hub/index/otc/bars",
               "/api/hub/index/otc/bars1m",
+              "/api/hub/bars/{stock_code}",
+              "/api/hub/bars1m/{stock_code}",
           }
-          missing = expected - paths
+          missing = expected - set(paths)
           if missing:
-              raise SystemExit(f"Missing OTC Hub routes: {sorted(missing)}")
-          print("HanStock wrapped ASGI import OK; OTC routes registered:", sorted(expected))
+              raise SystemExit(f"Missing HanStock Hub routes: {sorted(missing)}")
+
+          for path in ("/api/hub/bars/{stock_code}", "/api/hub/bars1m/{stock_code}"):
+              count = paths.count(path)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one GET route for {path}, found {count}")
+
+          print("HanStock wrapped ASGI import OK; resilient stock + OTC routes registered")
           PY
