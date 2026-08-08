@@ -165,8 +165,10 @@ def _parse_underlyings(raw: str) -> list[str]:
         codes.append(code)
     if not codes:
         raise HTTPException(status_code=422, detail="underlyings 不可為空")
-    if len(codes) > 190:
-        raise HTTPException(status_code=422, detail="單次最多查詢 190 檔股票期貨")
+    # 單次 API 可接完整族群；實際 Shioaji 即時訂閱會由 stock_futures_service
+    # 分散到多條專用連線，每條仍嚴格低於官方 200 訂閱上限。
+    if len(codes) > 500:
+        raise HTTPException(status_code=422, detail="單次最多查詢 500 檔股票期貨")
     return codes
 
 
