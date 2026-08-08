@@ -177,6 +177,9 @@ class StockFuturesQuoteService:
         self._lock = threading.RLock()
         self._callback_api_id: Optional[int] = None
         self._contracts: dict[tuple[StockFuturesMode, str], Any] = {}
+        # 不能只從 contract 物件回讀舊 target_code：Shioaji 1.7 合約資訊可能原地更新。
+        # 所以保存「實際訂閱當下」的 target_code，才能可靠偵測換月。
+        self._targets: dict[tuple[StockFuturesMode, str], str] = {}
         self._reverse_codes: dict[str, tuple[StockFuturesMode, str]] = {}
         self._subscriptions: OrderedDict[tuple[StockFuturesMode, str], float] = OrderedDict()
         self._quotes: dict[tuple[StockFuturesMode, str], dict[str, Any]] = {}
@@ -196,6 +199,7 @@ class StockFuturesQuoteService:
                 return
             # Railway/Shioaji 重連後舊訂閱已不存在；保留 quotes 作畫面降級，但清空 active mapping。
             self._contracts.clear()
+            self._targets.clear()
             self._reverse_codes.clear()
             self._subscriptions.clear()
             self._callback_api_id = None
@@ -238,6 +242,7 @@ class StockFuturesQuoteService:
     def _unsubscribe_key(self, api: Any, key: tuple[StockFuturesMode, str]) -> None:
         with self._lock:
             contract = self._contracts.pop(key, None)
+            self._targets.pop(key, None)
             self._subscriptions.pop(key, None)
             for code, mapped_key in list(self._reverse_codes.items()):
                 if mapped_key == key:
@@ -328,13 +333,13 @@ class StockFuturesQuoteService:
                 fresh = resolve_front_month_contract(api, code, mode)
                 fresh_target = _target_code(fresh)
                 with self._lock:
-                    old = self._contracts.get(key)
-                    old_target = _target_code(old) if old is not None else ""
+                    old_target = self._targets.get(key, "")
                     active = key in self._subscriptions
 
                 if active and old_target == fresh_target:
                     with self._lock:
                         self._contracts[key] = fresh
+                        self._targets[key] = fresh_target
                         self._register_mapping(key, fresh)
                         self._subscriptions[key] = time.time()
                         self._subscriptions.move_to_end(key)
@@ -357,6 +362,7 @@ class StockFuturesQuoteService:
                 api.subscribe(fresh, quote_type=sj.QuoteType.Quote)
                 with self._lock:
                     self._contracts[key] = fresh
+                    self._targets[key] = fresh_target
                     self._register_mapping(key, fresh)
                     self._subscriptions[key] = time.time()
                     self._subscriptions.move_to_end(key)
@@ -394,6 +400,7 @@ class StockFuturesQuoteService:
         mode, underlying_code = key
         with self._lock:
             contract = self._contracts.get(key)
+            subscribed_target = self._targets.get(key, "")
         if contract is None:
             return False
 
@@ -407,6 +414,8 @@ class StockFuturesQuoteService:
             "underlying_code": underlying_code,
             "mode": mode,
             **_contract_public(contract),
+            # contract 物件可能已被 Shioaji 更新；對外行情標示用實際訂閱當下 target。
+            "target_code": subscribed_target or _target_code(contract),
             "callback_code": callback_code,
             "exchange": str(exchange_value),
             "close": close,
@@ -455,6 +464,7 @@ class StockFuturesQuoteService:
             for code in codes:
                 key = (mode, code)
                 contract = self._contracts.get(key)
+                subscribed_target = self._targets.get(key, "")
                 quote = self._quotes.get(key)
                 ts = self._quote_timestamps.get(key)
                 age = round(time.time() - ts, 1) if ts else None
@@ -464,10 +474,13 @@ class StockFuturesQuoteService:
                     item["quote_stale"] = age is not None and age > 90
                     data[code] = item
                 else:
+                    contract_data = _contract_public(contract) if contract is not None else {}
+                    if subscribed_target:
+                        contract_data["target_code"] = subscribed_target
                     data[code] = {
                         "underlying_code": code,
                         "mode": mode,
-                        **(_contract_public(contract) if contract is not None else {}),
+                        **contract_data,
                         "close": None,
                         "pct_chg": None,
                         "pct_chg_pct": None,
@@ -492,10 +505,13 @@ class StockFuturesQuoteService:
 
     def status(self, quote_service: Any) -> dict[str, Any]:
         with self._lock:
-            mappings = {
-                f"{mode}:{underlying}": _contract_public(contract)
-                for (mode, underlying), contract in self._contracts.items()
-            }
+            mappings = {}
+            for key, contract in self._contracts.items():
+                mode, underlying = key
+                item = _contract_public(contract)
+                if self._targets.get(key):
+                    item["target_code"] = self._targets[key]
+                mappings[f"{mode}:{underlying}"] = item
             errors = {f"{mode}:{underlying}": message for (mode, underlying), message in self._errors.items()}
             active = len(self._subscriptions)
             cached = len(self._quotes)
