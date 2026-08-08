@@ -2,8 +2,8 @@
 
 不修改既有 quote_service.py / api_server.py 的穩定股票與期貨流程；
 在載入原 app 前，以極小 monkey patch 掛上 Shioaji 1.7 Index Quote 訂閱，
-並在原 FastAPI app 載入後增加 OTC index Hub REST 端點，以及可跨重啟
-自動補齊今日歷史 Kbars 的個股 1m/5m Hub 端點。
+並在原 FastAPI app 載入後增加 OTC index Hub REST 端點、股票期貨近月即時行情，
+以及可跨重啟自動補齊今日歷史 Kbars 的個股 1m/5m Hub 端點。
 """
 
 from __future__ import annotations
@@ -144,6 +144,7 @@ _install_otc_index_patch()
 # patch 完成後才載入原 FastAPI app；其 lifespan 啟動 QuoteService 時即會自動套用。
 from api_server import app  # noqa: E402
 from stock_bar_bootstrap import get_resilient_stock_bars  # noqa: E402
+from stock_futures_service import get_stock_futures_quote_service  # noqa: E402
 
 
 def _normalize_stock_code(raw: str) -> str:
@@ -151,6 +152,22 @@ def _normalize_stock_code(raw: str) -> str:
     if not code or len(code) > 12 or not code.replace("-", "").isalnum():
         raise HTTPException(status_code=422, detail=f"股票代號格式不正確：{raw}")
     return code
+
+
+def _parse_underlyings(raw: str) -> list[str]:
+    codes: list[str] = []
+    seen: set[str] = set()
+    for item in str(raw).split(","):
+        code = _normalize_stock_code(item)
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    if not codes:
+        raise HTTPException(status_code=422, detail="underlyings 不可為空")
+    if len(codes) > 190:
+        raise HTTPException(status_code=422, detail="單次最多查詢 190 檔股票期貨")
+    return codes
 
 
 def _remove_get_route(path: str) -> None:
@@ -182,6 +199,37 @@ def get_resilient_hub_bars_5m(stock_code: str) -> dict[str, Any]:
     """今日 5 分 K：由已補齊 1 分 K 聚合並與即時 Hub 合併。"""
     code = _normalize_stock_code(stock_code)
     return get_resilient_stock_bars(code, "5m")
+
+
+@app.get("/api/hub/stock-futures")
+def get_stock_futures_quotes(
+    underlyings: str = Query(..., description="股票標的代號，逗號分隔，例如 2330,2454"),
+    mode: str = Query(default="regular", description="regular=一般股票期貨；mini=小型股票期貨"),
+    subscribe: bool = Query(default=True, description="是否確保訂閱近月 QuoteFOPv1 即時行情"),
+) -> dict[str, Any]:
+    """股票期貨即時行情：永豐 Shioaji FOP，固定自動追蹤 R1 近月。"""
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode not in {"regular", "mini"}:
+        raise HTTPException(status_code=422, detail="mode 只能是 regular 或 mini")
+    codes = _parse_underlyings(underlyings)
+    service = get_stock_futures_quote_service()
+    quote_service = quote_module.get_quote_service()
+    return service.get_quotes(
+        quote_service,
+        codes,
+        normalized_mode,  # type: ignore[arg-type]
+        subscribe=subscribe,
+    )
+
+
+@app.get("/api/hub/stock-futures/status")
+def get_stock_futures_status() -> dict[str, Any]:
+    """股票期貨專用行情通道狀態；不與現貨/台指期 latest tick 混用。"""
+    service = get_stock_futures_quote_service()
+    return {
+        "status": "ok",
+        "data": service.status(quote_module.get_quote_service()),
+    }
 
 
 @app.get("/api/hub/index/otc/status")

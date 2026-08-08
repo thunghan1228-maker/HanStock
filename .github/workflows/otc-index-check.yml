@@ -5,16 +5,19 @@ on:
     branches:
       - feat/otc-index-hub-20260807
       - hotfix/stock-kbar-bootstrap-20260807
+      - feat/stock-futures-front-month-20260808
   pull_request:
     paths:
       - "otc_index.py"
       - "otc_index_hub.py"
       - "otc_index_service.py"
       - "stock_bar_bootstrap.py"
+      - "stock_futures_service.py"
       - "hanstock_app.py"
       - "run_api.py"
       - "test_otc_index.py"
       - "test_stock_bar_bootstrap.py"
+      - "test_stock_futures_service.py"
       - "requirements.txt"
       - ".github/workflows/otc-index-check.yml"
 
@@ -31,9 +34,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile Hub Python modules
-        run: python -m py_compile otc_index.py otc_index_hub.py otc_index_service.py stock_bar_bootstrap.py hanstock_app.py run_api.py
+        run: python -m py_compile otc_index.py otc_index_hub.py otc_index_service.py stock_bar_bootstrap.py stock_futures_service.py hanstock_app.py run_api.py
       - name: Run Hub unit tests
-        run: python -m unittest -v test_otc_index.py test_stock_bar_bootstrap.py
+        run: python -m unittest -v test_otc_index.py test_stock_bar_bootstrap.py test_stock_futures_service.py
       - name: Import wrapped ASGI app and verify routes
         run: |
           python - <<'PY'
@@ -46,6 +49,8 @@ jobs:
               "/api/hub/index/otc/bars1m",
               "/api/hub/bars/{stock_code}",
               "/api/hub/bars1m/{stock_code}",
+              "/api/hub/stock-futures",
+              "/api/hub/stock-futures/status",
           }
           missing = expected - set(paths)
           if missing:
@@ -56,5 +61,5 @@ jobs:
               if count != 1:
                   raise SystemExit(f"Expected exactly one GET route for {path}, found {count}")
 
-          print("HanStock wrapped ASGI import OK; resilient stock + OTC routes registered")
+          print("HanStock wrapped ASGI import OK; stock futures front-month + resilient stock + OTC routes registered")
           PY
