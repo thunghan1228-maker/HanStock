@@ -1,0 +1,1 @@
+Trigger HanStock Hub full CI for Shioaji multi-day 5m history and intraday signal persistence changes.
