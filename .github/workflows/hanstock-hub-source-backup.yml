@@ -1,0 +1,27 @@
+name: HanStock Hub Source Backup 20260809
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Hub snapshot
+        uses: actions/checkout@v4
+        with:
+          ref: 4419a89fdb62e8d2430d3e5109b97e9f8a3ba381
+          fetch-depth: 1
+      - name: Create source ZIP
+        run: git archive --format=zip --output=HanStock_Hub_20260809_1043.zip HEAD
+      - name: Upload source backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: HanStock_Hub_20260809_1043
+          path: HanStock_Hub_20260809_1043.zip
+          if-no-files-found: error
+          retention-days: 30
