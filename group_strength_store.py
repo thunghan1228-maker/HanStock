@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from database import DATABASE_PATH, get_connection
-from paths import DATA_DIR
+from paths import DATA_DIR, DATA_DIR_SOURCE
 
 MAX_SNAPSHOTS_PER_DAY = 84
 
@@ -94,7 +94,6 @@ def save_group_strength_snapshot(
             """,
             (trade_date, int(bucket_ts), payload, now),
         )
-        # 每個交易日只保留最近 84 個 5 分鐘快照。
         connection.execute(
             """
             DELETE FROM group_strength_snapshots
@@ -128,9 +127,12 @@ def group_strength_storage_status() -> dict[str, Any]:
     hub_key_set = bool(os.getenv("HANSTOCK_HUB_KEY", "").strip())
     sync_token_set = bool(os.getenv("HANSTOCK_SYNC_TOKEN", "").strip())
     writable = os.access(DATA_DIR, os.W_OK)
+    railway_volume_detected = DATA_DIR_SOURCE == "railway-volume-auto" or str(DATA_DIR) == "/data"
     return {
         "dataDir": str(DATA_DIR),
+        "dataDirSource": DATA_DIR_SOURCE,
         "dataDirEnvSet": bool(data_dir_env),
+        "railwayVolumeDetected": railway_volume_detected,
         "recommendedRailwayVolumePath": "/data",
         "databasePath": str(DATABASE_PATH),
         "databaseExists": DATABASE_PATH.exists(),
@@ -140,7 +142,6 @@ def group_strength_storage_status() -> dict[str, Any]:
         "syncTokenConfigured": sync_token_set,
         "authConfigured": hub_key_set or sync_token_set,
         "snapshotCount": total,
-        # HANSTOCK_DATA_DIR 有明確設定時，代表部署端刻意指定持久化目錄；
-        # Railway 正式建議值為 /data 並掛 Volume。
-        "persistentCandidate": bool(data_dir_env) and writable,
+        # 明確 HANSTOCK_DATA_DIR 或自動偵測到 /data Volume 都視為持久化候選。
+        "persistentCandidate": writable and (bool(data_dir_env) or railway_volume_detected),
     }
