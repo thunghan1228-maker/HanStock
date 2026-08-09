@@ -5,6 +5,10 @@ import logging
 
 import uvicorn
 
+# 股票期貨若同月份同時存在標準與調整型 R1，優先標準契約；
+# 模組載入即安裝 policy，之後 hanstock_app 取用同一個 stock_futures_service module。
+import stock_futures_standard_policy  # noqa: F401,E402
+
 
 # 設定根日誌
 logging.basicConfig(
