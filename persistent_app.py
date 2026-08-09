@@ -17,6 +17,13 @@ from group_strength_store import (
     save_group_strength_snapshot,
 )
 from hanstock_app import app
+from intraday_signal_collector import start_intraday_signal_collector
+from intraday_signal_store import (
+    intraday_signal_count,
+    load_latest_signals,
+    load_recent_trade_dates,
+    load_signals_for_ticker,
+)
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -51,8 +58,10 @@ def _require_hub_auth(x_hub_key: str | None) -> None:
 
 @app.on_event("startup")
 def start_persistence_workers() -> None:
-    # 由 Hub 自己讀公開的族群排名並寫入 SQLite，不需要 Vercel 持有寫入金鑰。
+    # 兩個背景工作都由 Hub 自己拉「公開/唯讀計算結果」後寫入自己的 /data SQLite；
+    # Vercel 不需要持有 Railway 寫入金鑰。
     start_group_strength_collector()
+    start_intraday_signal_collector()
 
 
 @app.get("/api/hub/persistence/status")
@@ -61,6 +70,10 @@ def get_persistence_status() -> dict[str, Any]:
     data["collectorEnabled"] = os.getenv(
         "HANSTOCK_GROUP_STRENGTH_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    data["intradaySignalCollectorEnabled"] = os.getenv(
+        "HANSTOCK_INTRADAY_SIGNAL_COLLECTOR_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    data["intradaySignalCount"] = intraday_signal_count()
     return {"status": "ok", "data": data}
 
 
@@ -98,3 +111,50 @@ def post_group_strength_history(
         "saved": len(body.ranks),
         "snapshotCount": count,
     }
+
+
+@app.get("/api/hub/intraday-signals/latest")
+def get_latest_intraday_signals(
+    trade_date: str = Query(..., min_length=10, max_length=10),
+    limit: int = Query(20, ge=1, le=200),
+    market_only: bool = Query(False),
+) -> dict[str, Any]:
+    date = _validate_trade_date(trade_date)
+    signals = load_latest_signals(date, limit=limit, market_only=market_only)
+    return {
+        "status": "ok",
+        "tradeDate": date,
+        "marketOnly": bool(market_only),
+        "count": len(signals),
+        "signals": signals,
+    }
+
+
+@app.get("/api/hub/intraday-signals/ticker")
+def get_intraday_signals_for_ticker(
+    ticker: str = Query(..., min_length=1, max_length=16),
+    trade_date: str | None = Query(None, min_length=10, max_length=10),
+    since_ts: int | None = Query(None, ge=1),
+    limit: int = Query(500, ge=1, le=2000),
+) -> dict[str, Any]:
+    date = _validate_trade_date(trade_date) if trade_date else None
+    code = ticker.strip().upper()
+    if not code:
+        raise HTTPException(status_code=422, detail="ticker 不可為空")
+    signals = load_signals_for_ticker(code, trade_date=date, since_ts=since_ts, limit=limit)
+    return {
+        "status": "ok",
+        "ticker": code,
+        "tradeDate": date,
+        "sinceTs": since_ts,
+        "count": len(signals),
+        "signals": signals,
+    }
+
+
+@app.get("/api/hub/intraday-signals/dates")
+def get_intraday_signal_dates(
+    limit: int = Query(10, ge=1, le=60),
+) -> dict[str, Any]:
+    dates = load_recent_trade_dates(limit=limit)
+    return {"status": "ok", "count": len(dates), "dates": dates}
