@@ -133,6 +133,12 @@ def group_strength_storage_status() -> dict[str, Any]:
         "dataDirSource": DATA_DIR_SOURCE,
         "dataDirEnvSet": bool(data_dir_env),
         "railwayVolumeDetected": railway_volume_detected,
+        "railwayVolumeName": os.getenv("RAILWAY_VOLUME_NAME", ""),
+        "railwayVolumeMountPath": os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ""),
+        "railwayProjectId": os.getenv("RAILWAY_PROJECT_ID", ""),
+        "railwayServiceId": os.getenv("RAILWAY_SERVICE_ID", ""),
+        "railwayEnvironmentId": os.getenv("RAILWAY_ENVIRONMENT_ID", ""),
+        "railwayServiceName": os.getenv("RAILWAY_SERVICE_NAME", ""),
         "recommendedRailwayVolumePath": "/data",
         "databasePath": str(DATABASE_PATH),
         "databaseExists": DATABASE_PATH.exists(),
@@ -142,6 +148,5 @@ def group_strength_storage_status() -> dict[str, Any]:
         "syncTokenConfigured": sync_token_set,
         "authConfigured": hub_key_set or sync_token_set,
         "snapshotCount": total,
-        # 明確 HANSTOCK_DATA_DIR 或自動偵測到 /data Volume 都視為持久化候選。
         "persistentCandidate": writable and (bool(data_dir_env) or railway_volume_detected),
     }
