@@ -78,8 +78,21 @@ def collect_once() -> bool:
         if payload.get("tradeDate") != today:
             logger.warning("盤中訊號分片日期不符 shard=%s got=%s today=%s", shard, payload.get("tradeDate"), today)
             continue
-        if int(payload.get("shard") or -1) != shard or int(payload.get("shardCount") or 0) != SHARD_COUNT:
-            logger.warning("盤中訊號分片識別不符 shard=%s", shard)
+        # shard=0 是合法值，不能用 `or -1`，否則 0 會被誤判成缺值。
+        try:
+            payload_shard = int(payload.get("shard", -1))
+            payload_shard_count = int(payload.get("shardCount", 0))
+        except (TypeError, ValueError):
+            logger.warning("盤中訊號分片識別格式錯誤 shard=%s", shard)
+            continue
+        if payload_shard != shard or payload_shard_count != SHARD_COUNT:
+            logger.warning(
+                "盤中訊號分片識別不符 expected=%s/%s got=%s/%s",
+                shard,
+                SHARD_COUNT,
+                payload_shard,
+                payload_shard_count,
+            )
             continue
         signals = payload.get("signals") or []
         if not isinstance(signals, list):
