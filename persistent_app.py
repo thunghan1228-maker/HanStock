@@ -16,7 +16,7 @@ from group_strength_store import (
     load_group_strength_history,
     save_group_strength_snapshot,
 )
-from hanstock_app import app
+from hanstock_app import _normalize_stock_code, app
 from intraday_signal_collector import start_intraday_signal_collector
 from intraday_signal_store import (
     intraday_signal_count,
@@ -24,6 +24,7 @@ from intraday_signal_store import (
     load_recent_trade_dates,
     load_signals_for_ticker,
 )
+from stock_history_service import get_stock_history_bars_5m
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -75,6 +76,16 @@ def get_persistence_status() -> dict[str, Any]:
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["intradaySignalCount"] = intraday_signal_count()
     return {"status": "ok", "data": data}
+
+
+@app.get("/api/hub/history5m/{stock_code}")
+def get_strategy_history_5m(
+    stock_code: str,
+    calendar_days: int = Query(14, ge=3, le=31),
+) -> dict[str, Any]:
+    """盤中策略專用多日 5 分 K：Shioaji kbars 歷史 + 今日 Hub，即時/歷史同源。"""
+    code = _normalize_stock_code(stock_code)
+    return get_stock_history_bars_5m(code, calendar_days=calendar_days)
 
 
 @app.get("/api/hub/group-strength/history")
