@@ -1,13 +1,14 @@
-"""HanStock 股票期貨即時行情服務。
+"""HanStock 股票期貨行情服務。
 
 設計原則
-- 股票期貨不使用現貨行情，也不使用 snapshots 輪詢冒充即時。
+- 股票期貨不使用現貨行情。
+- 盤中 08:45～13:45 使用 Shioaji FOP Quote 訂閱，不用 snapshots 輪詢冒充即時。
+- 休市時允許以 Shioaji Futures Snapshot 補最近交易日近月收盤，供週末/盤後查看。
 - 使用 Shioaji FOP Quote 訂閱；每一條連線都遠低於官方 200 訂閱上限。
 - 預設建立 2 條「股票期貨專用」Shioaji 連線，與既有台指期/現貨主連線分離。
   247 檔一般股期 + 47 檔小型股期可平均分散到兩條專用連線。
 - 每檔依股票標的反查 R1 近月連續月；不寫死交割月份。
 - 定期重查 R1 target_code；換月時自動取消舊 target 並訂閱新 target。
-- 日盤只接受 08:45～13:45（Asia/Taipei）的股票期貨 Quote。
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ StockFuturesMode = Literal["regular", "mini"]
 DEFAULT_POOL_SIZE = 2
 DEFAULT_PER_CONNECTION_CAP = 180
 DEFAULT_FRONT_MONTH_RECHECK_SECONDS = 300.0
+DEFAULT_CLOSED_SNAPSHOT_RECHECK_SECONDS = 600.0
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -94,6 +96,22 @@ def _quote_datetime(value: Any, quote: Any = None) -> datetime:
                 return datetime.combine(raw_date, raw_time, tzinfo=TW_TZ)
         except Exception:
             pass
+    return datetime.now(TW_TZ)
+
+
+def _snapshot_datetime(snapshot: Any) -> datetime:
+    raw = getattr(snapshot, "ts", None)
+    try:
+        ts = float(raw)
+        # Shioaji Snapshot ts 通常為 nanoseconds；同時兼容 ms / seconds。
+        if ts > 1e16:
+            ts /= 1e9
+        elif ts > 1e12:
+            ts /= 1e3
+        if ts > 0:
+            return datetime.fromtimestamp(ts, TW_TZ)
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
     return datetime.now(TW_TZ)
 
 
@@ -210,6 +228,12 @@ class StockFuturesQuoteService:
             30.0,
             3600.0,
         )
+        self._closed_snapshot_recheck_seconds = _env_float(
+            "SHIOAJI_STOCK_FUTURES_CLOSED_SNAPSHOT_SECONDS",
+            DEFAULT_CLOSED_SNAPSHOT_RECHECK_SECONDS,
+            60.0,
+            3600.0,
+        )
         self._pools: list[_PoolConnection] = []
         self._assignments: dict[tuple[StockFuturesMode, str], int] = {}
         self._contracts: dict[tuple[StockFuturesMode, str], Any] = {}
@@ -218,6 +242,7 @@ class StockFuturesQuoteService:
         self._reverse_codes: dict[tuple[int, str], tuple[StockFuturesMode, str]] = {}
         self._quotes: dict[tuple[StockFuturesMode, str], dict[str, Any]] = {}
         self._quote_timestamps: dict[tuple[StockFuturesMode, str], float] = {}
+        self._closed_snapshot_fetch_at: dict[tuple[StockFuturesMode, str], float] = {}
         self._errors: dict[tuple[StockFuturesMode, str], str] = {}
 
     def _new_api(self) -> Any:
@@ -252,7 +277,6 @@ class StockFuturesQuoteService:
                 raise AttributeError("Shioaji API 不支援 QuoteFOPv1 callback")
             decorator_factory()(callback)
 
-        # 記錄連線事件；斷線後下一次 ensure 會重建該 pool。
         try:
             @api.quote.on_event
             def _event(resp_code: int, event_code: int, info: str, event: str):
@@ -307,6 +331,7 @@ class StockFuturesQuoteService:
             contract = self._contracts.pop(key, None)
             self._targets.pop(key, None)
             self._last_resolved_at.pop(key, None)
+            self._closed_snapshot_fetch_at.pop(key, None)
             if pool is not None:
                 pool.subscriptions.pop(key, None)
             for reverse_key, mapped in list(self._reverse_codes.items()):
@@ -314,7 +339,7 @@ class StockFuturesQuoteService:
                     self._reverse_codes.pop(reverse_key, None)
         if pool is not None and contract is not None:
             try:
-                pool.api.subscribe  # touch attribute before unsubscribe for clearer fake compatibility
+                pool.api.subscribe
                 pool.api.unsubscribe(contract, quote_type=sj.QuoteType.Quote)
             except Exception as exc:
                 logger.debug("[Stock Futures] 取消訂閱 %s 失敗: %s", key, exc)
@@ -349,13 +374,11 @@ class StockFuturesQuoteService:
         roll: Optional[dict[str, str]] = None
         if active:
             self._unsubscribe_key(key)
-            # keep assignment on same healthy pool after unsubscribe
             with self._lock:
                 self._assignments[key] = pool.index
             roll = {"underlying_code": code, "from": old_target, "to": fresh_target}
 
         if len(pool.subscriptions) >= self._per_connection_cap:
-            # assignment may need to move if pool filled between resolve and subscribe
             with self._lock:
                 self._assignments.pop(key, None)
             pool = self._choose_pool(key)
@@ -416,6 +439,103 @@ class StockFuturesQuoteService:
         result["per_connection_cap"] = self._per_connection_cap
         return result
 
+    def _refresh_closed_snapshots(self, codes: list[str], mode: StockFuturesMode) -> None:
+        """休市時以單次 Snapshot 補最近交易日 R1 收盤；盤中永遠不用此方法。"""
+        if is_stock_futures_day_session():
+            return
+        now_ts = time.time()
+        grouped: dict[int, list[tuple[tuple[StockFuturesMode, str], Any]]] = {}
+        with self._lock:
+            for code in codes:
+                key = (mode, code)
+                contract = self._contracts.get(key)
+                pool_index = self._assignments.get(key)
+                fetched_at = self._closed_snapshot_fetch_at.get(key, 0.0)
+                quote = self._quotes.get(key)
+                if contract is None or pool_index is None or pool_index >= len(self._pools):
+                    continue
+                if quote is not None and quote.get("data_source") == "shioaji_realtime_stock_futures":
+                    # 已有上一交易日最後即時 Quote，直接保留，不額外消耗 Snapshot 流量。
+                    continue
+                if quote is not None and quote.get("data_source") == "shioaji_snapshot_stock_futures" and now_ts - fetched_at < self._closed_snapshot_recheck_seconds:
+                    continue
+                grouped.setdefault(pool_index, []).append((key, contract))
+
+        for pool_index, entries in grouped.items():
+            if not entries:
+                continue
+            with self._lock:
+                pool = self._pools[pool_index] if pool_index < len(self._pools) else None
+            if pool is None or not pool.healthy:
+                continue
+            contracts = [contract for _, contract in entries]
+            try:
+                snapshots = list(pool.api.snapshots(contracts) or [])
+            except Exception as exc:
+                logger.warning("[Stock Futures][pool=%s] 休市 Snapshot 失敗: %s", pool_index, exc)
+                with self._lock:
+                    for key, _ in entries:
+                        self._errors[key] = f"休市 Snapshot 失敗: {exc}"
+                continue
+
+            by_code: dict[str, Any] = {}
+            for snap in snapshots:
+                snap_code = str(getattr(snap, "code", "") or "").strip().upper()
+                if snap_code:
+                    by_code[snap_code] = snap
+
+            for index, (key, contract) in enumerate(entries):
+                mode_value, underlying_code = key
+                contract_code = _contract_code(contract)
+                target_code = _target_code(contract)
+                snapshot = by_code.get(contract_code) or by_code.get(target_code)
+                if snapshot is None and index < len(snapshots):
+                    snapshot = snapshots[index]
+                if snapshot is None:
+                    continue
+
+                close = _safe_float(getattr(snapshot, "close", None))
+                if close is None or close <= 0:
+                    continue
+                change_price = _safe_float(getattr(snapshot, "change_price", None))
+                change_rate = _safe_float(getattr(snapshot, "change_rate", None))
+                reference = close - change_price if change_price is not None else None
+                market_dt = _snapshot_datetime(snapshot)
+                received_at = datetime.now(TW_TZ).isoformat()
+                payload = {
+                    "underlying_code": underlying_code,
+                    "mode": mode_value,
+                    **_contract_public(contract),
+                    "target_code": self._targets.get(key, target_code),
+                    "callback_code": str(getattr(snapshot, "code", "") or target_code),
+                    "pool_index": pool_index,
+                    "exchange": str(getattr(getattr(snapshot, "exchange", None), "value", None) or getattr(snapshot, "exchange", "TAIFEX")),
+                    "close": close,
+                    "reference": reference,
+                    "open": _safe_float(getattr(snapshot, "open", None)),
+                    "high": _safe_float(getattr(snapshot, "high", None)),
+                    "low": _safe_float(getattr(snapshot, "low", None)),
+                    "avg_price": _safe_float(getattr(snapshot, "average_price", None)),
+                    "price_chg": change_price,
+                    "pct_chg": round(change_rate / 100.0, 8) if change_rate is not None else None,
+                    "pct_chg_pct": change_rate,
+                    "volume": _safe_int(getattr(snapshot, "volume", None)),
+                    "total_volume": _safe_int(getattr(snapshot, "total_volume", None)),
+                    "amount": _safe_float(getattr(snapshot, "amount", None)),
+                    "total_amount": _safe_float(getattr(snapshot, "total_amount", None)),
+                    "simtrade": False,
+                    "quote_time": market_dt.isoformat(),
+                    "received_at": received_at,
+                    "data_source": "shioaji_snapshot_stock_futures",
+                    "session": "08:45-13:45 Asia/Taipei",
+                    "contract_policy": "R1-front-month-auto-roll",
+                }
+                with self._lock:
+                    self._quotes[key] = payload
+                    self._quote_timestamps[key] = now_ts
+                    self._closed_snapshot_fetch_at[key] = now_ts
+                    self._errors.pop(key, None)
+
     def on_quote(self, pool_index: int, exchange: Any, quote: Any) -> bool:
         callback_code = str(getattr(quote, "code", "") or "").strip().upper()
         with self._lock:
@@ -472,6 +592,7 @@ class StockFuturesQuoteService:
         with self._lock:
             self._quotes[key] = payload
             self._quote_timestamps[key] = time.time()
+            self._closed_snapshot_fetch_at.pop(key, None)
             if pool_index < len(self._pools) and key in self._pools[pool_index].subscriptions:
                 self._pools[pool_index].subscriptions[key] = time.time()
                 self._pools[pool_index].subscriptions.move_to_end(key)
@@ -480,6 +601,10 @@ class StockFuturesQuoteService:
     def get_quotes(self, quote_service: Any, underlying_codes: Iterable[str], mode: StockFuturesMode, *, subscribe: bool = True) -> dict[str, Any]:
         codes = _normalize_codes(underlying_codes)
         subscription = self.ensure_subscriptions(quote_service, codes, mode) if subscribe else None
+        session_open = is_stock_futures_day_session()
+        if not session_open:
+            self._refresh_closed_snapshots(codes, mode)
+
         data: dict[str, Any] = {}
         with self._lock:
             for code in codes:
@@ -491,8 +616,9 @@ class StockFuturesQuoteService:
                 age = round(time.time() - ts, 1) if ts else None
                 if quote is not None:
                     item = dict(quote)
-                    item["quote_age_seconds"] = age
-                    item["quote_stale"] = age is not None and age > 90
+                    is_snapshot = item.get("data_source") == "shioaji_snapshot_stock_futures"
+                    item["quote_age_seconds"] = None if is_snapshot else age
+                    item["quote_stale"] = False if is_snapshot and not session_open else (age is not None and age > 90)
                     data[code] = item
                 else:
                     contract_data = _contract_public(contract) if contract is not None else {}
@@ -507,7 +633,7 @@ class StockFuturesQuoteService:
                         "pct_chg_pct": None,
                         "quote_age_seconds": None,
                         "quote_stale": True,
-                        "data_source": "shioaji_realtime_stock_futures",
+                        "data_source": "shioaji_realtime_stock_futures" if session_open else "shioaji_snapshot_stock_futures",
                         "session": "08:45-13:45 Asia/Taipei",
                         "contract_policy": "R1-front-month-auto-roll",
                         "error": self._errors.get(key),
@@ -516,8 +642,9 @@ class StockFuturesQuoteService:
             "status": "ok",
             "mode": mode,
             "session": "08:45-13:45 Asia/Taipei",
-            "session_clock_open": is_stock_futures_day_session(),
+            "session_clock_open": session_open,
             "contract_policy": "R1-front-month-auto-roll",
+            "closed_market_source": "Shioaji Futures Snapshot" if not session_open else None,
             "count": len(codes),
             "data": data,
             "subscription": subscription,
@@ -533,6 +660,7 @@ class StockFuturesQuoteService:
                     item["target_code"] = self._targets[key]
                 item["pool_index"] = self._assignments.get(key)
                 mappings[f"{mode}:{underlying}"] = item
+            snapshot_count = sum(1 for quote in self._quotes.values() if quote.get("data_source") == "shioaji_snapshot_stock_futures")
             return {
                 "enabled": bool(self._pools) and all(pool.healthy for pool in self._pools),
                 "session": "08:45-13:45 Asia/Taipei",
@@ -544,6 +672,7 @@ class StockFuturesQuoteService:
                 "pool_health": {str(pool.index): {"healthy": pool.healthy, "error": pool.error} for pool in self._pools},
                 "active_subscription_count": sum(len(pool.subscriptions) for pool in self._pools),
                 "cached_quote_count": len(self._quotes),
+                "cached_closed_snapshot_count": snapshot_count,
                 "mappings": mappings,
                 "errors": {f"{mode}:{code}": msg for (mode, code), msg in self._errors.items()},
             }
