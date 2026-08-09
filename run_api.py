@@ -6,8 +6,10 @@ import logging
 import uvicorn
 
 # 股票期貨若同月份同時存在標準與調整型 R1，優先標準契約；
-# 模組載入即安裝 policy，之後 hanstock_app 取用同一個 stock_futures_service module。
+# 休市 Snapshot 時間同時做正規化，避免 +8 小時或 ts 無效時拿查詢時間冒充行情時間。
+# policy 模組載入後會修改同一個 stock_futures_service module，之後 hanstock_app 直接沿用。
 import stock_futures_standard_policy  # noqa: F401,E402
+import stock_futures_snapshot_policy  # noqa: F401,E402
 
 
 # 設定根日誌
