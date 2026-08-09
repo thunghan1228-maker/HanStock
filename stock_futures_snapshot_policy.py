@@ -5,9 +5,9 @@ Shioaji Snapshot 的 ``ts`` 在不同商品/版本可能出現兩種語意：
 2. 台灣本地牆鐘時間被包成 UTC epoch（若再轉 +08 會變成 17:xx~21:xx）。
 
 本 policy 只修休市 Snapshot 的市場時間，不修改盤中 QuoteFOPv1 即時行情。
-若 ts 缺失/無效，不再用「現在時間」冒充成交時間；改用最近可能的日盤日期 13:45。
-網站端仍會以整個族群的主流交易日做第二層驗證，因此遇到交易所休假日也不會
-讓少數 fallback 日期混入正式排名。
+若 ts 缺失、無效，或兩種解碼都不落在股票期貨日盤時段，不再拿查詢時間／週末時間
+冒充市場時間；改用最近可能的日盤日期 13:45。網站端仍會以整個族群的主流交易日
+做第二層驗證，因此遇到交易所休假日也不會讓少數 fallback 日期混入正式排名。
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _coerce_epoch_seconds(raw: Any) -> Optional[float]:
 
 
 def _recent_session_fallback(now: Optional[datetime] = None) -> datetime:
-    """ts 無效時給出最近可能的日盤日期；網站端還會再做族群日期一致性檢查。"""
+    """ts 不可信時給出最近可能的日盤日期；網站端還會再做族群日期一致性檢查。"""
     current = (now or datetime.now(TW_TZ)).astimezone(TW_TZ)
     candidate = current
     clock = current.time().replace(tzinfo=None)
@@ -84,9 +84,10 @@ def normalized_snapshot_datetime(snapshot: Any) -> datetime:
         # 兩者都合理時保留標準 epoch 語意。
         return converted
 
-    # 兩者都不在日盤時，不把「查詢現在時間」當成市場時間。
-    # 優先保留牆鐘解碼的原始日期，讓網站端主流交易日規則判斷是否應納入。
-    return wall_clock
+    # 兩種解碼都不可能是股票期貨日盤（例如週六 04:59 / 12:59）時，
+    # 視為 Snapshot ts 不可信，改用最近可能的日盤日期。網站端的主流日期規則
+    # 仍會負責最終把交易所休假日或少數異常 fallback 排除。
+    return _recent_session_fallback()
 
 
 def install() -> None:
