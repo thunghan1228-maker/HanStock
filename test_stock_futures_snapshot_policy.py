@@ -33,5 +33,13 @@ def test_invalid_ts_fallback_uses_previous_weekday_on_weekend():
     assert got.isoformat().startswith("2026-08-07T13:45:00")
 
 
+def test_weekend_non_session_timestamp_is_not_kept_as_market_time():
+    # 生產曾看到 2330/2303 解碼後落在週六 04:59/12:59；兩種都不是合法日盤。
+    snap = SimpleNamespace(ts=ns(datetime(2026, 8, 8, 4, 59, tzinfo=UTC)))
+    got = policy.normalized_snapshot_datetime(snap)
+    assert got.weekday() < 5
+    assert (got.hour, got.minute) == (13, 45)
+
+
 def test_policy_is_installed_on_stock_futures_service():
     assert service._snapshot_datetime is policy.normalized_snapshot_datetime
