@@ -50,8 +50,6 @@ class FakeContracts:
                 delivery_date="2026/08/19" if regular_target.endswith("H6") else "2026/09/16",
                 contract_size=2000,
             ),
-            # 刻意不在名稱寫「小型」；用 contract_size=100 驗證 mini 判斷，
-            # 可涵蓋個別 Shioaji 商品名稱不一致的情況。
             Contract(
                 code=f"M{code}R1",
                 target_code=mini_target,
@@ -75,6 +73,7 @@ class FakeApi:
         self.callback = None
         self.logged_in = False
         self.logged_out = False
+        self.snapshot_calls = 0
 
     def login(self, api_key=None, secret_key=None):
         if not api_key or not secret_key:
@@ -94,6 +93,31 @@ class FakeApi:
 
     def unsubscribe(self, contract, quote_type=None):
         self.unsubscribed.append((contract, quote_type))
+
+    def snapshots(self, contracts):
+        self.snapshot_calls += 1
+        ts = int(datetime(2026, 8, 7, 13, 45, tzinfo=TW_TZ).timestamp() * 1_000_000_000)
+        rows = []
+        for i, contract in enumerate(contracts):
+            close = 1000.0 + i
+            change_price = 20.0
+            rows.append(SimpleNamespace(
+                ts=ts,
+                code=contract.target_code,
+                exchange="TAIFEX",
+                open=980.0,
+                high=1010.0,
+                low=975.0,
+                close=close,
+                change_price=change_price,
+                change_rate=round(change_price / (close - change_price) * 100, 6),
+                average_price=995.0,
+                volume=3,
+                total_volume=123,
+                amount=3000.0,
+                total_amount=123000.0,
+            ))
+        return rows
 
 
 class FakeApiFactory:
@@ -116,6 +140,7 @@ ENV = {
     "SHIOAJI_STOCK_FUTURES_POOL_SIZE": "2",
     "SHIOAJI_STOCK_FUTURES_PER_CONNECTION_CAP": "180",
     "SHIOAJI_STOCK_FUTURES_R1_RECHECK_SECONDS": "300",
+    "SHIOAJI_STOCK_FUTURES_CLOSED_SNAPSHOT_SECONDS": "600",
 }
 
 
@@ -203,6 +228,30 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["pct_chg_pct"], 2.040816)
         self.assertEqual(row["data_source"], "shioaji_realtime_stock_futures")
 
+    @patch("stock_futures_service.is_stock_futures_day_session", return_value=False)
+    @patch.dict(os.environ, ENV, clear=False)
+    def test_closed_market_uses_futures_snapshot_for_aug7_close(self, _session_mock):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+
+        payload = service.get_quotes(None, ["2330"], "regular", subscribe=True)
+        row = payload["data"]["2330"]
+
+        self.assertFalse(payload["session_clock_open"])
+        self.assertEqual(payload["closed_market_source"], "Shioaji Futures Snapshot")
+        self.assertEqual(row["futures_code"], "R2330R1")
+        self.assertEqual(row["target_code"], "R2330H6")
+        self.assertEqual(row["close"], 1000.0)
+        self.assertEqual(row["data_source"], "shioaji_snapshot_stock_futures")
+        self.assertTrue(str(row["quote_time"]).startswith("2026-08-07T13:45:00"))
+        self.assertFalse(row["quote_stale"])
+
+        first_calls = sum(api.snapshot_calls for api in factory.apis)
+        self.assertGreater(first_calls, 0)
+        payload2 = service.get_quotes(None, ["2330"], "regular", subscribe=True)
+        self.assertEqual(payload2["data"]["2330"]["close"], 1000.0)
+        self.assertEqual(sum(api.snapshot_calls for api in factory.apis), first_calls)
+
     @patch.dict(os.environ, ENV, clear=False)
     def test_r1_target_change_auto_rolls_without_hard_coded_month(self):
         factory = FakeApiFactory()
@@ -211,7 +260,6 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertEqual(first["newly_subscribed"], ["2330"])
         self.assertEqual(service.status(None)["mappings"]["regular:2330"]["target_code"], "R2330H6")
 
-        # 模擬 Shioaji 合約下載在換月後把 R1 target 指到下一個近月。
         for api in factory.apis:
             api.contracts.targets[("regular", "2330")] = "R2330I6"
         service._recheck_seconds = 0
