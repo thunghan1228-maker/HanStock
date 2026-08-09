@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from group_strength_collector import start_group_strength_collector
 from group_strength_store import (
     group_strength_storage_status,
     load_group_strength_history,
@@ -33,7 +34,6 @@ def _validate_trade_date(value: str) -> str:
 
 
 def _expected_hub_secret() -> str:
-    # 優先沿用網站既有 HANSTOCK_HUB_KEY；舊 Railway 環境若只有同步 token 也可相容。
     return (
         os.getenv("HANSTOCK_HUB_KEY", "").strip()
         or os.getenv("HANSTOCK_SYNC_TOKEN", "").strip()
@@ -49,18 +49,26 @@ def _require_hub_auth(x_hub_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="Hub key 驗證失敗")
 
 
+@app.on_event("startup")
+def start_persistence_workers() -> None:
+    # 由 Hub 自己讀公開的族群排名並寫入 SQLite，不需要 Vercel 持有寫入金鑰。
+    start_group_strength_collector()
+
+
 @app.get("/api/hub/persistence/status")
 def get_persistence_status() -> dict[str, Any]:
-    """只回傳非敏感狀態，用來確認 Railway Volume/SQLite 是否可用。"""
-    return {"status": "ok", "data": group_strength_storage_status()}
+    data = group_strength_storage_status()
+    data["collectorEnabled"] = os.getenv(
+        "HANSTOCK_GROUP_STRENGTH_COLLECTOR_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    return {"status": "ok", "data": data}
 
 
 @app.get("/api/hub/group-strength/history")
 def get_group_strength_history(
     trade_date: str = Query(..., min_length=10, max_length=10),
-    x_hub_key: str | None = Header(default=None, alias="X-Hub-Key"),
 ) -> dict[str, Any]:
-    _require_hub_auth(x_hub_key)
+    # 排名歷史本身就是公開網站資料；只開放唯讀 GET，寫入仍需金鑰。
     date = _validate_trade_date(trade_date)
     snapshots = load_group_strength_history(date)
     return {
