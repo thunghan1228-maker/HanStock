@@ -1,0 +1,28 @@
+name: HanStock Railway Persistence Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_PROJECT_TOKEN: ${{ secrets.RAILWAY_PROJECT_TOKEN }}
+    steps:
+      - name: Check Railway automation credentials
+        shell: bash
+        run: |
+          if [ -n "$RAILWAY_TOKEN" ]; then echo "RAILWAY_TOKEN_PRESENT=true"; else echo "RAILWAY_TOKEN_PRESENT=false"; fi
+          if [ -n "$RAILWAY_API_TOKEN" ]; then echo "RAILWAY_API_TOKEN_PRESENT=true"; else echo "RAILWAY_API_TOKEN_PRESENT=false"; fi
+          if [ -n "$RAILWAY_PROJECT_TOKEN" ]; then echo "RAILWAY_PROJECT_TOKEN_PRESENT=true"; else echo "RAILWAY_PROJECT_TOKEN_PRESENT=false"; fi
+      - name: Read public Hub persistence status
+        shell: bash
+        run: |
+          set -e
+          curl --fail --silent --show-error --max-time 15 https://hanstock.xyz/api/hub/persistence/status | python -m json.tool
