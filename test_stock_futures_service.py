@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -221,6 +222,37 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertLessEqual(max(total_counts), 195)
         # 主 QuoteService 另占 1 條；共享池 4 條，合計符合官方最多 5 條連線。
         self.assertEqual(1 + len(factory.apis), 5)
+
+    @patch.dict(
+        os.environ,
+        {
+            **ENV,
+            "SHIOAJI_SHARED_QUOTE_POOL_SIZE": "4",
+            "SHIOAJI_SHARED_PER_CONNECTION_CAP": "195",
+        },
+        clear=False,
+    )
+    def test_concurrent_subscription_batches_initialize_unique_pool_indexes_once(self):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+        batches = [
+            [f"{1000 + batch * 20 + offset:04d}" for offset in range(20)]
+            for batch in range(8)
+        ]
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(
+                executor.map(
+                    lambda codes: service.ensure_stock_subscriptions(
+                        codes, lambda _exchange, _tick: None
+                    ),
+                    batches,
+                )
+            )
+
+        self.assertTrue(all(result["failed"] == {} for result in results))
+        self.assertEqual(len(factory.apis), 4)
+        self.assertEqual([pool.index for pool in service._pools], [0, 1, 2, 3])
 
     @patch.dict(os.environ, ENV, clear=False)
     def test_quote_callback_routes_by_pool_and_returns_futures_not_spot(self):

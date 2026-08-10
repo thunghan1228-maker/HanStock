@@ -218,6 +218,7 @@ class _PoolConnection:
 class StockFuturesQuoteService:
     def __init__(self, api_factory: Optional[Callable[[], Any]] = None) -> None:
         self._lock = threading.RLock()
+        self._pool_init_lock = threading.Lock()
         self._api_factory = api_factory
         legacy_pool_size = _env_int(
             "SHIOAJI_STOCK_FUTURES_POOL_SIZE", DEFAULT_POOL_SIZE, 2, 4
@@ -369,20 +370,23 @@ class StockFuturesQuoteService:
         raise RuntimeError(f"共享行情 Session／商品檔於期限內未就緒{detail}")
 
     def _ensure_pools(self) -> None:
-        with self._lock:
-            current = len(self._pools)
-        for index in range(current, self._pool_size):
-            try:
-                pool = self._create_pool_connection(index)
-            except Exception as exc:
-                logger.warning("[Shared Quote] pool #%s 初始化失敗，稍後重試: %s", index, exc)
-                with self._lock:
-                    has_usable_pool = bool(self._pools)
-                if not has_usable_pool:
-                    raise
-                break
+        # FastAPI/Vercel 可能同時送入多批全市場訂閱；初始化必須單飛，否則
+        # 多個執行緒會同時看到 current=0，建立出數條都叫 pool #0 的連線。
+        with self._pool_init_lock:
             with self._lock:
-                self._pools.append(pool)
+                current = len(self._pools)
+            for index in range(current, self._pool_size):
+                try:
+                    pool = self._create_pool_connection(index)
+                except Exception as exc:
+                    logger.warning("[Shared Quote] pool #%s 初始化失敗，稍後重試: %s", index, exc)
+                    with self._lock:
+                        has_usable_pool = bool(self._pools)
+                    if not has_usable_pool:
+                        raise
+                    break
+                with self._lock:
+                    self._pools.append(pool)
 
     @staticmethod
     def _pool_load(pool: _PoolConnection) -> int:
