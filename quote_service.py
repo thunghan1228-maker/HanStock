@@ -213,6 +213,10 @@ class QuoteService:
         try:
             self._initialize()
             self._login()
+            if not self.state.logged_in:
+                logger.warning("[Shioaji] 啟動登入未成功，交由背景重連流程恢復。")
+                self._trigger_reconnect()
+                return
             self._activate_ca()
             self._setup_callbacks()
             self._do_subscribe_futures()
