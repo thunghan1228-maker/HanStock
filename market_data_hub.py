@@ -193,6 +193,9 @@ class MarketDataHub:
         # Bar Aggregators：1 分 K 與既有 5 分 K 同時由同一份 tick 更新。
         self.bars_1m = BarAggregator(BAR_INTERVAL_1M_MS, "1m")
         self.bars = BarAggregator(BAR_INTERVAL_5M_MS, "5m")
+        # 台指期使用獨立 aggregator，避免與同名股票代號或股票盤別混在一起。
+        self.futures_bars_1m = BarAggregator(BAR_INTERVAL_1M_MS, "futures-1m")
+        self.futures_bars = BarAggregator(BAR_INTERVAL_5M_MS, "futures-5m")
         # WebSocket subscribers: set of asyncio.Queue (one per connected client)
         self._ws_subscribers: set[asyncio.Queue] = set()
         self._ws_lock = threading.Lock()
@@ -202,6 +205,8 @@ class MarketDataHub:
         self._total_ticks: int = 0
         self._total_bars_completed: int = 0
         self._total_bars_1m_completed: int = 0
+        self._total_futures_bars_completed: int = 0
+        self._total_futures_bars_1m_completed: int = 0
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """設定 asyncio event loop（WebSocket 廣播用）。"""
@@ -261,12 +266,38 @@ class MarketDataHub:
         })
 
     def on_futures_tick(self, tick_data: dict[str, Any]) -> None:
-        """接收台指期 tick，更新 cache 並廣播。"""
-        code = tick_data.get("code", "TXFR1")
+        """接收台指期 tick，更新 cache、1m/5m K 棒並廣播。"""
+        code = str(tick_data.get("code", "TXFR1") or "TXFR1").strip().upper()
+        price = tick_data.get("close")
+        volume = tick_data.get("volume", 0) or 0
+        if price is None:
+            return
+
         with self._lock:
             self._tick_cache[f"FUT:{code}"] = tick_data
             self._tick_timestamps[f"FUT:{code}"] = time.time()
             self._total_ticks += 1
+
+        tick_ts_ms = self._extract_tick_ts_ms(tick_data)
+        completed_bar_1m = self.futures_bars_1m.on_tick(code, price, volume, tick_ts_ms)
+        if completed_bar_1m:
+            self._total_futures_bars_1m_completed += 1
+            self._broadcast({
+                "type": "futures_bar1m_completed",
+                "interval": "1m",
+                "code": code,
+                "bar": completed_bar_1m.to_dict(),
+            })
+
+        completed_bar = self.futures_bars.on_tick(code, price, volume, tick_ts_ms)
+        if completed_bar:
+            self._total_futures_bars_completed += 1
+            self._broadcast({
+                "type": "futures_bar_completed",
+                "interval": "5m",
+                "code": code,
+                "bar": completed_bar.to_dict(),
+            })
 
         self._broadcast({
             "type": "futures_tick",
@@ -321,6 +352,14 @@ class MarketDataHub:
         """批次取得多檔今日 5 分 K。"""
         return {code: self.get_live_bars(code) for code in codes}
 
+    def get_live_futures_bars_1m(self, code: str) -> list[dict[str, Any]]:
+        """取得指定期貨合約本次執行期間的 1 分 K（含進行中 K 棒）。"""
+        return self.futures_bars_1m.get_bars(code.strip().upper(), include_current=True)
+
+    def get_live_futures_bars(self, code: str) -> list[dict[str, Any]]:
+        """取得指定期貨合約本次執行期間的 5 分 K（含進行中 K 棒）。"""
+        return self.futures_bars.get_bars(code.strip().upper(), include_current=True)
+
     def get_hub_status(self) -> dict[str, Any]:
         """取得 Hub 狀態摘要。"""
         with self._lock:
@@ -338,9 +377,13 @@ class MarketDataHub:
             "total_ticks_received": self._total_ticks,
             "total_bars_completed": self._total_bars_completed,
             "total_bars_1m_completed": self._total_bars_1m_completed,
+            "total_futures_bars_completed": self._total_futures_bars_completed,
+            "total_futures_bars_1m_completed": self._total_futures_bars_1m_completed,
             "websocket_clients": ws_count,
             "bar_aggregator_codes": len(self.bars._current),
             "bar_aggregator_1m_codes": len(self.bars_1m._current),
+            "futures_bar_aggregator_codes": len(self.futures_bars._current),
+            "futures_bar_aggregator_1m_codes": len(self.futures_bars_1m._current),
         }
 
     # ------------------------------------------------------------------

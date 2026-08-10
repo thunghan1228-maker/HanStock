@@ -143,6 +143,7 @@ _install_otc_index_patch()
 
 # patch 完成後才載入原 FastAPI app；其 lifespan 啟動 QuoteService 時即會自動套用。
 from api_server import app  # noqa: E402
+from futures_bar_bootstrap import get_resilient_futures_bars  # noqa: E402
 from stock_bar_bootstrap import get_resilient_stock_bars  # noqa: E402
 from stock_futures_service import get_stock_futures_quote_service  # noqa: E402
 
@@ -201,6 +202,24 @@ def get_resilient_hub_bars_5m(stock_code: str) -> dict[str, Any]:
     """今日 5 分 K：由已補齊 1 分 K 聚合並與即時 Hub 合併。"""
     code = _normalize_stock_code(stock_code)
     return get_resilient_stock_bars(code, "5m")
+
+
+@app.get("/api/hub/futures/bars/{futures_code}")
+def get_resilient_hub_futures_bars_5m(futures_code: str) -> dict[str, Any]:
+    """台指期目前／最近交易時段 5 分 K：歷史 Kbars + 即時 Tick 聚合。"""
+    code = _normalize_stock_code(futures_code)
+    if not code.startswith("TXF"):
+        raise HTTPException(status_code=422, detail=f"目前僅支援台指期合約：{code}")
+    return get_resilient_futures_bars(code, "5m")
+
+
+@app.get("/api/hub/futures/bars1m/{futures_code}")
+def get_resilient_hub_futures_bars_1m(futures_code: str) -> dict[str, Any]:
+    """台指期目前／最近交易時段 1 分 K。"""
+    code = _normalize_stock_code(futures_code)
+    if not code.startswith("TXF"):
+        raise HTTPException(status_code=422, detail=f"目前僅支援台指期合約：{code}")
+    return get_resilient_futures_bars(code, "1m")
 
 
 @app.get("/api/hub/stock-futures")
