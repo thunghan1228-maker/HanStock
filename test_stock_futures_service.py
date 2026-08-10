@@ -203,7 +203,7 @@ class StockFuturesServiceTests(unittest.TestCase):
     def test_shared_pool_covers_full_market_and_all_stock_futures_with_five_total_logins(self):
         factory = FakeApiFactory()
         service = StockFuturesQuoteService(api_factory=factory)
-        overflow_stocks = [f"{1000 + i:04d}" for i in range(461)]
+        overflow_stocks = [f"{1000 + i:04d}" for i in range(474)]
         regular_codes = [f"{3000 + i:04d}" for i in range(247)]
         mini_codes = [f"{6000 + i:04d}" for i in range(47)]
 
@@ -217,7 +217,7 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertEqual(len(factory.apis), 4)
         status = service.status(None)
         total_counts = list(status["total_pool_counts"].values())
-        self.assertEqual(sum(total_counts), 461 + 247 + 47)
+        self.assertEqual(sum(total_counts), 474 + 247 + 47)
         self.assertLessEqual(max(total_counts), 195)
         # 主 QuoteService 另占 1 條；共享池 4 條，合計符合官方最多 5 條連線。
         self.assertEqual(1 + len(factory.apis), 5)

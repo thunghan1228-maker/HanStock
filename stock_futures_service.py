@@ -31,6 +31,7 @@ TW_TZ = timezone(timedelta(hours=8))
 StockFuturesMode = Literal["regular", "mini"]
 DEFAULT_POOL_SIZE = 4
 DEFAULT_PER_CONNECTION_CAP = 195
+DEFAULT_CONTRACT_READY_TIMEOUT_SECONDS = 20.0
 DEFAULT_FRONT_MONTH_RECHECK_SECONDS = 300.0
 DEFAULT_CLOSED_SNAPSHOT_RECHECK_SECONDS = 600.0
 
@@ -251,6 +252,12 @@ class StockFuturesQuoteService:
             60.0,
             3600.0,
         )
+        self._contract_ready_timeout = _env_float(
+            "SHIOAJI_SHARED_CONTRACT_READY_TIMEOUT_SECONDS",
+            DEFAULT_CONTRACT_READY_TIMEOUT_SECONDS,
+            3.0,
+            60.0,
+        )
         self._pools: list[_PoolConnection] = []
         self._stock_tick_handler: Optional[Callable[[Any, Any], None]] = None
         self._stock_assignments: dict[str, int] = {}
@@ -280,11 +287,15 @@ class StockFuturesQuoteService:
         if not api_key or not secret_key:
             raise RuntimeError("缺少 SHIOAJI_API_KEY 或 SHIOAJI_SECRET_KEY")
         api = self._new_api()
+        api.login(api_key=api_key, secret_key=secret_key)
         try:
-            api.login(api_key=api_key, secret_key=secret_key, subscribe_trade=False)
-        except TypeError:
-            # 測試替身與少數舊版 Shioaji 尚無 subscribe_trade 參數。
-            api.login(api_key=api_key, secret_key=secret_key)
+            self._wait_for_contracts_ready(api)
+        except Exception:
+            try:
+                api.logout()
+            except Exception:
+                pass
+            raise
         pool = _PoolConnection(index=index, api=api)
 
         def callback(exchange: Any, quote: Any) -> None:
@@ -343,11 +354,33 @@ class StockFuturesQuoteService:
         logger.info("[Shared Quote] Shioaji pool #%s 登入成功", index)
         return pool
 
+    def _wait_for_contracts_ready(self, api: Any) -> None:
+        """login 後等待行情 Session 與商品檔就緒，避免立即訂閱的 NotReady。"""
+        deadline = time.monotonic() + self._contract_ready_timeout
+        last_error: Optional[Exception] = None
+        while time.monotonic() < deadline:
+            try:
+                if api.contracts.get("2330") is not None:
+                    return
+            except Exception as exc:
+                last_error = exc
+            time.sleep(1.0)
+        detail = f": {last_error}" if last_error is not None else ""
+        raise RuntimeError(f"共享行情 Session／商品檔於期限內未就緒{detail}")
+
     def _ensure_pools(self) -> None:
         with self._lock:
             current = len(self._pools)
         for index in range(current, self._pool_size):
-            pool = self._create_pool_connection(index)
+            try:
+                pool = self._create_pool_connection(index)
+            except Exception as exc:
+                logger.warning("[Shared Quote] pool #%s 初始化失敗，稍後重試: %s", index, exc)
+                with self._lock:
+                    has_usable_pool = bool(self._pools)
+                if not has_usable_pool:
+                    raise
+                break
             with self._lock:
                 self._pools.append(pool)
 

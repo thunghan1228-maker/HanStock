@@ -187,7 +187,7 @@ class QuoteServiceStockTests(unittest.TestCase):
         },
         clear=False,
     )
-    def test_full_651_stock_universe_stays_active_without_lru_eviction(self):
+    def test_full_664_stock_universe_stays_active_without_lru_eviction(self):
         import stock_futures_service
 
         if stock_futures_service._service is not None:
@@ -196,21 +196,21 @@ class QuoteServiceStockTests(unittest.TestCase):
         service = module.QuoteService()
         service.api = FakeAPI()
         service.state.logged_in = True
-        codes = [f"{1000 + index:04d}" for index in range(651)]
+        codes = [f"{1000 + index:04d}" for index in range(664)]
 
         result = service.ensure_stock_subscriptions(codes)
 
         self.assertEqual(result["failed"], {})
         self.assertEqual(result["evicted"], [])
-        self.assertEqual(result["active_count"], 651)
+        self.assertEqual(result["active_count"], 664)
         self.assertEqual(result["main_active_count"], 190)
-        self.assertEqual(result["shared_active_count"], 461)
-        self.assertEqual(len(service.get_active_stock_codes()), 651)
+        self.assertEqual(result["shared_active_count"], 474)
+        self.assertEqual(len(service.get_active_stock_codes()), 664)
         health = service.get_stock_health()
-        self.assertEqual(health["active_subscription_count"], 651)
+        self.assertEqual(health["active_subscription_count"], 664)
         self.assertEqual(health["eviction_policy"], "disabled")
         self.assertEqual(health["main_connection_active_count"], 190)
-        self.assertEqual(health["shared_pool_active_count"], 461)
+        self.assertEqual(health["shared_pool_active_count"], 474)
 
 
 if __name__ == "__main__":
