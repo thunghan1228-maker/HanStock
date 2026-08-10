@@ -233,6 +233,14 @@ def health() -> dict[str, Any]:
         "server_time": now,
         "rule1_result_exists": RESULT_PATH.exists(),
         "group_count": len(STOCK_GROUPS),
+        # Railway project/service UUID 並非密鑰；公開於 health 只用來辨識兩個
+        # GitHub 自動部署中，哪一個實際承載 hanstock.xyz 正式流量。
+        "deployment": {
+            "provider": "railway" if os.getenv("RAILWAY_PROJECT_ID") else "local",
+            "project_id": os.getenv("RAILWAY_PROJECT_ID"),
+            "service_id": os.getenv("RAILWAY_SERVICE_ID"),
+            "environment_id": os.getenv("RAILWAY_ENVIRONMENT_ID"),
+        },
     }
 
     if SHIOAJI_QUOTE_ENABLED:
