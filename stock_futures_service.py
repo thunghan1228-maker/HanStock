@@ -568,9 +568,18 @@ class StockFuturesQuoteService:
             except Exception as exc:
                 logger.debug("[Stock Futures] 取消訂閱 %s 失敗: %s", key, exc)
 
-    def _subscribe_or_refresh(self, code: str, mode: StockFuturesMode) -> tuple[str, Optional[dict[str, str]]]:
+    def _subscribe_or_refresh(
+        self,
+        code: str,
+        mode: StockFuturesMode,
+        resolver_api: Any = None,
+    ) -> tuple[str, Optional[dict[str, str]]]:
         key = (mode, code)
         pool = self._choose_pool(key)
+        # 多連線登入時，輔助行情 Session 可先收到 Tick，但其 P2P 商品查詢
+        # Session 仍是 NotReady。R1 合約統一由已就緒的主連線解析，再交給
+        # 對應共享行情連線訂閱，避免冷啟動時所有股期都解析失敗。
+        contract_api = resolver_api or pool.api
         now = time.time()
         with self._lock:
             active = key in pool.subscriptions
@@ -582,7 +591,7 @@ class StockFuturesQuoteService:
                 pool.subscriptions.move_to_end(key)
             return "already", None
 
-        fresh = resolve_front_month_contract(pool.api, code, mode)
+        fresh = resolve_front_month_contract(contract_api, code, mode)
         fresh_target = _target_code(fresh)
         if active and old_target == fresh_target:
             with self._lock:
@@ -606,7 +615,7 @@ class StockFuturesQuoteService:
             with self._lock:
                 self._assignments.pop(key, None)
             pool = self._choose_pool(key)
-            fresh = resolve_front_month_contract(pool.api, code, mode)
+            fresh = resolve_front_month_contract(contract_api, code, mode)
             fresh_target = _target_code(fresh)
 
         pool.api.subscribe(fresh, quote_type=sj.QuoteType.Quote)
@@ -622,7 +631,7 @@ class StockFuturesQuoteService:
         logger.info("[Stock Futures] pool=%s %s %s: %s -> %s", pool.index, mode, code, _contract_code(fresh), fresh_target)
         return "new", roll
 
-    def ensure_subscriptions(self, _quote_service: Any, underlying_codes: Iterable[str], mode: StockFuturesMode) -> dict[str, Any]:
+    def ensure_subscriptions(self, quote_service: Any, underlying_codes: Iterable[str], mode: StockFuturesMode) -> dict[str, Any]:
         codes = _normalize_codes(underlying_codes)
         result: dict[str, Any] = {
             "mode": mode,
@@ -642,9 +651,10 @@ class StockFuturesQuoteService:
             result["failed"] = {code: str(exc) for code in codes}
             return result
 
+        resolver_api = getattr(quote_service, "api", None)
         for code in codes:
             try:
-                state, roll = self._subscribe_or_refresh(code, mode)
+                state, roll = self._subscribe_or_refresh(code, mode, resolver_api)
                 if state == "new":
                     result["newly_subscribed"].append(code)
                 else:

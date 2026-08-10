@@ -135,6 +135,27 @@ class FakeApiFactory:
         return api
 
 
+class QuoteOnlyContracts(FakeContracts):
+    def futures_by_underlying(self, stock):
+        raise RuntimeError("auxiliary P2P session is NotReady")
+
+
+class QuoteOnlyApi(FakeApi):
+    def __init__(self, index: int):
+        super().__init__(index)
+        self.contracts = QuoteOnlyContracts()
+
+
+class QuoteOnlyApiFactory:
+    def __init__(self):
+        self.apis: list[QuoteOnlyApi] = []
+
+    def __call__(self):
+        api = QuoteOnlyApi(len(self.apis))
+        self.apis.append(api)
+        return api
+
+
 class FakeQuote(SimpleNamespace):
     pass
 
@@ -296,6 +317,20 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["pct_chg"], 0.02040816)
         self.assertAlmostEqual(row["pct_chg_pct"], 2.040816)
         self.assertEqual(row["data_source"], "shioaji_realtime_stock_futures")
+
+    @patch.dict(os.environ, ENV, clear=False)
+    def test_futures_contracts_resolve_on_primary_api_when_auxiliary_p2p_is_not_ready(self):
+        factory = QuoteOnlyApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+        primary = SimpleNamespace(api=FakeApi(99))
+
+        result = service.ensure_subscriptions(primary, ["2330"], "regular")
+
+        self.assertEqual(result["failed"], {})
+        self.assertEqual(result["newly_subscribed"], ["2330"])
+        self.assertEqual(service.status(primary)["active_subscription_count"], 1)
+        subscribed_contract = factory.apis[0].subscribed[0][0]
+        self.assertEqual(subscribed_contract.code, "R2330R1")
 
     @patch("stock_futures_service.is_stock_futures_day_session", return_value=False)
     @patch.dict(os.environ, ENV, clear=False)
