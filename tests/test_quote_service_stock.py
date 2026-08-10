@@ -165,6 +165,15 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(second["already_subscribed"], ["2330"])
         self.assertEqual(len(self.service.api.subscribed), 2)
 
+    def test_extra_index_futures_subscription_is_idempotent_and_restorable(self):
+        contract = FakeContract("MXFR1", "FUT", "MXFH6")
+        self.assertTrue(self.service.ensure_extra_futures_subscription(contract))
+        self.assertTrue(self.service.ensure_extra_futures_subscription(contract))
+        self.assertEqual(self.service.api.subscribed, [("MXFR1", "tick")])
+
+        self.service._resubscribe_extra_futures()
+        self.assertEqual(self.service.api.subscribed, [("MXFR1", "tick"), ("MXFR1", "tick")])
+
     def test_capacity_spills_to_shared_pool_without_eviction(self):
         self.service.ensure_stock_subscriptions(["2330", "2344"])
         result = self.service.ensure_stock_subscriptions(["2408"])

@@ -307,8 +307,13 @@ class StockFuturesServiceTests(unittest.TestCase):
             ask_side_total_vol=40,
             simtrade=False,
         )
-        handled = service.on_quote(pool_index, "TAIFEX", quote)
+        with patch("market_data_hub.get_market_data_hub") as get_hub:
+            handled = service.on_quote(pool_index, "TAIFEX", quote)
+            pushed = get_hub.return_value.on_futures_tick.call_args.args[0]
         self.assertTrue(handled)
+        self.assertEqual(pushed["code"], "M2330H6")
+        self.assertEqual(pushed["close"], 1000.0)
+        self.assertEqual(pushed["volume"], 3)
         payload = service.get_quotes(None, ["2330"], "mini", subscribe=False)
         row = payload["data"]["2330"]
         self.assertEqual(row["futures_code"], "M2330R1")
@@ -317,6 +322,9 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["pct_chg"], 0.02040816)
         self.assertAlmostEqual(row["pct_chg_pct"], 2.040816)
         self.assertEqual(row["data_source"], "shioaji_realtime_stock_futures")
+        resolved = service.resolve_contract_by_code("M2330R1")
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved[1], "M2330H6")
 
     @patch.dict(os.environ, ENV, clear=False)
     def test_futures_contracts_resolve_on_primary_api_when_auxiliary_p2p_is_not_ready(self):

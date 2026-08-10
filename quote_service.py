@@ -176,6 +176,8 @@ class QuoteService:
         self._reconnect_thread: Optional[threading.Thread] = None
         self._target_code = os.getenv("SHIOAJI_FUTURES_CODE", "TXFR1").strip() or "TXFR1"
         self._resolved_futures_code: Optional[str] = None
+        self._extra_futures_lock = threading.RLock()
+        self._extra_futures_contracts: dict[str, Any] = {}
         self._stale_seconds = _env_float(
             "SHIOAJI_QUOTE_STALE_SECONDS", DEFAULT_STALE_SECONDS, 5.0, 3600.0
         )
@@ -507,6 +509,7 @@ class QuoteService:
             elif event_code == 13:
                 self.state.quote_connected = True
                 self._do_subscribe_futures()
+                self._resubscribe_extra_futures()
                 self._resubscribe_stocks()
             elif event_code == 16:
                 # 只把期貨訂閱確認寫入 futures subscribed；股票另由 active set 管理。
@@ -633,6 +636,46 @@ class QuoteService:
             logger.error("[Shioaji] 台指期訂閱失敗: %s", exc)
             self.state.error_message = f"台指期訂閱失敗: {exc}"
             self.state.subscribed = False
+
+    def ensure_extra_futures_subscription(self, contract: Any) -> bool:
+        """在主行情連線上按需訂閱小台／微台等額外指數期貨 Tick。"""
+        if not self.state.logged_in or self.api is None or contract is None:
+            return False
+        code = str(
+            getattr(contract, "target_code", None)
+            or getattr(contract, "code", None)
+            or ""
+        ).strip().upper()
+        if not code:
+            return False
+        primary_codes = {
+            str(self._target_code or "").strip().upper(),
+            str(self._resolved_futures_code or "").strip().upper(),
+        }
+        if code in primary_codes:
+            return True
+        with self._extra_futures_lock:
+            if code in self._extra_futures_contracts:
+                return True
+            try:
+                self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
+            except Exception as exc:
+                logger.warning("[Shioaji] 額外期貨 %s 訂閱失敗: %s", code, exc)
+                return False
+            self._extra_futures_contracts[code] = contract
+        logger.info("[Shioaji] 已請求訂閱額外指數期貨 Tick: %s", code)
+        return True
+
+    def _resubscribe_extra_futures(self) -> None:
+        if self.api is None or not self.state.logged_in:
+            return
+        with self._extra_futures_lock:
+            contracts = list(self._extra_futures_contracts.items())
+        for code, contract in contracts:
+            try:
+                self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
+            except Exception as exc:
+                logger.warning("[Shioaji] 額外期貨 %s 恢復訂閱失敗: %s", code, exc)
 
     def _subscribe_bootstrap_stocks(self) -> None:
         raw = os.getenv("SHIOAJI_STOCK_BOOTSTRAP_CODES", "")

@@ -19,7 +19,13 @@ def wall_ns(hour: int, minute: int) -> int:
 
 class FakeContracts:
     def get(self, code: str):
-        return SimpleNamespace(code="TXFH6") if code.startswith("TXF") else None
+        if code == "TXFR1":
+            return SimpleNamespace(code="TXFR1", target_code="TXFQ6")
+        if code == "TXFH6":
+            return SimpleNamespace(code="TXFH6")
+        if code == "MXFR1":
+            return SimpleNamespace(code="MXFR1", target_code="MXFQ6")
+        return None
 
 
 class FakeApi:
@@ -46,11 +52,18 @@ class FakeService:
     api = FakeApi()
     state = SimpleNamespace(logged_in=True)
     _target_code = "TXFR1"
-    _resolved_futures_code = "TXFH6"
+    _resolved_futures_code = "TXFQ6"
+
+    def __init__(self):
+        self.extra_subscriptions = []
+
+    def ensure_extra_futures_subscription(self, contract):
+        self.extra_subscriptions.append(getattr(contract, "target_code", contract.code))
+        return True
 
     @staticmethod
     def get_latest_tick():
-        return {"code": "TXFH6"}
+        return {"code": "TXFQ6"}
 
 
 class EmptyHub:
@@ -93,6 +106,48 @@ class FuturesBarTests(unittest.TestCase):
             [datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%H:%M") for bar in result["bars"]],
             ["08:45", "08:50", "08:55"],
         )
+
+    def test_stale_txf_month_uses_active_r1_contract(self):
+        result = get_resilient_futures_bars(
+            "TXFH6",
+            "5m",
+            service=FakeService(),
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+        )
+
+        self.assertEqual(result["requested_code"], "TXFH6")
+        self.assertEqual(result["code"], "TXFQ6")
+        self.assertGreater(result["bar_count"], 0)
+
+    def test_mini_taiwan_futures_uses_night_capable_contract(self):
+        service = FakeService()
+        result = get_resilient_futures_bars(
+            "MXFR1",
+            "5m",
+            service=service,
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+        )
+
+        self.assertEqual(result["code"], "MXFQ6")
+        self.assertEqual(service.extra_subscriptions, ["MXFQ6"])
+        self.assertGreater(result["bar_count"], 0)
+
+    def test_stock_futures_show_latest_day_session_at_night(self):
+        contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
+        result = get_resilient_futures_bars(
+            "NCFR1",
+            "5m",
+            service=FakeService(),
+            hub=EmptyHub(),
+            now_ms=ts(23, 0),
+            stock_futures_lookup=lambda code: (contract, "NCFQ6") if code == "NCFR1" else None,
+        )
+
+        self.assertEqual(result["session"], "day")
+        self.assertEqual(result["code"], "NCFQ6")
+        self.assertGreater(result["bar_count"], 0)
 
 
 if __name__ == "__main__":

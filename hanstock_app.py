@@ -206,19 +206,15 @@ def get_resilient_hub_bars_5m(stock_code: str) -> dict[str, Any]:
 
 @app.get("/api/hub/futures/bars/{futures_code}")
 def get_resilient_hub_futures_bars_5m(futures_code: str) -> dict[str, Any]:
-    """台指期目前／最近交易時段 5 分 K：歷史 Kbars + 即時 Tick 聚合。"""
+    """期貨目前／最近交易時段 5 分 K：歷史 Kbars + 即時行情聚合。"""
     code = _normalize_stock_code(futures_code)
-    if not code.startswith("TXF"):
-        raise HTTPException(status_code=422, detail=f"目前僅支援台指期合約：{code}")
     return get_resilient_futures_bars(code, "5m")
 
 
 @app.get("/api/hub/futures/bars1m/{futures_code}")
 def get_resilient_hub_futures_bars_1m(futures_code: str) -> dict[str, Any]:
-    """台指期目前／最近交易時段 1 分 K。"""
+    """期貨目前／最近交易時段 1 分 K。"""
     code = _normalize_stock_code(futures_code)
-    if not code.startswith("TXF"):
-        raise HTTPException(status_code=422, detail=f"目前僅支援台指期合約：{code}")
     return get_resilient_futures_bars(code, "1m")
 
 

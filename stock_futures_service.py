@@ -548,6 +548,27 @@ class StockFuturesQuoteService:
             if code:
                 self._reverse_codes[(pool_index, code)] = key
 
+    def resolve_contract_by_code(self, futures_code: str) -> Optional[tuple[Any, str]]:
+        """由畫面上的 R1 或實際交割月代號取回目前訂閱合約。
+
+        回傳的 canonical code 固定使用 target_code，讓歷史 Kbars 與即時
+        Quote callback 都落在同一個實際合約代號。
+        """
+        requested = str(futures_code).strip().upper()
+        if not requested:
+            return None
+        with self._lock:
+            for key, contract in self._contracts.items():
+                aliases = {
+                    _contract_code(contract),
+                    _target_code(contract),
+                    str(self._targets.get(key, "") or "").strip().upper(),
+                }
+                if requested in aliases:
+                    canonical = str(self._targets.get(key, "") or _target_code(contract)).strip().upper()
+                    return contract, canonical or requested
+        return None
+
     def _unsubscribe_key(self, key: tuple[StockFuturesMode, str]) -> None:
         with self._lock:
             pool_index = self._assignments.get(key)
@@ -833,6 +854,21 @@ class StockFuturesQuoteService:
             if pool_index < len(self._pools) and key in self._pools[pool_index].subscriptions:
                 self._pools[pool_index].subscriptions[key] = time.time()
                 self._pools[pool_index].subscriptions.move_to_end(key)
+        if close is not None and close > 0 and not payload["simtrade"]:
+            try:
+                from market_data_hub import get_market_data_hub
+
+                get_market_data_hub().on_futures_tick({
+                    "code": callback_code or payload["target_code"] or payload["futures_code"],
+                    "close": close,
+                    "volume": payload["volume"],
+                    "total_volume": payload["total_volume"],
+                    "tick_time": quote_dt.isoformat(),
+                    "received_at": now.isoformat(),
+                    "data_source": "shioaji_realtime_stock_futures",
+                })
+            except Exception as exc:
+                logger.debug("[Stock Futures] 即時 K 棒聚合失敗: %s", exc)
         return True
 
     def get_quotes(self, quote_service: Any, underlying_codes: Iterable[str], mode: StockFuturesMode, *, subscribe: bool = True) -> dict[str, Any]:
