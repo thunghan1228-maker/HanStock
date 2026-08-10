@@ -182,6 +182,7 @@ class QuoteService:
 
         self._callbacks_api_id: Optional[int] = None
         self._stock_lock = threading.RLock()
+        self._stock_main_subscription_lock = threading.Lock()
         self._stock_ticks: dict[str, dict[str, Any]] = {}
         self._stock_tick_timestamps: dict[str, float] = {}
         self._stock_contracts: dict[str, Any] = {}
@@ -359,19 +360,27 @@ class QuoteService:
                     self._stock_subscriptions.move_to_end(code)
                     result["already_subscribed"].append(code)
                     continue
-            with self._stock_lock:
-                main_count = sum(
-                    1 for value in self._stock_assignments.values() if value == "main"
-                )
-            if main_count >= self._stock_subscription_limit:
-                shared_codes.append(code)
-                continue
-
-            if self._subscribe_stock(code):
-                result["newly_subscribed"].append(code)
-            else:
+            # 容量判斷與主連線訂閱必須是同一個臨界區。若多個掃描 shard
+            # 同時進來，分開判斷會讓所有執行緒都看到尚有空位而越過上限。
+            with self._stock_main_subscription_lock:
                 with self._stock_lock:
-                    result["failed"][code] = self._stock_errors.get(code, "訂閱失敗")
+                    if code in self._stock_subscriptions:
+                        self._stock_subscriptions[code] = time.time()
+                        self._stock_subscriptions.move_to_end(code)
+                        result["already_subscribed"].append(code)
+                        continue
+                    main_count = sum(
+                        1 for value in self._stock_assignments.values() if value == "main"
+                    )
+                if main_count >= self._stock_subscription_limit:
+                    shared_codes.append(code)
+                    continue
+
+                if self._subscribe_stock(code):
+                    result["newly_subscribed"].append(code)
+                else:
+                    with self._stock_lock:
+                        result["failed"][code] = self._stock_errors.get(code, "訂閱失敗")
 
         if shared_codes:
             if shared_svc is None:

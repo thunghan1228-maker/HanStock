@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import time
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -173,6 +175,28 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(result["shared_active_count"], 1)
         self.assertNotIn(("2330", "tick"), self.service.api.unsubscribed)
         self.assertEqual(self.service.get_active_stock_codes(), ["2330", "2344", "2408"])
+
+    def test_concurrent_batches_do_not_exceed_main_connection_limit(self):
+        original_subscribe = self.service.api.subscribe
+
+        def slow_subscribe(contract, quote_type):
+            time.sleep(0.01)
+            original_subscribe(contract, quote_type)
+
+        self.service.api.subscribe = slow_subscribe
+        codes = ["2330", "2344", "2408", "2317"]
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(
+                executor.map(lambda code: self.service.ensure_stock_subscriptions([code]), codes)
+            )
+
+        self.assertTrue(all(result["failed"] == {} for result in results))
+        health = self.service.get_stock_health()
+        self.assertEqual(health["active_subscription_count"], 4)
+        self.assertEqual(health["main_connection_active_count"], 2)
+        self.assertEqual(health["shared_pool_active_count"], 2)
+        self.assertEqual(len(self.service.api.subscribed), 2)
 
     def test_invalid_contract_returns_failure(self):
         result = self.service.ensure_stock_subscriptions(["BAD1"])
