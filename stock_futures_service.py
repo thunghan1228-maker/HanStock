@@ -5,8 +5,10 @@
 - 盤中 08:45～13:45 使用 Shioaji FOP Quote 訂閱，不用 snapshots 輪詢冒充即時。
 - 休市時允許以 Shioaji Futures Snapshot 補最近交易日近月收盤，供週末/盤後查看。
 - 使用 Shioaji FOP Quote 訂閱；每一條連線都遠低於官方 200 訂閱上限。
-- 預設建立 2 條「股票期貨專用」Shioaji 連線，與既有台指期/現貨主連線分離。
-  247 檔一般股期 + 47 檔小型股期可平均分散到兩條專用連線。
+- 預設建立 4 條共享 Shioaji 行情連線，與既有台指期主連線合計 5 條，
+  嚴格遵守同一 person_id 最多 5 條連線的官方限制。
+- 共享連線同時承載全市場現貨 Tick 與股票期貨 Quote；每條保留安全餘裕，
+  避免為全股掃描另開連線而擠掉股票期貨功能。
 - 每檔依股票標的反查 R1 近月連續月；不寫死交割月份。
 - 定期重查 R1 target_code；換月時自動取消舊 target 並訂閱新 target。
 """
@@ -27,8 +29,8 @@ import shioaji as sj
 logger = logging.getLogger("hanstock.stock_futures")
 TW_TZ = timezone(timedelta(hours=8))
 StockFuturesMode = Literal["regular", "mini"]
-DEFAULT_POOL_SIZE = 2
-DEFAULT_PER_CONNECTION_CAP = 180
+DEFAULT_POOL_SIZE = 4
+DEFAULT_PER_CONNECTION_CAP = 195
 DEFAULT_FRONT_MONTH_RECHECK_SECONDS = 300.0
 DEFAULT_CLOSED_SNAPSHOT_RECHECK_SECONDS = 600.0
 
@@ -209,18 +211,33 @@ class _PoolConnection:
     healthy: bool = True
     error: Optional[str] = None
     subscriptions: OrderedDict[tuple[StockFuturesMode, str], float] = field(default_factory=OrderedDict)
+    stock_subscriptions: OrderedDict[str, float] = field(default_factory=OrderedDict)
 
 
 class StockFuturesQuoteService:
     def __init__(self, api_factory: Optional[Callable[[], Any]] = None) -> None:
         self._lock = threading.RLock()
         self._api_factory = api_factory
-        self._pool_size = _env_int("SHIOAJI_STOCK_FUTURES_POOL_SIZE", DEFAULT_POOL_SIZE, 2, 4)
-        self._per_connection_cap = _env_int(
+        legacy_pool_size = _env_int(
+            "SHIOAJI_STOCK_FUTURES_POOL_SIZE", DEFAULT_POOL_SIZE, 2, 4
+        )
+        self._pool_size = _env_int(
+            "SHIOAJI_SHARED_QUOTE_POOL_SIZE",
+            max(DEFAULT_POOL_SIZE, legacy_pool_size),
+            1,
+            4,
+        )
+        legacy_per_connection_cap = _env_int(
             "SHIOAJI_STOCK_FUTURES_PER_CONNECTION_CAP",
             DEFAULT_PER_CONNECTION_CAP,
             100,
-            190,
+            198,
+        )
+        self._per_connection_cap = _env_int(
+            "SHIOAJI_SHARED_PER_CONNECTION_CAP",
+            max(DEFAULT_PER_CONNECTION_CAP, legacy_per_connection_cap),
+            100,
+            198,
         )
         self._recheck_seconds = _env_float(
             "SHIOAJI_STOCK_FUTURES_R1_RECHECK_SECONDS",
@@ -235,6 +252,10 @@ class StockFuturesQuoteService:
             3600.0,
         )
         self._pools: list[_PoolConnection] = []
+        self._stock_tick_handler: Optional[Callable[[Any, Any], None]] = None
+        self._stock_assignments: dict[str, int] = {}
+        self._stock_contracts: dict[str, Any] = {}
+        self._stock_errors: dict[str, str] = {}
         self._assignments: dict[tuple[StockFuturesMode, str], int] = {}
         self._contracts: dict[tuple[StockFuturesMode, str], Any] = {}
         self._targets: dict[tuple[StockFuturesMode, str], str] = {}
@@ -259,7 +280,11 @@ class StockFuturesQuoteService:
         if not api_key or not secret_key:
             raise RuntimeError("缺少 SHIOAJI_API_KEY 或 SHIOAJI_SECRET_KEY")
         api = self._new_api()
-        api.login(api_key=api_key, secret_key=secret_key)
+        try:
+            api.login(api_key=api_key, secret_key=secret_key, subscribe_trade=False)
+        except TypeError:
+            # 測試替身與少數舊版 Shioaji 尚無 subscribe_trade 參數。
+            api.login(api_key=api_key, secret_key=secret_key)
         pool = _PoolConnection(index=index, api=api)
 
         def callback(exchange: Any, quote: Any) -> None:
@@ -277,6 +302,24 @@ class StockFuturesQuoteService:
                 raise AttributeError("Shioaji API 不支援 QuoteFOPv1 callback")
             decorator_factory()(callback)
 
+        def stock_callback(exchange: Any, tick: Any) -> None:
+            with self._lock:
+                handler = self._stock_tick_handler
+            if handler is None:
+                return
+            try:
+                handler(exchange, tick)
+            except Exception as exc:
+                logger.debug("[Shared Quote][pool=%s] Stock tick callback 失敗: %s", index, exc)
+
+        stock_setter = getattr(api, "set_on_tick_stk_v1_callback", None)
+        if callable(stock_setter):
+            stock_setter(stock_callback)
+        else:
+            stock_decorator_factory = getattr(api, "on_tick_stk_v1", None)
+            if callable(stock_decorator_factory):
+                stock_decorator_factory()(stock_callback)
+
         try:
             @api.quote.on_event
             def _event(resp_code: int, event_code: int, info: str, event: str):
@@ -287,10 +330,17 @@ class StockFuturesQuoteService:
                     pool.healthy = True
                     if event_code in (0, 13):
                         pool.error = None
+                    if event_code == 13:
+                        threading.Thread(
+                            target=self._resubscribe_pool,
+                            args=(index,),
+                            name=f"shared-quote-resubscribe-{index}",
+                            daemon=True,
+                        ).start()
         except Exception:
             pass
 
-        logger.info("[Stock Futures] 專用 Shioaji pool #%s 登入成功", index)
+        logger.info("[Shared Quote] Shioaji pool #%s 登入成功", index)
         return pool
 
     def _ensure_pools(self) -> None:
@@ -301,20 +351,157 @@ class StockFuturesQuoteService:
             with self._lock:
                 self._pools.append(pool)
 
+    @staticmethod
+    def _pool_load(pool: _PoolConnection) -> int:
+        return len(pool.subscriptions) + len(pool.stock_subscriptions)
+
+    def shared_capacity(self) -> int:
+        return self._pool_size * self._per_connection_cap
+
+    def _resubscribe_pool(self, index: int) -> None:
+        """SESSION_UP 後在同一條連線恢復現貨與股期訂閱，不額外 login。"""
+        with self._lock:
+            if index >= len(self._pools):
+                return
+            pool = self._pools[index]
+            stock_contracts = [
+                self._stock_contracts[code]
+                for code, pool_index in self._stock_assignments.items()
+                if pool_index == index and code in self._stock_contracts
+            ]
+            futures_contracts = [
+                self._contracts[key]
+                for key, pool_index in self._assignments.items()
+                if pool_index == index and key in self._contracts
+            ]
+        for contract in stock_contracts:
+            try:
+                pool.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
+            except Exception as exc:
+                logger.warning("[Shared Quote][pool=%s] 恢復現貨訂閱失敗: %s", index, exc)
+        for contract in futures_contracts:
+            try:
+                pool.api.subscribe(contract, quote_type=sj.QuoteType.Quote)
+            except Exception as exc:
+                logger.warning("[Shared Quote][pool=%s] 恢復股期訂閱失敗: %s", index, exc)
+
     def _choose_pool(self, key: tuple[StockFuturesMode, str]) -> _PoolConnection:
         self._ensure_pools()
         with self._lock:
             assigned = self._assignments.get(key)
             if assigned is not None and assigned < len(self._pools):
                 pool = self._pools[assigned]
-                if pool.healthy:
+                active = key in pool.subscriptions
+                if pool.healthy and (active or self._pool_load(pool) < self._per_connection_cap):
                     return pool
-            candidates = [p for p in self._pools if p.healthy and len(p.subscriptions) < self._per_connection_cap]
+            candidates = [
+                p for p in self._pools
+                if p.healthy and self._pool_load(p) < self._per_connection_cap
+            ]
             if not candidates:
-                raise RuntimeError("股票期貨專用即時行情連線容量已滿")
-            pool = min(candidates, key=lambda p: len(p.subscriptions))
+                raise RuntimeError("共享即時行情連線容量已滿")
+            pool = min(candidates, key=self._pool_load)
             self._assignments[key] = pool.index
             return pool
+
+    def _choose_stock_pool(self, code: str) -> _PoolConnection:
+        self._ensure_pools()
+        with self._lock:
+            assigned = self._stock_assignments.get(code)
+            if assigned is not None and assigned < len(self._pools):
+                pool = self._pools[assigned]
+                if pool.healthy and code in pool.stock_subscriptions:
+                    return pool
+            candidates = [
+                p for p in self._pools
+                if p.healthy and self._pool_load(p) < self._per_connection_cap
+            ]
+            if not candidates:
+                raise RuntimeError("共享即時行情連線容量已滿")
+            pool = min(candidates, key=self._pool_load)
+            self._stock_assignments[code] = pool.index
+            return pool
+
+    @staticmethod
+    def _resolve_stock_contract(api: Any, code: str) -> Any:
+        contract = api.contracts.get(code)
+        if contract is None:
+            try:
+                contract = api.Contracts.Stocks[code]
+            except Exception:
+                contract = None
+        if contract is None:
+            return None
+        security_type = str(getattr(contract, "security_type", "")).upper()
+        if security_type and "STK" not in security_type and "STOCK" not in security_type:
+            return None
+        return contract
+
+    def ensure_stock_subscriptions(
+        self,
+        stock_codes: Iterable[str],
+        tick_handler: Callable[[Any, Any], None],
+    ) -> dict[str, Any]:
+        """在 4 條共享連線上永久分配現貨 Tick；不使用 LRU 淘汰。"""
+        codes = _normalize_codes(stock_codes)
+        with self._lock:
+            self._stock_tick_handler = tick_handler
+        result: dict[str, Any] = {
+            "requested": codes,
+            "newly_subscribed": [],
+            "already_subscribed": [],
+            "failed": {},
+            "assignments": {},
+        }
+        try:
+            self._ensure_pools()
+        except Exception as exc:
+            result["failed"] = {code: str(exc) for code in codes}
+            return result
+
+        for code in codes:
+            try:
+                pool = self._choose_stock_pool(code)
+                with self._lock:
+                    active = code in pool.stock_subscriptions
+                if active:
+                    with self._lock:
+                        pool.stock_subscriptions[code] = time.time()
+                        pool.stock_subscriptions.move_to_end(code)
+                    result["already_subscribed"].append(code)
+                    result["assignments"][code] = pool.index
+                    continue
+
+                contract = self._resolve_stock_contract(pool.api, code)
+                if contract is None:
+                    raise ValueError(f"找不到股票合約：{code}")
+                pool.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
+                with self._lock:
+                    self._stock_contracts[code] = contract
+                    self._stock_assignments[code] = pool.index
+                    pool.stock_subscriptions[code] = time.time()
+                    pool.stock_subscriptions.move_to_end(code)
+                    self._stock_errors.pop(code, None)
+                result["newly_subscribed"].append(code)
+                result["assignments"][code] = pool.index
+            except Exception as exc:
+                with self._lock:
+                    self._stock_errors[code] = str(exc)
+                    self._stock_assignments.pop(code, None)
+                result["failed"][code] = str(exc)
+
+        with self._lock:
+            result["active_count"] = sum(len(p.stock_subscriptions) for p in self._pools)
+            result["pool_counts"] = {
+                str(p.index): len(p.stock_subscriptions) for p in self._pools
+            }
+            result["total_pool_counts"] = {
+                str(p.index): self._pool_load(p) for p in self._pools
+            }
+        result["pool_size"] = self._pool_size
+        result["per_connection_cap"] = self._per_connection_cap
+        result["capacity"] = self.shared_capacity()
+        return result
 
     def _register_mapping(self, pool_index: int, key: tuple[StockFuturesMode, str], contract: Any) -> None:
         for reverse_key, mapped in list(self._reverse_codes.items()):
@@ -378,7 +565,7 @@ class StockFuturesQuoteService:
                 self._assignments[key] = pool.index
             roll = {"underlying_code": code, "from": old_target, "to": fresh_target}
 
-        if len(pool.subscriptions) >= self._per_connection_cap:
+        if self._pool_load(pool) >= self._per_connection_cap:
             with self._lock:
                 self._assignments.pop(key, None)
             pool = self._choose_pool(key)
@@ -435,6 +622,9 @@ class StockFuturesQuoteService:
         with self._lock:
             result["active_count"] = sum(len(pool.subscriptions) for pool in self._pools)
             result["pool_counts"] = {str(pool.index): len(pool.subscriptions) for pool in self._pools}
+            result["shared_pool_total_counts"] = {
+                str(pool.index): self._pool_load(pool) for pool in self._pools
+            }
         result["pool_size"] = self._pool_size
         result["per_connection_cap"] = self._per_connection_cap
         return result
@@ -669,8 +859,11 @@ class StockFuturesQuoteService:
                 "pool_size": self._pool_size,
                 "per_connection_cap": self._per_connection_cap,
                 "pool_counts": {str(pool.index): len(pool.subscriptions) for pool in self._pools},
+                "stock_pool_counts": {str(pool.index): len(pool.stock_subscriptions) for pool in self._pools},
+                "total_pool_counts": {str(pool.index): self._pool_load(pool) for pool in self._pools},
                 "pool_health": {str(pool.index): {"healthy": pool.healthy, "error": pool.error} for pool in self._pools},
                 "active_subscription_count": sum(len(pool.subscriptions) for pool in self._pools),
+                "active_stock_subscription_count": sum(len(pool.stock_subscriptions) for pool in self._pools),
                 "cached_quote_count": len(self._quotes),
                 "cached_closed_snapshot_count": snapshot_count,
                 "mappings": mappings,
@@ -681,6 +874,8 @@ class StockFuturesQuoteService:
         with self._lock:
             pools = list(self._pools)
             self._pools.clear()
+            self._stock_assignments.clear()
+            self._stock_contracts.clear()
         for pool in pools:
             try:
                 pool.api.logout()

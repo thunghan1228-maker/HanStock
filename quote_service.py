@@ -6,7 +6,8 @@
 狀態設定原則：
 - futures subscribed = True：僅在收到期貨 Event Code 16 或首筆期貨 Tick 後設定
 - quote_connected = True：僅在收到 SESSION_UP 或實際行情後設定
-- 台股採動態訂閱：網站查詢股票或族群時才訂閱，使用 LRU 控制訂閱數
+- 台股採動態訂閱：主連線先承載 190 檔，其餘分配到 4 條共享連線池
+- 全市場訂閱不使用 LRU 淘汰；現貨與股票期貨共用連線池，總連線數不超過 5
 - 不以 snapshots/ticks/kbars 輪詢取代盤中即時行情
 """
 
@@ -33,7 +34,10 @@ MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_BASE_INTERVAL = 5
 RECONNECT_MAX_INTERVAL = 300
 DEFAULT_STALE_SECONDS = 60.0
-DEFAULT_STOCK_SUBSCRIPTION_LIMIT = 150  # 官方總上限 200，預留期貨與未來其他行情
+DEFAULT_STOCK_SUBSCRIPTION_LIMIT = 190  # 主連線預留台指期、OTC 指數與安全餘裕
+# hanstock.xyz 於 2026-08-10 實機辨識到的 Railway 正式 Hub。
+# 可用環境變數覆寫，方便日後把正式流量切到備援專案。
+DEFAULT_PRIMARY_RAILWAY_PROJECT_ID = "4b2403bb-cd2d-4917-bd8f-80dffe894d00"
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -50,6 +54,18 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
     except (TypeError, ValueError):
         value = default
     return max(minimum, min(maximum, value))
+
+
+def quote_deployment_role() -> str:
+    """限制同一永豐 person_id 只由正式 Railway 專案登入行情。"""
+    current_project = os.getenv("RAILWAY_PROJECT_ID", "").strip()
+    primary_project = os.getenv(
+        "HANSTOCK_PRIMARY_RAILWAY_PROJECT_ID",
+        DEFAULT_PRIMARY_RAILWAY_PROJECT_ID,
+    ).strip()
+    if current_project and primary_project and current_project != primary_project:
+        return "standby"
+    return "primary"
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -170,10 +186,14 @@ class QuoteService:
         self._stock_tick_timestamps: dict[str, float] = {}
         self._stock_contracts: dict[str, Any] = {}
         self._stock_subscriptions: OrderedDict[str, float] = OrderedDict()
+        self._stock_assignments: dict[str, str] = {}
         self._stock_errors: dict[str, str] = {}
+        legacy_stock_limit = _env_int(
+            "SHIOAJI_STOCK_MAX_SUBSCRIPTIONS", DEFAULT_STOCK_SUBSCRIPTION_LIMIT, 1, 190
+        )
         self._stock_subscription_limit = _env_int(
-            "SHIOAJI_STOCK_MAX_SUBSCRIPTIONS",
-            DEFAULT_STOCK_SUBSCRIPTION_LIMIT,
+            "SHIOAJI_MAIN_STOCK_MAX_SUBSCRIPTIONS",
+            max(DEFAULT_STOCK_SUBSCRIPTION_LIMIT, legacy_stock_limit),
             1,
             190,
         )
@@ -184,6 +204,12 @@ class QuoteService:
 
     def startup(self) -> None:
         """同步啟動：初始化 → 登入 → 憑證 → 設定回呼 → 訂閱台指期。"""
+        if quote_deployment_role() != "primary":
+            self.state.data_source = "standby_no_shioaji_login"
+            logger.info(
+                "[Shioaji] Railway 備援專案不登入行情，避免超過同一 person_id 5 條連線上限。"
+            )
+            return
         try:
             self._initialize()
             self._login()
@@ -208,13 +234,23 @@ class QuoteService:
             except Exception as exc:
                 logger.warning("登出時發生錯誤: %s", exc)
 
+        try:
+            from stock_futures_service import get_stock_futures_quote_service
+
+            get_stock_futures_quote_service().shutdown()
+            logger.info("共享行情連線池已安全登出。")
+        except Exception as exc:
+            logger.warning("關閉共享行情連線池時發生錯誤: %s", exc)
+
         self.state.logged_in = False
         self.state.quote_connected = False
         self.state.subscribed = False
 
     def get_health(self) -> dict[str, Any]:
         """取得台指期行情服務健康狀態。"""
-        return self.state.to_dict(self._stale_seconds)
+        health = self.state.to_dict(self._stale_seconds)
+        health["quote_role"] = quote_deployment_role()
+        return health
 
     def get_latest_tick(self) -> Optional[dict[str, Any]]:
         """取得最新一筆台指期 tick。"""
@@ -222,15 +258,28 @@ class QuoteService:
             return dict(self.state.last_tick_data) if self.state.last_tick_data else None
 
     def get_stock_health(self) -> dict[str, Any]:
-        """取得台股動態訂閱健康狀態。"""
+        """取得台股多連線訂閱健康狀態。"""
         with self._stock_lock:
             timestamps = list(self._stock_tick_timestamps.values())
             latest_ts = max(timestamps) if timestamps else None
             age = round(time.time() - latest_ts, 1) if latest_ts else None
+            main_count = sum(1 for value in self._stock_assignments.values() if value == "main")
+            shared_count = len(self._stock_assignments) - main_count
+            try:
+                from stock_futures_service import get_stock_futures_quote_service
+
+                shared_capacity = get_stock_futures_quote_service().shared_capacity()
+            except Exception:
+                shared_capacity = 0
             return {
                 "enabled": self.state.logged_in,
                 "active_subscription_count": len(self._stock_subscriptions),
-                "subscription_limit": self._stock_subscription_limit,
+                "subscription_limit": self._stock_subscription_limit + shared_capacity,
+                "main_connection_limit": self._stock_subscription_limit,
+                "main_connection_active_count": main_count,
+                "shared_pool_active_count": shared_count,
+                "shared_pool_capacity": shared_capacity,
+                "eviction_policy": "disabled",
                 "cached_quote_count": len(self._stock_ticks),
                 "last_stock_quote_time": (
                     datetime.fromtimestamp(latest_ts, TW_TZ).isoformat() if latest_ts else None
@@ -263,7 +312,7 @@ class QuoteService:
         return {str(code).strip().upper(): self.get_stock_quote(str(code)) for code in stock_codes}
 
     def ensure_stock_subscriptions(self, stock_codes: Iterable[str]) -> dict[str, Any]:
-        """確保指定股票已訂閱 Tick 行情，並以 LRU 控制總訂閱數。"""
+        """確保指定股票持續訂閱 Tick；主連線滿後分配到共享池，不淘汰舊股票。"""
         codes = []
         seen: set[str] = set()
         for raw in stock_codes:
@@ -273,6 +322,15 @@ class QuoteService:
             seen.add(code)
             codes.append(code)
 
+        try:
+            from stock_futures_service import get_stock_futures_quote_service
+
+            shared_svc = get_stock_futures_quote_service()
+            shared_capacity = shared_svc.shared_capacity()
+        except Exception:
+            shared_svc = None
+            shared_capacity = 0
+
         result: dict[str, Any] = {
             "requested": codes,
             "newly_subscribed": [],
@@ -280,14 +338,16 @@ class QuoteService:
             "evicted": [],
             "failed": {},
             "active_count": 0,
-            "capacity": self._stock_subscription_limit,
+            "capacity": self._stock_subscription_limit + shared_capacity,
+            "main_capacity": self._stock_subscription_limit,
+            "shared_capacity": shared_capacity,
         }
 
         if not self.state.logged_in or self.api is None:
             result["failed"] = {code: "Shioaji 尚未登入" for code in codes}
             return result
 
-        requested_set = set(codes)
+        shared_codes: list[str] = []
         for code in codes:
             with self._stock_lock:
                 if code in self._stock_subscriptions:
@@ -295,14 +355,12 @@ class QuoteService:
                     self._stock_subscriptions.move_to_end(code)
                     result["already_subscribed"].append(code)
                     continue
-
-            evicted = self._evict_until_capacity(requested_set)
-            result["evicted"].extend(evicted)
-
             with self._stock_lock:
-                capacity_full = len(self._stock_subscriptions) >= self._stock_subscription_limit
-            if capacity_full:
-                result["failed"][code] = "台股即時行情訂閱容量已滿"
+                main_count = sum(
+                    1 for value in self._stock_assignments.values() if value == "main"
+                )
+            if main_count >= self._stock_subscription_limit:
+                shared_codes.append(code)
                 continue
 
             if self._subscribe_stock(code):
@@ -311,8 +369,40 @@ class QuoteService:
                 with self._stock_lock:
                     result["failed"][code] = self._stock_errors.get(code, "訂閱失敗")
 
+        if shared_codes:
+            if shared_svc is None:
+                result["failed"].update(
+                    {code: "共享即時行情連線池無法啟動" for code in shared_codes}
+                )
+            else:
+                shared = shared_svc.ensure_stock_subscriptions(
+                    shared_codes,
+                    self._handle_stock_tick,
+                )
+                assignments = shared.get("assignments", {})
+                successful = list(shared.get("newly_subscribed", [])) + list(
+                    shared.get("already_subscribed", [])
+                )
+                now = time.time()
+                with self._stock_lock:
+                    for code in successful:
+                        pool_index = assignments.get(code)
+                        self._stock_subscriptions[code] = now
+                        self._stock_subscriptions.move_to_end(code)
+                        self._stock_assignments[code] = f"shared:{pool_index}"
+                        self._stock_errors.pop(code, None)
+                result["newly_subscribed"].extend(shared.get("newly_subscribed", []))
+                result["already_subscribed"].extend(shared.get("already_subscribed", []))
+                result["failed"].update(shared.get("failed", {}))
+                result["shared_pool_counts"] = shared.get("pool_counts", {})
+                result["shared_pool_total_counts"] = shared.get("total_pool_counts", {})
+
         with self._stock_lock:
             result["active_count"] = len(self._stock_subscriptions)
+            result["main_active_count"] = sum(
+                1 for value in self._stock_assignments.values() if value == "main"
+            )
+            result["shared_active_count"] = result["active_count"] - result["main_active_count"]
         return result
 
     # ------------------------------------------------------------------
@@ -443,20 +533,7 @@ class QuoteService:
 
         @self.api.on_tick_stk_v1()
         def _stock_tick_callback(exchange: sj.Exchange, tick: sj.TickSTKv1):
-            tick_data = self._stock_tick_to_dict(exchange, tick)
-            code = tick_data["code"]
-            with self._stock_lock:
-                self._stock_ticks[code] = tick_data
-                self._stock_tick_timestamps[code] = time.time()
-                self._stock_errors.pop(code, None)
-                if code in self._stock_subscriptions:
-                    self._stock_subscriptions[code] = time.time()
-            self.state.quote_connected = True
-            # 推送到 Market Data Hub（Tick Cache + 5 分 K 聚合 + WebSocket 廣播）
-            try:
-                get_market_data_hub().on_stock_tick(tick_data)
-            except Exception as exc:
-                logger.debug("[Hub] stock tick 推送失敗: %s", exc)
+            self._handle_stock_tick(exchange, tick)
 
         self._callbacks_api_id = id(self.api)
 
@@ -496,6 +573,24 @@ class QuoteService:
             "received_at": now,
             "data_source": "shioaji_realtime_stock",
         }
+
+    def _handle_stock_tick(self, exchange: Any, tick: Any) -> None:
+        """統一處理主連線與共享連線收到的現貨 Tick。"""
+        tick_data = self._stock_tick_to_dict(exchange, tick)
+        code = tick_data["code"]
+        if not code:
+            return
+        with self._stock_lock:
+            self._stock_ticks[code] = tick_data
+            self._stock_tick_timestamps[code] = time.time()
+            self._stock_errors.pop(code, None)
+            if code in self._stock_subscriptions:
+                self._stock_subscriptions[code] = time.time()
+        self.state.quote_connected = True
+        try:
+            get_market_data_hub().on_stock_tick(tick_data)
+        except Exception as exc:
+            logger.debug("[Hub] stock tick 推送失敗: %s", exc)
 
     # ------------------------------------------------------------------
     # 訂閱管理
@@ -561,6 +656,7 @@ class QuoteService:
                 self._stock_contracts[code] = contract
                 self._stock_subscriptions[code] = time.time()
                 self._stock_subscriptions.move_to_end(code)
+                self._stock_assignments[code] = "main"
                 self._stock_errors.pop(code, None)
             logger.info("[Shioaji] 已請求訂閱台股 Tick: %s", code)
             return True
@@ -574,36 +670,25 @@ class QuoteService:
     def _unsubscribe_stock(self, code: str) -> None:
         contract = None
         with self._stock_lock:
+            assignment = self._stock_assignments.get(code)
             contract = self._stock_contracts.pop(code, None)
             self._stock_subscriptions.pop(code, None)
-        if self.api is not None and contract is not None:
+            self._stock_assignments.pop(code, None)
+        if assignment == "main" and self.api is not None and contract is not None:
             try:
                 self.api.unsubscribe(contract, quote_type=sj.QuoteType.Tick)
                 logger.info("[Shioaji] 已取消台股 Tick 訂閱: %s", code)
             except Exception as exc:
                 logger.warning("[Shioaji] 取消 %s 訂閱失敗: %s", code, exc)
 
-    def _evict_until_capacity(self, protected_codes: set[str]) -> list[str]:
-        evicted: list[str] = []
-        while True:
-            with self._stock_lock:
-                if len(self._stock_subscriptions) < self._stock_subscription_limit:
-                    break
-                victim = next(
-                    (code for code in self._stock_subscriptions if code not in protected_codes),
-                    None,
-                )
-                if victim is None:
-                    break
-            self._unsubscribe_stock(victim)
-            evicted.append(victim)
-        return evicted
-
     def _resubscribe_stocks(self) -> None:
         with self._stock_lock:
-            codes = list(self._stock_subscriptions.keys())
-            self._stock_subscriptions.clear()
-            self._stock_contracts.clear()
+            codes = [
+                code for code, assignment in self._stock_assignments.items()
+                if assignment == "main"
+            ]
+            for code in codes:
+                self._stock_contracts.pop(code, None)
         for code in codes:
             self._subscribe_stock(code)
 
@@ -643,7 +728,6 @@ class QuoteService:
                 return
 
             try:
-                active_codes = self.get_active_stock_codes()
                 if self.api:
                     try:
                         self.api.logout()
@@ -654,8 +738,9 @@ class QuoteService:
                 self.state.quote_connected = False
                 self.state.subscribed = False
                 with self._stock_lock:
-                    self._stock_subscriptions = OrderedDict((code, time.time()) for code in active_codes)
-                    self._stock_contracts.clear()
+                    for code, assignment in list(self._stock_assignments.items()):
+                        if assignment == "main":
+                            self._stock_contracts.pop(code, None)
 
                 self._initialize()
                 self._login()

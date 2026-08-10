@@ -240,6 +240,16 @@ def health() -> dict[str, Any]:
             "project_id": os.getenv("RAILWAY_PROJECT_ID"),
             "service_id": os.getenv("RAILWAY_SERVICE_ID"),
             "environment_id": os.getenv("RAILWAY_ENVIRONMENT_ID"),
+            "quote_role": (
+                "primary"
+                if not os.getenv("RAILWAY_PROJECT_ID")
+                or os.getenv("RAILWAY_PROJECT_ID")
+                == os.getenv(
+                    "HANSTOCK_PRIMARY_RAILWAY_PROJECT_ID",
+                    "4b2403bb-cd2d-4917-bd8f-80dffe894d00",
+                )
+                else "standby"
+            ),
         },
     }
 

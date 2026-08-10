@@ -71,11 +71,12 @@ class FakeApi:
         self.subscribed = []
         self.unsubscribed = []
         self.callback = None
+        self.stock_callback = None
         self.logged_in = False
         self.logged_out = False
         self.snapshot_calls = 0
 
-    def login(self, api_key=None, secret_key=None):
+    def login(self, api_key=None, secret_key=None, subscribe_trade=False):
         if not api_key or not secret_key:
             raise RuntimeError("missing fake credentials")
         self.logged_in = True
@@ -87,6 +88,9 @@ class FakeApi:
 
     def set_on_quote_fop_v1_callback(self, callback):
         self.callback = callback
+
+    def set_on_tick_stk_v1_callback(self, callback):
+        self.stock_callback = callback
 
     def subscribe(self, contract, quote_type=None):
         self.subscribed.append((contract, quote_type))
@@ -139,6 +143,8 @@ ENV = {
     "SHIOAJI_SECRET_KEY": "fake-secret",
     "SHIOAJI_STOCK_FUTURES_POOL_SIZE": "2",
     "SHIOAJI_STOCK_FUTURES_PER_CONNECTION_CAP": "180",
+    "SHIOAJI_SHARED_QUOTE_POOL_SIZE": "2",
+    "SHIOAJI_SHARED_PER_CONNECTION_CAP": "180",
     "SHIOAJI_STOCK_FUTURES_R1_RECHECK_SECONDS": "300",
     "SHIOAJI_STOCK_FUTURES_CLOSED_SNAPSHOT_SECONDS": "600",
 }
@@ -184,6 +190,37 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertLessEqual(max(counts), 180)
         self.assertLessEqual(max(counts) - min(counts), 1)
         self.assertTrue(status["enabled"])
+
+    @patch.dict(
+        os.environ,
+        {
+            **ENV,
+            "SHIOAJI_SHARED_QUOTE_POOL_SIZE": "4",
+            "SHIOAJI_SHARED_PER_CONNECTION_CAP": "195",
+        },
+        clear=False,
+    )
+    def test_shared_pool_covers_full_market_and_all_stock_futures_with_five_total_logins(self):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+        overflow_stocks = [f"{1000 + i:04d}" for i in range(461)]
+        regular_codes = [f"{3000 + i:04d}" for i in range(247)]
+        mini_codes = [f"{6000 + i:04d}" for i in range(47)]
+
+        stocks = service.ensure_stock_subscriptions(overflow_stocks, lambda _exchange, _tick: None)
+        regular = service.ensure_subscriptions(None, regular_codes, "regular")
+        mini = service.ensure_subscriptions(None, mini_codes, "mini")
+
+        self.assertEqual(stocks["failed"], {})
+        self.assertEqual(regular["failed"], {})
+        self.assertEqual(mini["failed"], {})
+        self.assertEqual(len(factory.apis), 4)
+        status = service.status(None)
+        total_counts = list(status["total_pool_counts"].values())
+        self.assertEqual(sum(total_counts), 461 + 247 + 47)
+        self.assertLessEqual(max(total_counts), 195)
+        # 主 QuoteService 另占 1 條；共享池 4 條，合計符合官方最多 5 條連線。
+        self.assertEqual(1 + len(factory.apis), 5)
 
     @patch.dict(os.environ, ENV, clear=False)
     def test_quote_callback_routes_by_pool_and_returns_futures_not_spot(self):
