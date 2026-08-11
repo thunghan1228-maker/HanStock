@@ -35,6 +35,7 @@ RECONNECT_BASE_INTERVAL = 5
 RECONNECT_MAX_INTERVAL = 300
 DEFAULT_STALE_SECONDS = 60.0
 DEFAULT_STOCK_SUBSCRIPTION_LIMIT = 190  # 主連線預留台指期、OTC 指數與安全餘裕
+DEFAULT_RAILWAY_STARTUP_DELAY_SECONDS = 15.0
 # hanstock.xyz 於 2026-08-10 實機辨識到的 Railway 正式 Hub。
 # 可用環境變數覆寫，方便日後把正式流量切到備援專案。
 DEFAULT_PRIMARY_RAILWAY_PROJECT_ID = "4b2403bb-cd2d-4917-bd8f-80dffe894d00"
@@ -66,6 +67,18 @@ def quote_deployment_role() -> str:
     if current_project and primary_project and current_project != primary_project:
         return "standby"
     return "primary"
+
+
+def quote_startup_delay_seconds() -> float:
+    """Railway 新版先健康、舊版才終止；行情登入需延後以免五連線重疊。"""
+    if quote_deployment_role() != "primary" or not os.getenv("RAILWAY_PROJECT_ID", "").strip():
+        return 0.0
+    return _env_float(
+        "SHIOAJI_RAILWAY_STARTUP_DELAY_SECONDS",
+        DEFAULT_RAILWAY_STARTUP_DELAY_SECONDS,
+        5.0,
+        120.0,
+    )
 
 
 def _safe_float(value: Any) -> Optional[float]:
