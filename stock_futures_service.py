@@ -292,6 +292,7 @@ class StockFuturesQuoteService:
         self._pools: list[_PoolConnection] = []
         self._pool_recovery_thread: Optional[threading.Thread] = None
         self._last_pool_recovery_at = 0.0
+        self._last_subscription_success_at = 0.0
         self._stock_tick_handler: Optional[Callable[[Any, Any], None]] = None
         self._stock_assignments: dict[str, int] = {}
         self._stock_contracts: dict[str, Any] = {}
@@ -475,6 +476,11 @@ class StockFuturesQuoteService:
             def recover() -> None:
                 try:
                     time.sleep(self._pool_recovery_delay)
+                    with self._lock:
+                        recovered_while_waiting = self._last_subscription_success_at > now
+                    if recovered_while_waiting:
+                        logger.info("[Shared Quote] 訂閱已自行恢復，取消過期的 Session 重建排程")
+                        return
                     recover_primary = getattr(quote_service, "recover_transient_p2p_session", None)
                     if callable(recover_primary):
                         logger.warning("[Shared Quote] 同步重建主 Shioaji P2P Session")
@@ -641,6 +647,9 @@ class StockFuturesQuoteService:
         )
         if codes and transient_count >= max(1, len(codes) // 2):
             self._trigger_pool_recovery(quote_service)
+        elif result["newly_subscribed"] or result["already_subscribed"]:
+            with self._lock:
+                self._last_subscription_success_at = time.monotonic()
 
         with self._lock:
             result["active_count"] = sum(len(p.stock_subscriptions) for p in self._pools)
@@ -827,6 +836,16 @@ class StockFuturesQuoteService:
                 with self._lock:
                     self._errors[(mode, code)] = str(exc)
                 result["failed"][code] = str(exc)
+
+        transient_count = sum(
+            1 for error in result["failed"].values()
+            if self._is_transient_session_error(error)
+        )
+        if codes and transient_count >= max(1, len(codes) // 2):
+            self._trigger_pool_recovery(quote_service)
+        elif result["newly_subscribed"] or result["already_subscribed"]:
+            with self._lock:
+                self._last_subscription_success_at = time.monotonic()
 
         with self._lock:
             result["active_count"] = sum(len(pool.subscriptions) for pool in self._pools)
