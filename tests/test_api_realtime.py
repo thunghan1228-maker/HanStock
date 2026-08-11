@@ -132,6 +132,16 @@ class RealtimeApiTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.client_context.__exit__(None, None, None)
 
+    def test_root_redirects_to_public_website(self):
+        response = self.client.get("/", follow_redirects=False)
+        self.assertEqual(response.status_code, 308)
+        self.assertEqual(response.headers["location"], "https://www.hanstock.xyz/")
+
+    def test_hub_dashboard_remains_available(self):
+        response = self.client.get("/hub-dashboard")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("HanStock", response.text)
+
     def test_group_query_returns_ranked_quotes(self):
         response = self.client.get("/api/realtime/group/記憶體")
         self.assertEqual(response.status_code, 200)
