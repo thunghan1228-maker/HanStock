@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -43,17 +44,41 @@ TW_TZ = timezone(timedelta(hours=8))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     quote_svc = None
+    quote_startup_thread = None
     hub = get_market_data_hub()
     monitor = get_reconnect_monitor()
     if SHIOAJI_QUOTE_ENABLED:
         logger.info("＝＝＝＝ 啟動 Shioaji 即時行情服務 ＝＝＝＝")
         try:
-            from quote_service import get_quote_service
+            from quote_service import get_quote_service, quote_startup_delay_seconds
 
             quote_svc = get_quote_service()
-            quote_svc.startup()
-            monitor.start()
-            logger.info("＝＝＝＝ Market Data Hub 已啟動 ＝＝＝＝")
+            startup_delay = quote_startup_delay_seconds()
+            if startup_delay > 0:
+                def delayed_startup() -> None:
+                    if quote_svc._shutdown_event.wait(startup_delay):
+                        return
+                    try:
+                        quote_svc.startup()
+                        monitor.start()
+                        logger.info("＝＝＝＝ Market Data Hub 延遲啟動完成 ＝＝＝＝")
+                    except Exception as exc:
+                        logger.error("Shioaji 延遲啟動失敗（API 仍繼續運作）: %s", exc)
+
+                quote_startup_thread = threading.Thread(
+                    target=delayed_startup,
+                    name="railway-delayed-shioaji-startup",
+                    daemon=True,
+                )
+                quote_startup_thread.start()
+                logger.info(
+                    "Railway 部署切換：API 先上線，Shioaji 延遲 %.0f 秒登入，避免新舊連線重疊。",
+                    startup_delay,
+                )
+            else:
+                quote_svc.startup()
+                monitor.start()
+                logger.info("＝＝＝＝ Market Data Hub 已啟動 ＝＝＝＝")
         except Exception as exc:
             logger.error("Shioaji 即時行情啟動失敗（API 仍繼續運作）: %s", exc)
     else:
@@ -64,8 +89,10 @@ async def lifespan(app: FastAPI):
     if quote_svc is not None:
         logger.info("＝＝＝＝ 關閉 Shioaji 即時行情服務 ＝＝＝＝")
         try:
-            monitor.stop()
             quote_svc.shutdown()
+            if quote_startup_thread and quote_startup_thread.is_alive():
+                quote_startup_thread.join(timeout=5)
+            monitor.stop()
         except Exception as exc:
             logger.warning("Shioaji 關閉時發生錯誤: %s", exc)
 

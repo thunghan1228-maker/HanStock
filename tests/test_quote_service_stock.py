@@ -145,6 +145,18 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(self.service.state.error_message, "test P2P failure")
         self.assertEqual(calls, ["reconnect"])
 
+    @patch.dict(
+        os.environ,
+        {
+            "RAILWAY_PROJECT_ID": "primary-project",
+            "HANSTOCK_PRIMARY_RAILWAY_PROJECT_ID": "primary-project",
+            "SHIOAJI_RAILWAY_STARTUP_DELAY_SECONDS": "18",
+        },
+        clear=False,
+    )
+    def test_primary_railway_deployment_delays_shioaji_login(self):
+        self.assertEqual(module.quote_startup_delay_seconds(), 18.0)
+
     def tearDown(self):
         import stock_futures_service
 
