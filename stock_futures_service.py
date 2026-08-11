@@ -463,7 +463,7 @@ class StockFuturesQuoteService:
                 with self._lock:
                     self._pools.append(fresh)
 
-    def _trigger_pool_recovery(self) -> None:
+    def _trigger_pool_recovery(self, quote_service: Any = None) -> None:
         now = time.monotonic()
         with self._lock:
             if self._pool_recovery_thread and self._pool_recovery_thread.is_alive():
@@ -474,6 +474,13 @@ class StockFuturesQuoteService:
             def recover() -> None:
                 try:
                     time.sleep(self._pool_recovery_delay)
+                    recover_primary = getattr(quote_service, "recover_transient_p2p_session", None)
+                    if callable(recover_primary):
+                        logger.warning("[Shared Quote] 同步重建主 Shioaji P2P Session")
+                        recover_primary("股期商品／Kbars P2P Session 未建立，執行自動重連")
+                        # 主 QuoteService 重連會先等待 5 秒，再登入並恢復訂閱；讓
+                        # c0 完成後才重建 c1～c4，避免五條連線同時搶登入名額。
+                        time.sleep(15.0)
                     logger.warning("[Shared Quote] 偵測到大量暫時性 Session 失敗，重建共享連線")
                     self._rebuild_pools()
                 finally:
@@ -632,7 +639,7 @@ class StockFuturesQuoteService:
             if self._is_transient_session_error(error)
         )
         if codes and transient_count >= max(1, len(codes) // 2):
-            self._trigger_pool_recovery()
+            self._trigger_pool_recovery(quote_service)
 
         with self._lock:
             result["active_count"] = sum(len(p.stock_subscriptions) for p in self._pools)

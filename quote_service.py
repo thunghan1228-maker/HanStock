@@ -264,6 +264,16 @@ class QuoteService:
         with self.state._lock:
             return dict(self.state.last_tick_data) if self.state.last_tick_data else None
 
+    def recover_transient_p2p_session(self, reason: str = "P2P SessionNotEstablished") -> None:
+        """行情仍有連線但商品／Kbars P2P 卡住時，強制走既有背景重連流程。"""
+        if quote_deployment_role() != "primary":
+            return
+        with self.state._lock:
+            self.state.quote_connected = False
+            self.state.subscribed = False
+            self.state.error_message = reason
+        self._trigger_reconnect()
+
     def get_stock_health(self) -> dict[str, Any]:
         """取得台股多連線訂閱健康狀態。"""
         with self._stock_lock:
