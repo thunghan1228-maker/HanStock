@@ -132,6 +132,19 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.service.api = FakeAPI()
         self.service.state.logged_in = True
 
+    def test_transient_p2p_recovery_forces_main_reconnect(self):
+        calls = []
+        self.service.state.quote_connected = True
+        self.service.state.subscribed = True
+        self.service._trigger_reconnect = lambda: calls.append("reconnect")
+
+        self.service.recover_transient_p2p_session("test P2P failure")
+
+        self.assertFalse(self.service.state.quote_connected)
+        self.assertFalse(self.service.state.subscribed)
+        self.assertEqual(self.service.state.error_message, "test P2P failure")
+        self.assertEqual(calls, ["reconnect"])
+
     def tearDown(self):
         import stock_futures_service
 
