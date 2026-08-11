@@ -38,6 +38,7 @@ class _HistoryEntry:
     fetched_at_monotonic: float
     ok: bool
     error: Optional[str] = None
+    name: str = ""
 
 
 _cache_lock = threading.RLock()
@@ -398,6 +399,7 @@ def _bootstrap_history(
         stock_futures_lookup=stock_futures_lookup,
     )
     primary_api = getattr(service, "api", None)
+    display_name = str(getattr(contract, "name", "") or requested_code).strip()
     logged_in = bool(
         api is not None
         and (
@@ -407,7 +409,7 @@ def _bootstrap_history(
     )
     if api is None or not logged_in or contract is None:
         error = "Shioaji 尚未登入" if api is None or not logged_in else f"找不到期貨合約：{requested_code}"
-        return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, error)
+        return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, error, display_name)
 
     try:
         # 訂閱所在 pool 與主 QuoteService 是不同 Shioaji instance。合約物件優先
@@ -511,10 +513,11 @@ def _bootstrap_history(
             monotonic_fn(),
             ok,
             None if ok else "Shioaji 本交易時段 Kbars 暫無資料",
+            display_name,
         )
     except Exception as exc:
         logger.warning("[Futures KBar] %s 歷史補齊失敗: %s", requested_code, exc)
-        return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, str(exc))
+        return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, str(exc), display_name)
 
 
 def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
@@ -612,6 +615,7 @@ def get_resilient_futures_bars(
         "status": "ok",
         "requested_code": requested_code,
         "code": entry.code,
+        "name": entry.name or requested_code,
         "interval": interval,
         "session": current_window.name,
         "history_days": lookback_days,
