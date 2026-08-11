@@ -340,6 +340,21 @@ class StockFuturesServiceTests(unittest.TestCase):
         subscribed_contract = factory.apis[0].subscribed[0][0]
         self.assertEqual(subscribed_contract.code, "R2330R1")
 
+    @patch.dict(os.environ, ENV, clear=False)
+    def test_futures_contracts_fall_back_to_ready_pool_when_primary_is_not_ready(self):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+        primary = SimpleNamespace(api=QuoteOnlyApi(99))
+
+        result = service.ensure_subscriptions(primary, ["2330"], "regular")
+
+        self.assertEqual(result["failed"], {})
+        self.assertEqual(result["newly_subscribed"], ["2330"])
+        context = service.resolve_contract_context_by_code("R2330R1")
+        self.assertIsNotNone(context)
+        self.assertEqual(context[1], "R2330H6")
+        self.assertIs(context[2], factory.apis[0])
+
     @patch("stock_futures_service.is_stock_futures_day_session", return_value=False)
     @patch.dict(os.environ, ENV, clear=False)
     def test_closed_market_uses_futures_snapshot_for_aug7_close(self, _session_mock):
