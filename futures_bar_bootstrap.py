@@ -40,8 +40,8 @@ class _HistoryEntry:
 
 
 _cache_lock = threading.RLock()
-_history_cache: dict[tuple[str, int], _HistoryEntry] = {}
-_code_locks: dict[tuple[str, int], threading.Lock] = {}
+_history_cache: dict[tuple[str, int, int], _HistoryEntry] = {}
+_code_locks: dict[tuple[str, int, int], threading.Lock] = {}
 
 
 def clear_futures_bar_bootstrap_cache() -> None:
@@ -189,6 +189,28 @@ def _aggregate_5m(bars: list[dict[str, Any]], *, now_ms: int) -> list[dict[str, 
         rows = sorted(grouped[bucket], key=lambda row: int(row["ts"]))
         result.append({
             "ts": bucket,
+            "open": rows[0]["open"],
+            "high": max(row["high"] for row in rows),
+            "low": min(row["low"] for row in rows),
+            "close": rows[-1]["close"],
+            "volume": sum(_safe_int(row.get("volume")) for row in rows),
+            "tick_count": sum(max(1, _safe_int(row.get("tick_count"))) for row in rows),
+        })
+    return result
+
+
+def _aggregate_1d(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """將完成的 1 分 K 依台北日盤日期聚合成日 K。"""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for bar in bars:
+        day = datetime.fromtimestamp(int(bar["ts"]) / 1000, TW_TZ).strftime("%Y-%m-%d")
+        grouped.setdefault(day, []).append(bar)
+
+    result: list[dict[str, Any]] = []
+    for day in sorted(grouped):
+        rows = sorted(grouped[day], key=lambda row: int(row["ts"]))
+        result.append({
+            "ts": rows[0]["ts"],
             "open": rows[0]["open"],
             "high": max(row["high"] for row in rows),
             "low": min(row["low"] for row in rows),
@@ -381,15 +403,23 @@ def get_resilient_futures_bars(
     now_ms: Optional[int] = None,
     monotonic_fn: Callable[[], float] = time.monotonic,
     stock_futures_lookup: Optional[Callable[[str], Optional[tuple[Any, str]]]] = None,
+    history_days: Optional[int] = None,
 ) -> dict[str, Any]:
-    if interval not in {"1m", "5m"}:
+    if interval not in {"1m", "5m", "1d"}:
         raise ValueError(f"不支援 interval: {interval}")
     requested_code = str(futures_code).strip().upper()
     now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
-    window = _session_window(now_value, requested_code)
+    current_window = _session_window(now_value, requested_code)
+    default_days = 180 if interval == "1d" else 7
+    lookback_days = max(1, min(370, int(history_days or default_days)))
+    history_window = _SessionWindow(
+        current_window.name,
+        current_window.start_ms - (lookback_days - 1) * 24 * 60 * 60 * 1000,
+        current_window.end_ms,
+    )
     service = service if service is not None else _default_service()
     hub = hub if hub is not None else _default_hub()
-    key = (requested_code, window.start_ms)
+    key = (requested_code, current_window.start_ms, lookback_days)
 
     with _cache_lock:
         entry = _history_cache.get(key)
@@ -403,7 +433,7 @@ def get_resilient_futures_bars(
             if entry is None or (not entry.ok and monotonic_fn() - entry.fetched_at_monotonic >= RETRY_AFTER_SECONDS):
                 entry = _bootstrap_history(
                     requested_code,
-                    window,
+                    history_window,
                     service=service,
                     now_ms=now_value,
                     monotonic_fn=monotonic_fn,
@@ -412,23 +442,31 @@ def get_resilient_futures_bars(
                 with _cache_lock:
                     _history_cache[key] = entry
 
-    live_getter = hub.get_live_futures_bars_1m if interval == "1m" else hub.get_live_futures_bars
-    live = list(live_getter(entry.code) or [])
-    if entry.code != requested_code and not live:
-        live = list(live_getter(requested_code) or [])
-    history = entry.bars_1m if interval == "1m" else entry.bars_5m
-    bars = _merge(history, live, window)
+    if interval == "1d":
+        live = list(hub.get_live_futures_bars_1m(entry.code) or [])
+        if entry.code != requested_code and not live:
+            live = list(hub.get_live_futures_bars_1m(requested_code) or [])
+        bars = _aggregate_1d(_merge(entry.bars_1m, live, history_window))
+    else:
+        live_getter = hub.get_live_futures_bars_1m if interval == "1m" else hub.get_live_futures_bars
+        live = list(live_getter(entry.code) or [])
+        if entry.code != requested_code and not live:
+            live = list(live_getter(requested_code) or [])
+        history = entry.bars_1m if interval == "1m" else entry.bars_5m
+        bars = _merge(history, live, history_window)
+
     return {
         "status": "ok",
         "requested_code": requested_code,
         "code": entry.code,
         "interval": interval,
-        "session": window.name,
+        "session": current_window.name,
+        "history_days": lookback_days,
         "bar_count": len(bars),
         "bars": bars,
         "bootstrap": {
-            "session_start": datetime.fromtimestamp(window.start_ms / 1000, TW_TZ).isoformat(),
-            "session_end": datetime.fromtimestamp(window.end_ms / 1000, TW_TZ).isoformat(),
+            "session_start": datetime.fromtimestamp(history_window.start_ms / 1000, TW_TZ).isoformat(),
+            "session_end": datetime.fromtimestamp(history_window.end_ms / 1000, TW_TZ).isoformat(),
             "history_1m": len(entry.bars_1m),
             "history_5m": len(entry.bars_5m),
             "live_count": len(live),
