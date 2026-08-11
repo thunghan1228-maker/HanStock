@@ -55,6 +55,7 @@ class FakeAPI:
 
     def login(self, api_key=None, secret_key=None, subscribe_trade=False):
         self.logged_in = True
+        self.subscribe_trade = subscribe_trade
         return []
 
     def logout(self):
@@ -156,6 +157,13 @@ class QuoteServiceStockTests(unittest.TestCase):
     )
     def test_primary_railway_deployment_delays_shioaji_login(self):
         self.assertEqual(module.quote_startup_delay_seconds(), 18.0)
+
+    def test_market_data_login_does_not_subscribe_trade_events(self):
+        self.service.state.initialized = True
+        self.service._login()
+
+        self.assertTrue(self.service.state.logged_in)
+        self.assertFalse(self.service.api.subscribe_trade)
 
     def tearDown(self):
         import stock_futures_service
