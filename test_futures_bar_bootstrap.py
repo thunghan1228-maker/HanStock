@@ -304,6 +304,24 @@ class FuturesBarTests(unittest.TestCase):
         self.assertGreater(result["bar_count"], 0)
         self.assertEqual(primary_api.kbar_calls, 1)
 
+    def test_stock_futures_history_tries_other_shared_pool_sessions(self):
+        contract = SimpleNamespace(code="OVFR1", target_code="OVFH6")
+        alternate_api = LocalCatalogApi("OVFH6")
+        service = FakeService()
+        service.api = FailingHistoryApi()
+        result = get_resilient_futures_bars(
+            "OVFR1",
+            "1m",
+            service=service,
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+            stock_futures_lookup=lambda code: (contract, "OVFH6", FailingHistoryApi()),
+            stock_futures_history_apis=lambda: [alternate_api],
+        )
+
+        self.assertGreater(result["bar_count"], 0)
+        self.assertEqual(alternate_api.kbar_calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
