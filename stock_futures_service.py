@@ -34,6 +34,15 @@ DEFAULT_PER_CONNECTION_CAP = 195
 DEFAULT_CONTRACT_READY_TIMEOUT_SECONDS = 20.0
 DEFAULT_FRONT_MONTH_RECHECK_SECONDS = 300.0
 DEFAULT_CLOSED_SNAPSHOT_RECHECK_SECONDS = 600.0
+DEFAULT_POOL_RECOVERY_DELAY_SECONDS = 35.0
+DEFAULT_POOL_RECOVERY_COOLDOWN_SECONDS = 120.0
+TRANSIENT_SESSION_MARKERS = (
+    "SESSIONNOTESTABLISHED",
+    "SESSION ERROR",
+    "NOTREADY",
+    "TOKEN IS EXPIRED",
+    "TRANSIENT TRANSPORT FAILURE",
+)
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -221,6 +230,7 @@ class _PoolConnection:
     error: Optional[str] = None
     subscriptions: OrderedDict[tuple[StockFuturesMode, str], float] = field(default_factory=OrderedDict)
     stock_subscriptions: OrderedDict[str, float] = field(default_factory=OrderedDict)
+    created_at_monotonic: float = field(default_factory=time.monotonic)
 
 
 class StockFuturesQuoteService:
@@ -267,7 +277,21 @@ class StockFuturesQuoteService:
             3.0,
             60.0,
         )
+        self._pool_recovery_delay = _env_float(
+            "SHIOAJI_SHARED_POOL_RECOVERY_DELAY_SECONDS",
+            DEFAULT_POOL_RECOVERY_DELAY_SECONDS,
+            1.0,
+            120.0,
+        )
+        self._pool_recovery_cooldown = _env_float(
+            "SHIOAJI_SHARED_POOL_RECOVERY_COOLDOWN_SECONDS",
+            DEFAULT_POOL_RECOVERY_COOLDOWN_SECONDS,
+            30.0,
+            600.0,
+        )
         self._pools: list[_PoolConnection] = []
+        self._pool_recovery_thread: Optional[threading.Thread] = None
+        self._last_pool_recovery_at = 0.0
         self._stock_tick_handler: Optional[Callable[[Any, Any], None]] = None
         self._stock_assignments: dict[str, int] = {}
         self._stock_contracts: dict[str, Any] = {}
@@ -381,6 +405,12 @@ class StockFuturesQuoteService:
         raise RuntimeError(f"共享行情 Session／商品檔於期限內未就緒{detail}")
 
     def _ensure_pools(self) -> None:
+        # 備援 Railway 專案不得偷偷建立共享行情登入；否則正式／備援各四條
+        # 再加主連線，會超過同一 person_id 五條限制並讓 P2P Session 卡住。
+        from quote_service import quote_deployment_role
+
+        if quote_deployment_role() != "primary":
+            raise RuntimeError("備援服務不建立 Shioaji 股期連線，請使用正式行情服務")
         # FastAPI/Vercel 可能同時送入多批全市場訂閱；初始化必須單飛，否則
         # 多個執行緒會同時看到 current=0，建立出數條都叫 pool #0 的連線。
         with self._pool_init_lock:
@@ -398,6 +428,65 @@ class StockFuturesQuoteService:
                     break
                 with self._lock:
                     self._pools.append(pool)
+
+    @staticmethod
+    def _is_transient_session_error(value: Any) -> bool:
+        message = str(value or "").upper().replace("_", "")
+        return any(marker in message for marker in TRANSIENT_SESSION_MARKERS)
+
+    def _rebuild_pools(self) -> None:
+        """登出卡住的共享連線並在同一程序內重建，下一次請求會重新訂閱。"""
+        with self._pool_init_lock:
+            with self._lock:
+                old_pools = list(self._pools)
+                self._pools.clear()
+                self._stock_assignments.clear()
+                self._stock_contracts.clear()
+                self._stock_errors.clear()
+                self._assignments.clear()
+                self._contracts.clear()
+                self._targets.clear()
+                self._last_resolved_at.clear()
+                self._reverse_codes.clear()
+                self._errors.clear()
+            for pool in old_pools:
+                try:
+                    pool.api.logout()
+                except Exception:
+                    pass
+            for index in range(self._pool_size):
+                try:
+                    fresh = self._create_pool_connection(index)
+                except Exception as exc:
+                    logger.warning("[Shared Quote] recovery pool #%s 初始化失敗: %s", index, exc)
+                    break
+                with self._lock:
+                    self._pools.append(fresh)
+
+    def _trigger_pool_recovery(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if self._pool_recovery_thread and self._pool_recovery_thread.is_alive():
+                return
+            if now - self._last_pool_recovery_at < self._pool_recovery_cooldown:
+                return
+
+            def recover() -> None:
+                try:
+                    time.sleep(self._pool_recovery_delay)
+                    logger.warning("[Shared Quote] 偵測到大量暫時性 Session 失敗，重建共享連線")
+                    self._rebuild_pools()
+                finally:
+                    with self._lock:
+                        self._last_pool_recovery_at = time.monotonic()
+                        self._pool_recovery_thread = None
+
+            self._pool_recovery_thread = threading.Thread(
+                target=recover,
+                name="shared-quote-session-recovery",
+                daemon=True,
+            )
+            self._pool_recovery_thread.start()
 
     @staticmethod
     def _pool_load(pool: _PoolConnection) -> int:
@@ -537,6 +626,13 @@ class StockFuturesQuoteService:
                     self._stock_errors[code] = str(exc)
                     self._stock_assignments.pop(code, None)
                 result["failed"][code] = str(exc)
+
+        transient_count = sum(
+            1 for error in result["failed"].values()
+            if self._is_transient_session_error(error)
+        )
+        if codes and transient_count >= max(1, len(codes) // 2):
+            self._trigger_pool_recovery()
 
         with self._lock:
             result["active_count"] = sum(len(p.stock_subscriptions) for p in self._pools)
