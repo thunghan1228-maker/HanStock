@@ -135,6 +135,28 @@ class FakeApiFactory:
         return api
 
 
+class CachedStocks:
+    def __getitem__(self, code):
+        code = str(code).strip().upper()
+        return Contract(code=code, security_type="STK", name=f"快取股票{code}")
+
+
+class CachedContractApi(FakeApi):
+    def __init__(self, index: int):
+        super().__init__(index)
+        self.Contracts = SimpleNamespace(Stocks=CachedStocks())
+        original_futures = self.contracts.futures_by_underlying
+
+        class RemoteGetMustNotRun:
+            def get(_self, _code):
+                raise RuntimeError("contracts.get must not run")
+
+            def futures_by_underlying(_self, stock):
+                return original_futures(stock)
+
+        self.contracts = RemoteGetMustNotRun()
+
+
 class QuoteOnlyContracts(FakeContracts):
     def futures_by_underlying(self, stock):
         raise RuntimeError("auxiliary P2P session is NotReady")
@@ -189,6 +211,11 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertEqual(mini.code, "M2330R1")
         self.assertEqual(mini.target_code, "M2330H6")
         self.assertEqual(mini.contract_size, 100)
+
+    def test_resolver_uses_cached_contracts_before_remote_get(self):
+        api = CachedContractApi(0)
+        regular = resolve_front_month_contract(api, "2330", "regular")
+        self.assertEqual(regular.code, "R2330R1")
 
     @patch.dict(os.environ, ENV, clear=False)
     def test_294_futures_are_balanced_across_two_dedicated_connections(self):
