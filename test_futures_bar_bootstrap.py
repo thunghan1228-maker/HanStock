@@ -258,7 +258,7 @@ class FuturesBarTests(unittest.TestCase):
         self.assertGreater(result["bar_count"], 100)
 
     def test_stock_futures_show_latest_day_session_at_night(self):
-        contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
+        contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6", name="南亞科期貨近月")
         result = get_resilient_futures_bars(
             "NCFR1",
             "5m",
@@ -270,6 +270,7 @@ class FuturesBarTests(unittest.TestCase):
 
         self.assertEqual(result["session"], "day")
         self.assertEqual(result["code"], "NCFQ6")
+        self.assertEqual(result["name"], "南亞科期貨近月")
         self.assertGreater(result["bar_count"], 0)
 
     def test_stock_futures_history_uses_initialized_subscription_api(self):
