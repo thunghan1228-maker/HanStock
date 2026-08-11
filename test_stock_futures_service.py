@@ -217,6 +217,25 @@ class StockFuturesServiceTests(unittest.TestCase):
         regular = resolve_front_month_contract(api, "2330", "regular")
         self.assertEqual(regular.code, "R2330R1")
 
+    @patch.dict(
+        os.environ,
+        {
+            **ENV,
+            "RAILWAY_PROJECT_ID": "standby-project",
+            "HANSTOCK_PRIMARY_RAILWAY_PROJECT_ID": "primary-project",
+        },
+        clear=False,
+    )
+    def test_standby_deployment_never_opens_shared_shioaji_logins(self):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+
+        result = service.ensure_subscriptions(SimpleNamespace(api=None), ["2330"], "regular")
+
+        self.assertEqual(len(factory.apis), 0)
+        self.assertIn("2330", result["failed"])
+        self.assertIn("備援服務", result["failed"]["2330"])
+
     @patch.dict(os.environ, ENV, clear=False)
     def test_294_futures_are_balanced_across_two_dedicated_connections(self):
         factory = FakeApiFactory()
