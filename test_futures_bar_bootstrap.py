@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from futures_bar_bootstrap import clear_futures_bar_bootstrap_cache, get_resilient_futures_bars
@@ -15,6 +15,11 @@ def ts(hour: int, minute: int, second: int = 0) -> int:
 
 def wall_ns(hour: int, minute: int) -> int:
     return int(datetime(2026, 8, 10, hour, minute, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
+
+
+def wall_ns_for_day(day: str, hour: int, minute: int) -> int:
+    value = datetime.fromisoformat(f"{day}T{hour:02d}:{minute:02d}:00+00:00")
+    return int(value.timestamp() * 1_000_000_000)
 
 
 class FakeContracts:
@@ -55,6 +60,32 @@ class TrackingApi(FakeApi):
     def kbars(self, *, contract, start: str, end: str):
         self.kbar_calls += 1
         return super().kbars(contract=contract, start=start, end=end)
+
+
+class RangeLimitedApi(FakeApi):
+    def __init__(self):
+        self.ranges: list[tuple[str, str]] = []
+
+    def kbars(self, *, contract, start: str, end: str):
+        start_day = datetime.fromisoformat(start)
+        end_day = datetime.fromisoformat(end)
+        if (end_day - start_day).days > 29:
+            raise AssertionError("Kbars range exceeded 30 calendar days")
+        self.ranges.append((start, end))
+        days = []
+        cursor = start_day
+        while cursor <= end_day:
+            if cursor.weekday() < 5:
+                days.append(cursor.date().isoformat())
+            cursor += timedelta(days=1)
+        return {
+            "ts": [wall_ns_for_day(day, 8, 46) for day in days],
+            "Open": [100.0] * len(days),
+            "High": [102.0] * len(days),
+            "Low": [99.0] * len(days),
+            "Close": [101.0] * len(days),
+            "Volume": [10] * len(days),
+        }
 
 
 class FakeService:
@@ -158,6 +189,23 @@ class FuturesBarTests(unittest.TestCase):
         self.assertEqual(result["bars"][0]["open"], 44790.0)
         self.assertEqual(result["bars"][0]["close"], 44810.0)
         self.assertEqual(result["bars"][0]["volume"], 16)
+
+
+    def test_daily_history_is_split_into_shioaji_30_day_ranges(self):
+        api = RangeLimitedApi()
+        service = FakeService()
+        service.api = api
+        result = get_resilient_futures_bars(
+            "TXFH6",
+            "1d",
+            service=service,
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+        )
+
+        self.assertEqual(len(api.ranges), 6)
+        self.assertTrue(all((datetime.fromisoformat(end) - datetime.fromisoformat(start)).days <= 29 for start, end in api.ranges))
+        self.assertGreater(result["bar_count"], 100)
 
     def test_stock_futures_show_latest_day_session_at_night(self):
         contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
