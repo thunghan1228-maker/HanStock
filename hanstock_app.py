@@ -213,9 +213,16 @@ def get_resilient_hub_futures_bars_5m(futures_code: str) -> dict[str, Any]:
 
 @app.get("/api/hub/futures/bars1m/{futures_code}")
 def get_resilient_hub_futures_bars_1m(futures_code: str) -> dict[str, Any]:
-    """期貨目前／最近交易時段 1 分 K。"""
+    """期貨近 7 日 1 分 K，含目前交易時段即時資料。"""
     code = _normalize_stock_code(futures_code)
     return get_resilient_futures_bars(code, "1m")
+
+
+@app.get("/api/hub/futures/bars1d/{futures_code}")
+def get_resilient_hub_futures_bars_1d(futures_code: str) -> dict[str, Any]:
+    """期貨近月合約日 K：歷史 Kbars 聚合並接續當日即時資料。"""
+    code = _normalize_stock_code(futures_code)
+    return get_resilient_futures_bars(code, "1d")
 
 
 @app.get("/api/hub/stock-futures")
