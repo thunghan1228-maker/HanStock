@@ -158,15 +158,23 @@ def _contract_public(contract: Any) -> dict[str, Any]:
     }
 
 
+def _cached_stock_contract(api: Any, code: str) -> Any:
+    """優先讀 login 已載入的本機商品檔，避免逐檔觸發遠端 contracts.get。"""
+    try:
+        return api.Contracts.Stocks[code]
+    except Exception:
+        return None
+
+
 def resolve_front_month_contract(api: Any, underlying_code: str, mode: StockFuturesMode) -> Any:
     code = str(underlying_code).strip().upper()
     if mode not in ("regular", "mini"):
         raise ValueError(f"不支援股票期貨模式：{mode}")
 
-    underlying = api.contracts.get(code)
+    underlying = _cached_stock_contract(api, code)
     if underlying is None:
         try:
-            underlying = api.Contracts.Stocks[code]
+            underlying = api.contracts.get(code)
         except Exception:
             underlying = None
     if underlying is None:
@@ -361,7 +369,10 @@ class StockFuturesQuoteService:
         last_error: Optional[Exception] = None
         while time.monotonic() < deadline:
             try:
-                if api.contracts.get("2330") is not None:
+                stock = _cached_stock_contract(api, "2330")
+                if stock is None:
+                    stock = api.contracts.get("2330")
+                if stock is not None:
                     return
             except Exception as exc:
                 last_error = exc
@@ -461,10 +472,10 @@ class StockFuturesQuoteService:
 
     @staticmethod
     def _resolve_stock_contract(api: Any, code: str) -> Any:
-        contract = api.contracts.get(code)
+        contract = _cached_stock_contract(api, code)
         if contract is None:
             try:
-                contract = api.Contracts.Stocks[code]
+                contract = api.contracts.get(code)
             except Exception:
                 contract = None
         if contract is None:
