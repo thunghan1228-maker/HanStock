@@ -816,6 +816,18 @@ class StockFuturesQuoteService:
         if mode not in ("regular", "mini"):
             result["failed"] = {code: f"不支援模式：{mode}" for code in codes}
             return result
+        # Railway 新容器會先開 HTTP、延遲登入主 Shioaji。股期請求若在這段
+        # 窗口先建立 c1～c4，共享池會搶走第一個 P2P Session，導致主 c0
+        # 永遠無法查 Kbars。正式環境固定等主線登入後才建立共享池。
+        from quote_service import quote_deployment_role
+
+        if quote_deployment_role() != "primary":
+            result["failed"] = {code: "備援服務不建立 Shioaji 股期連線，請使用正式行情服務" for code in codes}
+            return result
+        quote_state = getattr(quote_service, "state", None) if quote_service is not None else None
+        if quote_state is not None and not bool(getattr(quote_state, "logged_in", False)):
+            result["failed"] = {code: "主行情連線登入中，請稍後重試" for code in codes}
+            return result
         try:
             self._ensure_pools()
         except Exception as exc:
