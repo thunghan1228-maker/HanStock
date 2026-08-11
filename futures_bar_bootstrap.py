@@ -378,12 +378,57 @@ def _bootstrap_history(
         return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, error)
 
     try:
-        bars_1m, request_count = _query_history_1m(
-            api,
-            contract,
-            window=window,
-            now_ms=now_ms,
+        # 訂閱所在 pool 與主 QuoteService 是不同 Shioaji instance。合約物件優先
+        # 在實際查詢的 API 上重取；跨 instance 沿用 contract 可能只回當日或 NotReady。
+        history_contract = _lookup_api_contract(api, requested_code) or contract
+        pool_error: Optional[Exception] = None
+        try:
+            bars_1m, request_count = _query_history_1m(
+                api,
+                history_contract,
+                window=window,
+                now_ms=now_ms,
+            )
+        except Exception as exc:
+            bars_1m, request_count = [], 0
+            pool_error = exc
+
+        # 冷啟動時共享訂閱 pool 的行情推播已可用，但歷史 P2P Session 可能仍
+        # NotReady。此時改用已登入的主 API 重試；若兩邊都有資料，保留較完整者。
+        history_day_count = len({
+            datetime.fromtimestamp(int(bar["ts"]) / 1000, TW_TZ).date()
+            for bar in bars_1m
+        })
+        primary_logged_in = bool(
+            primary_api is not None and getattr(getattr(service, "state", None), "logged_in", False)
         )
+        should_try_primary = (
+            primary_logged_in
+            and primary_api is not api
+            and (pool_error is not None or history_day_count < 2)
+        )
+        if should_try_primary:
+            try:
+                primary_contract = _lookup_api_contract(primary_api, requested_code) or contract
+                primary_bars, primary_requests = _query_history_1m(
+                    primary_api,
+                    primary_contract,
+                    window=window,
+                    now_ms=now_ms,
+                )
+                if len(primary_bars) > len(bars_1m):
+                    bars_1m = primary_bars
+                    request_count = primary_requests
+                    api = primary_api
+            except Exception as primary_error:
+                if pool_error is not None:
+                    raise RuntimeError(
+                        f"pool history failed: {pool_error}; primary history failed: {primary_error}"
+                    ) from primary_error
+                logger.warning("[Futures KBar] %s 主 API 歷史備援失敗: %s", requested_code, primary_error)
+
+        if pool_error is not None and not bars_1m:
+            raise pool_error
         bars_5m = _aggregate_5m(bars_1m, now_ms=now_ms)
         ok = bool(bars_1m)
         logger.info(
