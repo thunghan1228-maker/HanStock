@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from otc_index import FIVE_MIN_MS, ONE_MIN_MS, TW_TZ, shioaji_kbar_close_to_start_ms
 
@@ -297,6 +297,15 @@ def _default_stock_futures_contract_lookup(code: str) -> Optional[tuple[Any, str
         return None
 
 
+def _default_stock_futures_history_apis() -> Iterable[Any]:
+    try:
+        from stock_futures_service import get_stock_futures_quote_service
+
+        return get_stock_futures_quote_service().history_api_candidates()
+    except Exception:
+        return []
+
+
 def _resolve_contract(
     service: Any,
     requested_code: str,
@@ -381,6 +390,7 @@ def _bootstrap_history(
     now_ms: int,
     monotonic_fn: Callable[[], float],
     stock_futures_lookup: Optional[Callable[[str], Optional[tuple[Any, str]]]] = None,
+    stock_futures_history_apis: Optional[Callable[[], Iterable[Any]]] = None,
 ) -> _HistoryEntry:
     contract, canonical, api = _resolve_contract(
         service,
@@ -402,24 +412,42 @@ def _bootstrap_history(
     try:
         # 訂閱所在 pool 與主 QuoteService 是不同 Shioaji instance。合約物件優先
         # 在實際查詢的 API 上重取；跨 instance 沿用 contract 可能只回當日或 NotReady。
-        history_contract = _lookup_api_contract_candidates(
-            api,
-            canonical,
-            getattr(contract, "target_code", None),
-            requested_code,
-            getattr(contract, "code", None),
-        ) or contract
-        pool_error: Optional[Exception] = None
-        try:
-            bars_1m, request_count = _query_history_1m(
-                api,
-                history_contract,
-                window=window,
-                now_ms=now_ms,
+        bars_1m: list[dict[str, Any]] = []
+        request_count = 0
+        attempt_errors: list[str] = []
+        attempted_api_ids: set[int] = set()
+
+        def try_history(candidate_api: Any, label: str, *, allow_original_contract: bool = False) -> None:
+            nonlocal bars_1m, request_count
+            if candidate_api is None or id(candidate_api) in attempted_api_ids:
+                return
+            attempted_api_ids.add(id(candidate_api))
+            candidate_contract = _lookup_api_contract_candidates(
+                candidate_api,
+                canonical,
+                getattr(contract, "target_code", None),
+                requested_code,
+                getattr(contract, "code", None),
             )
-        except Exception as exc:
-            bars_1m, request_count = [], 0
-            pool_error = exc
+            if candidate_contract is None and allow_original_contract:
+                candidate_contract = contract
+            if candidate_contract is None:
+                attempt_errors.append(f"{label}: 找不到自己的期貨合約 {canonical}")
+                return
+            try:
+                candidate_bars, candidate_requests = _query_history_1m(
+                    candidate_api,
+                    candidate_contract,
+                    window=window,
+                    now_ms=now_ms,
+                )
+                if len(candidate_bars) > len(bars_1m):
+                    bars_1m = candidate_bars
+                    request_count = candidate_requests
+            except Exception as exc:
+                attempt_errors.append(f"{label}: {exc}")
+
+        try_history(api, "assigned pool", allow_original_contract=True)
 
         # 冷啟動時共享訂閱 pool 的行情推播已可用，但歷史 P2P Session 可能仍
         # NotReady。此時改用已登入的主 API 重試；若兩邊都有資料，保留較完整者。
@@ -433,38 +461,36 @@ def _bootstrap_history(
         should_try_primary = (
             primary_logged_in
             and primary_api is not api
-            and (pool_error is not None or history_day_count < 2)
+            and (attempt_errors or history_day_count < 2)
         )
         if should_try_primary:
-            try:
-                primary_contract = _lookup_api_contract_candidates(
-                    primary_api,
-                    canonical,
-                    getattr(contract, "target_code", None),
-                    requested_code,
-                    getattr(contract, "code", None),
-                )
-                if primary_contract is None:
-                    raise RuntimeError(f"主 API 找不到自己的期貨合約：{canonical}")
-                primary_bars, primary_requests = _query_history_1m(
-                    primary_api,
-                    primary_contract,
-                    window=window,
-                    now_ms=now_ms,
-                )
-                if len(primary_bars) > len(bars_1m):
-                    bars_1m = primary_bars
-                    request_count = primary_requests
-                    api = primary_api
-            except Exception as primary_error:
-                if pool_error is not None:
-                    raise RuntimeError(
-                        f"pool history failed: {pool_error}; primary history failed: {primary_error}"
-                    ) from primary_error
-                logger.warning("[Futures KBar] %s 主 API 歷史備援失敗: %s", requested_code, primary_error)
+            try_history(primary_api, "primary API")
 
-        if pool_error is not None and not bars_1m:
-            raise pool_error
+        # 同一帳號的多條 Shioaji 連線，行情 Session 與歷史 P2P Session 的
+        # 就緒時間可能不同。若指定 pool／主 API 都沒補到至少兩天，依序嘗試
+        # 其餘已登入的共享 API；每條連線都只使用自己 catalog 的合約物件。
+        history_day_count = len({
+            datetime.fromtimestamp(int(bar["ts"]) / 1000, TW_TZ).date()
+            for bar in bars_1m
+        })
+        if not _has_night_session(requested_code) and history_day_count < 2:
+            history_api_factory = stock_futures_history_apis or _default_stock_futures_history_apis
+            try:
+                other_apis = list(history_api_factory() or [])
+            except Exception as exc:
+                other_apis = []
+                attempt_errors.append(f"shared pools: {exc}")
+            for index, candidate_api in enumerate(other_apis):
+                try_history(candidate_api, f"shared pool #{index}")
+                history_day_count = len({
+                    datetime.fromtimestamp(int(bar["ts"]) / 1000, TW_TZ).date()
+                    for bar in bars_1m
+                })
+                if history_day_count >= 2:
+                    break
+
+        if not bars_1m and attempt_errors:
+            raise RuntimeError("; ".join(attempt_errors))
         bars_5m = _aggregate_5m(bars_1m, now_ms=now_ms)
         ok = bool(bars_1m)
         logger.info(
@@ -526,6 +552,7 @@ def get_resilient_futures_bars(
     now_ms: Optional[int] = None,
     monotonic_fn: Callable[[], float] = time.monotonic,
     stock_futures_lookup: Optional[Callable[[str], Optional[tuple[Any, str]]]] = None,
+    stock_futures_history_apis: Optional[Callable[[], Iterable[Any]]] = None,
     history_days: Optional[int] = None,
 ) -> dict[str, Any]:
     if interval not in {"1m", "5m", "1d"}:
@@ -561,6 +588,7 @@ def get_resilient_futures_bars(
                     now_ms=now_value,
                     monotonic_fn=monotonic_fn,
                     stock_futures_lookup=stock_futures_lookup,
+                    stock_futures_history_apis=stock_futures_history_apis,
                 )
                 with _cache_lock:
                     _history_cache[key] = entry
