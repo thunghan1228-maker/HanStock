@@ -234,33 +234,55 @@ def _looks_like_futures_contract(contract: Any) -> bool:
 
 
 def _lookup_api_contract(api: Any, code: str) -> Any:
+    """在指定 Shioaji instance 上取得合約；先讀本機 catalog 再打遠端。
+
+    冷啟動時 ``api.contracts.get`` 可能因 P2P session 尚未建立而失敗，
+    但 ``api.Contracts.Futures`` 通常已經可用。歷史 Kbars 又不能沿用別的
+    Shioaji instance 建立的 contract，所以這裡必須優先找目前 API 自己的
+    catalog 合約。
+    """
+    futures = getattr(getattr(api, "Contracts", None), "Futures", None)
+    if futures is not None:
+        prefixes: list[str] = []
+        for prefix in (code[:3], code[:2], code[:4], code[:5], *NIGHT_SESSION_PREFIXES):
+            if prefix and prefix not in prefixes:
+                prefixes.append(prefix)
+        for prefix in prefixes:
+            group = None
+            try:
+                group = futures[prefix]
+            except Exception:
+                group = getattr(futures, prefix, None)
+            if group is None:
+                continue
+            try:
+                contract = group[code]
+            except Exception:
+                contract = getattr(group, code, None)
+            if _looks_like_futures_contract(contract):
+                return contract
+
+    # local catalog 裡真的沒有時才使用遠端查詢，避免冷啟動的
+    # SessionNotEstablished 擋住原本已就緒的 Futures catalog。
     contract = None
     try:
         contract = api.contracts.get(code)
     except Exception:
         contract = None
-    if _looks_like_futures_contract(contract):
-        return contract
+    return contract if _looks_like_futures_contract(contract) else None
 
-    futures = getattr(getattr(api, "Contracts", None), "Futures", None)
-    if futures is None:
-        return None
-    prefixes: list[str] = []
-    for prefix in (code[:3], code[:2], code[:4], code[:5], *NIGHT_SESSION_PREFIXES):
-        if prefix and prefix not in prefixes:
-            prefixes.append(prefix)
-    for prefix in prefixes:
-        group = None
-        try:
-            group = futures[prefix]
-        except Exception:
-            group = getattr(futures, prefix, None)
-        if group is None:
+
+def _lookup_api_contract_candidates(api: Any, *codes: Any) -> Any:
+    seen: set[str] = set()
+    for raw in codes:
+        code = str(raw or "").strip().upper()
+        if not code or code in seen:
             continue
+        seen.add(code)
         try:
-            contract = group[code]
+            contract = _lookup_api_contract(api, code)
         except Exception:
-            contract = getattr(group, code, None)
+            contract = None
         if _looks_like_futures_contract(contract):
             return contract
     return None
@@ -380,7 +402,13 @@ def _bootstrap_history(
     try:
         # 訂閱所在 pool 與主 QuoteService 是不同 Shioaji instance。合約物件優先
         # 在實際查詢的 API 上重取；跨 instance 沿用 contract 可能只回當日或 NotReady。
-        history_contract = _lookup_api_contract(api, requested_code) or contract
+        history_contract = _lookup_api_contract_candidates(
+            api,
+            canonical,
+            getattr(contract, "target_code", None),
+            requested_code,
+            getattr(contract, "code", None),
+        ) or contract
         pool_error: Optional[Exception] = None
         try:
             bars_1m, request_count = _query_history_1m(
@@ -409,7 +437,15 @@ def _bootstrap_history(
         )
         if should_try_primary:
             try:
-                primary_contract = _lookup_api_contract(primary_api, requested_code) or contract
+                primary_contract = _lookup_api_contract_candidates(
+                    primary_api,
+                    canonical,
+                    getattr(contract, "target_code", None),
+                    requested_code,
+                    getattr(contract, "code", None),
+                )
+                if primary_contract is None:
+                    raise RuntimeError(f"主 API 找不到自己的期貨合約：{canonical}")
                 primary_bars, primary_requests = _query_history_1m(
                     primary_api,
                     primary_contract,
