@@ -254,6 +254,16 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertIsNone(service_module._service)
 
     @patch.dict(os.environ, ENV, clear=False)
+    def test_successful_subscription_marks_stale_recovery_as_cancelable(self):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+
+        result = service.ensure_subscriptions(None, ["2330"], "regular")
+
+        self.assertEqual(result["failed"], {})
+        self.assertGreater(service._last_subscription_success_at, 0.0)
+
+    @patch.dict(os.environ, ENV, clear=False)
     def test_294_futures_are_balanced_across_two_dedicated_connections(self):
         factory = FakeApiFactory()
         service = StockFuturesQuoteService(api_factory=factory)
