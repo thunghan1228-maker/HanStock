@@ -4,7 +4,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from futures_bar_bootstrap import clear_futures_bar_bootstrap_cache, get_resilient_futures_bars
+from futures_bar_bootstrap import (
+    _lookup_api_contract,
+    clear_futures_bar_bootstrap_cache,
+    get_resilient_futures_bars,
+)
 from market_data_hub import MarketDataHub
 from otc_index import TW_TZ
 
@@ -60,6 +64,41 @@ class TrackingApi(FakeApi):
     def kbars(self, *, contract, start: str, end: str):
         self.kbar_calls += 1
         return super().kbars(contract=contract, start=start, end=end)
+
+
+class LocalFuturesGroup:
+    def __init__(self, contracts: dict[str, object]):
+        self.contracts = contracts
+
+    def __getitem__(self, code: str):
+        return self.contracts[code]
+
+
+class LocalFuturesCatalog:
+    def __init__(self, groups: dict[str, LocalFuturesGroup]):
+        self.groups = groups
+
+    def __getitem__(self, prefix: str):
+        return self.groups[prefix]
+
+
+class RaisingContracts:
+    @staticmethod
+    def get(code: str):
+        raise RuntimeError("SessionNotEstablished")
+
+
+class LocalCatalogApi(TrackingApi):
+    contracts = RaisingContracts()
+
+    def __init__(self, code: str):
+        super().__init__()
+        prefix = code[:3]
+        contract = SimpleNamespace(code=code)
+        self.local_contract = contract
+        self.Contracts = SimpleNamespace(
+            Futures=LocalFuturesCatalog({prefix: LocalFuturesGroup({code: contract})})
+        )
 
 
 class RangeLimitedApi(FakeApi):
@@ -136,6 +175,13 @@ class FuturesBarTests(unittest.TestCase):
         self.assertEqual((bars[0]["open"], bars[0]["close"], bars[0]["volume"]), (44800.0, 44810.0, 5))
         self.assertEqual(bars[1]["open"], 44820.0)
 
+    def test_contract_lookup_uses_local_catalog_before_remote_session(self):
+        api = LocalCatalogApi("OVFH6")
+
+        contract = _lookup_api_contract(api, "OVFH6")
+
+        self.assertIs(contract, api.local_contract)
+
     def test_day_session_bootstrap_starts_at_0845(self):
         result = get_resilient_futures_bars(
             "TXFH6",
@@ -195,7 +241,6 @@ class FuturesBarTests(unittest.TestCase):
         self.assertEqual(result["bars"][0]["close"], 44810.0)
         self.assertEqual(result["bars"][0]["volume"], 16)
 
-
     def test_daily_history_is_split_into_shioaji_30_day_ranges(self):
         api = RangeLimitedApi()
         service = FakeService()
@@ -244,7 +289,7 @@ class FuturesBarTests(unittest.TestCase):
 
     def test_stock_futures_history_falls_back_to_logged_in_primary_api(self):
         contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
-        primary_api = TrackingApi()
+        primary_api = LocalCatalogApi("NCFQ6")
         service = FakeService()
         service.api = primary_api
         result = get_resilient_futures_bars(
