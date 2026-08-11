@@ -88,6 +88,11 @@ class RangeLimitedApi(FakeApi):
         }
 
 
+class FailingHistoryApi(FakeApi):
+    def kbars(self, *, contract, start: str, end: str):
+        raise RuntimeError("SessionNotReady")
+
+
 class FakeService:
     api = FakeApi()
     state = SimpleNamespace(logged_in=True)
@@ -236,6 +241,23 @@ class FuturesBarTests(unittest.TestCase):
 
         self.assertGreater(result["bar_count"], 0)
         self.assertEqual(ready_api.kbar_calls, 1)
+
+    def test_stock_futures_history_falls_back_to_logged_in_primary_api(self):
+        contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
+        primary_api = TrackingApi()
+        service = FakeService()
+        service.api = primary_api
+        result = get_resilient_futures_bars(
+            "NCFR1",
+            "1m",
+            service=service,
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+            stock_futures_lookup=lambda code: (contract, "NCFQ6", FailingHistoryApi()) if code == "NCFR1" else None,
+        )
+
+        self.assertGreater(result["bar_count"], 0)
+        self.assertEqual(primary_api.kbar_calls, 1)
 
 
 if __name__ == "__main__":
