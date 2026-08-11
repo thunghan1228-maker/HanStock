@@ -81,6 +81,7 @@ class FakeApi:
         if not api_key or not secret_key:
             raise RuntimeError("missing fake credentials")
         self.logged_in = True
+        self.subscribe_trade = subscribe_trade
         return []
 
     def logout(self):
@@ -248,6 +249,7 @@ class StockFuturesServiceTests(unittest.TestCase):
 
         self.assertEqual(regular["failed"], {})
         self.assertEqual(mini["failed"], {})
+        self.assertTrue(all(api.subscribe_trade is False for api in factory.apis))
         self.assertEqual(len(regular["newly_subscribed"]), 247)
         self.assertEqual(len(mini["newly_subscribed"]), 47)
         self.assertEqual(len(factory.apis), 2)
