@@ -48,6 +48,15 @@ class FakeApi:
         }
 
 
+class TrackingApi(FakeApi):
+    def __init__(self):
+        self.kbar_calls = 0
+
+    def kbars(self, *, contract, start: str, end: str):
+        self.kbar_calls += 1
+        return super().kbars(contract=contract, start=start, end=end)
+
+
 class FakeService:
     api = FakeApi()
     state = SimpleNamespace(logged_in=True)
@@ -164,6 +173,21 @@ class FuturesBarTests(unittest.TestCase):
         self.assertEqual(result["session"], "day")
         self.assertEqual(result["code"], "NCFQ6")
         self.assertGreater(result["bar_count"], 0)
+
+    def test_stock_futures_history_uses_initialized_subscription_api(self):
+        contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
+        ready_api = TrackingApi()
+        result = get_resilient_futures_bars(
+            "NCFR1",
+            "1m",
+            service=FakeService(),
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+            stock_futures_lookup=lambda code: (contract, "NCFQ6", ready_api) if code == "NCFR1" else None,
+        )
+
+        self.assertGreater(result["bar_count"], 0)
+        self.assertEqual(ready_api.kbar_calls, 1)
 
 
 if __name__ == "__main__":

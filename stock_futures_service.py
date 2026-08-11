@@ -548,11 +548,11 @@ class StockFuturesQuoteService:
             if code:
                 self._reverse_codes[(pool_index, code)] = key
 
-    def resolve_contract_by_code(self, futures_code: str) -> Optional[tuple[Any, str]]:
-        """由畫面上的 R1 或實際交割月代號取回目前訂閱合約。
+    def resolve_contract_context_by_code(self, futures_code: str) -> Optional[tuple[Any, str, Any]]:
+        """取回已訂閱合約、實際月份代號，以及持有該合約的 Shioaji API。
 
-        回傳的 canonical code 固定使用 target_code，讓歷史 Kbars 與即時
-        Quote callback 都落在同一個實際合約代號。
+        K 線歷史查詢必須使用與股票期貨訂閱相同、已完成 Session 初始化的
+        API 連線；冷啟動時主現貨連線可能仍在 NotReady，不能拿它查股期。
         """
         requested = str(futures_code).strip().upper()
         if not requested:
@@ -564,10 +564,23 @@ class StockFuturesQuoteService:
                     _target_code(contract),
                     str(self._targets.get(key, "") or "").strip().upper(),
                 }
-                if requested in aliases:
-                    canonical = str(self._targets.get(key, "") or _target_code(contract)).strip().upper()
-                    return contract, canonical or requested
+                if requested not in aliases:
+                    continue
+                canonical = str(self._targets.get(key, "") or _target_code(contract)).strip().upper()
+                pool_index = self._assignments.get(key)
+                if pool_index is None or pool_index >= len(self._pools):
+                    continue
+                return contract, canonical or requested, self._pools[pool_index].api
         return None
+
+    def resolve_contract_by_code(self, futures_code: str) -> Optional[tuple[Any, str]]:
+        """由畫面上的 R1 或實際交割月代號取回目前訂閱合約。
+
+        回傳的 canonical code 固定使用 target_code，讓歷史 Kbars 與即時
+        Quote callback 都落在同一個實際合約代號。
+        """
+        context = self.resolve_contract_context_by_code(futures_code)
+        return (context[0], context[1]) if context is not None else None
 
     def _unsubscribe_key(self, key: tuple[StockFuturesMode, str]) -> None:
         with self._lock:
@@ -612,7 +625,15 @@ class StockFuturesQuoteService:
                 pool.subscriptions.move_to_end(key)
             return "already", None
 
-        fresh = resolve_front_month_contract(contract_api, code, mode)
+        try:
+            fresh = resolve_front_month_contract(contract_api, code, mode)
+        except Exception:
+            # 主現貨連線冷啟動時 contracts_info 偶爾仍是 NotReady；共享行情
+            # pool 在建立時已通過商品檔就緒檢查，直接用它重試即可。
+            if contract_api is pool.api:
+                raise
+            fresh = resolve_front_month_contract(pool.api, code, mode)
+            contract_api = pool.api
         fresh_target = _target_code(fresh)
         if active and old_target == fresh_target:
             with self._lock:
