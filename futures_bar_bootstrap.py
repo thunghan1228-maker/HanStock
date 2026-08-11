@@ -265,11 +265,11 @@ def _lookup_api_contract(api: Any, code: str) -> Any:
     return None
 
 
-def _default_stock_futures_contract_lookup(code: str) -> Optional[tuple[Any, str]]:
+def _default_stock_futures_contract_lookup(code: str) -> Optional[tuple[Any, str, Any]]:
     try:
         from stock_futures_service import get_stock_futures_quote_service
 
-        return get_stock_futures_quote_service().resolve_contract_by_code(code)
+        return get_stock_futures_quote_service().resolve_contract_context_by_code(code)
     except Exception:
         return None
 
@@ -279,18 +279,19 @@ def _resolve_contract(
     requested_code: str,
     *,
     stock_futures_lookup: Optional[Callable[[str], Optional[tuple[Any, str]]]] = None,
-) -> tuple[Any, str]:
+) -> tuple[Any, str, Any]:
     api = getattr(service, "api", None)
     if api is None:
-        return None, requested_code
+        return None, requested_code, None
 
     lookup = stock_futures_lookup or _default_stock_futures_contract_lookup
     if not _has_night_session(requested_code):
         mapped = lookup(requested_code)
         if mapped is not None:
-            contract, canonical = mapped
+            contract, canonical = mapped[:2]
+            contract_api = mapped[2] if len(mapped) > 2 else api
             if _looks_like_futures_contract(contract):
-                return contract, str(canonical or requested_code).strip().upper()
+                return contract, str(canonical or requested_code).strip().upper(), contract_api
 
     candidates: list[str] = []
     # TXF 畫面可能仍帶到舊交割月代號；應優先使用主行情連線已解析的
@@ -321,7 +322,7 @@ def _resolve_contract(
                 ensure_subscription(contract)
             except Exception as exc:
                 logger.debug("[Futures KBar] %s 即時訂閱失敗，保留歷史 Kbars: %s", canonical, exc)
-    return contract, canonical
+    return contract, canonical, api
 
 
 def _bootstrap_history(
@@ -333,13 +334,19 @@ def _bootstrap_history(
     monotonic_fn: Callable[[], float],
     stock_futures_lookup: Optional[Callable[[str], Optional[tuple[Any, str]]]] = None,
 ) -> _HistoryEntry:
-    contract, canonical = _resolve_contract(
+    contract, canonical, api = _resolve_contract(
         service,
         requested_code,
         stock_futures_lookup=stock_futures_lookup,
     )
-    api = getattr(service, "api", None)
-    logged_in = bool(getattr(getattr(service, "state", None), "logged_in", False))
+    primary_api = getattr(service, "api", None)
+    logged_in = bool(
+        api is not None
+        and (
+            api is not primary_api
+            or getattr(getattr(service, "state", None), "logged_in", False)
+        )
+    )
     if api is None or not logged_in or contract is None:
         error = "Shioaji 尚未登入" if api is None or not logged_in else f"找不到期貨合約：{requested_code}"
         return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, error)
