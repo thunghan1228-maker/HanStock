@@ -469,7 +469,9 @@ class QuoteService:
 
         logger.info("[Shioaji] 登入中...")
         try:
-            self.api.login(api_key=api_key, secret_key=secret_key)
+            # HanStock 僅使用行情／歷史資料，不下單；不要讓五條行情連線
+            # 重複訂閱委託成交回報，避免額外交易 Session 與 P2P 資源競爭。
+            self.api.login(api_key=api_key, secret_key=secret_key, subscribe_trade=False)
             self.state.logged_in = True
             self.state.error_message = None
             logger.info("[Shioaji] 登入成功。")

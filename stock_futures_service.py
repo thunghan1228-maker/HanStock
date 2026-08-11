@@ -320,7 +320,8 @@ class StockFuturesQuoteService:
         if not api_key or not secret_key:
             raise RuntimeError("缺少 SHIOAJI_API_KEY 或 SHIOAJI_SECRET_KEY")
         api = self._new_api()
-        api.login(api_key=api_key, secret_key=secret_key)
+        # 共享池只承載 Stock Tick／FOP Quote，不需要委託成交回報。
+        api.login(api_key=api_key, secret_key=secret_key, subscribe_trade=False)
         try:
             self._wait_for_contracts_ready(api)
         except Exception:
