@@ -264,6 +264,17 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertGreater(service._last_subscription_success_at, 0.0)
 
     @patch.dict(os.environ, ENV, clear=False)
+    def test_shared_pools_wait_until_primary_quote_login_finishes(self):
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+        quote_service = SimpleNamespace(api=None, state=SimpleNamespace(logged_in=False))
+
+        result = service.ensure_subscriptions(quote_service, ["2330"], "regular")
+
+        self.assertEqual(len(factory.apis), 0)
+        self.assertIn("登入中", result["failed"]["2330"])
+
+    @patch.dict(os.environ, ENV, clear=False)
     def test_294_futures_are_balanced_across_two_dedicated_connections(self):
         factory = FakeApiFactory()
         service = StockFuturesQuoteService(api_factory=factory)
