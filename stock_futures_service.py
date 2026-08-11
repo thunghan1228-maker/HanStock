@@ -593,6 +593,11 @@ class StockFuturesQuoteService:
         context = self.resolve_contract_context_by_code(futures_code)
         return (context[0], context[1]) if context is not None else None
 
+    def history_api_candidates(self) -> list[Any]:
+        """回傳已登入的共享 API，供歷史 Kbars 在 P2P Session 間備援。"""
+        with self._lock:
+            return [pool.api for pool in self._pools if pool.api is not None]
+
     def _unsubscribe_key(self, key: tuple[StockFuturesMode, str]) -> None:
         with self._lock:
             pool_index = self._assignments.get(key)
