@@ -19,6 +19,7 @@ from otc_index import FIVE_MIN_MS, ONE_MIN_MS, TW_TZ, shioaji_kbar_close_to_star
 logger = logging.getLogger("hanstock.futures_bar_bootstrap")
 RETRY_AFTER_SECONDS = 30.0
 NIGHT_SESSION_PREFIXES = ("TXF", "MXF", "TMF")
+MAX_KBARS_CALENDAR_DAYS = 30
 
 
 @dataclass
@@ -325,6 +326,31 @@ def _resolve_contract(
     return contract, canonical, api
 
 
+def _query_history_1m(
+    api: Any,
+    contract: Any,
+    *,
+    window: _SessionWindow,
+    now_ms: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """依 Shioaji 每次最多 30 日限制分段查詢，再用 timestamp 去重合併。"""
+    start_day = datetime.fromtimestamp(window.start_ms / 1000, TW_TZ).date()
+    end_day = datetime.fromtimestamp(min(now_ms, window.end_ms) / 1000, TW_TZ).date()
+    cursor = start_day
+    rows: dict[int, dict[str, Any]] = {}
+    request_count = 0
+
+    while cursor <= end_day:
+        chunk_end = min(cursor + timedelta(days=MAX_KBARS_CALENDAR_DAYS - 1), end_day)
+        kbars = api.kbars(contract=contract, start=cursor.isoformat(), end=chunk_end.isoformat())
+        request_count += 1
+        for bar in _normalize_1m(kbars, window=window, now_ms=now_ms):
+            rows[int(bar["ts"])] = bar
+        cursor = chunk_end + timedelta(days=1)
+
+    return [rows[ts] for ts in sorted(rows)], request_count
+
+
 def _bootstrap_history(
     requested_code: str,
     window: _SessionWindow,
@@ -352,13 +378,22 @@ def _bootstrap_history(
         return _HistoryEntry(window.start_ms, canonical, [], [], monotonic_fn(), False, error)
 
     try:
-        start_date = datetime.fromtimestamp(window.start_ms / 1000, TW_TZ).strftime("%Y-%m-%d")
-        end_date = datetime.fromtimestamp(min(now_ms, window.end_ms) / 1000, TW_TZ).strftime("%Y-%m-%d")
-        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-        bars_1m = _normalize_1m(kbars, window=window, now_ms=now_ms)
+        bars_1m, request_count = _query_history_1m(
+            api,
+            contract,
+            window=window,
+            now_ms=now_ms,
+        )
         bars_5m = _aggregate_5m(bars_1m, now_ms=now_ms)
         ok = bool(bars_1m)
-        logger.info("[Futures KBar] %s 補齊完成: 1m=%d, 5m=%d, session=%s", canonical, len(bars_1m), len(bars_5m), window.name)
+        logger.info(
+            "[Futures KBar] %s 補齊完成: 1m=%d, 5m=%d, requests=%d, session=%s",
+            canonical,
+            len(bars_1m),
+            len(bars_5m),
+            request_count,
+            window.name,
+        )
         return _HistoryEntry(
             window.start_ms,
             canonical,
