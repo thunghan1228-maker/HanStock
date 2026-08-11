@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -57,12 +58,23 @@ def _require_hub_auth(x_hub_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="Hub key 驗證失敗")
 
 
-@app.on_event("startup")
-def start_persistence_workers() -> None:
-    # 兩個背景工作都由 Hub 自己拉「公開/唯讀計算結果」後寫入自己的 /data SQLite；
-    # Vercel 不需要持有 Railway 寫入金鑰。
-    start_group_strength_collector()
-    start_intraday_signal_collector()
+_market_data_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _persistent_lifespan(fastapi_app):
+    # api_server 已設定 lifespan；FastAPI 不會再執行同一個 app 上的舊式
+    # @app.on_event("startup")。把持久化工作明確包進原 lifespan，Railway
+    # 啟動時才會真的開啟兩個背景收集器。
+    async with _market_data_lifespan(fastapi_app) as state:
+        # 兩個背景工作都由 Hub 自己拉「公開/唯讀計算結果」後寫入自己的
+        # /data SQLite；Vercel 不需要持有 Railway 寫入金鑰。
+        start_group_strength_collector()
+        start_intraday_signal_collector()
+        yield state
+
+
+app.router.lifespan_context = _persistent_lifespan
 
 
 @app.get("/api/hub/persistence/status")
