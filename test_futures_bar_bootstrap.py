@@ -306,7 +306,9 @@ class FuturesBarTests(unittest.TestCase):
 
     def test_stock_futures_history_tries_other_shared_pool_sessions(self):
         contract = SimpleNamespace(code="OVFR1", target_code="OVFH6")
-        alternate_api = LocalCatalogApi("OVFH6")
+        # 其他共享連線可能已登入但尚未載入這檔股期的本機 catalog；仍應使用
+        # 已解析的 Contract 資料模型發出 Kbars 查詢。
+        alternate_api = TrackingApi()
         service = FakeService()
         service.api = FailingHistoryApi()
         result = get_resilient_futures_bars(

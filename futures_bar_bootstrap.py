@@ -464,7 +464,9 @@ def _bootstrap_history(
             and (attempt_errors or history_day_count < 2)
         )
         if should_try_primary:
-            try_history(primary_api, "primary API")
+            # Shioaji Contract 是查詢參數資料模型，不綁定行情 Session；主 API
+            # catalog 尚未載入該股期時，仍可序列化已解析的近月 contract 查 Kbars。
+            try_history(primary_api, "primary API", allow_original_contract=True)
 
         # 同一帳號的多條 Shioaji 連線，行情 Session 與歷史 P2P Session 的
         # 就緒時間可能不同。若指定 pool／主 API 都沒補到至少兩天，依序嘗試
@@ -481,7 +483,7 @@ def _bootstrap_history(
                 other_apis = []
                 attempt_errors.append(f"shared pools: {exc}")
             for index, candidate_api in enumerate(other_apis):
-                try_history(candidate_api, f"shared pool #{index}")
+                try_history(candidate_api, f"shared pool #{index}", allow_original_contract=True)
                 history_day_count = len({
                     datetime.fromtimestamp(int(bar["ts"]) / 1000, TW_TZ).date()
                     for bar in bars_1m
