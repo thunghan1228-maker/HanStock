@@ -3,7 +3,7 @@
 提供族群、Rule1、台指期及台股動態即時行情，供 hanstock.xyz、
 台股族群雷達、LINE Bot 或 App 使用。
 
-v1.3.0: 新增 Hub 盤中 1 分 K REST API。
+v1.3.1: Railway 部署交接時完整釋放並延遲重建 Shioaji 行情連線。
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hanstock.api")
 
-API_VERSION = "1.3.0"
+API_VERSION = "1.3.1"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 TW_TZ = timezone(timedelta(hours=8))
