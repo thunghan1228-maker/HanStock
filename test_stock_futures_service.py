@@ -12,6 +12,7 @@ from stock_futures_service import (
     StockFuturesQuoteService,
     is_stock_futures_day_session,
     resolve_front_month_contract,
+    shutdown_stock_futures_quote_service,
 )
 
 
@@ -236,6 +237,21 @@ class StockFuturesServiceTests(unittest.TestCase):
         self.assertEqual(len(factory.apis), 0)
         self.assertIn("2330", result["failed"])
         self.assertIn("備援服務", result["failed"]["2330"])
+
+    @patch.dict(os.environ, ENV, clear=False)
+    def test_global_shutdown_logs_out_every_shared_pool(self):
+        import stock_futures_service as service_module
+
+        factory = FakeApiFactory()
+        service = StockFuturesQuoteService(api_factory=factory)
+        service._ensure_pools()
+        service_module._service = service
+
+        shutdown_stock_futures_quote_service()
+
+        self.assertTrue(factory.apis)
+        self.assertTrue(all(api.logged_out for api in factory.apis))
+        self.assertIsNone(service_module._service)
 
     @patch.dict(os.environ, ENV, clear=False)
     def test_294_futures_are_balanced_across_two_dedicated_connections(self):

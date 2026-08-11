@@ -89,10 +89,15 @@ async def lifespan(app: FastAPI):
     if quote_svc is not None:
         logger.info("＝＝＝＝ 關閉 Shioaji 即時行情服務 ＝＝＝＝")
         try:
+            monitor.stop()
+            # 先登出 c1～c4 共享池，再登出 c0 主線；避免 Railway 舊容器
+            # 結束後，券商端仍保留四條孤兒 Session 阻擋新版登入。
+            from stock_futures_service import shutdown_stock_futures_quote_service
+
+            shutdown_stock_futures_quote_service()
             quote_svc.shutdown()
             if quote_startup_thread and quote_startup_thread.is_alive():
                 quote_startup_thread.join(timeout=5)
-            monitor.stop()
         except Exception as exc:
             logger.warning("Shioaji 關閉時發生錯誤: %s", exc)
 

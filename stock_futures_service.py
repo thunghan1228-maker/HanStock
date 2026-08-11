@@ -1115,3 +1115,12 @@ def get_stock_futures_quote_service() -> StockFuturesQuoteService:
     if _service is None:
         _service = StockFuturesQuoteService()
     return _service
+
+
+def shutdown_stock_futures_quote_service() -> None:
+    """Railway graceful shutdown 時明確登出全部共享行情連線。"""
+    global _service
+    service = _service
+    _service = None
+    if service is not None:
+        service.shutdown()
