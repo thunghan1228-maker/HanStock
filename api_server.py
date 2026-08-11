@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from config import SHIOAJI_QUOTE_ENABLED
 from read_rule1_results import RESULT_PATH, load_rule1_results
@@ -231,7 +231,12 @@ app.add_middleware(
 )
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/", include_in_schema=False)
+def website_redirect() -> RedirectResponse:
+    return RedirectResponse(url="https://www.hanstock.xyz/", status_code=308)
+
+
+@app.get("/hub-dashboard", response_class=HTMLResponse, include_in_schema=False)
 def dashboard() -> str:
     dashboard_path = Path(__file__).parent / "web" / "index.html"
     if not dashboard_path.exists():
