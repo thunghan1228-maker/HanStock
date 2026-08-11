@@ -143,6 +143,22 @@ class FuturesBarTests(unittest.TestCase):
         self.assertEqual(service.extra_subscriptions, ["MXFQ6"])
         self.assertGreater(result["bar_count"], 0)
 
+    def test_daily_kline_aggregates_history_and_current_session(self):
+        result = get_resilient_futures_bars(
+            "TXFH6",
+            "1d",
+            service=FakeService(),
+            hub=EmptyHub(),
+            now_ms=ts(9, 1, 30),
+        )
+
+        self.assertEqual(result["interval"], "1d")
+        self.assertEqual(result["history_days"], 180)
+        self.assertEqual(result["bar_count"], 1)
+        self.assertEqual(result["bars"][0]["open"], 44790.0)
+        self.assertEqual(result["bars"][0]["close"], 44810.0)
+        self.assertEqual(result["bars"][0]["volume"], 16)
+
     def test_stock_futures_show_latest_day_session_at_night(self):
         contract = SimpleNamespace(code="NCFR1", target_code="NCFQ6")
         result = get_resilient_futures_bars(
