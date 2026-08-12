@@ -294,7 +294,7 @@ def aggregate_1m_to_5m(
         if opens is None or closes is None or any(v is None for v in highs) or any(v is None for v in lows):
             continue
 
-        result.append({
+        aggregated = {
             "ts": bucket,
             "open": opens,
             "high": max(v for v in highs if v is not None),
@@ -302,6 +302,23 @@ def aggregate_1m_to_5m(
             "close": closes,
             "volume": sum(_safe_int(row.get("volume")) for row in rows),
             "tick_count": sum(max(1, _safe_int(row.get("tick_count"))) for row in rows),
-        })
+        }
+        # 個股歷史逐筆回補會在 1 分 K 附加下列欄位；聚合 5 分 K 時必須一併
+        # 加總，否則前端只能看到 K 棒而看不到主力進出柱狀體。一般 Kbars／
+        # 櫃買指數沒有這些欄位時維持原本 payload，不會誤標為有主力資料。
+        if any("main_net_volume" in row for row in rows):
+            aggregated.update({
+                "buy_volume": sum(_safe_int(row.get("buy_volume")) for row in rows),
+                "sell_volume": sum(_safe_int(row.get("sell_volume")) for row in rows),
+                "neutral_volume": sum(_safe_int(row.get("neutral_volume")) for row in rows),
+                "main_buy_volume": sum(_safe_int(row.get("main_buy_volume")) for row in rows),
+                "main_sell_volume": sum(_safe_int(row.get("main_sell_volume")) for row in rows),
+                "main_tick_count": sum(_safe_int(row.get("main_tick_count")) for row in rows),
+                "main_force_available": any(bool(row.get("main_force_available")) for row in rows),
+            })
+            aggregated["main_net_volume"] = (
+                aggregated["main_buy_volume"] - aggregated["main_sell_volume"]
+            )
+        result.append(aggregated)
 
     return result
