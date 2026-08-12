@@ -22,10 +22,13 @@ def resolve_front_month_contract(api: Any, underlying_code: str, mode: service.S
     if mode not in ("regular", "mini"):
         raise ValueError(f"不支援股票期貨模式：{mode}")
 
-    underlying = api.contracts.get(code)
+    # Railway 冷啟動時，商品目錄通常已經載入，但 P2P contracts.get Session
+    # 仍可能拋出 SessionNotEstablished。先使用本機商品目錄，真的找不到才
+    # 呼叫遠端查詢，避免股期即時價正常、歷史 Kbars 卻整批變成空陣列。
+    underlying = service._cached_stock_contract(api, code)
     if underlying is None:
         try:
-            underlying = api.Contracts.Stocks[code]
+            underlying = api.contracts.get(code)
         except Exception:
             underlying = None
     if underlying is None:

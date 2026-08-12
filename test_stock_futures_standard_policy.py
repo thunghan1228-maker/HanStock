@@ -21,6 +21,20 @@ class FakeContracts:
 class FakeApi:
     def __init__(self, rows):
         self.contracts = FakeContracts(rows)
+        self.Contracts = SimpleNamespace(Stocks={})
+
+
+class NotReadyContracts(FakeContracts):
+    def get(self, code):
+        raise RuntimeError("SessionNotEstablished")
+
+
+class LocalCatalogApi(FakeApi):
+    def __init__(self, rows):
+        self.contracts = NotReadyContracts(rows)
+        self.Contracts = SimpleNamespace(
+            Stocks={"1717": SimpleNamespace(code="1717")}
+        )
 
 
 def contract(code: str, month: str, size: int = 2000, name: str = "股票期貨"):
@@ -61,6 +75,13 @@ class StockFuturesStandardPolicyTests(unittest.TestCase):
 
     def test_policy_is_installed_on_service_module(self):
         self.assertIs(service.resolve_front_month_contract, resolve_front_month_contract)
+
+    def test_local_stock_catalog_survives_not_ready_remote_session(self):
+        api = LocalCatalogApi([contract("QOFR1", "202608")])
+
+        picked = resolve_front_month_contract(api, "1717", "regular")
+
+        self.assertEqual(picked.code, "QOFR1")
 
 
 if __name__ == "__main__":
