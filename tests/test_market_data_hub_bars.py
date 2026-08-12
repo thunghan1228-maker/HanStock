@@ -9,12 +9,24 @@ from market_data_hub import MarketDataHub
 TW_TZ = timezone(timedelta(hours=8))
 
 
-def tick(code: str, price: float, volume: int, hour: int, minute: int, second: int = 0):
+def tick(
+    code: str,
+    price: float,
+    volume: int,
+    hour: int,
+    minute: int,
+    second: int = 0,
+    *,
+    tick_type: int = 0,
+    amount: float = 0,
+):
     dt = datetime(2026, 8, 7, hour, minute, second, tzinfo=TW_TZ)
     return {
         "code": code,
         "close": price,
         "volume": volume,
+        "tick_type": tick_type,
+        "amount": amount,
         "tick_time": dt.isoformat(),
     }
 
@@ -80,6 +92,22 @@ class MarketDataHubBarTests(unittest.TestCase):
         status = hub.get_hub_status()
         self.assertEqual(status["total_bars_1m_completed"], 1)
         self.assertEqual(status["bar_aggregator_1m_codes"], 1)
+
+    def test_main_force_buy_sell_volume_is_aggregated_per_bar(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 100.0, 25, 9, 0, 1, tick_type=1))
+        hub.on_stock_tick(tick("2330", 99.5, 30, 9, 0, 2, tick_type=2))
+        hub.on_stock_tick(tick("2330", 100.5, 2, 9, 0, 3, tick_type=1, amount=1_200_000))
+        hub.on_stock_tick(tick("2330", 100.0, 3, 9, 0, 4, tick_type=0))
+
+        bar = hub.get_live_bars_1m("2330")[0]
+        self.assertEqual(bar["buy_volume"], 27)
+        self.assertEqual(bar["sell_volume"], 30)
+        self.assertEqual(bar["neutral_volume"], 3)
+        self.assertEqual(bar["main_buy_volume"], 27)
+        self.assertEqual(bar["main_sell_volume"], 30)
+        self.assertEqual(bar["main_net_volume"], -3)
+        self.assertEqual(bar["main_tick_count"], 3)
 
 
 if __name__ == "__main__":

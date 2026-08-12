@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections import defaultdict
@@ -35,6 +36,11 @@ BAR_INTERVAL_5M_MS = 5 * 60 * 1000
 # 向下相容：既有程式若引用 BAR_INTERVAL_MS，仍代表 5 分 K。
 BAR_INTERVAL_MS = BAR_INTERVAL_5M_MS
 
+# 盤中主力進出：單筆成交達任一門檻即列入主力大單。
+# 股票 volume 依目前 Hub 規格為「張」，amount 為該筆成交金額（元）。
+MAIN_FORCE_MIN_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_MIN_LOTS", "20")))
+MAIN_FORCE_MIN_AMOUNT = max(1.0, float(os.getenv("HANSTOCK_MAIN_FORCE_MIN_AMOUNT", "1000000")))
+
 
 def _bar_start_ms(ts_ms: int, interval_ms: int = BAR_INTERVAL_5M_MS) -> int:
     """將 timestamp (ms) 對齊到指定 K 棒週期起始點。"""
@@ -51,6 +57,38 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _trade_side(tick_data: dict[str, Any]) -> str:
+    """Shioaji TickType：1=外盤買進、2=內盤賣出、其餘=中性。"""
+    tick_type = tick_data.get("tick_type")
+    if tick_type == 1:
+        return "buy"
+    if tick_type == 2:
+        return "sell"
+    return "neutral"
+
+
+def _is_main_force_trade(tick_data: dict[str, Any], *, futures: bool = False) -> bool:
+    """以單筆張數或成交金額辨識大單；門檻可由環境變數調整。"""
+    try:
+        volume = max(0, int(tick_data.get("volume", 0) or 0))
+    except (TypeError, ValueError):
+        volume = 0
+    if volume >= MAIN_FORCE_MIN_LOTS:
+        return True
+    if futures:
+        return False
+    try:
+        amount = float(tick_data.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount <= 0:
+        try:
+            amount = float(tick_data.get("close", 0) or 0) * volume * 1000
+        except (TypeError, ValueError):
+            amount = 0.0
+    return amount >= MAIN_FORCE_MIN_AMOUNT
+
+
 @dataclass
 class Bar:
     """通用 OHLCV K 棒。"""
@@ -61,8 +99,20 @@ class Bar:
     close: float
     volume: int = 0
     tick_count: int = 0
+    buy_volume: int = 0
+    sell_volume: int = 0
+    neutral_volume: int = 0
+    main_buy_volume: int = 0
+    main_sell_volume: int = 0
+    main_tick_count: int = 0
 
-    def update(self, price: float, volume: int = 0) -> None:
+    def update(
+        self,
+        price: float,
+        volume: int = 0,
+        side: str = "neutral",
+        is_main_force: bool = False,
+    ) -> None:
         if self.tick_count == 0:
             self.open = price
             self.high = price
@@ -72,6 +122,18 @@ class Bar:
             self.low = min(self.low, price)
         self.close = price
         self.volume += volume
+        if side == "buy":
+            self.buy_volume += volume
+            if is_main_force:
+                self.main_buy_volume += volume
+        elif side == "sell":
+            self.sell_volume += volume
+            if is_main_force:
+                self.main_sell_volume += volume
+        else:
+            self.neutral_volume += volume
+        if is_main_force and side in ("buy", "sell"):
+            self.main_tick_count += 1
         self.tick_count += 1
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +145,13 @@ class Bar:
             "close": self.close,
             "volume": self.volume,
             "tick_count": self.tick_count,
+            "buy_volume": self.buy_volume,
+            "sell_volume": self.sell_volume,
+            "neutral_volume": self.neutral_volume,
+            "main_buy_volume": self.main_buy_volume,
+            "main_sell_volume": self.main_sell_volume,
+            "main_net_volume": self.main_buy_volume - self.main_sell_volume,
+            "main_tick_count": self.main_tick_count,
         }
 
 
@@ -106,7 +175,15 @@ class BarAggregator:
         # 當日日期（台北），用於跨日清理
         self._trade_date: str = _now_tw().strftime("%Y-%m-%d")
 
-    def on_tick(self, code: str, price: float, volume: int, tick_ts_ms: int) -> Optional[Bar]:
+    def on_tick(
+        self,
+        code: str,
+        price: float,
+        volume: int,
+        tick_ts_ms: int,
+        side: str = "neutral",
+        is_main_force: bool = False,
+    ) -> Optional[Bar]:
         """收到 tick 時更新 bar。若跨 bar 則回傳剛完成的 bar，否則回傳 None。"""
         self._check_day_rollover()
         bar_start = _bar_start_ms(tick_ts_ms, self.interval_ms)
@@ -131,9 +208,9 @@ class BarAggregator:
                     self._completed[code].append(current)
                     completed_bar = current
                 self._current[code] = Bar(ts=bar_start, open=price, high=price, low=price, close=price)
-                self._current[code].update(price, volume)
+                self._current[code].update(price, volume, side, is_main_force)
             else:
-                current.update(price, volume)
+                current.update(price, volume, side, is_main_force)
 
         return completed_bar
 
@@ -226,6 +303,8 @@ class MarketDataHub:
         volume = tick_data.get("volume", 0) or 0
         if price is None:
             return
+        side = _trade_side(tick_data)
+        is_main_force = _is_main_force_trade(tick_data)
 
         # 更新 Tick Cache
         with self._lock:
@@ -237,7 +316,9 @@ class MarketDataHub:
         tick_ts_ms = self._extract_tick_ts_ms(tick_data)
 
         # 更新 1 分 K Aggregator
-        completed_bar_1m = self.bars_1m.on_tick(code, price, volume, tick_ts_ms)
+        completed_bar_1m = self.bars_1m.on_tick(
+            code, price, volume, tick_ts_ms, side, is_main_force
+        )
         if completed_bar_1m:
             self._total_bars_1m_completed += 1
             self._broadcast({
@@ -248,7 +329,9 @@ class MarketDataHub:
             })
 
         # 更新既有 5 分 K Aggregator
-        completed_bar = self.bars.on_tick(code, price, volume, tick_ts_ms)
+        completed_bar = self.bars.on_tick(
+            code, price, volume, tick_ts_ms, side, is_main_force
+        )
         if completed_bar:
             self._total_bars_completed += 1
             self._broadcast({
@@ -272,6 +355,8 @@ class MarketDataHub:
         volume = tick_data.get("volume", 0) or 0
         if price is None:
             return
+        side = _trade_side(tick_data)
+        is_main_force = _is_main_force_trade(tick_data, futures=True)
 
         with self._lock:
             self._tick_cache[f"FUT:{code}"] = tick_data
@@ -279,7 +364,9 @@ class MarketDataHub:
             self._total_ticks += 1
 
         tick_ts_ms = self._extract_tick_ts_ms(tick_data)
-        completed_bar_1m = self.futures_bars_1m.on_tick(code, price, volume, tick_ts_ms)
+        completed_bar_1m = self.futures_bars_1m.on_tick(
+            code, price, volume, tick_ts_ms, side, is_main_force
+        )
         if completed_bar_1m:
             self._total_futures_bars_1m_completed += 1
             self._broadcast({
@@ -289,7 +376,9 @@ class MarketDataHub:
                 "bar": completed_bar_1m.to_dict(),
             })
 
-        completed_bar = self.futures_bars.on_tick(code, price, volume, tick_ts_ms)
+        completed_bar = self.futures_bars.on_tick(
+            code, price, volume, tick_ts_ms, side, is_main_force
+        )
         if completed_bar:
             self._total_futures_bars_completed += 1
             self._broadcast({
