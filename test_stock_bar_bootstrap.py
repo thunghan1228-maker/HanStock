@@ -15,6 +15,7 @@ def ts(year: int, month: int, day: int, hour: int, minute: int) -> int:
 class FakeApi:
     def __init__(self) -> None:
         self.kbars_calls = 0
+        self.ticks_calls = 0
 
     def kbars(self, *, contract, start: str, end: str):
         self.kbars_calls += 1
@@ -34,6 +35,21 @@ class FakeApi:
             "Low": [99, 100, 101, 102, 103, 104],
             "Close": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
             "Volume": [10, 20, 30, 40, 50, 60],
+        }
+
+    def ticks(self, *, contract, date: str, **_kwargs):
+        self.ticks_calls += 1
+        return {
+            "ts": [
+                datetime(2026, 8, 7, 9, 0, 10, tzinfo=TW_TZ),
+                datetime(2026, 8, 7, 9, 0, 20, tzinfo=TW_TZ),
+                datetime(2026, 8, 7, 9, 1, 10, tzinfo=TW_TZ),
+                datetime(2026, 8, 7, 9, 2, 10, tzinfo=TW_TZ),
+            ],
+            "close": [100, 100, 600, 102],
+            "volume": [25, 30, 2, 3],
+            "tick_type": [1, 2, 1, 0],
+            "simtrade": [0, 0, 0, 0],
         }
 
 
@@ -134,14 +150,23 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(self.service.subscription_calls, [["2344"]])
         self.assertEqual(self.service.api.kbars_calls, 1)
+        self.assertEqual(self.service.api.ticks_calls, 1)
         self.assertEqual(result["bootstrap"]["history_1m"], 6)
         self.assertTrue(result["bootstrap"]["history_ok"])
+        self.assertTrue(result["bootstrap"]["main_force_history_ok"])
 
         bars = result["bars"]
         self.assertEqual([bar["ts"] for bar in bars], [ts(2026, 8, 7, 9, minute) for minute in range(7)])
         bar_0905 = next(bar for bar in bars if bar["ts"] == ts(2026, 8, 7, 9, 5))
         self.assertEqual(bar_0905["close"], 110)
         self.assertEqual(bar_0905["tick_count"], 9)
+        bar_0900 = next(bar for bar in bars if bar["ts"] == ts(2026, 8, 7, 9, 0))
+        self.assertEqual(bar_0900["main_buy_volume"], 25)
+        self.assertEqual(bar_0900["main_sell_volume"], 30)
+        self.assertEqual(bar_0900["main_net_volume"], -5)
+        self.assertTrue(bar_0900["main_force_available"])
+        bar_0901 = next(bar for bar in bars if bar["ts"] == ts(2026, 8, 7, 9, 1))
+        self.assertEqual(bar_0901["main_buy_volume"], 2, "金額超過 100 萬的小張數交易也應列為大單")
         self.assertNotIn(ts(2026, 8, 6, 9, 0), [bar["ts"] for bar in bars])
 
     def test_five_minute_reuses_history_cache_and_keeps_live_current_bucket(self):
@@ -162,12 +187,18 @@ class StockBarBootstrapTests(unittest.TestCase):
 
         self.assertGreater(first["bar_count"], 0)
         self.assertEqual(self.service.api.kbars_calls, 1, "1m/5m 同時讀取不可重複打 kbars()")
+        self.assertEqual(self.service.api.ticks_calls, 1, "1m/5m 同時讀取不可重複打 ticks()")
         self.assertEqual(second["bootstrap"]["history_5m"], 1)
         self.assertEqual([bar["ts"] for bar in second["bars"]], [
             ts(2026, 8, 7, 9, 0),
             ts(2026, 8, 7, 9, 5),
         ])
         self.assertEqual(second["bars"][-1]["close"], 111)
+        first_five = second["bars"][0]
+        self.assertEqual(first_five["main_buy_volume"], 27)
+        self.assertEqual(first_five["main_sell_volume"], 30)
+        self.assertEqual(first_five["main_net_volume"], -3)
+        self.assertTrue(first_five["main_force_available"])
 
     def test_failed_contract_returns_live_data_and_throttles_bootstrap_retry(self):
         self.service._resolve_stock_contract = lambda code: None

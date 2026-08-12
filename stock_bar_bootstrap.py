@@ -4,8 +4,9 @@
 本模組在個股 K 線被讀取時：
 1. 自動確保該股票 Tick 已訂閱；
 2. 以 Shioaji api.kbars() 補齊今日已完成的正式 1 分 K；
-3. 聚合成今日已完成的 5 分 K；
-4. 與 MarketDataHub 的即時 K 棒依 timestamp 合併（live 覆蓋 history）。
+3. 以 Shioaji api.ticks() 回補逐筆成交方向與主力大單欄位；
+4. 聚合成今日已完成的 5 分 K；
+5. 與 MarketDataHub 的即時 K 棒依 timestamp 合併（live 覆蓋 history）。
 
 這層不修改 QuoteService / MarketDataHub 的穩定即時流程，也不持久化憑證或行情。
 """
@@ -17,15 +18,18 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from otc_index import (
     TW_TZ,
+    ONE_MIN_MS,
     aggregate_1m_to_5m,
     normalize_kbars_1m,
+    shioaji_kbar_close_to_start_ms,
     taipei_minute_of_day,
     taipei_trade_date,
 )
+from market_data_hub import _is_main_force_trade, _trade_side
 
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
@@ -40,6 +44,8 @@ class _HistoryEntry:
     fetched_at_monotonic: float
     ok: bool
     error: Optional[str] = None
+    main_force_ok: bool = False
+    main_force_error: Optional[str] = None
 
 
 _cache_lock = threading.RLock()
@@ -108,7 +114,7 @@ def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
         return None
     if ts <= 0 or min(open_, high, low, close) <= 0:
         return None
-    return {
+    result = {
         "ts": ts,
         "open": open_,
         "high": high,
@@ -117,6 +123,143 @@ def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
         "volume": volume,
         "tick_count": tick_count,
     }
+    optional_volume_fields = (
+        "buy_volume",
+        "sell_volume",
+        "neutral_volume",
+        "main_buy_volume",
+        "main_sell_volume",
+        "main_tick_count",
+    )
+    for field in optional_volume_fields:
+        if field in raw:
+            try:
+                result[field] = max(0, int(raw.get(field, 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                result[field] = 0
+    if "main_net_volume" in raw:
+        try:
+            result["main_net_volume"] = int(raw.get("main_net_volume", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            result["main_net_volume"] = 0
+    if "main_force_available" in raw:
+        result["main_force_available"] = bool(raw.get("main_force_available"))
+    return result
+
+
+def _field_values(payload: Any, *names: str) -> list[Any]:
+    """讀取 Shioaji Ticks 的欄位；同時支援物件屬性與 Mapping。"""
+    for name in names:
+        value = payload.get(name) if isinstance(payload, Mapping) else getattr(payload, name, None)
+        if value is None:
+            continue
+        try:
+            return list(value)
+        except TypeError:
+            return []
+    return []
+
+
+def _shioaji_tick_to_ms(value: Any) -> Optional[int]:
+    """把 Shioaji 歷史 tick 的台灣牆鐘 timestamp 轉為真正 UTC epoch ms。"""
+    kbar_start = shioaji_kbar_close_to_start_ms(value)
+    return kbar_start + ONE_MIN_MS if kbar_start is not None else None
+
+
+def _fetch_historical_ticks(api: Any, contract: Any, trade_date: str) -> Any:
+    """要求整日逐筆；舊版／測試替身若無 AllDay enum 則沿用預設查詢。"""
+    kwargs: dict[str, Any] = {
+        "contract": contract,
+        "date": trade_date,
+    }
+    try:
+        import shioaji as sj
+
+        query_types = getattr(getattr(sj, "constant", None), "TicksQueryType", None)
+        all_day = getattr(query_types, "AllDay", None)
+        if all_day is not None:
+            kwargs["query_type"] = all_day
+    except Exception:
+        pass
+    return api.ticks(**kwargs)
+
+
+def _historical_tick_metrics(
+    ticks: Any,
+    *,
+    trade_date: str,
+) -> dict[int, dict[str, Any]]:
+    """將歷史逐筆成交依 1 分鐘彙總成內外盤與主力大單統計（單位：張）。"""
+    timestamps = _field_values(ticks, "ts", "datetime")
+    closes = _field_values(ticks, "close", "Close")
+    volumes = _field_values(ticks, "volume", "Volume")
+    tick_types = _field_values(ticks, "tick_type", "TickType")
+    amounts = _field_values(ticks, "amount", "Amount")
+    simtrades = _field_values(ticks, "simtrade", "Simtrade")
+    size = min(len(timestamps), len(closes), len(volumes))
+    metrics: dict[int, dict[str, Any]] = {}
+
+    for index in range(size):
+        ts_ms = _shioaji_tick_to_ms(timestamps[index])
+        if ts_ms is None or taipei_trade_date(ts_ms) != trade_date:
+            continue
+        minute_of_day = taipei_minute_of_day(ts_ms)
+        if minute_of_day < 9 * 60 or minute_of_day > 13 * 60 + 30:
+            continue
+        if index < len(simtrades) and bool(simtrades[index]):
+            continue
+        try:
+            close = float(closes[index])
+            volume = max(0, int(volumes[index] or 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if close <= 0 or volume <= 0:
+            continue
+
+        tick_type: Any = tick_types[index] if index < len(tick_types) else 0
+        tick_type = getattr(tick_type, "value", tick_type)
+        try:
+            tick_type = int(tick_type)
+        except (TypeError, ValueError, OverflowError):
+            tick_type = 0
+        amount: Any = amounts[index] if index < len(amounts) else 0
+        minute_ts = ts_ms - (ts_ms % ONE_MIN_MS)
+        row = metrics.setdefault(minute_ts, {
+            "buy_volume": 0,
+            "sell_volume": 0,
+            "neutral_volume": 0,
+            "main_buy_volume": 0,
+            "main_sell_volume": 0,
+            "main_net_volume": 0,
+            "main_tick_count": 0,
+            "tick_count": 0,
+            "main_force_available": True,
+        })
+        side = _trade_side({"tick_type": tick_type})
+        row[f"{side}_volume"] += volume
+        is_main_force = _is_main_force_trade({
+            "close": close,
+            "volume": volume,
+            "amount": amount,
+        })
+        if is_main_force and side in {"buy", "sell"}:
+            row[f"main_{side}_volume"] += volume
+            row["main_tick_count"] += 1
+        row["tick_count"] += 1
+
+    for row in metrics.values():
+        row["main_net_volume"] = row["main_buy_volume"] - row["main_sell_volume"]
+    return metrics
+
+
+def _attach_tick_metrics(
+    bars_1m: list[dict[str, Any]],
+    metrics: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {**bar, **metrics[bar["ts"]]} if bar.get("ts") in metrics else dict(bar)
+        for bar in bars_1m
+    ]
 
 
 def _is_formal_stock_bar(ts_ms: int, interval: str, trade_date: str) -> bool:
@@ -137,14 +280,18 @@ def _merge_bars(
     interval: str,
     trade_date: str,
 ) -> list[dict[str, Any]]:
-    """history 先放、live 後放；同 timestamp 以即時資料覆蓋。"""
+    """history 先放、live 後放；即時 OHLCV 覆蓋，同分鐘歷史主力欄位可保留。"""
     merged: dict[int, dict[str, Any]] = {}
     for source in (history, live):
         for raw in source:
             bar = _safe_bar(raw)
             if bar is None or not _is_formal_stock_bar(bar["ts"], interval, trade_date):
                 continue
-            merged[bar["ts"]] = bar
+            existing = merged.get(bar["ts"])
+            if existing is not None:
+                merged[bar["ts"]] = {**existing, **bar}
+            else:
+                merged[bar["ts"]] = bar
     return [merged[ts] for ts in sorted(merged)]
 
 
@@ -209,6 +356,18 @@ def _bootstrap_history(
             include_current=False,
             now_ms=now_ms,
         )
+        main_force_ok = False
+        main_force_error: Optional[str] = None
+        try:
+            ticks = _fetch_historical_ticks(api, contract, trade_date)
+            metrics = _historical_tick_metrics(ticks, trade_date=trade_date)
+            bars_1m = _attach_tick_metrics(bars_1m, metrics)
+            main_force_ok = bool(metrics)
+            if not main_force_ok:
+                main_force_error = "Shioaji 今日 ticks 暫無資料"
+        except Exception as exc:
+            main_force_error = str(exc)
+            logger.warning("[Stock Main Force] %s 歷史逐筆回補失敗: %s", code, exc)
         bars_5m = aggregate_1m_to_5m(
             bars_1m,
             include_current=False,
@@ -222,13 +381,16 @@ def _bootstrap_history(
             fetched_at_monotonic=monotonic_fn(),
             ok=ok,
             error=None if ok else "Shioaji 今日 Kbars 暫無資料",
+            main_force_ok=main_force_ok,
+            main_force_error=main_force_error,
         )
         _store_entry(code, entry)
         logger.info(
-            "[Stock KBar] %s 歷史補齊完成: 1m=%d, 5m=%d, date=%s",
+            "[Stock KBar] %s 歷史補齊完成: 1m=%d, 5m=%d, main_force=%s, date=%s",
             code,
             len(bars_1m),
             len(bars_5m),
+            main_force_ok,
             trade_date,
         )
         return entry
@@ -310,7 +472,9 @@ def get_resilient_stock_bars(
             "live_count": len(live),
             "history_ok": entry.ok,
             "error": entry.error,
+            "main_force_history_ok": entry.main_force_ok,
+            "main_force_error": entry.main_force_error,
             "subscription": subscription,
-            "source": "shioaji_kbars+realtime_hub",
+            "source": "shioaji_kbars+shioaji_ticks+realtime_hub",
         },
     }
