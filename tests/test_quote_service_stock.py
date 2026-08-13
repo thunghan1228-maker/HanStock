@@ -178,6 +178,17 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(data["pct_chg"], 1.11)
         self.assertIn("2026-08-04T09:12:30.123456+08:00", data["tick_time"])
 
+    def test_shared_stock_tick_does_not_mask_stale_primary_connection(self):
+        """共享池仍有現貨 Tick 時，不可讓主連線重連誤判為已恢復。"""
+        self.service.state.quote_connected = False
+        fake_hub = types.SimpleNamespace(on_stock_tick=lambda _tick: None)
+
+        with patch.object(module, "get_market_data_hub", return_value=fake_hub):
+            self.service._handle_stock_tick(FakeExchange.TSE, FakeTick())
+
+        self.assertFalse(self.service.state.quote_connected)
+        self.assertIsNotNone(self.service.get_stock_quote("2330"))
+
     @patch.dict(
         os.environ,
         {"RAILWAY_PROJECT_ID": "7109048d-fb11-4ddf-bf67-f1bb98ca815e"},

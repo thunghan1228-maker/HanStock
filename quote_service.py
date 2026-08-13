@@ -627,7 +627,10 @@ class QuoteService:
             self._stock_errors.pop(code, None)
             if code in self._stock_subscriptions:
                 self._stock_subscriptions[code] = time.time()
-        self.state.quote_connected = True
+        # quote_connected 專門代表「主 Shioaji 期貨行情連線」是否健康。
+        # 現貨 Tick 也可能由共享行情池送進來；若在這裡設成 True，主連線
+        # 已過期時，共享池的正常 Tick 會把狀態洗回已連線，讓背景重連執行緒
+        # 在真正 logout/login 前提早退出，結果所有 1m/5m K 棒永久停在舊時間。
         try:
             get_market_data_hub().on_stock_tick(tick_data)
         except Exception as exc:
@@ -793,6 +796,8 @@ class QuoteService:
         attempt = 0
         while attempt < MAX_RECONNECT_ATTEMPTS and not self._shutdown_event.is_set():
             attempt += 1
+            with self.state._lock:
+                self.state.reconnect_count += 1
             interval = min(
                 RECONNECT_BASE_INTERVAL * (2 ** (attempt - 1)),
                 RECONNECT_MAX_INTERVAL,
