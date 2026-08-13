@@ -189,6 +189,22 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertFalse(self.service.state.quote_connected)
         self.assertIsNotNone(self.service.get_stock_quote("2330"))
 
+    def test_primary_stock_tick_refreshes_primary_connection_health(self):
+        """主連線現貨 Tick 可證明 Session 健康，不必等待台指期成交。"""
+        self.service.state.quote_connected = False
+        self.service.state.last_quote_timestamp = None
+        fake_hub = types.SimpleNamespace(on_stock_tick=lambda _tick: None)
+
+        with patch.object(module, "get_market_data_hub", return_value=fake_hub):
+            self.service._handle_stock_tick(
+                FakeExchange.TSE,
+                FakeTick(),
+                primary_connection=True,
+            )
+
+        self.assertTrue(self.service.state.quote_connected)
+        self.assertIsNotNone(self.service.state.last_quote_timestamp)
+
     @patch.dict(
         os.environ,
         {"RAILWAY_PROJECT_ID": "7109048d-fb11-4ddf-bf67-f1bb98ca815e"},

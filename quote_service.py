@@ -574,7 +574,7 @@ class QuoteService:
 
         @self.api.on_tick_stk_v1()
         def _stock_tick_callback(exchange: sj.Exchange, tick: sj.TickSTKv1):
-            self._handle_stock_tick(exchange, tick)
+            self._handle_stock_tick(exchange, tick, primary_connection=True)
 
         self._callbacks_api_id = id(self.api)
 
@@ -615,12 +615,24 @@ class QuoteService:
             "data_source": "shioaji_realtime_stock",
         }
 
-    def _handle_stock_tick(self, exchange: Any, tick: Any) -> None:
+    def _handle_stock_tick(
+        self,
+        exchange: Any,
+        tick: Any,
+        *,
+        primary_connection: bool = False,
+    ) -> None:
         """統一處理主連線與共享連線收到的現貨 Tick。"""
         tick_data = self._stock_tick_to_dict(exchange, tick)
         code = tick_data["code"]
         if not code:
             return
+        if primary_connection:
+            # 台指期可能短暫沒有成交，但主連線收到現貨 Tick 就代表行情 Session
+            # 仍健康；只允許主連線更新這個 heartbeat，共享池不可代替主連線。
+            with self.state._lock:
+                self.state.last_quote_timestamp = time.time()
+                self.state.quote_connected = True
         with self._stock_lock:
             self._stock_ticks[code] = tick_data
             self._stock_tick_timestamps[code] = time.time()
