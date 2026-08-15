@@ -8,8 +8,13 @@ Market Data Hub（單筆 20 張或新台幣 100 萬元），讓盤中主力副�
 from __future__ import annotations
 
 import logging
+import json
+import math
+import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, time as datetime_time, timedelta
 from typing import Any, Iterable, Mapping, Optional
 
@@ -22,13 +27,182 @@ from stock_bar_bootstrap import (
     _shioaji_tick_to_ms,
 )
 from stock_groups import STOCK_GROUPS
+from daytrade_flow_store import (
+    begin_daytrade_scan,
+    fail_daytrade_scan,
+    finish_daytrade_scan,
+    load_daytrade_rows,
+    load_daytrade_scan_status,
+    save_daytrade_rows,
+    update_daytrade_scan_progress,
+)
 
 logger = logging.getLogger("hanstock.daytrade_flow")
 
 _CACHE_SECONDS = 30 * 60
 _cache_lock = threading.RLock()
 _scan_lock = threading.Lock()
+_background_lock = threading.Lock()
+_background_dates: set[str] = set()
 _ranking_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict[str, Any]], list[str]]] = {}
+
+TWSE_DAILY_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+TPEX_DAILY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
+
+
+def _text(value: Any) -> str:
+    return re.sub(r"<[^>]+>", "", str(value or "")).strip()
+
+
+def _number(value: Any) -> float:
+    text = _text(value).replace(",", "").replace("＋", "+").replace("－", "-")
+    if text in {"", "--", "---", "除權", "除息", "除權息"}:
+        return 0.0
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    return float(match.group(0)) if match else 0.0
+
+
+def _fetch_json(url: str, params: Mapping[str, str]) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{url}?{urllib.parse.urlencode(params)}",
+        headers={"Accept": "application/json", "User-Agent": "HanStock-DaytradeFlow/2.0"},
+    )
+    with urllib.request.urlopen(request, timeout=45) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise RuntimeError("交易所日行情格式錯誤")
+    return payload
+
+
+def _tick_size(price: float) -> float:
+    if price < 10:
+        return 0.01
+    if price < 50:
+        return 0.05
+    if price < 100:
+        return 0.1
+    if price < 500:
+        return 0.5
+    if price < 1000:
+        return 1.0
+    return 5.0
+
+
+def limit_up_price(reference_price: float) -> float:
+    """台股一般股票 10% 漲停價，依價格級距向下取合法跳動單位。"""
+    if reference_price <= 0:
+        return 0.0
+    raw = reference_price * 1.10
+    tick = _tick_size(raw)
+    return round(math.floor((raw + 1e-9) / tick) * tick, 2)
+
+
+def _daily_row(
+    *,
+    ticker: str,
+    name: str,
+    market: str,
+    open_price: float,
+    high_price: float,
+    close_price: float,
+    reference_price: float,
+    turnover: float,
+) -> Optional[dict[str, Any]]:
+    code = ticker.strip().upper()
+    if not code or open_price <= 0 or high_price <= 0 or close_price <= 0 or reference_price <= 0:
+        return None
+    upper = limit_up_price(reference_price)
+    if upper <= 0:
+        return None
+    return {
+        "ticker": code,
+        "name": name.strip() or code,
+        "market": market,
+        "open_price": open_price,
+        "high_price": high_price,
+        "close_price": close_price,
+        "reference_price": reference_price,
+        "limit_up_price": upper,
+        "day_change_pct": round((close_price / reference_price - 1) * 100, 4),
+        "official_turnover_amount": max(0.0, turnover),
+        "reached_limit_up": high_price + 1e-8 >= upper,
+        "closed_at_limit_up": close_price + 1e-8 >= upper,
+    }
+
+
+def fetch_daily_market_snapshot(trade_date: str) -> list[dict[str, Any]]:
+    """讀取 TWSE/TPEx 官方收盤行情，建立全市場掃描母名單。"""
+    target = date.fromisoformat(trade_date)
+    rows: list[dict[str, Any]] = []
+
+    twse = _fetch_json(
+        TWSE_DAILY_URL,
+        {"date": target.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+    )
+    for table in twse.get("tables") or []:
+        fields = [_text(item) for item in table.get("fields") or []]
+        if "證券代號" not in fields or "收盤價" not in fields or "漲跌價差" not in fields:
+            continue
+        indexes = {field: index for index, field in enumerate(fields)}
+        for values in table.get("data") or []:
+            if not isinstance(values, list):
+                continue
+            def value(field: str) -> Any:
+                index = indexes.get(field, -1)
+                return values[index] if 0 <= index < len(values) else ""
+            close = _number(value("收盤價"))
+            change = _number(value("漲跌價差"))
+            sign = _text(value("漲跌(+/-)"))
+            signed_change = -abs(change) if "-" in sign or "－" in sign else abs(change)
+            daily = _daily_row(
+                ticker=_text(value("證券代號")),
+                name=_text(value("證券名稱")),
+                market="上市",
+                open_price=_number(value("開盤價")),
+                high_price=_number(value("最高價")),
+                close_price=close,
+                reference_price=close - signed_change,
+                turnover=_number(value("成交金額")),
+            )
+            if daily:
+                rows.append(daily)
+
+    tpex = _fetch_json(
+        TPEX_DAILY_URL,
+        {"date": target.strftime("%Y/%m/%d"), "id": "", "response": "json"},
+    )
+    for table in tpex.get("tables") or []:
+        fields = [_text(item) for item in table.get("fields") or []]
+        if "代號" not in fields or "收盤" not in fields or "漲跌" not in fields:
+            continue
+        indexes = {field: index for index, field in enumerate(fields)}
+        for values in table.get("data") or []:
+            if not isinstance(values, list):
+                continue
+            def value(field: str) -> Any:
+                index = indexes.get(field, -1)
+                return values[index] if 0 <= index < len(values) else ""
+            close = _number(value("收盤"))
+            change = _number(value("漲跌"))
+            daily = _daily_row(
+                ticker=_text(value("代號")),
+                name=_text(value("名稱")),
+                market="上櫃",
+                open_price=_number(value("開盤")),
+                high_price=_number(value("最高")),
+                close_price=close,
+                reference_price=close - change,
+                turnover=_number(value("成交金額(元)")),
+            )
+            if daily:
+                rows.append(daily)
+
+    deduplicated: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        deduplicated.setdefault(str(row["ticker"]), row)
+    if not deduplicated:
+        raise RuntimeError(f"{trade_date} 交易所收盤行情為空，不覆蓋既有備份")
+    return list(deduplicated.values())
 
 
 def latest_completed_trade_date(now: Optional[datetime] = None) -> str:
@@ -102,6 +276,7 @@ def summarize_historical_ticks(
     name: str,
     market: str,
     trade_date: str,
+    daily_meta: Optional[Mapping[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """把一日逐筆成交彙總成前端隔日沖模型需要的金額欄位。"""
     timestamps = _field_values(ticks, "ts", "datetime")
@@ -166,12 +341,17 @@ def summarize_historical_ticks(
         elif side == "sell":
             large_sell_amount += amount
 
-    if total_turnover_amount <= 0 or (large_buy_amount <= 0 and large_sell_amount <= 0):
+    reached_limit_up = bool((daily_meta or {}).get("reached_limit_up"))
+    if total_turnover_amount <= 0:
+        total_turnover_amount = float((daily_meta or {}).get("official_turnover_amount") or 0)
+    if total_turnover_amount <= 0 or (
+        large_buy_amount <= 0 and large_sell_amount <= 0 and not reached_limit_up
+    ):
         return None
     price_impact_pct = 0.0
     if first_price and last_price:
         price_impact_pct = (last_price / first_price - 1) * 100
-    return {
+    row = {
         "ticker": ticker,
         "name": name,
         "market": market,
@@ -185,6 +365,21 @@ def summarize_historical_ticks(
         "previous_large_buy_amount": 0,
         "next_day_large_sell_amount": 0,
     }
+    if daily_meta:
+        for field in (
+            "open_price",
+            "high_price",
+            "close_price",
+            "reference_price",
+            "limit_up_price",
+            "day_change_pct",
+            "reached_limit_up",
+            "closed_at_limit_up",
+        ):
+            row[field] = daily_meta.get(field, 0)
+    row["suspicion_score"] = round(_score(row), 2)
+    row["category"] = classify_daytrade_row(row)
+    return row if row["category"] else None
 
 
 def _score(row: Mapping[str, Any]) -> float:
@@ -204,11 +399,27 @@ def _score(row: Mapping[str, Any]) -> float:
     )
 
 
+def classify_daytrade_row(row: Mapping[str, Any]) -> str:
+    """三層名單：優先看真實漲停，再看強勢大單，不列一般交易。"""
+    if bool(row.get("closed_at_limit_up")):
+        return "漲停鎖定"
+    if bool(row.get("reached_limit_up")):
+        return "曾達漲停"
+    buy = float(row.get("large_buy_amount") or 0)
+    sell = float(row.get("large_sell_amount") or 0)
+    score = float(row.get("suspicion_score") or _score(row))
+    day_change = float(row.get("day_change_pct") or row.get("price_impact_pct") or 0)
+    if buy > sell and day_change > 0 and score >= 30:
+        return "強勢大單"
+    return ""
+
+
 def scan_daytrade_flow(
     service: Any,
     *,
     trade_date: str,
     codes: Iterable[str],
+    daily_rows: Optional[Iterable[Mapping[str, Any]]] = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """逐檔呼叫 Shioaji api.ticks(date=...)；結果快取 30 分鐘。"""
     normalized = tuple(
@@ -221,6 +432,8 @@ def scan_daytrade_flow(
         if cached and now - cached[0] < _CACHE_SECONDS:
             return [dict(row) for row in cached[1]], list(cached[2])
 
+    market_rows = list(daily_rows) if daily_rows is not None else fetch_daily_market_snapshot(trade_date)
+    daily_by_code = {str(row.get("ticker") or "").upper(): row for row in market_rows}
     names = _name_map()
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -244,9 +457,10 @@ def scan_daytrade_flow(
                 row = summarize_historical_ticks(
                     ticks,
                     ticker=code,
-                    name=names.get(code, code),
-                    market=_market_label(service, code),
+                    name=str((daily_by_code.get(code) or {}).get("name") or names.get(code, code)),
+                    market=str((daily_by_code.get(code) or {}).get("market") or _market_label(service, code)),
                     trade_date=trade_date,
+                    daily_meta=daily_by_code.get(code),
                 )
                 if row is not None:
                     rows.append(row)
@@ -265,6 +479,110 @@ def scan_daytrade_flow(
                 list(errors),
             )
     return rows, errors
+
+
+def _full_market_worker(service: Any, trade_date: str, force: bool) -> None:
+    try:
+        daily_rows = fetch_daily_market_snapshot(trade_date)
+        # 只保留 Shioaji 能解析為一般股票的合約；排除權證、牛熊證等商品。
+        candidates: list[dict[str, Any]] = []
+        for row in daily_rows:
+            code = str(row.get("ticker") or "").strip().upper()
+            if code and _resolve_stock_contract(service, code) is not None:
+                candidates.append(row)
+        if not candidates:
+            raise RuntimeError(f"{trade_date} 找不到可掃描的股票合約")
+
+        begin_daytrade_scan(trade_date, len(candidates))
+        api = getattr(service, "api", None)
+        logged_in = bool(getattr(getattr(service, "state", None), "logged_in", False))
+        if api is None or not logged_in:
+            raise RuntimeError("Shioaji 尚未登入，稍後自動重試")
+
+        matches: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for index, daily in enumerate(candidates, start=1):
+            code = str(daily["ticker"])
+            try:
+                contract = _resolve_stock_contract(service, code)
+                if contract is None:
+                    continue
+                ticks = _fetch_historical_ticks(api, contract, trade_date)
+                row = summarize_historical_ticks(
+                    ticks,
+                    ticker=code,
+                    name=str(daily.get("name") or code),
+                    market=str(daily.get("market") or "上市櫃"),
+                    trade_date=trade_date,
+                    daily_meta=daily,
+                )
+                if row is not None:
+                    matches.append(row)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Daytrade Full Scan] %s %s 失敗: %s", trade_date, code, exc)
+                errors.append(f"{code}: {exc}")
+
+            if index % 20 == 0 or index == len(candidates):
+                # 掃描途中也增量保存；容器重啟時已完成部分不會消失。
+                save_daytrade_rows(matches[-20:])
+                update_daytrade_scan_progress(
+                    trade_date,
+                    processed_count=index,
+                    match_count=len(matches),
+                    errors=errors,
+                )
+
+        matches.sort(
+            key=lambda row: (
+                {"漲停鎖定": 3, "曾達漲停": 2, "強勢大單": 1}.get(str(row.get("category")), 0),
+                float(row.get("suspicion_score") or 0),
+                float(row.get("large_buy_amount") or 0),
+            ),
+            reverse=True,
+        )
+        finish_daytrade_scan(
+            trade_date,
+            matches,
+            processed_count=len(candidates),
+            errors=errors,
+        )
+        clear_daytrade_flow_cache()
+        logger.info(
+            "[Daytrade Full Scan] 完成 date=%s stocks=%s matches=%s errors=%s",
+            trade_date,
+            len(candidates),
+            len(matches),
+            len(errors),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Daytrade Full Scan] %s 全市場掃描失敗", trade_date)
+        fail_daytrade_scan(trade_date, str(exc))
+    finally:
+        with _background_lock:
+            _background_dates.discard(trade_date)
+
+
+def start_full_market_scan(service: Any, trade_date: str, *, force: bool = False) -> bool:
+    """非同步啟動全市場掃描；同一天只允許一條執行緒。"""
+    status = load_daytrade_scan_status(trade_date)
+    if not force and status.get("status") == "completed":
+        return False
+    with _background_lock:
+        if trade_date in _background_dates:
+            return False
+        _background_dates.add(trade_date)
+    thread = threading.Thread(
+        target=_full_market_worker,
+        args=(service, trade_date, force),
+        name=f"hanstock-daytrade-{trade_date}",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def daytrade_flow_snapshot(trade_date: str, limit: int = 500) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return load_daytrade_rows(trade_date, limit=limit), load_daytrade_scan_status(trade_date)
 
 
 def clear_daytrade_flow_cache() -> None:
