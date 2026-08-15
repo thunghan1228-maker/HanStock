@@ -655,7 +655,7 @@ def get_daytrade_flow_ranking(
     date: str | None = Query(default=None, description="指定交易日 YYYY-MM-DD；未指定取最近已收盤平日"),
     codes: str | None = Query(default=None, description="可選：逗號分隔股票代號"),
     limit: int = Query(default=50, ge=1, le=200),
-    scan_limit: int = Query(default=24, ge=1, le=80),
+    scan_limit: int = Query(default=12, ge=1, le=80),
 ) -> dict[str, Any]:
     """回補 Shioaji 歷史逐筆成交並產生疑似隔日沖資金流排行。
 
