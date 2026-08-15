@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hanstock.api")
 
-API_VERSION = "1.3.1"
+API_VERSION = "1.3.2"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 TW_TZ = timezone(timedelta(hours=8))
@@ -647,6 +647,57 @@ def get_hub_bars_batch(
         "status": "ok",
         "requested_count": len(codes),
         "data": result,
+    }
+
+
+@app.get("/api/hub/daytrade-flow-ranking")
+def get_daytrade_flow_ranking(
+    date: str | None = Query(default=None, description="指定交易日 YYYY-MM-DD；未指定取最近已收盤平日"),
+    codes: str | None = Query(default=None, description="可選：逗號分隔股票代號"),
+    limit: int = Query(default=50, ge=1, le=200),
+    scan_limit: int = Query(default=24, ge=1, le=80),
+) -> dict[str, Any]:
+    """回補 Shioaji 歷史逐筆成交並產生疑似隔日沖資金流排行。
+
+    不含券商分點身分；大單門檻與盤中主力副圖相同。未傳日期時，
+    週末會自動回到星期五，避免把星期六誤當成資料日。
+    """
+    from daytrade_flow import candidate_codes, resolve_trade_date, scan_daytrade_flow
+
+    try:
+        trade_date = resolve_trade_date(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    svc = _quote_service_or_503()
+    requested = _split_codes(codes)
+    if requested:
+        candidates = requested[:scan_limit]
+    else:
+        active_codes = svc.get_active_stock_codes()
+        candidates = candidate_codes(active_codes)[:scan_limit]
+
+    try:
+        rows, errors = scan_daytrade_flow(
+            svc,
+            trade_date=trade_date,
+            codes=candidates,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    selected = rows[:limit]
+    return {
+        "status": "ok",
+        "source": "shioaji_historical_ticks_estimate",
+        "data_date": trade_date,
+        "updated_at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+        "requested_count": len(candidates),
+        "available_count": len(rows),
+        "count": len(selected),
+        "rows": selected,
+        "errors": errors[:20],
+        "disclaimer": "由逐筆成交的大單方向推估，不含券商分點身分。",
     }
 
 
