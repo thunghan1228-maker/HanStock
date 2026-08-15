@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 from daytrade_flow import latest_completed_trade_date, start_full_market_scan
-from daytrade_flow_store import has_completed_daytrade_scan, load_daytrade_scan_status
+from daytrade_flow_store import has_completed_daytrade_scan
 from otc_index import TW_TZ
 
 logger = logging.getLogger("hanstock.daytrade_flow_collector")
@@ -27,15 +27,13 @@ def collect_once(now: datetime | None = None) -> bool:
     trade_date = latest_completed_trade_date(current)
     if has_completed_daytrade_scan(trade_date):
         return False
-    status = load_daytrade_scan_status(trade_date)
-    if status.get("status") == "running":
-        return False
-
     from quote_service import get_quote_service
 
     service = get_quote_service()
     if not bool(getattr(getattr(service, "state", None), "logged_in", False)):
         return False
+    # SQLite 的 running 可能是上一個容器被部署中止所留下；是否真的正在
+    # 執行由本行程的 _background_dates 判斷，重啟後必須能自動續跑。
     started = start_full_market_scan(service, trade_date)
     if started:
         logger.info("每日隔日沖全市場備份已啟動: trade_date=%s", trade_date)
