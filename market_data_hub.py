@@ -152,6 +152,9 @@ class Bar:
             "main_sell_volume": self.main_sell_volume,
             "main_net_volume": self.main_buy_volume - self.main_sell_volume,
             "main_tick_count": self.main_tick_count,
+            # 即時 bar 與歷史 tick 回補使用同一份資料契約。前端會以此旗標
+            # 判斷是否建立盤中主力副圖；缺少旗標時即使淨量已有數字也不會畫。
+            "main_force_available": True,
         }
 
 

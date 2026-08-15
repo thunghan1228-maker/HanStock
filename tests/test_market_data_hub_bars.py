@@ -108,6 +108,11 @@ class MarketDataHubBarTests(unittest.TestCase):
         self.assertEqual(bar["main_sell_volume"], 30)
         self.assertEqual(bar["main_net_volume"], -3)
         self.assertEqual(bar["main_tick_count"], 3)
+        self.assertTrue(bar["main_force_available"])
+
+        five_minute_bar = hub.get_live_bars("2330")[0]
+        self.assertEqual(five_minute_bar["main_net_volume"], -3)
+        self.assertTrue(five_minute_bar["main_force_available"])
 
 
 if __name__ == "__main__":
