@@ -299,6 +299,12 @@ def candidate_codes(active_codes: Iterable[str] = ()) -> list[str]:
     return result
 
 
+def is_equity_code(code: str) -> bool:
+    """排除 ETF、債券、權證等；保留一般股票、特別股與 TDR。"""
+    value = str(code or "").strip().upper()
+    return bool(re.fullmatch(r"(?:[1-9]\d{3}[A-Z]?|91\d{4})", value))
+
+
 def _name_map() -> dict[str, str]:
     result: dict[str, str] = {}
     for stocks in STOCK_GROUPS.values():
@@ -540,7 +546,7 @@ def _full_market_worker(service: Any, trade_date: str, force: bool) -> None:
         candidates: list[dict[str, Any]] = []
         for row in daily_rows:
             code = str(row.get("ticker") or "").strip().upper()
-            if code and _resolve_stock_contract(service, code) is not None:
+            if is_equity_code(code) and _resolve_stock_contract(service, code) is not None:
                 candidates.append(row)
         if not candidates:
             raise RuntimeError(f"{trade_date} 找不到可掃描的股票合約")

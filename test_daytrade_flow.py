@@ -5,6 +5,7 @@ from datetime import datetime
 
 from daytrade_flow import (
     classify_daytrade_row,
+    is_equity_code,
     latest_completed_trade_date,
     limit_up_price,
     summarize_historical_ticks,
@@ -78,6 +79,14 @@ class DaytradeFlowTests(unittest.TestCase):
             ),
             "",
         )
+
+    def test_equity_universe_excludes_etfs_and_bonds(self):
+        self.assertTrue(is_equity_code("1303"))
+        self.assertTrue(is_equity_code("2887E"))
+        self.assertTrue(is_equity_code("910322"))
+        self.assertFalse(is_equity_code("0055"))
+        self.assertFalse(is_equity_code("00679B"))
+        self.assertFalse(is_equity_code("00919"))
 
 
 if __name__ == "__main__":
