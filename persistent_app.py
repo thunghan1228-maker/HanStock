@@ -19,6 +19,8 @@ from group_strength_store import (
 )
 from hanstock_app import _normalize_stock_code, app
 from intraday_signal_collector import start_intraday_signal_collector
+from daytrade_flow_collector import start_daytrade_flow_collector
+from daytrade_flow_store import load_daytrade_scan_status
 from intraday_signal_store import (
     intraday_signal_count,
     load_latest_signals,
@@ -71,6 +73,7 @@ async def _persistent_lifespan(fastapi_app):
         # /data SQLite；Vercel 不需要持有 Railway 寫入金鑰。
         start_group_strength_collector()
         start_intraday_signal_collector()
+        start_daytrade_flow_collector()
         yield state
 
 
@@ -87,6 +90,10 @@ def get_persistence_status() -> dict[str, Any]:
         "HANSTOCK_INTRADAY_SIGNAL_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["intradaySignalCount"] = intraday_signal_count()
+    data["daytradeFlowCollectorEnabled"] = os.getenv(
+        "HANSTOCK_DAYTRADE_COLLECTOR_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    data["daytradeFlowLatestScan"] = load_daytrade_scan_status()
     return {"status": "ok", "data": data}
 
 

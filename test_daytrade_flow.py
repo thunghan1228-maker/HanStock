@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from daytrade_flow import latest_completed_trade_date, summarize_historical_ticks
+from daytrade_flow import (
+    classify_daytrade_row,
+    latest_completed_trade_date,
+    limit_up_price,
+    summarize_historical_ticks,
+)
 from otc_index import TW_TZ
 
 
@@ -41,6 +46,38 @@ class DaytradeFlowTests(unittest.TestCase):
         self.assertEqual(row["total_turnover_amount"], 7_620_000)
         self.assertNotEqual(row["price_impact_pct"], 0)
         self.assertEqual(row["trade_date"], "2026-08-14")
+
+    def test_limit_up_price_uses_taiwan_tick_size_and_rounds_down(self):
+        self.assertEqual(limit_up_price(189), 207.5)
+        self.assertEqual(limit_up_price(30.5), 33.55)
+        self.assertEqual(limit_up_price(472), 519)
+
+    def test_three_layers_prioritize_locked_then_touched(self):
+        base = {
+            "large_buy_amount": 5_000_000,
+            "large_sell_amount": 1_000_000,
+            "total_turnover_amount": 10_000_000,
+            "late_large_buy_amount": 2_000_000,
+            "day_change_pct": 9.8,
+            "suspicion_score": 90,
+        }
+        self.assertEqual(classify_daytrade_row({**base, "closed_at_limit_up": True}), "漲停鎖定")
+        self.assertEqual(classify_daytrade_row({**base, "reached_limit_up": True}), "曾達漲停")
+        self.assertEqual(classify_daytrade_row(base), "強勢大單")
+
+    def test_general_trading_is_not_listed(self):
+        self.assertEqual(
+            classify_daytrade_row(
+                {
+                    "large_buy_amount": 1_000_000,
+                    "large_sell_amount": 2_000_000,
+                    "total_turnover_amount": 10_000_000,
+                    "day_change_pct": -1,
+                    "suspicion_score": 15,
+                }
+            ),
+            "",
+        )
 
 
 if __name__ == "__main__":

@@ -654,49 +654,87 @@ def get_hub_bars_batch(
 def get_daytrade_flow_ranking(
     date: str | None = Query(default=None, description="指定交易日 YYYY-MM-DD；未指定取最近已收盤平日"),
     codes: str | None = Query(default=None, description="可選：逗號分隔股票代號"),
-    limit: int = Query(default=50, ge=1, le=200),
-    scan_limit: int = Query(default=12, ge=1, le=80),
+    limit: int = Query(default=500, ge=1, le=2000),
+    scan_limit: int = Query(default=80, ge=1, le=200),
+    force: bool = Query(default=False, description="強制重跑指定交易日的全市場掃描"),
 ) -> dict[str, Any]:
     """回補 Shioaji 歷史逐筆成交並產生疑似隔日沖資金流排行。
 
     不含券商分點身分；大單門檻與盤中主力副圖相同。未傳日期時，
     週末會自動回到星期五，避免把星期六誤當成資料日。
     """
-    from daytrade_flow import candidate_codes, resolve_trade_date, scan_daytrade_flow
+    from daytrade_flow import (
+        daytrade_flow_snapshot,
+        fetch_daily_market_snapshot,
+        resolve_trade_date,
+        scan_daytrade_flow,
+        start_full_market_scan,
+    )
 
     try:
         trade_date = resolve_trade_date(date)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    svc = _quote_service_or_503()
     requested = _split_codes(codes)
     if requested:
+        svc = _quote_service_or_503()
         candidates = requested[:scan_limit]
-    else:
-        active_codes = svc.get_active_stock_codes()
-        candidates = candidate_codes(active_codes)[:scan_limit]
+        try:
+            daily = fetch_daily_market_snapshot(trade_date)
+            rows, errors = scan_daytrade_flow(
+                svc,
+                trade_date=trade_date,
+                codes=candidates,
+                daily_rows=daily,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        selected = rows[:limit]
+        return {
+            "status": "ok",
+            "source": "shioaji_historical_ticks_estimate",
+            "scan_status": "diagnostic",
+            "data_date": trade_date,
+            "updated_at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+            "requested_count": len(candidates),
+            "processed_count": len(candidates),
+            "available_count": len(rows),
+            "count": len(selected),
+            "rows": selected,
+            "errors": errors[:20],
+            "disclaimer": "由逐筆成交的大單方向推估，不含券商分點身分。",
+        }
 
-    try:
-        rows, errors = scan_daytrade_flow(
-            svc,
-            trade_date=trade_date,
-            codes=candidates,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # 全市場模式永不阻塞 HTTP：啟動背景工作後立即回傳已永久保存的進度與名單。
+    svc = None
+    if SHIOAJI_QUOTE_ENABLED:
+        from quote_service import get_quote_service
 
-    selected = rows[:limit]
+        candidate_service = get_quote_service()
+        if bool(getattr(getattr(candidate_service, "state", None), "logged_in", False)):
+            svc = candidate_service
+    rows, scan = daytrade_flow_snapshot(trade_date, limit=limit)
+    started = False
+    if svc is not None and (force or scan.get("status") != "completed"):
+        started = start_full_market_scan(svc, trade_date, force=force)
+        if started:
+            # 讓前端立即知道工作已排入，不必等待第一批 SQLite progress。
+            scan = {**scan, "status": "starting"}
+
     return {
         "status": "ok",
-        "source": "shioaji_historical_ticks_estimate",
+        "source": "twse_tpex_daily_and_shioaji_historical_ticks_estimate",
+        "scan_status": scan.get("status", "not_started"),
+        "scan_started": started,
         "data_date": trade_date,
         "updated_at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
-        "requested_count": len(candidates),
+        "requested_count": int(scan.get("requested_count") or 0),
+        "processed_count": int(scan.get("processed_count") or 0),
         "available_count": len(rows),
-        "count": len(selected),
-        "rows": selected,
-        "errors": errors[:20],
+        "count": len(rows),
+        "rows": rows,
+        "errors": list(scan.get("errors") or [])[:20],
         "disclaimer": "由逐筆成交的大單方向推估，不含券商分點身分。",
     }
 
