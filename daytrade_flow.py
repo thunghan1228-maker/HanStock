@@ -62,14 +62,14 @@ def _number(value: Any) -> float:
     return float(match.group(0)) if match else 0.0
 
 
-def _fetch_json(url: str, params: Mapping[str, str]) -> dict[str, Any]:
+def _fetch_json(url: str, params: Mapping[str, str]) -> Any:
     request = urllib.request.Request(
         f"{url}?{urllib.parse.urlencode(params)}",
         headers={"Accept": "application/json", "User-Agent": "HanStock-DaytradeFlow/2.0"},
     )
     with urllib.request.urlopen(request, timeout=45) as response:
         payload = json.load(response)
-    if not isinstance(payload, dict):
+    if not isinstance(payload, (dict, list)):
         raise RuntimeError("交易所日行情格式錯誤")
     return payload
 
@@ -130,7 +130,7 @@ def _daily_row(
     }
 
 
-def fetch_daily_market_snapshot(trade_date: str) -> list[dict[str, Any]]:
+def _fetch_archived_daily_market_snapshot(trade_date: str) -> list[dict[str, Any]]:
     """讀取 TWSE/TPEx 官方收盤行情，建立全市場掃描母名單。"""
     target = date.fromisoformat(trade_date)
     rows: list[dict[str, Any]] = []
@@ -203,6 +203,58 @@ def fetch_daily_market_snapshot(trade_date: str) -> list[dict[str, Any]]:
     if not deduplicated:
         raise RuntimeError(f"{trade_date} 交易所收盤行情為空，不覆蓋既有備份")
     return list(deduplicated.values())
+
+
+def _roc_date(trade_date: str) -> str:
+    parsed = date.fromisoformat(trade_date)
+    return f"{parsed.year - 1911:03d}{parsed.month:02d}{parsed.day:02d}"
+
+
+def _fetch_current_openapi_snapshot(trade_date: str) -> list[dict[str, Any]]:
+    """交易所歷史端點被機房擋下時，改走官方 OpenAPI 最近交易日備援。"""
+    expected = _roc_date(trade_date)
+    rows: list[dict[str, Any]] = []
+    sources = (
+        ("上市", "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"),
+        ("上櫃", "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"),
+    )
+    for market, url in sources:
+        payload = _fetch_json(url, {})
+        raw_rows = payload if isinstance(payload, list) else []
+        for raw in raw_rows:
+            if not isinstance(raw, dict) or str(raw.get("Date") or "") != expected:
+                continue
+            if market == "上市":
+                close = _number(raw.get("ClosingPrice"))
+                change = _number(raw.get("Change"))
+                daily = _daily_row(
+                    ticker=_text(raw.get("Code")), name=_text(raw.get("Name")), market=market,
+                    open_price=_number(raw.get("OpeningPrice")), high_price=_number(raw.get("HighestPrice")),
+                    close_price=close, reference_price=close - change,
+                    turnover=_number(raw.get("TradeValue")),
+                )
+            else:
+                close = _number(raw.get("Close"))
+                change = _number(raw.get("Change"))
+                daily = _daily_row(
+                    ticker=_text(raw.get("SecuritiesCompanyCode")), name=_text(raw.get("CompanyName")), market=market,
+                    open_price=_number(raw.get("Open")), high_price=_number(raw.get("High")),
+                    close_price=close, reference_price=close - change,
+                    turnover=_number(raw.get("TransactionAmount")),
+                )
+            if daily:
+                rows.append(daily)
+    if not rows:
+        raise RuntimeError(f"{trade_date} 官方 OpenAPI 尚無相符交易日，不覆蓋既有備份")
+    return list({str(row["ticker"]): row for row in rows}.values())
+
+
+def fetch_daily_market_snapshot(trade_date: str) -> list[dict[str, Any]]:
+    try:
+        return _fetch_archived_daily_market_snapshot(trade_date)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("交易所歷史端點失敗，改走官方 OpenAPI 備援: %s", exc)
+        return _fetch_current_openapi_snapshot(trade_date)
 
 
 def latest_completed_trade_date(now: Optional[datetime] = None) -> str:
