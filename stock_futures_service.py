@@ -44,6 +44,20 @@ TRANSIENT_SESSION_MARKERS = (
     "TRANSIENT TRANSPORT FAILURE",
 )
 
+# 與 quote_service 共用相同預設值，但不反向匯入 quote_service，避免測試隔離載入及循環匯入。
+DEFAULT_PRIMARY_RAILWAY_PROJECT_ID = "4b2403bb-cd2d-4917-bd8f-80dffe894d00"
+
+
+def _quote_deployment_role() -> str:
+    current_project = os.getenv("RAILWAY_PROJECT_ID", "").strip()
+    primary_project = os.getenv(
+        "HANSTOCK_PRIMARY_RAILWAY_PROJECT_ID",
+        DEFAULT_PRIMARY_RAILWAY_PROJECT_ID,
+    ).strip()
+    if current_project and primary_project and current_project != primary_project:
+        return "standby"
+    return "primary"
+
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
@@ -409,9 +423,7 @@ class StockFuturesQuoteService:
     def _ensure_pools(self) -> None:
         # 備援 Railway 專案不得偷偷建立共享行情登入；否則正式／備援各四條
         # 再加主連線，會超過同一 person_id 五條限制並讓 P2P Session 卡住。
-        from quote_service import quote_deployment_role
-
-        if quote_deployment_role() != "primary":
+        if _quote_deployment_role() != "primary":
             raise RuntimeError("備援服務不建立 Shioaji 股期連線，請使用正式行情服務")
         # FastAPI/Vercel 可能同時送入多批全市場訂閱；初始化必須單飛，否則
         # 多個執行緒會同時看到 current=0，建立出數條都叫 pool #0 的連線。
