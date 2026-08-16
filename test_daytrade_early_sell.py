@@ -58,18 +58,18 @@ class DaytradeEarlySellTests(unittest.TestCase):
         database.DATABASE_PATH = self.old_path
         self.temp.cleanup()
 
-    def test_uses_previous_net_amount_and_allows_later_five_minute_repeat(self):
+    def test_uses_estimated_next_day_sell_pressure_and_allows_later_five_minute_repeat(self):
         service = FakeService()
         hub = FakeHub({
             "2330": [
-                {"ts": ts(9, 0), "close": 99, "main_sell_amount": 3_000_000},
-                {"ts": ts(9, 4), "close": 98, "main_sell_amount": 1_000_000},
+                {"ts": ts(9, 0), "close": 99, "main_sell_amount": 2_000_000},
+                {"ts": ts(9, 4), "close": 98, "main_sell_amount": 500_000},
             ],
         })
         now = datetime(2026, 8, 17, 9, 4, 30, tzinfo=TW_TZ)
         first = collect_early_sell_signals(service, hub, now)
         self.assertEqual(len(first["inserted"]), 1)
-        self.assertIn("前日淨額 8000000", first["inserted"][0]["note"])
+        self.assertIn("前日預估隔日賣壓 5000000", first["inserted"][0]["note"])
         self.assertIn("比例 50.0%", first["inserted"][0]["note"])
 
         # 同一根 5 分 K 重跑不再通知。
@@ -84,23 +84,25 @@ class DaytradeEarlySellTests(unittest.TestCase):
             service, hub, datetime(2026, 8, 17, 9, 6, 20, tzinfo=TW_TZ)
         )
         self.assertEqual(len(later["inserted"]), 1)
-        self.assertIn("比例 62.5%", later["inserted"][0]["note"])
+        self.assertIn("比例 70.0%", later["inserted"][0]["note"])
 
-    def test_does_not_use_previous_buy_amount_or_nine_thirty_bar(self):
+    def test_includes_nine_thirty_minute(self):
         service = FakeService()
         hub = FakeHub({
             "2330": [
-                # 3.9m 已超過前日買進 10m 的錯誤 39% 判法，但未達前日淨額 8m 的 50%。
-                {"ts": ts(9, 29), "close": 99, "main_sell_amount": 3_900_000},
-                # 09:30 起的成交不屬於使用者指定的九點半之前。
-                {"ts": ts(9, 30), "close": 98, "main_sell_amount": 5_000_000},
+                # 前日預估隔日賣壓為 5m，09:29 累計 2m 尚未達 50%。
+                {"ts": ts(9, 29), "close": 99, "main_sell_amount": 2_000_000},
+                # 09:30 這一分鐘包含在使用者指定的監控區間內。
+                {"ts": ts(9, 30), "close": 98, "main_sell_amount": 500_000},
             ],
         })
         result = collect_early_sell_signals(
             service, hub, datetime(2026, 8, 17, 9, 30, 20, tzinfo=TW_TZ)
         )
-        self.assertFalse(result["inWindow"])
-        self.assertEqual(result["inserted"], [])
+        self.assertTrue(result["inWindow"])
+        self.assertEqual(len(result["inserted"]), 1)
+        self.assertEqual(result["inserted"][0]["barTs"], ts(9, 30))
+        self.assertIn("比例 50.0%", result["inserted"][0]["note"])
 
 
 if __name__ == "__main__":
