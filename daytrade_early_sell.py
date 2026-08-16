@@ -86,7 +86,7 @@ def collect_early_sell_signals(
     minute = _minute_of_day(current)
     prepared = prepare_subscriptions(service, current)
     previous_date, candidates = monitored_candidates()
-    in_window = current.weekday() < 5 and WINDOW_START_MINUTE <= minute <= WINDOW_END_MINUTE
+    in_window = current.weekday() < 5 and WINDOW_START_MINUTE <= minute < WINDOW_END_MINUTE
     if not in_window:
         return {
             **prepared,
