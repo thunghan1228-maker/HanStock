@@ -99,6 +99,7 @@ class DaytradeEarlySellTests(unittest.TestCase):
         result = collect_early_sell_signals(
             service, hub, datetime(2026, 8, 17, 9, 30, 20, tzinfo=TW_TZ)
         )
+        self.assertFalse(result["inWindow"])
         self.assertEqual(result["inserted"], [])
 
 
