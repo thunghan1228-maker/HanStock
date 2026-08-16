@@ -69,7 +69,7 @@ class DaytradeEarlySellTests(unittest.TestCase):
         now = datetime(2026, 8, 17, 9, 4, 30, tzinfo=TW_TZ)
         first = collect_early_sell_signals(service, hub, now)
         self.assertEqual(len(first["inserted"]), 1)
-        self.assertIn("前日預估隔日賣壓 5000000", first["inserted"][0]["note"])
+        self.assertIn("前日預估隔日賣壓 500.0 萬", first["inserted"][0]["note"])
         self.assertIn("比例 50.0%", first["inserted"][0]["note"])
 
         # 同一根 5 分 K 重跑不再通知。
