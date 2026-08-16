@@ -1,4 +1,4 @@
-"""隔日 09:00～09:30 大單賣壓達前日大單淨額 50% 的即時訊號。"""
+"""隔日 09:00～09:30 大單賣出達前日預估隔日賣壓 50% 的即時訊號。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from otc_index import TW_TZ
 
 
 SIGNAL_KIND = "daytradeEarlySell50"
-SIGNAL_LABEL = "早盤大單賣壓達前日淨額 50%"
+SIGNAL_LABEL = "早盤大單賣出達前日預估隔日賣壓 50%"
 THRESHOLD_RATE = 0.50
 PREPARE_START_MINUTE = 8 * 60 + 50
 WINDOW_START_MINUTE = 9 * 60
@@ -41,6 +41,34 @@ def _bar_datetime(timestamp: Any) -> datetime | None:
         return None
 
 
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _estimated_next_day_sell_pressure(row: dict[str, Any]) -> float:
+    """沿用戰鬥版隔日沖表格的「預估隔日賣壓」公式。"""
+    buy = max(0.0, float(row.get("large_buy_amount") or 0))
+    sell = max(0.0, float(row.get("large_sell_amount") or 0))
+    turnover = max(0.0, float(row.get("total_turnover_amount") or 0))
+    net = max(0.0, buy - sell)
+    if net <= 0:
+        return 0.0
+    score = float(row.get("suspicion_score") or 0)
+    if score <= 0:
+        participation = buy / turnover * 100 if turnover > 0 else 0.0
+        net_rate = net / turnover * 100 if turnover > 0 else 0.0
+        late_buy = max(0.0, float(row.get("late_large_buy_amount") or 0))
+        late_concentration = late_buy / buy * 100 if buy > 0 else 0.0
+        price_impact = max(0.0, float(row.get("price_impact_pct") or 0))
+        score = (
+            _clamp(participation / 25, 0, 1) * 40
+            + _clamp(net_rate / 15, 0, 1) * 25
+            + _clamp(late_concentration / 80, 0, 1) * 20
+            + _clamp(price_impact / 5, 0, 1) * 15
+        )
+    return net * _clamp((score - 20) / 80, 0.15, 0.85)
+
+
 def monitored_candidates() -> tuple[str, list[dict[str, Any]]]:
     """讀取最近有效交易日名單；休市日不會改用空日期覆蓋。"""
     rows = load_daytrade_rows(None, limit=2000)
@@ -49,12 +77,10 @@ def monitored_candidates() -> tuple[str, list[dict[str, Any]]]:
     previous_date = str(rows[0].get("trade_date") or "")
     candidates: list[dict[str, Any]] = []
     for row in rows:
-        buy = max(0.0, float(row.get("large_buy_amount") or 0))
-        sell = max(0.0, float(row.get("large_sell_amount") or 0))
-        previous_net_amount = buy - sell
-        if previous_net_amount <= 0:
+        estimated_sell_pressure = _estimated_next_day_sell_pressure(row)
+        if estimated_sell_pressure <= 0:
             continue
-        candidates.append({**row, "previous_net_amount": previous_net_amount})
+        candidates.append({**row, "previous_estimated_sell_pressure": estimated_sell_pressure})
     return previous_date, candidates
 
 
@@ -86,7 +112,7 @@ def collect_early_sell_signals(
     minute = _minute_of_day(current)
     prepared = prepare_subscriptions(service, current)
     previous_date, candidates = monitored_candidates()
-    in_window = current.weekday() < 5 and WINDOW_START_MINUTE <= minute < WINDOW_END_MINUTE
+    in_window = current.weekday() < 5 and WINDOW_START_MINUTE <= minute <= WINDOW_END_MINUTE
     if not in_window:
         return {
             **prepared,
@@ -106,20 +132,20 @@ def collect_early_sell_signals(
             if bar_time is None or bar_time.strftime("%Y-%m-%d") != today:
                 continue
             bar_minute = _minute_of_day(bar_time)
-            if WINDOW_START_MINUTE <= bar_minute < WINDOW_END_MINUTE:
+            if WINDOW_START_MINUTE <= bar_minute <= WINDOW_END_MINUTE:
                 eligible.append((bar, bar_time))
         if not eligible:
             continue
         cumulative_sell = sum(max(0.0, float(bar.get("main_sell_amount") or 0)) for bar, _ in eligible)
-        previous_net = float(row["previous_net_amount"])
-        if cumulative_sell < previous_net * THRESHOLD_RATE:
+        previous_pressure = float(row["previous_estimated_sell_pressure"])
+        if cumulative_sell < previous_pressure * THRESHOLD_RATE:
             continue
         sell_bars = [(bar, bar_time) for bar, bar_time in eligible if float(bar.get("main_sell_amount") or 0) > 0]
         if not sell_bars:
             continue
         latest_bar, latest_time = sell_bars[-1]
         five_minute_ts = int(latest_time.timestamp() * 1000) // 300_000 * 300_000
-        ratio = cumulative_sell / previous_net * 100
+        ratio = cumulative_sell / previous_pressure * 100
         pending.append({
             "tradeDate": today,
             "ticker": ticker,
@@ -129,7 +155,7 @@ def collect_early_sell_signals(
             "label": SIGNAL_LABEL,
             "barTs": five_minute_ts,
             "price": max(0.01, float(latest_bar.get("close") or row.get("close_price") or 0.01)),
-            "note": f"前日淨額 {previous_net:.0f}｜早盤大單賣出 {cumulative_sell:.0f}｜比例 {ratio:.1f}%",
+            "note": f"前日預估隔日賣壓 {previous_pressure:.0f}｜早盤大單賣出 {cumulative_sell:.0f}｜比例 {ratio:.1f}%",
         })
 
     inserted = save_intraday_signals(pending)
