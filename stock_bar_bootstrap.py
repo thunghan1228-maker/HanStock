@@ -17,7 +17,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Optional
 
 from otc_index import (
@@ -34,6 +34,14 @@ from market_data_hub import _is_main_force_trade, _trade_side
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
 RETRY_AFTER_SECONDS = 30.0
+
+
+def _latest_weekday_trade_date(now_ms: int) -> str:
+    """週末改抓前一個交易日，避免 Shioaji 查到當日空資料。"""
+    trade_day = datetime.fromtimestamp(now_ms / 1000, TW_TZ)
+    while trade_day.weekday() >= 5:
+        trade_day -= timedelta(days=1)
+    return trade_day.strftime("%Y-%m-%d")
 
 
 @dataclass
@@ -450,7 +458,7 @@ def get_resilient_stock_bars(
     service = service if service is not None else _default_service()
     hub = hub if hub is not None else _default_hub()
     now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
-    trade_date = datetime.fromtimestamp(now_value / 1000, TW_TZ).strftime("%Y-%m-%d")
+    trade_date = _latest_weekday_trade_date(now_value)
 
     subscription: Any = None
     try:
