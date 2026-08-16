@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hanstock.api")
 
-API_VERSION = "1.3.2"
+API_VERSION = "1.4.0"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 TW_TZ = timezone(timedelta(hours=8))
@@ -737,6 +737,48 @@ def get_daytrade_flow_ranking(
         "errors": list(scan.get("errors") or [])[:20],
         "disclaimer": "由逐筆成交的大單方向推估，不含券商分點身分。",
     }
+
+
+# ------------------------------------------------------------------
+# 盤後選股：日線三角收斂
+# ------------------------------------------------------------------
+
+@app.get("/api/screener/triangles/latest")
+def get_triangle_screener_results(
+    status: str | None = Query(default=None, description="形成中、接近突破、突破待量、放量突破"),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    from triangle_screener import load_triangle_results
+
+    try:
+        result = load_triangle_results()
+    except RuntimeError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    rows = list(result.get("rows") or [])
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return {
+        "status": "ok",
+        "strategy": result.get("strategy"),
+        "generated_at": result.get("generated_at"),
+        "summary": result.get("summary", {}),
+        "count": min(len(rows), limit),
+        "rows": rows[:limit],
+    }
+
+
+@app.post("/api/screener/triangles/run")
+def run_triangle_screener(
+    x_hanstock_sync_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    expected_token = os.getenv("HANSTOCK_SYNC_TOKEN", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="伺服器尚未設定同步金鑰。")
+    if x_hanstock_sync_token != expected_token:
+        raise HTTPException(status_code=401, detail="同步金鑰不正確。")
+    from triangle_screener import scan_all_triangles
+
+    return {"status": "ok", **scan_all_triangles()}
 
 
 # ------------------------------------------------------------------
