@@ -13,6 +13,7 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossUp20ma",
     "firstCrossDown20ma",
 }
+ONCE_PER_BAR_KINDS = {"daytradeEarlySell50"}
 
 
 def _ensure_table() -> None:
@@ -124,6 +125,20 @@ def save_intraday_signals(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]
                 ).fetchone()
                 if exists is not None:
                     continue
+            if signal["kind"] in ONCE_PER_BAR_KINDS:
+                exists = connection.execute(
+                    """
+                    SELECT id FROM intraday_signals
+                    WHERE trade_date = ? AND ticker = ? AND kind = ? AND bar_ts = ?
+                    LIMIT 1
+                    """,
+                    (
+                        signal["trade_date"], signal["ticker"],
+                        signal["kind"], signal["bar_ts"],
+                    ),
+                ).fetchone()
+                if exists is not None:
+                    continue
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO intraday_signals (
@@ -172,6 +187,26 @@ def load_latest_signals(trade_date: str, limit: int = 20, market_only: bool = Fa
             LIMIT ?
             """,
             (*params, limit),
+        ).fetchall()
+    return [_to_api(row) for row in rows]
+
+
+def load_latest_signals_by_kind(
+    trade_date: str,
+    kind: str,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    _ensure_table()
+    limit = max(1, min(int(limit), 500))
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM intraday_signals
+            WHERE trade_date = ? AND kind = ?
+            ORDER BY bar_ts DESC, id DESC
+            LIMIT ?
+            """,
+            (trade_date, kind, limit),
         ).fetchall()
     return [_to_api(row) for row in rows]
 

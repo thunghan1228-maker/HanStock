@@ -107,6 +107,9 @@ class MarketDataHubBarTests(unittest.TestCase):
         self.assertEqual(bar["main_buy_volume"], 27)
         self.assertEqual(bar["main_sell_volume"], 30)
         self.assertEqual(bar["main_net_volume"], -3)
+        self.assertEqual(bar["main_buy_amount"], 3_700_000)
+        self.assertEqual(bar["main_sell_amount"], 2_985_000)
+        self.assertEqual(bar["main_net_amount"], 715_000)
         self.assertEqual(bar["main_tick_count"], 3)
         self.assertTrue(bar["main_force_available"])
 
