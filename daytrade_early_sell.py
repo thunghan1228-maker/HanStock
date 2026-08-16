@@ -57,6 +57,15 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def _format_tw_amount(value: float) -> str:
+    amount = max(0.0, float(value or 0))
+    if amount >= 100_000_000:
+        return f"{amount / 100_000_000:.2f} 億"
+    if amount >= 10_000:
+        return f"{amount / 10_000:.1f} 萬"
+    return f"{amount:.0f}"
+
+
 def _estimated_next_day_sell_pressure(row: dict[str, Any]) -> float:
     """沿用戰鬥版隔日沖表格的「預估隔日賣壓」公式。"""
     buy = max(0.0, float(row.get("large_buy_amount") or 0))
@@ -165,7 +174,7 @@ def historical_early_sell_signals_for_ticks(
             "label": SIGNAL_LABEL,
             "barTs": bar_ts,
             "price": max(0.01, float(bar["price"] or row.get("close_price") or 0.01)),
-            "note": f"前日預估隔日賣壓 {previous_pressure:.0f}｜早盤大單賣出 {cumulative_sell:.0f}｜比例 {ratio:.1f}%",
+            "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜早盤大單賣出 {_format_tw_amount(cumulative_sell)}｜比例 {ratio:.1f}%",
             "demo": True,
         })
     return signals
@@ -308,7 +317,7 @@ def collect_early_sell_signals(
             "label": SIGNAL_LABEL,
             "barTs": five_minute_ts,
             "price": max(0.01, float(latest_bar.get("close") or row.get("close_price") or 0.01)),
-            "note": f"前日預估隔日賣壓 {previous_pressure:.0f}｜早盤大單賣出 {cumulative_sell:.0f}｜比例 {ratio:.1f}%",
+            "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜早盤大單賣出 {_format_tw_amount(cumulative_sell)}｜比例 {ratio:.1f}%",
         })
 
     inserted = save_intraday_signals(pending)
