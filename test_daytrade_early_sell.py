@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import database
-from daytrade_early_sell import collect_early_sell_signals
+from daytrade_early_sell import collect_early_sell_signals, historical_early_sell_signals_for_ticks
 from daytrade_flow_store import save_daytrade_rows
 from otc_index import TW_TZ
 
@@ -103,6 +103,28 @@ class DaytradeEarlySellTests(unittest.TestCase):
         self.assertEqual(len(result["inserted"]), 1)
         self.assertEqual(result["inserted"][0]["barTs"], ts(9, 30))
         self.assertIn("比例 50.0%", result["inserted"][0]["note"])
+
+    def test_historical_demo_replays_actual_ticks_without_saving_official_signal(self):
+        row = saved_row()
+        ticks = {
+            "ts": [
+                datetime(2026, 8, 17, 9, 0),
+                datetime(2026, 8, 17, 9, 4),
+                datetime(2026, 8, 17, 9, 6),
+                datetime(2026, 8, 17, 9, 30),
+            ],
+            "close": [99, 98, 97, 96],
+            "volume": [20, 20, 20, 20],
+            "amount": [2_000_000, 500_000, 1_000_000, 500_000],
+            "tick_type": [2, 2, 2, 2],
+            "simtrade": [False, False, False, False],
+        }
+        signals = historical_early_sell_signals_for_ticks(ticks, row, "2026-08-17")
+        self.assertEqual(len(signals), 3)
+        self.assertEqual(signals[0]["barTs"], ts(9, 0))
+        self.assertIn("比例 50.0%", signals[0]["note"])
+        self.assertEqual(signals[-1]["barTs"], ts(9, 30))
+        self.assertTrue(signals[-1]["demo"])
 
 
 if __name__ == "__main__":

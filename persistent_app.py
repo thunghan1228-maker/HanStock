@@ -20,7 +20,7 @@ from group_strength_store import (
 from hanstock_app import _normalize_stock_code, app
 from intraday_signal_collector import start_intraday_signal_collector
 from daytrade_flow_collector import start_daytrade_flow_collector
-from daytrade_early_sell import early_sell_signal_snapshot
+from daytrade_early_sell import early_sell_signal_snapshot, historical_early_sell_demo_snapshot
 from daytrade_early_sell_collector import collect_once as collect_early_sell_once
 from daytrade_early_sell_collector import start_daytrade_early_sell_collector
 from daytrade_flow_store import load_daytrade_scan_status
@@ -121,6 +121,28 @@ def get_daytrade_early_sell_signals(
         "prepared": bool(runtime.get("prepared")),
         "activeCount": int(runtime.get("activeCount") or 0),
         "failedCount": int(runtime.get("failedCount") or 0),
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/api/hub/daytrade-early-sell-demo")
+def get_daytrade_early_sell_demo(
+    date: str = Query(..., description="歷史交易日 YYYY-MM-DD"),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """以歷史逐筆成交重播早盤警示；不寫入正式訊號資料庫。"""
+    trade_date = _validate_trade_date(date)
+    from quote_service import get_quote_service
+
+    try:
+        snapshot = historical_early_sell_demo_snapshot(
+            get_quote_service(), trade_date, limit=limit
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        **snapshot,
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
