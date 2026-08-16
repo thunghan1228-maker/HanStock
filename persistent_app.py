@@ -20,6 +20,9 @@ from group_strength_store import (
 from hanstock_app import _normalize_stock_code, app
 from intraday_signal_collector import start_intraday_signal_collector
 from daytrade_flow_collector import start_daytrade_flow_collector
+from daytrade_early_sell import early_sell_signal_snapshot
+from daytrade_early_sell_collector import collect_once as collect_early_sell_once
+from daytrade_early_sell_collector import start_daytrade_early_sell_collector
 from daytrade_flow_store import load_daytrade_scan_status
 from intraday_signal_store import (
     intraday_signal_count,
@@ -74,6 +77,7 @@ async def _persistent_lifespan(fastapi_app):
         start_group_strength_collector()
         start_intraday_signal_collector()
         start_daytrade_flow_collector()
+        start_daytrade_early_sell_collector()
         yield state
 
 
@@ -94,7 +98,31 @@ def get_persistence_status() -> dict[str, Any]:
         "HANSTOCK_DAYTRADE_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["daytradeFlowLatestScan"] = load_daytrade_scan_status()
+    data["daytradeEarlySellCollectorEnabled"] = os.getenv(
+        "HANSTOCK_EARLY_SELL_COLLECTOR_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
     return {"status": "ok", "data": data}
+
+
+@app.get("/api/hub/daytrade-early-sell-signals")
+def get_daytrade_early_sell_signals(
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """09:00～09:30 累計大單賣出達前日大單淨額 50% 的即時訊號。"""
+    # API 被讀取時順手補跑一次；背景執行緒仍是主要來源，因此頁面未開啟也會監控。
+    try:
+        runtime = collect_early_sell_once()
+    except Exception:  # noqa: BLE001
+        runtime = {"prepared": False, "inserted": []}
+    snapshot = early_sell_signal_snapshot(limit=limit)
+    return {
+        "status": "ok",
+        **snapshot,
+        "prepared": bool(runtime.get("prepared")),
+        "activeCount": int(runtime.get("activeCount") or 0),
+        "failedCount": int(runtime.get("failedCount") or 0),
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
 
 
 @app.get("/api/hub/history5m/{stock_code}")
