@@ -134,13 +134,13 @@ def evaluate_triangle(
 
 
 def _unique_stocks() -> Iterable[tuple[str, str]]:
-    from stock_groups import STOCK_GROUPS
+    from database import get_connection
 
-    stocks: dict[str, str] = {}
-    for members in STOCK_GROUPS.values():
-        for code, name in members:
-            stocks.setdefault(str(code), name)
-    return sorted(stocks.items())
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT stock_code, stock_name FROM stocks ORDER BY stock_code"
+        ).fetchall()
+    return [(str(row["stock_code"]), str(row["stock_name"])) for row in rows]
 
 
 def scan_all_triangles() -> dict[str, Any]:
