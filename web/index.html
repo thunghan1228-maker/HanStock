@@ -81,6 +81,17 @@
     <div id="searchResult" style="margin-top:16px"></div>
   </section>
 
+  <section class="card section" id="triangleScreener">
+    <div class="futures-header"><h2>盤後選股｜日線三角收斂</h2><span class="label" id="triangleGenerated">尚未掃描</span></div>
+    <div class="toolbar" style="margin-bottom:12px">
+      <button class="secondary triangle-filter" data-status="">全部</button>
+      <button class="secondary triangle-filter" data-status="接近突破">接近突破</button>
+      <button class="secondary triangle-filter" data-status="放量突破">放量突破</button>
+    </div>
+    <div id="triangleEmpty" class="empty">載入盤後選股結果中…</div>
+    <div style="overflow:auto"><table id="triangleTable" class="hidden"><thead><tr><th>狀態</th><th>代號</th><th>名稱</th><th>收盤</th><th>距上緣</th><th>量比</th><th>分數</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
   <section class="card section">
     <h2>工具</h2>
     <div class="toolbar"><a class="btn secondary" href="/docs" target="_blank">API 文件</a><a class="btn secondary" href="/api/rule1/latest" target="_blank">原始 Rule1 JSON</a><button id="refreshBtn">重新整理</button></div>
@@ -202,6 +213,20 @@ async function loadRule1(){
 async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await jsonFetch('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<div class="group">${s.stock_code} ${s.stock_name}</div>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
 async function showAll(){const box=$('#searchResult');box.textContent='載入中…';try{const d=await jsonFetch('/api/groups');box.innerHTML=`<div class="groups">${d.groups.map(g=>`<div class="group"><strong>${g.group_name}</strong><br><span class="label">${g.stock_count} 檔</span></div>`).join('')}</div>`}catch(e){box.textContent='載入失敗'}}
 
+// ===== 盤後選股：日線三角收斂 =====
+async function loadTriangles(status=''){
+  const empty=$('#triangleEmpty'),table=$('#triangleTable'),tbody=$('#triangleTable tbody');
+  empty.textContent='載入盤後選股結果中…';empty.classList.remove('hidden');table.classList.add('hidden');
+  try{
+    const query=status?'?status='+encodeURIComponent(status):'';
+    const d=await jsonFetch('/api/screener/triangles/latest'+query);
+    $('#triangleGenerated').textContent='更新於 '+fmtTime(d.generated_at);tbody.innerHTML='';
+    (d.rows||[]).forEach(row=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+row.status+'</td><td>'+row.stock_code+'</td><td>'+(row.stock_name||'—')+'</td><td>'+fmtNum(row.close)+'</td><td>'+signedNum(row.distance_to_upper_pct)+'%</td><td>'+fmtNum(row.volume_ratio_20d)+' 倍</td><td>'+fmtNum(row.score,1)+'</td>';tbody.appendChild(tr)});
+    empty.textContent=(d.rows||[]).length?'':'目前沒有符合條件的股票。';empty.classList.toggle('hidden',!!(d.rows||[]).length);table.classList.toggle('hidden',!(d.rows||[]).length);
+  }catch(e){empty.textContent='尚無掃描結果；請先完成日 K 更新並執行盤後掃描。'}
+}
+document.querySelectorAll('.triangle-filter').forEach(button=>button.onclick=()=>loadTriangles(button.dataset.status));
+
 // ===== 初始化 =====
 $('#searchBtn').onclick=search;
 $('#showAllBtn').onclick=showAll;
@@ -211,6 +236,7 @@ $('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
 // 首次載入
 updateFutures();
 loadRule1();
+loadTriangles();
 
 // 每 1 秒更新台指期行情（不重新整理整個網頁）
 setInterval(updateFutures, 1000);
