@@ -16,9 +16,12 @@ class FakeApi:
     def __init__(self) -> None:
         self.kbars_calls = 0
         self.ticks_calls = 0
+        self.kbars_dates: list[tuple[str, str]] = []
+        self.ticks_dates: list[str] = []
 
     def kbars(self, *, contract, start: str, end: str):
         self.kbars_calls += 1
+        self.kbars_dates.append((start, end))
         # Shioaji KBars 的 ts 是「收棒時間」；09:01 代表 09:00~09:01。
         closes = [
             datetime(2026, 8, 7, 9, 1, tzinfo=TW_TZ),
@@ -39,6 +42,7 @@ class FakeApi:
 
     def ticks(self, *, contract, date: str, **_kwargs):
         self.ticks_calls += 1
+        self.ticks_dates.append(date)
         return {
             "ts": [
                 datetime(2026, 8, 7, 9, 0, 10, tzinfo=TW_TZ),
@@ -206,6 +210,26 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.assertEqual(first_five["main_sell_amount"], 3_000_000)
         self.assertEqual(first_five["main_net_amount"], 700_000)
         self.assertTrue(first_five["main_force_available"])
+
+    def test_weekend_uses_previous_friday_and_restores_main_force_amounts(self):
+        self.hub.live_1m = {}
+        self.hub.live_5m = {}
+
+        result = get_resilient_stock_bars(
+            "2344",
+            "5m",
+            service=self.service,
+            hub=self.hub,
+            now_ms=ts(2026, 8, 9, 12, 0),
+        )
+
+        self.assertEqual(result["bootstrap"]["trade_date"], "2026-08-07")
+        self.assertEqual(self.service.api.kbars_dates, [("2026-08-07", "2026-08-07")])
+        self.assertEqual(self.service.api.ticks_dates, ["2026-08-07"])
+        self.assertTrue(result["bootstrap"]["main_force_history_ok"])
+        self.assertEqual(result["bars"][0]["main_buy_amount"], 3_700_000)
+        self.assertEqual(result["bars"][0]["main_sell_amount"], 3_000_000)
+        self.assertEqual(result["bars"][0]["main_net_amount"], 700_000)
 
     def test_failed_contract_returns_live_data_and_throttles_bootstrap_retry(self):
         self.service._resolve_stock_contract = lambda code: None
