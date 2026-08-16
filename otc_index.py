@@ -313,11 +313,16 @@ def aggregate_1m_to_5m(
                 "neutral_volume": sum(_safe_int(row.get("neutral_volume")) for row in rows),
                 "main_buy_volume": sum(_safe_int(row.get("main_buy_volume")) for row in rows),
                 "main_sell_volume": sum(_safe_int(row.get("main_sell_volume")) for row in rows),
+                "main_buy_amount": round(sum(float(row.get("main_buy_amount") or 0) for row in rows)),
+                "main_sell_amount": round(sum(float(row.get("main_sell_amount") or 0) for row in rows)),
                 "main_tick_count": sum(_safe_int(row.get("main_tick_count")) for row in rows),
                 "main_force_available": any(bool(row.get("main_force_available")) for row in rows),
             })
             aggregated["main_net_volume"] = (
                 aggregated["main_buy_volume"] - aggregated["main_sell_volume"]
+            )
+            aggregated["main_net_amount"] = (
+                aggregated["main_buy_amount"] - aggregated["main_sell_amount"]
             )
         result.append(aggregated)
 

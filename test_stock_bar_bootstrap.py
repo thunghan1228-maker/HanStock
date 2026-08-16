@@ -164,9 +164,13 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.assertEqual(bar_0900["main_buy_volume"], 25)
         self.assertEqual(bar_0900["main_sell_volume"], 30)
         self.assertEqual(bar_0900["main_net_volume"], -5)
+        self.assertEqual(bar_0900["main_buy_amount"], 2_500_000)
+        self.assertEqual(bar_0900["main_sell_amount"], 3_000_000)
+        self.assertEqual(bar_0900["main_net_amount"], -500_000)
         self.assertTrue(bar_0900["main_force_available"])
         bar_0901 = next(bar for bar in bars if bar["ts"] == ts(2026, 8, 7, 9, 1))
         self.assertEqual(bar_0901["main_buy_volume"], 2, "金額超過 100 萬的小張數交易也應列為大單")
+        self.assertEqual(bar_0901["main_buy_amount"], 1_200_000)
         self.assertNotIn(ts(2026, 8, 6, 9, 0), [bar["ts"] for bar in bars])
 
     def test_five_minute_reuses_history_cache_and_keeps_live_current_bucket(self):
@@ -198,6 +202,9 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.assertEqual(first_five["main_buy_volume"], 27)
         self.assertEqual(first_five["main_sell_volume"], 30)
         self.assertEqual(first_five["main_net_volume"], -3)
+        self.assertEqual(first_five["main_buy_amount"], 3_700_000)
+        self.assertEqual(first_five["main_sell_amount"], 3_000_000)
+        self.assertEqual(first_five["main_net_amount"], 700_000)
         self.assertTrue(first_five["main_force_available"])
 
     def test_failed_contract_returns_live_data_and_throttles_bootstrap_retry(self):

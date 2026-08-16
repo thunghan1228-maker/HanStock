@@ -137,11 +137,22 @@ def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
                 result[field] = max(0, int(raw.get(field, 0) or 0))
             except (TypeError, ValueError, OverflowError):
                 result[field] = 0
+    for field in ("main_buy_amount", "main_sell_amount"):
+        if field in raw:
+            try:
+                result[field] = max(0, round(float(raw.get(field, 0) or 0)))
+            except (TypeError, ValueError, OverflowError):
+                result[field] = 0
     if "main_net_volume" in raw:
         try:
             result["main_net_volume"] = int(raw.get("main_net_volume", 0) or 0)
         except (TypeError, ValueError, OverflowError):
             result["main_net_volume"] = 0
+    if "main_net_amount" in raw:
+        try:
+            result["main_net_amount"] = round(float(raw.get("main_net_amount", 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            result["main_net_amount"] = 0
     if "main_force_available" in raw:
         result["main_force_available"] = bool(raw.get("main_force_available"))
     return result
@@ -231,6 +242,9 @@ def _historical_tick_metrics(
             "main_buy_volume": 0,
             "main_sell_volume": 0,
             "main_net_volume": 0,
+            "main_buy_amount": 0.0,
+            "main_sell_amount": 0.0,
+            "main_net_amount": 0.0,
             "main_tick_count": 0,
             "tick_count": 0,
             "main_force_available": True,
@@ -243,12 +257,22 @@ def _historical_tick_metrics(
             "amount": amount,
         })
         if is_main_force and side in {"buy", "sell"}:
+            try:
+                trade_amount = max(0.0, float(amount or 0))
+            except (TypeError, ValueError, OverflowError):
+                trade_amount = 0.0
+            if trade_amount <= 0:
+                trade_amount = close * volume * 1000
             row[f"main_{side}_volume"] += volume
+            row[f"main_{side}_amount"] += trade_amount
             row["main_tick_count"] += 1
         row["tick_count"] += 1
 
     for row in metrics.values():
         row["main_net_volume"] = row["main_buy_volume"] - row["main_sell_volume"]
+        row["main_buy_amount"] = round(row["main_buy_amount"])
+        row["main_sell_amount"] = round(row["main_sell_amount"])
+        row["main_net_amount"] = row["main_buy_amount"] - row["main_sell_amount"]
     return metrics
 
 
