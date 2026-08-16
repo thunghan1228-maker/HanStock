@@ -104,6 +104,8 @@ class Bar:
     neutral_volume: int = 0
     main_buy_volume: int = 0
     main_sell_volume: int = 0
+    main_buy_amount: float = 0.0
+    main_sell_amount: float = 0.0
     main_tick_count: int = 0
 
     def update(
@@ -112,6 +114,7 @@ class Bar:
         volume: int = 0,
         side: str = "neutral",
         is_main_force: bool = False,
+        amount: float = 0.0,
     ) -> None:
         if self.tick_count == 0:
             self.open = price
@@ -126,10 +129,12 @@ class Bar:
             self.buy_volume += volume
             if is_main_force:
                 self.main_buy_volume += volume
+                self.main_buy_amount += max(0.0, amount)
         elif side == "sell":
             self.sell_volume += volume
             if is_main_force:
                 self.main_sell_volume += volume
+                self.main_sell_amount += max(0.0, amount)
         else:
             self.neutral_volume += volume
         if is_main_force and side in ("buy", "sell"):
@@ -151,6 +156,9 @@ class Bar:
             "main_buy_volume": self.main_buy_volume,
             "main_sell_volume": self.main_sell_volume,
             "main_net_volume": self.main_buy_volume - self.main_sell_volume,
+            "main_buy_amount": round(self.main_buy_amount),
+            "main_sell_amount": round(self.main_sell_amount),
+            "main_net_amount": round(self.main_buy_amount - self.main_sell_amount),
             "main_tick_count": self.main_tick_count,
             # 即時 bar 與歷史 tick 回補使用同一份資料契約。前端會以此旗標
             # 判斷是否建立盤中主力副圖；缺少旗標時即使淨量已有數字也不會畫。
@@ -186,6 +194,7 @@ class BarAggregator:
         tick_ts_ms: int,
         side: str = "neutral",
         is_main_force: bool = False,
+        amount: float = 0.0,
     ) -> Optional[Bar]:
         """收到 tick 時更新 bar。若跨 bar 則回傳剛完成的 bar，否則回傳 None。"""
         self._check_day_rollover()
@@ -211,9 +220,9 @@ class BarAggregator:
                     self._completed[code].append(current)
                     completed_bar = current
                 self._current[code] = Bar(ts=bar_start, open=price, high=price, low=price, close=price)
-                self._current[code].update(price, volume, side, is_main_force)
+                self._current[code].update(price, volume, side, is_main_force, amount)
             else:
-                current.update(price, volume, side, is_main_force)
+                current.update(price, volume, side, is_main_force, amount)
 
         return completed_bar
 
@@ -308,6 +317,12 @@ class MarketDataHub:
             return
         side = _trade_side(tick_data)
         is_main_force = _is_main_force_trade(tick_data)
+        try:
+            trade_amount = max(0.0, float(tick_data.get("amount", 0) or 0))
+        except (TypeError, ValueError):
+            trade_amount = 0.0
+        if trade_amount <= 0:
+            trade_amount = max(0.0, float(price) * max(0, int(volume)) * 1000)
 
         # 更新 Tick Cache
         with self._lock:
@@ -320,7 +335,7 @@ class MarketDataHub:
 
         # 更新 1 分 K Aggregator
         completed_bar_1m = self.bars_1m.on_tick(
-            code, price, volume, tick_ts_ms, side, is_main_force
+            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount
         )
         if completed_bar_1m:
             self._total_bars_1m_completed += 1
@@ -333,7 +348,7 @@ class MarketDataHub:
 
         # 更新既有 5 分 K Aggregator
         completed_bar = self.bars.on_tick(
-            code, price, volume, tick_ts_ms, side, is_main_force
+            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount
         )
         if completed_bar:
             self._total_bars_completed += 1
