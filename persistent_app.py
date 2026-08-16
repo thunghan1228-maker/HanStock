@@ -108,7 +108,7 @@ def get_persistence_status() -> dict[str, Any]:
 def get_daytrade_early_sell_signals(
     limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
-    """09:00～09:30 累計大單賣出達前日大單淨額 50% 的即時訊號。"""
+    """09:00～09:30（含）累計大單賣出達前日預估隔日賣壓 50% 的即時訊號。"""
     # API 被讀取時順手補跑一次；背景執行緒仍是主要來源，因此頁面未開啟也會監控。
     try:
         runtime = collect_early_sell_once()
