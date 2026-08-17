@@ -1,4 +1,4 @@
-"""隔日 09:00～09:30 大單賣出達前日預估隔日賣壓 50% 的即時訊號。"""
+"""盤中 09:00～13:30 大單賣出達前日預估隔日賣壓 50% 的逐分鐘即時訊號。"""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ from stock_bar_bootstrap import (
 
 
 SIGNAL_KIND = "daytradeEarlySell50"
-SIGNAL_LABEL = "早盤大單賣出達前日預估隔日賣壓 50%"
+SIGNAL_LABEL = "盤中大單賣出達前日預估隔日賣壓 50%"
 THRESHOLD_RATE = 0.50
 PREPARE_START_MINUTE = 8 * 60 + 50
 WINDOW_START_MINUTE = 9 * 60
-WINDOW_END_MINUTE = 9 * 60 + 30
+WINDOW_END_MINUTE = 13 * 60 + 30
 _DEMO_CACHE_SECONDS = 6 * 60 * 60
 _demo_cache_lock = threading.RLock()
 _demo_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -108,7 +108,7 @@ def historical_early_sell_signals_for_ticks(
     row: dict[str, Any],
     trade_date: str,
 ) -> list[dict[str, Any]]:
-    """用歷史逐筆成交重播早盤規則；只回傳示範，不寫入正式訊號。"""
+    """用歷史逐筆成交重播盤中規則；只回傳示範，不寫入正式訊號。"""
     previous_pressure = _estimated_next_day_sell_pressure(row)
     if previous_pressure <= 0:
         return []
@@ -120,7 +120,7 @@ def historical_early_sell_signals_for_ticks(
     amounts = _field_values(ticks, "amount", "Amount")
     simtrades = _field_values(ticks, "simtrade", "Simtrade")
     size = min(len(timestamps), len(closes), len(volumes))
-    five_minute_bars: dict[int, dict[str, float]] = {}
+    minute_bars: dict[int, dict[str, float]] = {}
 
     for index in range(size):
         ts_ms = _shioaji_tick_to_ms(timestamps[index])
@@ -153,14 +153,14 @@ def historical_early_sell_signals_for_ticks(
         trade = {"close": close, "volume": volume, "amount": amount, "tick_type": tick_type}
         if not _is_main_force_trade(trade) or _trade_side(trade) != "sell":
             continue
-        bucket = ts_ms // 300_000 * 300_000
-        bar = five_minute_bars.setdefault(bucket, {"sell": 0.0, "price": close})
+        bucket = ts_ms // 60_000 * 60_000
+        bar = minute_bars.setdefault(bucket, {"sell": 0.0, "price": close})
         bar["sell"] += amount
         bar["price"] = close
 
     cumulative_sell = 0.0
     signals: list[dict[str, Any]] = []
-    for bar_ts, bar in sorted(five_minute_bars.items()):
+    for bar_ts, bar in sorted(minute_bars.items()):
         cumulative_sell += bar["sell"]
         if cumulative_sell < previous_pressure * THRESHOLD_RATE:
             continue
@@ -174,7 +174,7 @@ def historical_early_sell_signals_for_ticks(
             "label": SIGNAL_LABEL,
             "barTs": bar_ts,
             "price": max(0.01, float(bar["price"] or row.get("close_price") or 0.01)),
-            "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜早盤大單賣出 {_format_tw_amount(cumulative_sell)}｜比例 {ratio:.1f}%",
+            "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜盤中大單賣出 {_format_tw_amount(cumulative_sell)}｜比例 {ratio:.1f}%",
             "demo": True,
         })
     return signals
@@ -186,7 +186,7 @@ def historical_early_sell_demo_snapshot(
     *,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """重播指定交易日 09:00～09:30，供前端顯示歷史警示示範。"""
+    """重播指定交易日 09:00～13:30，供前端顯示歷史警示示範。"""
     cached = _demo_cache.get(trade_date)
     if cached and time.monotonic() - cached[0] < _DEMO_CACHE_SECONDS:
         return {**cached[1], "signals": list(cached[1]["signals"])[:limit]}
@@ -219,7 +219,7 @@ def historical_early_sell_demo_snapshot(
         "tradeDate": trade_date,
         "previousTradeDate": previous_date,
         "thresholdPct": THRESHOLD_RATE * 100,
-        "window": "09:00～09:30（含 09:30）",
+        "window": "09:00～13:30（含 13:30）",
         "candidateCount": len(candidates),
         "signalCount": len(signals),
         "signals": signals,
@@ -306,7 +306,7 @@ def collect_early_sell_signals(
         if not sell_bars:
             continue
         latest_bar, latest_time = sell_bars[-1]
-        five_minute_ts = int(latest_time.timestamp() * 1000) // 300_000 * 300_000
+        minute_ts = int(latest_time.timestamp() * 1000) // 60_000 * 60_000
         ratio = cumulative_sell / previous_pressure * 100
         pending.append({
             "tradeDate": today,
@@ -315,9 +315,9 @@ def collect_early_sell_signals(
             "groupName": "疑似隔日沖",
             "kind": SIGNAL_KIND,
             "label": SIGNAL_LABEL,
-            "barTs": five_minute_ts,
+            "barTs": minute_ts,
             "price": max(0.01, float(latest_bar.get("close") or row.get("close_price") or 0.01)),
-            "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜早盤大單賣出 {_format_tw_amount(cumulative_sell)}｜比例 {ratio:.1f}%",
+            "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜盤中大單賣出 {_format_tw_amount(cumulative_sell)}｜比例 {ratio:.1f}%",
         })
 
     inserted = save_intraday_signals(pending)
@@ -338,7 +338,7 @@ def early_sell_signal_snapshot(now: datetime | None = None, limit: int = 100) ->
         "tradeDate": today,
         "previousTradeDate": previous_date,
         "thresholdPct": THRESHOLD_RATE * 100,
-        "window": "09:00～09:30",
+        "window": "09:00～13:30",
         "monitoredCount": len(candidates),
         "signals": load_latest_signals_by_kind(today, SIGNAL_KIND, limit=limit),
     }
