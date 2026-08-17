@@ -27,12 +27,15 @@ from daytrade_flow_store import load_daytrade_scan_status
 from intraday_signal_store import (
     intraday_signal_count,
     load_latest_signals,
+    load_latest_signals_by_kind,
     load_recent_trade_dates,
     load_signals_for_ticker,
 )
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import start_stock_bar_repair_collector
+from triangle_intraday import intraday_triangle_status
+from triangle_intraday_collector import start_triangle_intraday_collector
 from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, main_force_storage_status
 
@@ -84,6 +87,7 @@ async def _persistent_lifespan(fastapi_app):
         start_daytrade_early_sell_collector()
         start_main_force_collector()
         start_stock_bar_repair_collector()
+        start_triangle_intraday_collector()
         yield state
 
 
@@ -115,6 +119,10 @@ def get_persistence_status() -> dict[str, Any]:
         "HANSTOCK_STOCK_BAR_REPAIR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["stockBarAutoRepair"] = stock_bar_repair_status()
+    data["triangleIntradayCollectorEnabled"] = os.getenv(
+        "HANSTOCK_TRIANGLE_INTRADAY_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    data["triangleIntraday"] = intraday_triangle_status()
     return {"status": "ok", "data": data}
 
 
@@ -155,6 +163,18 @@ def get_daytrade_early_sell_signals(
     except Exception:  # noqa: BLE001
         runtime = {"prepared": False, "inserted": []}
     snapshot = early_sell_signal_snapshot(limit=limit)
+    from triangle_intraday import SIGNAL_KIND_BY_STATUS
+
+    triangle_signals = [
+        signal
+        for kind in SIGNAL_KIND_BY_STATUS.values()
+        for signal in load_latest_signals_by_kind(snapshot["tradeDate"], kind, limit=limit)
+    ]
+    snapshot["signals"] = sorted(
+        [*snapshot.get("signals", []), *triangle_signals],
+        key=lambda signal: (int(signal.get("barTs") or 0), str(signal.get("ticker") or "")),
+        reverse=True,
+    )[:limit]
     return {
         "status": "ok",
         **snapshot,

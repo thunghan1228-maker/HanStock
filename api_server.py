@@ -781,6 +781,35 @@ def run_triangle_screener(
     return {"status": "ok", **scan_all_triangles()}
 
 
+@app.get("/api/screener/triangles/intraday/latest")
+def get_intraday_triangle_screener_results(
+    status: str | None = Query(default=None, description="接近突破、突破待量、放量突破"),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> dict[str, Any]:
+    from triangle_intraday import TARGET_STATUSES, load_intraday_triangle_results
+
+    if status and status not in TARGET_STATUSES:
+        raise HTTPException(status_code=422, detail="不支援的盤中三角收斂狀態")
+    try:
+        result = load_intraday_triangle_results()
+    except RuntimeError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    rows = list(result.get("rows") or [])
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return {
+        "status": "ok",
+        "strategy": result.get("strategy"),
+        "mode": result.get("mode"),
+        "trade_date": result.get("trade_date"),
+        "generated_at": result.get("generated_at"),
+        "bucket_ts": result.get("bucket_ts"),
+        "summary": result.get("summary", {}),
+        "count": min(len(rows), limit),
+        "rows": rows[:limit],
+    }
+
+
 # ------------------------------------------------------------------
 # WebSocket 端點
 # ------------------------------------------------------------------

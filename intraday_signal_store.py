@@ -12,6 +12,9 @@ ONCE_PER_DAY_KINDS = {
     "a8short",
     "firstCrossUp20ma",
     "firstCrossDown20ma",
+    "triangleNearBreakout",
+    "triangleBreakoutPendingVolume",
+    "triangleVolumeBreakout",
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
 EARLY_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000
