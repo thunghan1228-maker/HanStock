@@ -154,6 +154,7 @@ def get_daytrade_early_sell_signals(
         "prepared": bool(runtime.get("prepared")),
         "activeCount": int(runtime.get("activeCount") or 0),
         "failedCount": int(runtime.get("failedCount") or 0),
+        "excludedTickers": runtime.get("excludedTickers") or snapshot.get("excludedTickers") or [],
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 

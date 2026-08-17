@@ -340,8 +340,14 @@ def collect_early_sell_signals(
     today = current.strftime("%Y-%m-%d")
     minute = _minute_of_day(current)
     prepared = prepare_subscriptions(service, current)
-    previous_date, candidates = monitored_candidates()
-    candidates = _filter_trade_eligible(service, candidates, today)
+    previous_date, raw_candidates = monitored_candidates()
+    candidates = _filter_trade_eligible(service, raw_candidates, today)
+    eligible_tickers = {str(row.get("ticker") or "").strip().upper() for row in candidates}
+    excluded_tickers = sorted({
+        str(row.get("ticker") or "").strip().upper()
+        for row in raw_candidates
+        if str(row.get("ticker") or "").strip().upper() not in eligible_tickers
+    })
     in_window = current.weekday() < 5 and WINDOW_START_MINUTE <= minute <= WINDOW_END_MINUTE
     if not in_window:
         return {
@@ -349,6 +355,7 @@ def collect_early_sell_signals(
             "tradeDate": today,
             "previousTradeDate": previous_date,
             "inWindow": False,
+            "excludedTickers": excluded_tickers,
             "inserted": [],
         }
 
@@ -410,24 +417,37 @@ def collect_early_sell_signals(
         "tradeDate": today,
         "previousTradeDate": previous_date,
         "inWindow": True,
+        "excludedTickers": excluded_tickers,
         "inserted": inserted,
     }
 
 
-def early_sell_signal_snapshot(now: datetime | None = None, limit: int = 100) -> dict[str, Any]:
+def early_sell_signal_snapshot(now: datetime | None = None, limit: int = 100, service: Any = None) -> dict[str, Any]:
     current = _taipei_now(now)
     today = current.strftime("%Y-%m-%d")
-    previous_date, candidates = monitored_candidates()
+    previous_date, raw_candidates = monitored_candidates()
+    if service is None:
+        from quote_service import get_quote_service
+        service = get_quote_service()
+    candidates = _filter_trade_eligible(service, raw_candidates, today)
+    eligible_tickers = {str(row.get("ticker") or "").strip().upper() for row in candidates}
+    excluded_tickers = sorted({
+        str(row.get("ticker") or "").strip().upper()
+        for row in raw_candidates
+        if str(row.get("ticker") or "").strip().upper() not in eligible_tickers
+    })
+    stored = sorted(
+        load_latest_signals_by_kind(today, SIGNAL_KIND, limit=limit)
+        + load_latest_signals_by_kind(today, BUY_SIGNAL_KIND, limit=limit),
+        key=lambda item: (int(item["barTs"]), str(item["ticker"]), str(item["kind"])),
+        reverse=True,
+    )
     return {
         "tradeDate": today,
         "previousTradeDate": previous_date,
         "thresholdPct": THRESHOLD_RATE * 100,
         "window": "09:00～13:30",
         "monitoredCount": len(candidates),
-        "signals": sorted(
-            load_latest_signals_by_kind(today, SIGNAL_KIND, limit=limit)
-            + load_latest_signals_by_kind(today, BUY_SIGNAL_KIND, limit=limit),
-            key=lambda item: (int(item["barTs"]), str(item["ticker"]), str(item["kind"])),
-            reverse=True,
-        )[:limit],
+        "excludedTickers": excluded_tickers,
+        "signals": [item for item in stored if str(item["ticker"]).upper() in eligible_tickers][:limit],
     }

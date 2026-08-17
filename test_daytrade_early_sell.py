@@ -92,7 +92,7 @@ class DaytradeEarlySellTests(unittest.TestCase):
         self.assertEqual(later["inserted"][0]["barTs"], ts(9, 3))
         self.assertIn("比例 70.0%", later["inserted"][0]["note"])
 
-        snapshot = early_sell_signal_snapshot(now, limit=100)
+        snapshot = early_sell_signal_snapshot(now, limit=100, service=service)
         self.assertEqual(snapshot["window"], "09:00～13:30")
         self.assertEqual(snapshot["signals"][0]["barTs"], ts(9, 3))
         self.assertEqual(snapshot["signals"][1]["barTs"], ts(9, 2))
