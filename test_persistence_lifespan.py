@@ -16,11 +16,13 @@ class PersistenceLifespanTests(unittest.TestCase):
         with (
             patch.object(persistent_app, "start_group_strength_collector") as group_worker,
             patch.object(persistent_app, "start_intraday_signal_collector") as signal_worker,
+            patch.object(persistent_app, "start_stock_bar_repair_collector") as repair_worker,
         ):
             asyncio.run(exercise_lifespan())
 
         group_worker.assert_called_once_with()
         signal_worker.assert_called_once_with()
+        repair_worker.assert_called_once_with()
 
 
 if __name__ == "__main__":

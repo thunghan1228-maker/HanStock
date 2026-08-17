@@ -34,6 +34,9 @@ from market_data_hub import _is_main_force_trade, _trade_side
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
 RETRY_AFTER_SECONDS = 30.0
+SUCCESS_REFRESH_SECONDS = 180.0
+REPAIR_TARGET_TTL_SECONDS = 30 * 60.0
+REPAIR_BATCH_SIZE = 6
 
 
 def _latest_weekday_trade_date(now_ms: int) -> str:
@@ -59,6 +62,13 @@ class _HistoryEntry:
 _cache_lock = threading.RLock()
 _history_cache: dict[str, _HistoryEntry] = {}
 _code_locks: dict[str, threading.Lock] = {}
+_repair_targets: dict[str, float] = {}
+_repair_state: dict[str, Any] = {
+    "last_run_at": None,
+    "last_repaired_codes": [],
+    "attempt_count": 0,
+    "success_count": 0,
+}
 
 
 def clear_stock_bar_bootstrap_cache() -> None:
@@ -66,6 +76,43 @@ def clear_stock_bar_bootstrap_cache() -> None:
     with _cache_lock:
         _history_cache.clear()
         _code_locks.clear()
+        _repair_targets.clear()
+        _repair_state.update({
+            "last_run_at": None,
+            "last_repaired_codes": [],
+            "attempt_count": 0,
+            "success_count": 0,
+        })
+
+
+def _register_repair_target(code: str, now_monotonic: Optional[float] = None) -> None:
+    """記住最近開過的股票；背景巡檢只處理這些實際有人看的 K 線。"""
+    with _cache_lock:
+        _repair_targets[code] = now_monotonic if now_monotonic is not None else time.monotonic()
+
+
+def _is_transient_session_error(error: Any) -> bool:
+    message = str(error or "").lower()
+    return any(marker in message for marker in (
+        "sessionnotestablished",
+        "session not established",
+        "notready",
+        "unable to wait for session",
+    ))
+
+
+def _request_session_recovery(service: Any, error: Any) -> bool:
+    if not _is_transient_session_error(error):
+        return False
+    recover = getattr(service, "recover_transient_p2p_session", None)
+    if not callable(recover):
+        return False
+    try:
+        recover(f"K 線歷史回補連線異常：{error}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Stock KBar] 觸發行情連線自動復原失敗: %s", exc)
+        return False
 
 
 def _get_code_lock(code: str) -> threading.Lock:
@@ -399,6 +446,7 @@ def _bootstrap_history(
                 main_force_error = "Shioaji 今日 ticks 暫無資料"
         except Exception as exc:
             main_force_error = str(exc)
+            _request_session_recovery(service, exc)
             logger.warning("[Stock Main Force] %s 歷史逐筆回補失敗: %s", code, exc)
         bars_5m = aggregate_1m_to_5m(
             bars_1m,
@@ -428,6 +476,7 @@ def _bootstrap_history(
         return entry
     except Exception as exc:
         logger.warning("[Stock KBar] %s 歷史補齊失敗: %s", code, exc)
+        recovery_triggered = _request_session_recovery(service, exc)
         return _store_entry(
             code,
             _HistoryEntry(
@@ -436,9 +485,102 @@ def _bootstrap_history(
                 bars_5m=[],
                 fetched_at_monotonic=monotonic_fn(),
                 ok=False,
-                error=str(exc),
+                error=(
+                    f"{exc}（已啟動行情連線自動復原）"
+                    if recovery_triggered else str(exc)
+                ),
             ),
         )
+
+
+def repair_recent_stock_bars_once(
+    *,
+    service: Any = None,
+    now_ms: Optional[int] = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+    max_codes: int = REPAIR_BATCH_SIZE,
+) -> dict[str, Any]:
+    """巡檢最近開過的個股 K 線；失敗每 30 秒重試，成功每 3 分鐘補洞。"""
+    service = service if service is not None else _default_service()
+    now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
+    trade_date = _latest_weekday_trade_date(now_value)
+    now_monotonic = monotonic_fn()
+    with _cache_lock:
+        expired = [
+            code for code, seen_at in _repair_targets.items()
+            if now_monotonic - seen_at > REPAIR_TARGET_TTL_SECONDS
+        ]
+        for code in expired:
+            _repair_targets.pop(code, None)
+        candidates: list[tuple[float, str]] = []
+        for code, _seen_at in _repair_targets.items():
+            entry = _history_cache.get(code)
+            if entry is None or entry.trade_date != trade_date:
+                candidates.append((0.0, code))
+                continue
+            age = now_monotonic - entry.fetched_at_monotonic
+            threshold = SUCCESS_REFRESH_SECONDS if entry.ok else RETRY_AFTER_SECONDS
+            if age >= threshold:
+                candidates.append((entry.fetched_at_monotonic, code))
+
+    selected = [code for _, code in sorted(candidates)[:max(1, max_codes)]]
+    repaired: list[str] = []
+    errors: dict[str, str] = {}
+    for code in selected:
+        lock = _get_code_lock(code)
+        if not lock.acquire(blocking=False):
+            continue
+        try:
+            entry = _bootstrap_history(
+                code,
+                trade_date,
+                service=service,
+                now_ms=now_value,
+                monotonic_fn=monotonic_fn,
+            )
+            if entry.ok:
+                repaired.append(code)
+                try:
+                    from main_force_store import save_main_force_bars
+                    save_main_force_bars(code, "1m", entry.bars_1m)
+                    save_main_force_bars(code, "5m", entry.bars_5m)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[Stock Main Force] %s 巡檢回補落盤失敗: %s", code, exc)
+            else:
+                errors[code] = str(entry.error or "歷史 K 線暫無資料")
+        finally:
+            lock.release()
+
+    with _cache_lock:
+        _repair_state["last_run_at"] = datetime.now(TW_TZ).isoformat(timespec="seconds")
+        _repair_state["last_repaired_codes"] = repaired
+        _repair_state["attempt_count"] = int(_repair_state["attempt_count"]) + len(selected)
+        _repair_state["success_count"] = int(_repair_state["success_count"]) + len(repaired)
+        tracked_count = len(_repair_targets)
+        failed_count = sum(1 for entry in _history_cache.values() if not entry.ok)
+    return {
+        "trackedCount": tracked_count,
+        "checkedCount": len(selected),
+        "repairedCount": len(repaired),
+        "repairedCodes": repaired,
+        "failedCount": failed_count,
+        "errors": errors,
+    }
+
+
+def stock_bar_repair_status() -> dict[str, Any]:
+    with _cache_lock:
+        failed = {
+            code: str(entry.error or "")
+            for code, entry in _history_cache.items()
+            if not entry.ok
+        }
+        return {
+            "trackedCount": len(_repair_targets),
+            "failedCount": len(failed),
+            "failedCodes": list(sorted(failed))[:50],
+            **_repair_state,
+        }
 
 
 def backfill_main_force_date(
@@ -487,6 +629,7 @@ def get_resilient_stock_bars(
     hub = hub if hub is not None else _default_hub()
     now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
     trade_date = _latest_weekday_trade_date(now_value)
+    _register_repair_target(code, monotonic_fn())
 
     subscription: Any = None
     try:
@@ -540,6 +683,11 @@ def get_resilient_stock_bars(
             "error": entry.error,
             "main_force_history_ok": entry.main_force_ok,
             "main_force_error": entry.main_force_error,
+            "auto_repair": {
+                "enabled": True,
+                "waiting": not entry.ok,
+                "retry_after_seconds": RETRY_AFTER_SECONDS if not entry.ok else SUCCESS_REFRESH_SECONDS,
+            },
             "subscription": subscription,
             "source": "shioaji_kbars+shioaji_ticks+realtime_hub",
         },

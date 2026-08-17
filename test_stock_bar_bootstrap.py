@@ -5,7 +5,11 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from otc_index import TW_TZ
-from stock_bar_bootstrap import clear_stock_bar_bootstrap_cache, get_resilient_stock_bars
+from stock_bar_bootstrap import (
+    clear_stock_bar_bootstrap_cache,
+    get_resilient_stock_bars,
+    repair_recent_stock_bars_once,
+)
 
 
 def ts(year: int, month: int, day: int, hour: int, minute: int) -> int:
@@ -18,10 +22,13 @@ class FakeApi:
         self.ticks_calls = 0
         self.kbars_dates: list[tuple[str, str]] = []
         self.ticks_dates: list[str] = []
+        self.kbars_error: Exception | None = None
 
     def kbars(self, *, contract, start: str, end: str):
         self.kbars_calls += 1
         self.kbars_dates.append((start, end))
+        if self.kbars_error is not None:
+            raise self.kbars_error
         # Shioaji KBars 的 ts 是「收棒時間」；09:01 代表 09:00~09:01。
         closes = [
             datetime(2026, 8, 7, 9, 1, tzinfo=TW_TZ),
@@ -63,6 +70,7 @@ class FakeService:
         self.state = SimpleNamespace(logged_in=True)
         self.subscription_calls: list[list[str]] = []
         self.contract = object()
+        self.recovery_reasons: list[str] = []
 
     def ensure_stock_subscriptions(self, codes):
         codes = list(codes)
@@ -76,6 +84,9 @@ class FakeService:
 
     def _resolve_stock_contract(self, code: str):
         return self.contract if code == "2344" else None
+
+    def recover_transient_p2p_session(self, reason: str):
+        self.recovery_reasons.append(reason)
 
 
 class FakeHub:
@@ -264,6 +275,41 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.assertEqual(first["bar_count"], 1)
         self.assertEqual(second["bar_count"], 1)
         self.assertIn("找不到股票合約", first["bootstrap"]["error"])
+
+    def test_session_failure_triggers_reconnect_then_background_patrol_backfills(self):
+        self.service.api.kbars_error = RuntimeError(
+            "NotReady SessionNotEstablished Unable to wait for session"
+        )
+        first = get_resilient_stock_bars(
+            "2344",
+            "1m",
+            service=self.service,
+            hub=self.hub,
+            now_ms=self.now_ms,
+            monotonic_fn=lambda: 100.0,
+        )
+        self.assertFalse(first["bootstrap"]["history_ok"])
+        self.assertTrue(first["bootstrap"]["auto_repair"]["waiting"])
+        self.assertEqual(len(self.service.recovery_reasons), 1)
+        self.assertIn("自動復原", first["bootstrap"]["error"])
+
+        self.service.api.kbars_error = None
+        repaired = repair_recent_stock_bars_once(
+            service=self.service,
+            now_ms=self.now_ms,
+            monotonic_fn=lambda: 131.0,
+        )
+        self.assertEqual(repaired["repairedCodes"], ["2344"])
+        after = get_resilient_stock_bars(
+            "2344",
+            "1m",
+            service=self.service,
+            hub=self.hub,
+            now_ms=self.now_ms,
+            monotonic_fn=lambda: 132.0,
+        )
+        self.assertTrue(after["bootstrap"]["history_ok"])
+        self.assertEqual(after["bar_count"], 7)
 
 
 if __name__ == "__main__":
