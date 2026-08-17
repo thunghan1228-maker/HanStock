@@ -512,18 +512,19 @@ def repair_recent_stock_bars_once(
         ]
         for code in expired:
             _repair_targets.pop(code, None)
-        candidates: list[tuple[float, str]] = []
-        for code, _seen_at in _repair_targets.items():
+        candidates: list[tuple[int, float, float, str]] = []
+        for code, seen_at in _repair_targets.items():
             entry = _history_cache.get(code)
             if entry is None or entry.trade_date != trade_date:
-                candidates.append((0.0, code))
+                candidates.append((0, -seen_at, 0.0, code))
                 continue
             age = now_monotonic - entry.fetched_at_monotonic
             threshold = SUCCESS_REFRESH_SECONDS if entry.ok else RETRY_AFTER_SECONDS
             if age >= threshold:
-                candidates.append((entry.fetched_at_monotonic, code))
+                candidates.append((0 if not entry.ok else 1, -seen_at, entry.fetched_at_monotonic, code))
 
-    selected = [code for _, code in sorted(candidates)[:max(1, max_codes)]]
+    # 先補目前仍在看的失敗圖，再輪巡已成功但到了定期補洞時間的圖。
+    selected = [code for _, _, _, code in sorted(candidates)[:max(1, max_codes)]]
     repaired: list[str] = []
     errors: dict[str, str] = {}
     for code in selected:
