@@ -31,6 +31,8 @@ from intraday_signal_store import (
     load_signals_for_ticker,
 )
 from stock_history_service import get_stock_history_bars_5m
+from main_force_collector import start_main_force_collector
+from main_force_store import load_main_force_bars, main_force_storage_status
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -78,6 +80,7 @@ async def _persistent_lifespan(fastapi_app):
         start_intraday_signal_collector()
         start_daytrade_flow_collector()
         start_daytrade_early_sell_collector()
+        start_main_force_collector()
         yield state
 
 
@@ -101,7 +104,37 @@ def get_persistence_status() -> dict[str, Any]:
     data["daytradeEarlySellCollectorEnabled"] = os.getenv(
         "HANSTOCK_EARLY_SELL_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    data["mainForceCollectorEnabled"] = os.getenv(
+        "HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    data["mainForceHistory"] = main_force_storage_status()
     return {"status": "ok", "data": data}
+
+
+@app.get("/api/hub/force/bars/{stock_code}")
+def get_persisted_main_force_bars(
+    stock_code: str,
+    interval: str = Query("5m", pattern="^(1m|5m)$"),
+    trade_date: str | None = Query(None),
+    days: int = Query(31, ge=1, le=400),
+    limit: int = Query(20000, ge=1, le=100000),
+    backfill: bool = Query(True),
+) -> dict[str, Any]:
+    """跨日讀取永久保存的主力進出副圖；只回傳真實逐筆統計。"""
+    code = _normalize_stock_code(stock_code)
+    date = _validate_trade_date(trade_date) if trade_date else None
+    bars = load_main_force_bars(code, interval, trade_date=date, days=days, limit=limit)
+    backfill_result = None
+    if date and not bars and backfill:
+        from stock_bar_bootstrap import backfill_main_force_date
+        backfill_result = backfill_main_force_date(code, date)
+        bars = load_main_force_bars(code, interval, trade_date=date, days=days, limit=limit)
+    return {
+        "status": "ok", "code": code, "interval": interval,
+        "tradeDate": date, "bar_count": len(bars), "bars": bars,
+        "persistent": True, "source": "railway_sqlite_shioaji_ticks",
+        "backfill": backfill_result,
+    }
 
 
 @app.get("/api/hub/daytrade-early-sell-signals")

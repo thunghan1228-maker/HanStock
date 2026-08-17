@@ -8,7 +8,7 @@
 4. 聚合成今日已完成的 5 分 K；
 5. 與 MarketDataHub 的即時 K 棒依 timestamp 合併（live 覆蓋 history）。
 
-這層不修改 QuoteService / MarketDataHub 的穩定即時流程，也不持久化憑證或行情。
+這層不修改 QuoteService / MarketDataHub 的穩定即時流程；主力副圖會另行永久落盤。
 """
 
 from __future__ import annotations
@@ -441,6 +441,34 @@ def _bootstrap_history(
         )
 
 
+def backfill_main_force_date(
+    stock_code: str,
+    trade_date: str,
+    *,
+    service: Any = None,
+    now_ms: Optional[int] = None,
+) -> dict[str, Any]:
+    """用 Shioaji 真實 Kbars/ticks 回補指定交易日，無 ticks 時不建立假資料。"""
+    code = str(stock_code).strip().upper()
+    datetime.strptime(trade_date, "%Y-%m-%d")
+    service = service if service is not None else _default_service()
+    # 歷史日期的 include_current 判斷需使用該日收盤後時間。
+    effective_now = now_ms or int(datetime.now(TW_TZ).timestamp() * 1000)
+    entry = _bootstrap_history(
+        code, trade_date, service=service, now_ms=effective_now, monotonic_fn=time.monotonic,
+    )
+    saved_1m = saved_5m = 0
+    if entry.main_force_ok:
+        from main_force_store import save_main_force_bars
+        saved_1m = save_main_force_bars(code, "1m", entry.bars_1m)
+        saved_5m = save_main_force_bars(code, "5m", entry.bars_5m)
+    return {
+        "code": code, "trade_date": trade_date, "history_ok": entry.ok,
+        "main_force_ok": entry.main_force_ok, "error": entry.main_force_error or entry.error,
+        "saved_1m": saved_1m, "saved_5m": saved_5m,
+    }
+
+
 def get_resilient_stock_bars(
     stock_code: str,
     interval: str,
@@ -491,6 +519,12 @@ def get_resilient_stock_bars(
         live = list(hub.get_live_bars(code) or [])
 
     bars = _merge_bars(history, live, interval=interval, trade_date=trade_date)
+    # API 被讀取時也立即落盤，避免尚未等到背景收集週期就重啟而遺失。
+    try:
+        from main_force_store import save_main_force_bars
+        save_main_force_bars(code, interval, bars)
+    except Exception as exc:
+        logger.warning("[Stock Main Force] %s %s 永久保存失敗: %s", code, interval, exc)
     return {
         "status": "ok",
         "code": code,
