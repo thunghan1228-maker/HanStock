@@ -1,4 +1,4 @@
-"""盤中早盤隔日沖賣壓訊號背景收集器。"""
+"""盤中隔日沖賣壓訊號背景收集器。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from daytrade_early_sell import collect_early_sell_signals
 
 
 logger = logging.getLogger("hanstock.daytrade_early_sell_collector")
-POLL_SECONDS = max(5, int(os.getenv("HANSTOCK_EARLY_SELL_COLLECTOR_SECONDS", "10")))
+POLL_SECONDS = max(2, int(os.getenv("HANSTOCK_EARLY_SELL_COLLECTOR_SECONDS", "5")))
 _started = False
 _lock = threading.Lock()
 
@@ -31,9 +31,9 @@ def _loop() -> None:
         try:
             result = collect_once()
             if result.get("inserted"):
-                logger.info("早盤大單賣壓 50%% 訊號新增 %s 筆", len(result["inserted"]))
+                logger.info("盤中大單賣壓 50%% 訊號新增 %s 筆", len(result["inserted"]))
         except Exception:  # noqa: BLE001
-            logger.exception("早盤大單賣壓訊號收集器例外")
+            logger.exception("盤中大單賣壓訊號收集器例外")
         time.sleep(POLL_SECONDS)
 
 
@@ -44,7 +44,7 @@ def start_daytrade_early_sell_collector() -> bool:
             return False
         disabled = os.getenv("HANSTOCK_EARLY_SELL_COLLECTOR_ENABLED", "true").strip().lower()
         if disabled in {"0", "false", "no", "off"}:
-            logger.info("早盤大單賣壓訊號收集器已停用")
+            logger.info("盤中大單賣壓訊號收集器已停用")
             return False
         threading.Thread(
             target=_loop,
@@ -52,5 +52,5 @@ def start_daytrade_early_sell_collector() -> bool:
             daemon=True,
         ).start()
         _started = True
-        logger.info("早盤大單賣壓訊號收集器已啟動，間隔=%ss", POLL_SECONDS)
+        logger.info("盤中大單賣壓訊號收集器已啟動，間隔=%ss", POLL_SECONDS)
         return True
