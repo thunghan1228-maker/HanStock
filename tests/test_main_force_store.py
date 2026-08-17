@@ -58,6 +58,29 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(result, {"stockCount": 2, "saved1m": 2, "saved5m": 2})
         self.assertEqual(main_force_storage_status()["barCount"], 4)
 
+    def test_collector_only_rewrites_latest_two_bars(self):
+        bars = [{
+            "ts": 1_786_400_400_000 + offset * 60_000,
+            "main_buy_volume": offset + 1,
+            "main_sell_volume": 0,
+            "main_force_available": True,
+        } for offset in range(5)]
+
+        class Service:
+            def get_active_stock_codes(self):
+                return ["2330"]
+
+        class Hub:
+            def get_live_bars_1m(self, code):
+                return bars
+
+            def get_live_bars(self, code):
+                return bars
+
+        result = collect_once(service=Service(), hub=Hub())
+        self.assertEqual(result, {"stockCount": 1, "saved1m": 2, "saved5m": 2})
+        self.assertEqual(len(load_main_force_bars("2330", "1m")), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

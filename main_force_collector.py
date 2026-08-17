@@ -7,10 +7,11 @@ import os
 import threading
 import time
 
-from main_force_store import save_main_force_bars
+from main_force_store import save_main_force_batches
 
 logger = logging.getLogger("hanstock.main_force_collector")
 POLL_SECONDS = max(30, int(os.getenv("HANSTOCK_MAIN_FORCE_COLLECTOR_SECONDS", "60")))
+LATEST_BARS_PER_CYCLE = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_LATEST_BARS", "2")))
 _started = False
 _lock = threading.Lock()
 
@@ -23,10 +24,14 @@ def collect_once(*, service=None, hub=None) -> dict[str, int]:
         from market_data_hub import get_market_data_hub
         hub = get_market_data_hub()
     codes = list(service.get_active_stock_codes() or [])
-    saved_1m = saved_5m = 0
+    rows_1m = []
+    rows_5m = []
     for code in codes:
-        saved_1m += save_main_force_bars(code, "1m", hub.get_live_bars_1m(code) or [])
-        saved_5m += save_main_force_bars(code, "5m", hub.get_live_bars(code) or [])
+        # 每輪只更新目前棒與前一棒；較早的分鐘已永久保存，不需整天重寫。
+        rows_1m.append((code, "1m", (hub.get_live_bars_1m(code) or [])[-LATEST_BARS_PER_CYCLE:]))
+        rows_5m.append((code, "5m", (hub.get_live_bars(code) or [])[-LATEST_BARS_PER_CYCLE:]))
+    saved_1m = save_main_force_batches(rows_1m)
+    saved_5m = save_main_force_batches(rows_5m)
     return {"stockCount": len(codes), "saved1m": saved_1m, "saved5m": saved_5m}
 
 
