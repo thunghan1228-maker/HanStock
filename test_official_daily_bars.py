@@ -12,6 +12,7 @@ from official_daily_bars import (
     TWSE_DAILY_URL,
     fetch_tpex_day,
     fetch_twse_day,
+    fetch_official_day,
     parse_market_payload,
     _save_day,
 )
@@ -88,6 +89,26 @@ def test_tpex_falls_back_to_legacy_endpoint_when_modern_is_empty():
     assert calls[1][0] == TPEX_LEGACY_URL
 
 
+def test_closed_market_day_never_accepts_stale_tpex_rows():
+    tpex_called = False
+
+    def empty_twse(_trade_date):
+        return []
+
+    def stale_tpex(_trade_date):
+        nonlocal tpex_called
+        tpex_called = True
+        return [{"stock_code": "6488"}]
+
+    rows = fetch_official_day(
+        TRADE_DATE,
+        twse_loader=empty_twse,
+        tpex_loader=stale_tpex,
+    )
+    assert rows == []
+    assert tpex_called is False
+
+
 def test_save_day_fills_gaps_without_overwriting_existing_bar():
     with tempfile.TemporaryDirectory() as directory:
         database_path = Path(directory) / "test.db"
@@ -141,6 +162,7 @@ def load_tests(loader, tests, pattern):  # noqa: ARG001
         test_skips_rows_without_published_prices,
         test_twse_uses_one_market_request_per_date,
         test_tpex_falls_back_to_legacy_endpoint_when_modern_is_empty,
+        test_closed_market_day_never_accepts_stale_tpex_rows,
         test_save_day_fills_gaps_without_overwriting_existing_bar,
     ):
         suite.addTest(unittest.FunctionTestCase(function))
