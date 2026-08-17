@@ -217,6 +217,24 @@ def fetch_tpex_day(
     return parse_market_payload(payload, trade_date, "OTC")
 
 
+def fetch_official_day(
+    trade_date: date,
+    *,
+    twse_loader: Callable[[date], list[dict[str, Any]]] = fetch_twse_day,
+    tpex_loader: Callable[[date], list[dict[str, Any]]] = fetch_tpex_day,
+) -> list[dict[str, Any]]:
+    """Use TWSE as the shared trading-day gate before accepting TPEx rows.
+
+    TPEx's historical page can return the latest quote set while echoing a requested
+    market-closed date. TWSE returns no rows on the same holidays, so a date is only
+    persisted when TWSE confirms that the common Taiwan equity market was open.
+    """
+    twse_rows = twse_loader(trade_date)
+    if not twse_rows:
+        return []
+    return twse_rows + tpex_loader(trade_date)
+
+
 def _calendar_days(start: date, end: date) -> Iterable[date]:
     current = start
     while current <= end:
@@ -282,14 +300,27 @@ def download_official_daily_bars(
     inserted = 0
     source_failures: list[dict[str, str]] = []
     for index, trade_date in enumerate(dates, start=1):
-        day_rows: list[dict[str, Any]] = []
-        for source_name, loader in (("TWSE", fetch_twse_day), ("TPEx", fetch_tpex_day)):
-            try:
-                day_rows.extend(loader(trade_date))
-            except Exception as error:  # noqa: BLE001
-                source_failures.append(
-                    {"date": trade_date.isoformat(), "source": source_name, "error": str(error)}
-                )
+        try:
+            twse_rows = fetch_twse_day(trade_date)
+        except Exception as error:  # noqa: BLE001
+            source_failures.append(
+                {"date": trade_date.isoformat(), "source": "TWSE", "error": str(error)}
+            )
+            print(f"[{index}/{len(dates)}] {trade_date}: 證交所取得失敗，整日暫不寫入", flush=True)
+            time.sleep(max(0.0, delay))
+            continue
+        if not twse_rows:
+            print(f"[{index}/{len(dates)}] {trade_date}: 休市或尚未公布，整日略過", flush=True)
+            time.sleep(max(0.0, delay))
+            continue
+
+        day_rows = list(twse_rows)
+        try:
+            day_rows.extend(fetch_tpex_day(trade_date))
+        except Exception as error:  # noqa: BLE001
+            source_failures.append(
+                {"date": trade_date.isoformat(), "source": "TPEx", "error": str(error)}
+            )
         day_inserted = _save_day(day_rows)
         inserted += day_inserted
         print(
