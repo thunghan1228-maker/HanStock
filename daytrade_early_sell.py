@@ -8,7 +8,11 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from daytrade_flow_store import load_daytrade_rows
-from intraday_signal_store import load_latest_signals_by_kind, save_intraday_signals
+from intraday_signal_store import (
+    EARLY_SIGNAL_COOLDOWN_MS,
+    load_latest_signals_by_kind,
+    save_intraday_signals,
+)
 from market_data_hub import _is_main_force_trade, _trade_side
 from main_force_store import load_main_force_bars
 from otc_index import TW_TZ, taipei_minute_of_day, taipei_trade_date
@@ -33,6 +37,22 @@ _demo_cache_lock = threading.RLock()
 _demo_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _eligibility_cache_lock = threading.RLock()
 _eligibility_cache: dict[str, tuple[str, bool, str]] = {}
+
+
+def _apply_shared_ticker_cooldown(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """買進、賣出共用同股五分鐘冷卻；滿五分鐘的訊號才再次保留。"""
+    accepted: list[dict[str, Any]] = []
+    last_by_ticker: dict[str, int] = {}
+    for signal in sorted(signals, key=lambda item: (int(item.get("barTs") or 0), str(item.get("ticker") or ""))):
+        ticker = str(signal.get("ticker") or "").strip().upper()
+        bar_ts = int(signal.get("barTs") or 0)
+        previous_ts = last_by_ticker.get(ticker)
+        if ticker and previous_ts is not None and bar_ts - previous_ts < EARLY_SIGNAL_COOLDOWN_MS:
+            continue
+        accepted.append(signal)
+        if ticker:
+            last_by_ticker[ticker] = bar_ts
+    return accepted
 
 
 def _taipei_now(now: datetime | None = None) -> datetime:
@@ -242,7 +262,7 @@ def historical_early_sell_signals_for_ticks(
                 "note": f"前日預估隔日賣壓 {_format_tw_amount(previous_pressure)}｜盤中大單{wording} {_format_tw_amount(cumulative)}｜比例 {ratio:.1f}%",
                 "demo": True,
             })
-    return signals
+    return _apply_shared_ticker_cooldown(signals)
 
 
 def historical_early_sell_demo_snapshot(
@@ -437,8 +457,10 @@ def early_sell_signal_snapshot(now: datetime | None = None, limit: int = 100, se
         if str(row.get("ticker") or "").strip().upper() not in eligible_tickers
     })
     stored = sorted(
-        load_latest_signals_by_kind(today, SIGNAL_KIND, limit=limit)
-        + load_latest_signals_by_kind(today, BUY_SIGNAL_KIND, limit=limit),
+        _apply_shared_ticker_cooldown(
+            load_latest_signals_by_kind(today, SIGNAL_KIND, limit=limit)
+            + load_latest_signals_by_kind(today, BUY_SIGNAL_KIND, limit=limit)
+        ),
         key=lambda item: (int(item["barTs"]), str(item["ticker"]), str(item["kind"])),
         reverse=True,
     )
@@ -446,6 +468,7 @@ def early_sell_signal_snapshot(now: datetime | None = None, limit: int = 100, se
         "tradeDate": today,
         "previousTradeDate": previous_date,
         "thresholdPct": THRESHOLD_RATE * 100,
+        "cooldownMinutes": EARLY_SIGNAL_COOLDOWN_MS // 60_000,
         "window": "09:00～13:30",
         "monitoredCount": len(candidates),
         "excludedTickers": excluded_tickers,

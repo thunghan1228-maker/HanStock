@@ -12,6 +12,7 @@ from daytrade_early_sell import (
     historical_early_sell_signals_for_ticks,
 )
 from daytrade_flow_store import save_daytrade_rows
+from intraday_signal_store import save_intraday_signals
 from otc_index import TW_TZ
 
 
@@ -62,7 +63,7 @@ class DaytradeEarlySellTests(unittest.TestCase):
         database.DATABASE_PATH = self.old_path
         self.temp.cleanup()
 
-    def test_uses_estimated_next_day_sell_pressure_and_allows_next_minute_repeat(self):
+    def test_uses_estimated_next_day_sell_pressure_and_requires_five_minute_repeat(self):
         service = FakeService()
         hub = FakeHub({
             "2330": [
@@ -81,21 +82,64 @@ class DaytradeEarlySellTests(unittest.TestCase):
         repeated = collect_early_sell_signals(service, hub, now)
         self.assertEqual(repeated["inserted"], [])
 
-        # 不必等五分整點；下一分鐘又有新的大單賣出即可再次通知同一股票。
+        # 同股未滿五分鐘，即使下一分鐘又有新的大單賣出也不重複通知。
         hub.bars["2330"].append(
             {"ts": ts(9, 3), "close": 97, "main_sell_amount": 1_000_000},
         )
-        later = collect_early_sell_signals(
+        too_soon = collect_early_sell_signals(
             service, hub, datetime(2026, 8, 17, 9, 3, 20, tzinfo=TW_TZ)
         )
+        self.assertEqual(too_soon["inserted"], [])
+
+        # 不必等五分整點；與上一筆訊號相隔滿五分鐘即可再次通知。
+        hub.bars["2330"].append(
+            {"ts": ts(9, 7), "close": 96, "main_sell_amount": 500_000},
+        )
+        later = collect_early_sell_signals(
+            service, hub, datetime(2026, 8, 17, 9, 7, 20, tzinfo=TW_TZ)
+        )
         self.assertEqual(len(later["inserted"]), 1)
-        self.assertEqual(later["inserted"][0]["barTs"], ts(9, 3))
-        self.assertIn("比例 70.0%", later["inserted"][0]["note"])
+        self.assertEqual(later["inserted"][0]["barTs"], ts(9, 7))
+        self.assertIn("比例 80.0%", later["inserted"][0]["note"])
 
         snapshot = early_sell_signal_snapshot(now, limit=100, service=service)
         self.assertEqual(snapshot["window"], "09:00～13:30")
-        self.assertEqual(snapshot["signals"][0]["barTs"], ts(9, 3))
+        self.assertEqual(snapshot["cooldownMinutes"], 5)
+        self.assertEqual(snapshot["signals"][0]["barTs"], ts(9, 7))
         self.assertEqual(snapshot["signals"][1]["barTs"], ts(9, 2))
+
+    def test_buy_and_sell_share_the_same_five_minute_ticker_cooldown(self):
+        base = {
+            "tradeDate": "2026-08-17",
+            "ticker": "2330",
+            "name": "台積電",
+            "groupName": "疑似隔日沖",
+            "price": 100,
+            "note": "測試",
+        }
+        first = save_intraday_signals([{
+            **base,
+            "kind": "daytradeEarlySell50",
+            "label": "大單賣出",
+            "barTs": ts(9, 0),
+        }])
+        self.assertEqual(len(first), 1)
+
+        within_five_minutes = save_intraday_signals([{
+            **base,
+            "kind": "daytradeEarlyBuy50",
+            "label": "大單買進",
+            "barTs": ts(9, 4),
+        }])
+        self.assertEqual(within_five_minutes, [])
+
+        at_five_minutes = save_intraday_signals([{
+            **base,
+            "kind": "daytradeEarlyBuy50",
+            "label": "大單買進",
+            "barTs": ts(9, 5),
+        }])
+        self.assertEqual(len(at_five_minutes), 1)
 
     def test_includes_thirteen_thirty_but_excludes_thirteen_thirty_one(self):
         service = FakeService()
@@ -138,7 +182,7 @@ class DaytradeEarlySellTests(unittest.TestCase):
             "simtrade": [False, False, False, False, False],
         }
         signals = historical_early_sell_signals_for_ticks(ticks, row, "2026-08-17")
-        self.assertEqual(len(signals), 3)
+        self.assertEqual(len(signals), 2)
         self.assertEqual(signals[0]["barTs"], ts(9, 2))
         self.assertIn("比例 50.0%", signals[0]["note"])
         self.assertEqual(signals[-1]["barTs"], ts(13, 30))

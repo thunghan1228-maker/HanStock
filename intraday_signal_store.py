@@ -14,6 +14,7 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossDown20ma",
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
+EARLY_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000
 
 
 def _ensure_table() -> None:
@@ -129,12 +130,15 @@ def save_intraday_signals(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]
                 exists = connection.execute(
                     """
                     SELECT id FROM intraday_signals
-                    WHERE trade_date = ? AND ticker = ? AND kind = ? AND bar_ts = ?
+                    WHERE trade_date = ? AND ticker = ?
+                      AND kind IN ('daytradeEarlySell50', 'daytradeEarlyBuy50')
+                      AND bar_ts > ? AND bar_ts < ?
                     LIMIT 1
                     """,
                     (
                         signal["trade_date"], signal["ticker"],
-                        signal["kind"], signal["bar_ts"],
+                        signal["bar_ts"] - EARLY_SIGNAL_COOLDOWN_MS,
+                        signal["bar_ts"] + EARLY_SIGNAL_COOLDOWN_MS,
                     ),
                 ).fetchone()
                 if exists is not None:
