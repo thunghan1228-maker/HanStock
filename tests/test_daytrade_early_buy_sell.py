@@ -30,7 +30,7 @@ class DaytradeEarlyBuySellTests(unittest.TestCase):
         }
         with patch.object(signals, "monitored_candidates", return_value=("2026-08-14", [candidate])), patch.object(
             signals, "save_intraday_signals", side_effect=lambda rows: rows
-        ):
+        ), patch.object(signals, "load_main_force_bars", return_value=[]):
             result = signals.collect_early_sell_signals(Service(), Hub(), now=now)
 
         by_kind = {row["kind"]: row for row in result["inserted"]}
@@ -39,6 +39,36 @@ class DaytradeEarlyBuySellTests(unittest.TestCase):
         self.assertIn("比例 60.0%", by_kind[signals.BUY_SIGNAL_KIND]["note"])
         self.assertIn("盤中大單賣出", by_kind[signals.SIGNAL_KIND]["note"])
         self.assertIn("比例 55.0%", by_kind[signals.SIGNAL_KIND]["note"])
+
+    def test_restores_pre_restart_buy_amount_from_persistent_one_minute_bars(self):
+        now = datetime(2026, 8, 17, 10, 1, tzinfo=TW_TZ)
+
+        class Service:
+            def ensure_stock_subscriptions(self, codes):
+                return {"active_count": len(codes), "failed": {}}
+
+        class Hub:
+            def get_live_bars_1m(self, ticker):
+                return [{
+                    "ts": int(datetime(2026, 8, 17, 10, 0, tzinfo=TW_TZ).timestamp() * 1000),
+                    "close": 101, "main_buy_amount": 10,
+                }]
+
+        candidate = {
+            "ticker": "2330", "name": "台積電", "trade_date": "2026-08-14",
+            "previous_estimated_sell_pressure": 100.0,
+        }
+        restored = [{
+            "ts": int(datetime(2026, 8, 17, 9, 30, tzinfo=TW_TZ).timestamp() * 1000),
+            "main_buy_amount": 45, "main_sell_amount": 0,
+        }]
+        with patch.object(signals, "monitored_candidates", return_value=("2026-08-14", [candidate])), patch.object(
+            signals, "save_intraday_signals", side_effect=lambda rows: rows
+        ), patch.object(signals, "load_main_force_bars", return_value=restored):
+            result = signals.collect_early_sell_signals(Service(), Hub(), now=now)
+
+        buy = next(row for row in result["inserted"] if row["kind"] == signals.BUY_SIGNAL_KIND)
+        self.assertIn("比例 55.0%", buy["note"])
 
     def test_excludes_short_selling_suspended_or_non_day_trade_candidates(self):
         class Info:

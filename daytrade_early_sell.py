@@ -10,6 +10,7 @@ from typing import Any
 from daytrade_flow_store import load_daytrade_rows
 from intraday_signal_store import load_latest_signals_by_kind, save_intraday_signals
 from market_data_hub import _is_main_force_trade, _trade_side
+from main_force_store import load_main_force_bars
 from otc_index import TW_TZ, taipei_minute_of_day, taipei_trade_date
 from stock_bar_bootstrap import (
     _fetch_historical_ticks,
@@ -354,7 +355,19 @@ def collect_early_sell_signals(
     pending: list[dict[str, Any]] = []
     for row in candidates:
         ticker = str(row.get("ticker") or "").strip().upper()
-        bars = hub.get_live_bars_1m(ticker)
+        # Railway 重啟後 Hub 記憶體會歸零；先讀今天已落盤的 1 分主力資料，
+        # 再以即時 Hub 覆蓋同分鐘，確保累計永遠從 09:00 開始。
+        persisted = load_main_force_bars(ticker, "1m", trade_date=today, limit=1000)
+        merged_bars: dict[int, dict[str, Any]] = {}
+        for source in (persisted, hub.get_live_bars_1m(ticker) or []):
+            for bar in source:
+                try:
+                    bar_ts = int(bar.get("ts") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if bar_ts > 0:
+                    merged_bars[bar_ts] = {**merged_bars.get(bar_ts, {}), **bar}
+        bars = [merged_bars[bar_ts] for bar_ts in sorted(merged_bars)]
         eligible: list[tuple[dict[str, Any], datetime]] = []
         for bar in bars:
             bar_time = _bar_datetime(bar.get("ts"))
