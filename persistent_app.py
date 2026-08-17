@@ -141,7 +141,7 @@ def get_persisted_main_force_bars(
 def get_daytrade_early_sell_signals(
     limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
-    """09:00～13:30（含）逐分鐘累計大單賣出達前日預估隔日賣壓 50% 的即時訊號。"""
+    """09:00～13:30（含）逐分鐘累計大單買進／賣出達前日預估賣壓 50% 的訊號。"""
     # API 被讀取時順手補跑一次；背景執行緒仍是主要來源，因此頁面未開啟也會監控。
     try:
         runtime = collect_early_sell_once()

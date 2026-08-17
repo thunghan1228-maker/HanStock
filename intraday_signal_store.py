@@ -13,7 +13,7 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossUp20ma",
     "firstCrossDown20ma",
 }
-ONCE_PER_BAR_KINDS = {"daytradeEarlySell50"}
+ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
 
 
 def _ensure_table() -> None:
