@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -10,13 +11,17 @@ from database import get_connection
 from otc_index import TW_TZ
 
 
+_initialize_lock = threading.Lock()
+
+
 def _now() -> str:
     return datetime.now(TW_TZ).isoformat(timespec="seconds")
 
 
 def _initialize() -> None:
-    with get_connection() as connection:
-        connection.executescript(
+    with _initialize_lock:
+        with get_connection() as connection:
+            connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS daytrade_flow_daily_v2 (
                 ticker TEXT NOT NULL,
@@ -38,6 +43,8 @@ def _initialize() -> None:
                 previous_large_buy_amount REAL NOT NULL DEFAULT 0,
                 next_day_large_sell_amount REAL NOT NULL DEFAULT 0,
                 suspicion_score REAL NOT NULL DEFAULT 0,
+                main_force_data_status TEXT NOT NULL DEFAULT 'historical_ticks',
+                main_force_data_available INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (ticker, trade_date)
             );
@@ -51,13 +58,34 @@ def _initialize() -> None:
                 processed_count INTEGER NOT NULL DEFAULT 0,
                 match_count INTEGER NOT NULL DEFAULT 0,
                 error_count INTEGER NOT NULL DEFAULT 0,
+                data_missing_count INTEGER NOT NULL DEFAULT 0,
                 errors_json TEXT NOT NULL DEFAULT '[]',
                 started_at TEXT,
                 completed_at TEXT,
                 updated_at TEXT NOT NULL
             );
-            """
-        )
+                """
+            )
+            row_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(daytrade_flow_daily_v2)").fetchall()
+            }
+            if "main_force_data_status" not in row_columns:
+                connection.execute(
+                    "ALTER TABLE daytrade_flow_daily_v2 ADD COLUMN main_force_data_status TEXT NOT NULL DEFAULT 'historical_ticks'"
+                )
+            if "main_force_data_available" not in row_columns:
+                connection.execute(
+                    "ALTER TABLE daytrade_flow_daily_v2 ADD COLUMN main_force_data_available INTEGER NOT NULL DEFAULT 1"
+                )
+            job_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(daytrade_flow_scan_jobs)").fetchall()
+            }
+            if "data_missing_count" not in job_columns:
+                connection.execute(
+                    "ALTER TABLE daytrade_flow_scan_jobs ADD COLUMN data_missing_count INTEGER NOT NULL DEFAULT 0"
+                )
 
 
 def begin_daytrade_scan(trade_date: str, requested_count: int) -> None:
@@ -77,6 +105,7 @@ def begin_daytrade_scan(trade_date: str, requested_count: int) -> None:
                 processed_count = 0,
                 match_count = 0,
                 error_count = 0,
+                data_missing_count = 0,
                 errors_json = '[]',
                 started_at = excluded.started_at,
                 completed_at = NULL,
@@ -112,6 +141,8 @@ def save_daytrade_rows(rows: Iterable[dict[str, Any]]) -> int:
                 float(row.get("previous_large_buy_amount") or 0),
                 float(row.get("next_day_large_sell_amount") or 0),
                 float(row.get("suspicion_score") or 0),
+                str(row.get("main_force_data_status") or "historical_ticks"),
+                1 if bool(row.get("main_force_data_available", True)) else 0,
                 now,
             )
         )
@@ -128,8 +159,9 @@ def save_daytrade_rows(rows: Iterable[dict[str, Any]]) -> int:
                 large_sell_amount, total_turnover_amount,
                 late_large_buy_amount, price_impact_pct,
                 previous_large_buy_amount, next_day_large_sell_amount,
-                suspicion_score, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                suspicion_score, main_force_data_status,
+                main_force_data_available, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticker, trade_date) DO UPDATE SET
                 name = excluded.name,
                 market = excluded.market,
@@ -148,6 +180,8 @@ def save_daytrade_rows(rows: Iterable[dict[str, Any]]) -> int:
                 previous_large_buy_amount = excluded.previous_large_buy_amount,
                 next_day_large_sell_amount = excluded.next_day_large_sell_amount,
                 suspicion_score = excluded.suspicion_score,
+                main_force_data_status = excluded.main_force_data_status,
+                main_force_data_available = excluded.main_force_data_available,
                 updated_at = excluded.updated_at
             """,
             normalized,
@@ -189,6 +223,7 @@ def finish_daytrade_scan(
     *,
     processed_count: int,
     errors: Iterable[str] = (),
+    incomplete_count: int = 0,
 ) -> None:
     """完成時原子替換該交易日名單；空的市場資料絕不覆蓋舊備份。"""
     _initialize()
@@ -212,14 +247,16 @@ def finish_daytrade_scan(
         connection.execute(
             """
             UPDATE daytrade_flow_scan_jobs
-            SET status = 'completed', processed_count = ?, match_count = ?,
-                error_count = ?, errors_json = ?, completed_at = ?, updated_at = ?
+            SET status = ?, processed_count = ?, match_count = ?,
+                error_count = ?, data_missing_count = ?, errors_json = ?, completed_at = ?, updated_at = ?
             WHERE trade_date = ?
             """,
             (
+                "partial" if incomplete_count > 0 else "completed",
                 int(processed_count),
                 len(rows),
                 len(error_list),
+                max(0, int(incomplete_count)),
                 json.dumps(error_list, ensure_ascii=False),
                 now,
                 now,
