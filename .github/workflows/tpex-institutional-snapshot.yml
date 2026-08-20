@@ -1,0 +1,48 @@
+name: Refresh TPEx Institutional Snapshot
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - institutional_flow.py
+      - test_institutional_flow.py
+      - scripts/refresh_tpex_institutional_snapshot.py
+      - .github/workflows/tpex-institutional-snapshot.yml
+  schedule:
+    - cron: "35 8 * * 1-5"
+    - cron: "5,35 9 * * 1-5"
+    - cron: "5 10,11,12 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tpex-institutional-snapshot
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Download and validate official TPEx institutional data
+        run: python scripts/refresh_tpex_institutional_snapshot.py
+      - name: Publish snapshot when the official data changed
+        run: |
+          if git diff --quiet -- data/tpex-institutional-latest.json; then
+            echo "Snapshot is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- data/tpex-institutional-latest.json
+          git commit -m "Update TPEx institutional snapshot [skip ci]"
+          git push origin HEAD:main
