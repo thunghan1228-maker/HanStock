@@ -19,6 +19,7 @@ from datetime import date, datetime, time as datetime_time, timedelta
 from typing import Any, Iterable, Mapping, Optional
 
 from market_data_hub import _is_main_force_trade, _trade_side
+from main_force_store import load_main_force_bars
 from otc_index import TW_TZ, taipei_minute_of_day, taipei_trade_date
 from stock_bar_bootstrap import (
     _fetch_historical_ticks,
@@ -40,6 +41,7 @@ from daytrade_flow_store import (
 logger = logging.getLogger("hanstock.daytrade_flow")
 
 _CACHE_SECONDS = 30 * 60
+_PARTIAL_RETRY_SECONDS = 30 * 60
 _cache_lock = threading.RLock()
 _scan_lock = threading.Lock()
 _background_lock = threading.Lock()
@@ -349,6 +351,7 @@ def summarize_historical_ticks(
     large_buy_amount = 0.0
     large_sell_amount = 0.0
     late_large_buy_amount = 0.0
+    valid_tick_count = 0
     first_price: Optional[float] = None
     last_price: Optional[float] = None
 
@@ -369,6 +372,7 @@ def summarize_historical_ticks(
         if close <= 0 or volume <= 0:
             continue
 
+        valid_tick_count += 1
         raw_amount: Any = amounts[index] if index < len(amounts) else 0
         try:
             amount = float(raw_amount or 0)
@@ -399,6 +403,9 @@ def summarize_historical_ticks(
         elif side == "sell":
             large_sell_amount += amount
 
+    if valid_tick_count <= 0:
+        return None
+
     reached_limit_up = bool((daily_meta or {}).get("reached_limit_up"))
     if total_turnover_amount <= 0:
         total_turnover_amount = float((daily_meta or {}).get("official_turnover_amount") or 0)
@@ -422,6 +429,8 @@ def summarize_historical_ticks(
         # 第一個回補日尚無前一日／次一日配對；下一交易日收盤後再補算。
         "previous_large_buy_amount": 0,
         "next_day_large_sell_amount": 0,
+        "main_force_data_available": True,
+        "main_force_data_status": "historical_ticks",
     }
     if daily_meta:
         for field in (
@@ -438,6 +447,145 @@ def summarize_historical_ticks(
     row["suspicion_score"] = round(_score(row), 2)
     row["category"] = classify_daytrade_row(row)
     return row if row["category"] else None
+
+
+def summarize_persisted_main_force_bars(
+    bars: Iterable[Mapping[str, Any]],
+    *,
+    ticker: str,
+    name: str,
+    market: str,
+    trade_date: str,
+    daily_meta: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """歷史 ticks 尚未釋出時，以盤中永久保存的 1 分主力金額回補。"""
+    valid: list[Mapping[str, Any]] = []
+    for bar in bars:
+        if not isinstance(bar, Mapping) or not bool(bar.get("main_force_available")):
+            continue
+        if str(bar.get("trade_date") or trade_date) != trade_date:
+            continue
+        valid.append(bar)
+    if not valid:
+        return None
+
+    large_buy_amount = sum(max(0.0, float(bar.get("main_buy_amount") or 0)) for bar in valid)
+    large_sell_amount = sum(max(0.0, float(bar.get("main_sell_amount") or 0)) for bar in valid)
+    late_large_buy_amount = 0.0
+    for bar in valid:
+        try:
+            minute = taipei_minute_of_day(int(bar.get("ts") or 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if minute >= 13 * 60:
+            late_large_buy_amount += max(0.0, float(bar.get("main_buy_amount") or 0))
+
+    meta = daily_meta or {}
+    turnover = max(0.0, float(meta.get("official_turnover_amount") or 0))
+    reached_limit_up = bool(meta.get("reached_limit_up"))
+    if turnover <= 0 or (
+        large_buy_amount <= 0 and large_sell_amount <= 0 and not reached_limit_up
+    ):
+        return None
+    open_price = max(0.0, float(meta.get("open_price") or 0))
+    close_price = max(0.0, float(meta.get("close_price") or 0))
+    price_impact_pct = (close_price / open_price - 1) * 100 if open_price > 0 and close_price > 0 else 0.0
+    row = {
+        "ticker": ticker,
+        "name": name,
+        "market": market,
+        "trade_date": trade_date,
+        "large_buy_amount": round(large_buy_amount),
+        "large_sell_amount": round(large_sell_amount),
+        "total_turnover_amount": round(turnover),
+        "late_large_buy_amount": round(late_large_buy_amount),
+        "price_impact_pct": round(price_impact_pct, 4),
+        "previous_large_buy_amount": 0,
+        "next_day_large_sell_amount": 0,
+        "main_force_data_available": True,
+        "main_force_data_status": "persisted_intraday_bars",
+    }
+    for field in (
+        "open_price", "high_price", "close_price", "reference_price",
+        "limit_up_price", "day_change_pct", "reached_limit_up", "closed_at_limit_up",
+    ):
+        row[field] = meta.get(field, 0)
+    row["suspicion_score"] = round(_score(row), 2)
+    row["category"] = classify_daytrade_row(row)
+    return row if row["category"] else None
+
+
+def missing_main_force_row(
+    *,
+    ticker: str,
+    name: str,
+    market: str,
+    trade_date: str,
+    daily_meta: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """保留官方漲停候選，但明確標成待回補，禁止把缺資料冒充成 0。"""
+    meta = daily_meta or {}
+    if not bool(meta.get("reached_limit_up")):
+        return None
+    turnover = max(0.0, float(meta.get("official_turnover_amount") or 0))
+    if turnover <= 0:
+        return None
+    row = {
+        "ticker": ticker,
+        "name": name,
+        "market": market,
+        "trade_date": trade_date,
+        "large_buy_amount": 0,
+        "large_sell_amount": 0,
+        "total_turnover_amount": round(turnover),
+        "late_large_buy_amount": 0,
+        "price_impact_pct": 0,
+        "previous_large_buy_amount": 0,
+        "next_day_large_sell_amount": 0,
+        "suspicion_score": 0,
+        "main_force_data_available": False,
+        "main_force_data_status": "pending_backfill",
+    }
+    for field in (
+        "open_price", "high_price", "close_price", "reference_price",
+        "limit_up_price", "day_change_pct", "reached_limit_up", "closed_at_limit_up",
+    ):
+        row[field] = meta.get(field, 0)
+    row["category"] = classify_daytrade_row(row)
+    return row if row["category"] else None
+
+
+def summarize_daytrade_sources(
+    ticks: Any,
+    *,
+    ticker: str,
+    name: str,
+    market: str,
+    trade_date: str,
+    daily_meta: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """歷史 ticks 優先、盤中永久資料備援，最後才回傳待回補狀態。"""
+    row = summarize_historical_ticks(
+        ticks, ticker=ticker, name=name, market=market,
+        trade_date=trade_date, daily_meta=daily_meta,
+    )
+    if row is not None:
+        return row
+    try:
+        persisted = load_main_force_bars(ticker, "1m", trade_date=trade_date, limit=1000)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Daytrade Flow] %s %s 永久主力資料讀取失敗: %s", trade_date, ticker, exc)
+        persisted = []
+    row = summarize_persisted_main_force_bars(
+        persisted, ticker=ticker, name=name, market=market,
+        trade_date=trade_date, daily_meta=daily_meta,
+    )
+    if row is not None:
+        return row
+    return missing_main_force_row(
+        ticker=ticker, name=name, market=market,
+        trade_date=trade_date, daily_meta=daily_meta,
+    )
 
 
 def _score(row: Mapping[str, Any]) -> float:
@@ -512,7 +660,7 @@ def scan_daytrade_flow(
                     errors.append(f"{code}: 找不到股票合約")
                     continue
                 ticks = _fetch_historical_ticks(api, contract, trade_date)
-                row = summarize_historical_ticks(
+                row = summarize_daytrade_sources(
                     ticks,
                     ticker=code,
                     name=str((daily_by_code.get(code) or {}).get("name") or names.get(code, code)),
@@ -566,7 +714,7 @@ def _full_market_worker(service: Any, trade_date: str, force: bool) -> None:
                 if contract is None:
                     continue
                 ticks = _fetch_historical_ticks(api, contract, trade_date)
-                row = summarize_historical_ticks(
+                row = summarize_daytrade_sources(
                     ticks,
                     ticker=code,
                     name=str(daily.get("name") or code),
@@ -598,18 +746,23 @@ def _full_market_worker(service: Any, trade_date: str, force: bool) -> None:
             ),
             reverse=True,
         )
+        missing_count = sum(
+            1 for row in matches if not bool(row.get("main_force_data_available", True))
+        )
         finish_daytrade_scan(
             trade_date,
             matches,
             processed_count=len(candidates),
             errors=errors,
+            incomplete_count=missing_count,
         )
         clear_daytrade_flow_cache()
         logger.info(
-            "[Daytrade Full Scan] 完成 date=%s stocks=%s matches=%s errors=%s",
+            "[Daytrade Full Scan] 完成 date=%s stocks=%s matches=%s pending=%s errors=%s",
             trade_date,
             len(candidates),
             len(matches),
+            missing_count,
             len(errors),
         )
     except Exception as exc:  # noqa: BLE001
@@ -623,8 +776,18 @@ def _full_market_worker(service: Any, trade_date: str, force: bool) -> None:
 def start_full_market_scan(service: Any, trade_date: str, *, force: bool = False) -> bool:
     """非同步啟動全市場掃描；同一天只允許一條執行緒。"""
     status = load_daytrade_scan_status(trade_date)
-    if not force and status.get("status") == "completed":
-        return False
+    if not force:
+        if status.get("status") == "completed":
+            return False
+        if status.get("status") == "partial":
+            try:
+                updated_at = datetime.fromisoformat(str(status.get("updated_at") or ""))
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=TW_TZ)
+                if (datetime.now(TW_TZ) - updated_at.astimezone(TW_TZ)).total_seconds() < _PARTIAL_RETRY_SECONDS:
+                    return False
+            except ValueError:
+                pass
     with _background_lock:
         if trade_date in _background_dates:
             return False
