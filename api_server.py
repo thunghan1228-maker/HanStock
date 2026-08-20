@@ -650,6 +650,23 @@ def get_hub_bars_batch(
     }
 
 
+@app.get("/api/hub/official/tpex-institutional-latest")
+def get_tpex_institutional_latest() -> dict[str, Any]:
+    """轉接櫃買中心最新完整三大法人資料，供正式前端穩定取用。"""
+    from institutional_flow import fetch_tpex_institutional_latest
+
+    try:
+        result = fetch_tpex_institutional_latest()
+    except RuntimeError as exc:
+        logger.warning("櫃買三大法人資料取得失敗：%s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "source": "TPEx OpenAPI",
+        **result,
+    }
+
+
 @app.get("/api/hub/daytrade-flow-ranking")
 def get_daytrade_flow_ranking(
     date: str | None = Query(default=None, description="指定交易日 YYYY-MM-DD；未指定取最近已收盤平日"),
