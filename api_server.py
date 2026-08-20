@@ -731,6 +731,7 @@ def get_daytrade_flow_ranking(
         "updated_at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
         "requested_count": int(scan.get("requested_count") or 0),
         "processed_count": int(scan.get("processed_count") or 0),
+        "data_missing_count": int(scan.get("data_missing_count") or 0),
         "available_count": len(rows),
         "count": len(rows),
         "rows": rows,
