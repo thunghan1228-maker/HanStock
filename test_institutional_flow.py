@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from institutional_flow import fetch_tpex_institutional_latest, normalize_tpex_institutional_payload
+from institutional_flow import (
+    fetch_tpex_institutional_latest,
+    fetch_tpex_institutional_official,
+    load_tpex_institutional_snapshot,
+    normalize_tpex_institutional_payload,
+)
 
 
 FOREIGN_KEY = "Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference"
@@ -55,11 +62,48 @@ class InstitutionalFlowTest(unittest.TestCase):
     @patch("institutional_flow.urllib.request.urlopen")
     def test_fetch_uses_official_payload(self, urlopen) -> None:
         urlopen.return_value = FakeResponse([sample_row(index) for index in range(620)])
-        result = fetch_tpex_institutional_latest(timeout=5)
+        result = fetch_tpex_institutional_official(timeout=5)
 
         self.assertEqual(result["data_date"], "2026/08/19")
         self.assertEqual(result["count"], 620)
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 5)
+
+    def test_loads_verified_github_snapshot(self) -> None:
+        rows = normalize_tpex_institutional_payload([sample_row(index) for index in range(620)])["rows"]
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot_path = Path(directory) / "snapshot.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "data_date": "2026/08/19",
+                        "generated_at": "2026-08-19T09:35:00Z",
+                        "rows": rows,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            result = load_tpex_institutional_snapshot(snapshot_path)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data_date"], "2026/08/19")
+        self.assertEqual(result["count"], 620)
+
+    @patch("institutional_flow.fetch_tpex_institutional_official")
+    def test_falls_back_to_snapshot_when_datacenter_is_blocked(self, fetch_official) -> None:
+        fetch_official.side_effect = RuntimeError("tpex_institutional_fetch_failed_HTTPError")
+        rows = normalize_tpex_institutional_payload([sample_row(index) for index in range(620)])["rows"]
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot_path = Path(directory) / "snapshot.json"
+            snapshot_path.write_text(
+                json.dumps({"data_date": "2026/08/19", "rows": rows}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            result = fetch_tpex_institutional_latest(timeout=5, snapshot_path=snapshot_path)
+
+        self.assertEqual(result["data_date"], "2026/08/19")
+        self.assertEqual(result["count"], 620)
 
 
 if __name__ == "__main__":
