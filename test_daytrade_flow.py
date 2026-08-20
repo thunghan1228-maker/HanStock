@@ -8,6 +8,8 @@ from daytrade_flow import (
     is_equity_code,
     latest_completed_trade_date,
     limit_up_price,
+    missing_main_force_row,
+    summarize_persisted_main_force_bars,
     summarize_historical_ticks,
 )
 from otc_index import TW_TZ
@@ -47,6 +49,63 @@ class DaytradeFlowTests(unittest.TestCase):
         self.assertEqual(row["total_turnover_amount"], 7_620_000)
         self.assertNotEqual(row["price_impact_pct"], 0)
         self.assertEqual(row["trade_date"], "2026-08-14")
+        self.assertTrue(row["main_force_data_available"])
+        self.assertEqual(row["main_force_data_status"], "historical_ticks")
+
+    def test_empty_historical_ticks_are_not_presented_as_real_zeroes(self):
+        row = summarize_historical_ticks(
+            {"ts": [], "close": [], "volume": []},
+            ticker="3037",
+            name="欣興",
+            market="上市",
+            trade_date="2026-08-17",
+            daily_meta={"reached_limit_up": True, "official_turnover_amount": 4_000_000_000},
+        )
+        self.assertIsNone(row)
+
+    def test_persisted_intraday_main_force_bars_are_used_as_fallback(self):
+        bars = [
+            {"trade_date": "2026-08-17", "ts": int(datetime(2026, 8, 17, 9, 1, tzinfo=TW_TZ).timestamp() * 1000), "main_buy_amount": 80_000_000, "main_sell_amount": 20_000_000, "main_force_available": True},
+            {"trade_date": "2026-08-17", "ts": int(datetime(2026, 8, 17, 13, 5, tzinfo=TW_TZ).timestamp() * 1000), "main_buy_amount": 30_000_000, "main_sell_amount": 10_000_000, "main_force_available": True},
+        ]
+        row = summarize_persisted_main_force_bars(
+            bars,
+            ticker="3037",
+            name="欣興",
+            market="上市",
+            trade_date="2026-08-17",
+            daily_meta={
+                "open_price": 100, "close_price": 110, "reference_price": 100,
+                "limit_up_price": 110, "day_change_pct": 10,
+                "official_turnover_amount": 4_000_000_000,
+                "reached_limit_up": True, "closed_at_limit_up": True,
+            },
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["large_buy_amount"], 110_000_000)
+        self.assertEqual(row["large_sell_amount"], 30_000_000)
+        self.assertEqual(row["late_large_buy_amount"], 30_000_000)
+        self.assertTrue(row["main_force_data_available"])
+        self.assertEqual(row["main_force_data_status"], "persisted_intraday_bars")
+
+    def test_missing_source_is_explicitly_marked_pending_backfill(self):
+        row = missing_main_force_row(
+            ticker="3037",
+            name="欣興",
+            market="上市",
+            trade_date="2026-08-17",
+            daily_meta={
+                "open_price": 100, "close_price": 110, "reference_price": 100,
+                "limit_up_price": 110, "day_change_pct": 10,
+                "official_turnover_amount": 4_000_000_000,
+                "reached_limit_up": True, "closed_at_limit_up": True,
+            },
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertFalse(row["main_force_data_available"])
+        self.assertEqual(row["main_force_data_status"], "pending_backfill")
 
     def test_limit_up_price_uses_taiwan_tick_size_and_rounds_down(self):
         self.assertEqual(limit_up_price(189), 207.5)
