@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 
 TPEX_INSTITUTIONAL_URL = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"
+TPEX_SNAPSHOT_PATH = Path(__file__).resolve().parent / "data" / "tpex-institutional-latest.json"
 _FOREIGN_KEY = "Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference"
 _TRUST_KEY = "SecuritiesInvestmentTrustCompanies-Difference"
 _DEALER_KEY = "Dealers-Difference"
@@ -63,7 +65,8 @@ def normalize_tpex_institutional_payload(payload: Any) -> dict[str, Any]:
     return {"data_date": latest_date, "count": len(rows), "rows": rows}
 
 
-def fetch_tpex_institutional_latest(timeout: int = 30) -> dict[str, Any]:
+def fetch_tpex_institutional_official(timeout: int = 30) -> dict[str, Any]:
+    """Fetch the latest complete TPEx payload directly from the official API."""
     request = urllib.request.Request(
         TPEX_INSTITUTIONAL_URL,
         headers={
@@ -79,3 +82,44 @@ def fetch_tpex_institutional_latest(timeout: int = 30) -> dict[str, Any]:
     except Exception as exc:
         raise RuntimeError(f"tpex_institutional_fetch_failed_{type(exc).__name__}") from exc
     return normalize_tpex_institutional_payload(payload)
+
+
+def load_tpex_institutional_snapshot(path: str | Path = TPEX_SNAPSHOT_PATH) -> dict[str, Any]:
+    """Load the latest snapshot produced by the GitHub Actions Taiwan-data runner."""
+    snapshot_path = Path(path)
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"tpex_institutional_snapshot_unavailable_{type(exc).__name__}") from exc
+
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    data_date = str(payload.get("data_date") or "") if isinstance(payload, dict) else ""
+    if (
+        not isinstance(rows, list)
+        or len(rows) < 600
+        or len(data_date) != 10
+        or any(not isinstance(row, dict) or row.get("date") != data_date for row in rows)
+    ):
+        raise RuntimeError(f"tpex_institutional_snapshot_invalid_{len(rows) if isinstance(rows, list) else 0}")
+    return {
+        "status": "ok",
+        "data_date": data_date,
+        "count": len(rows),
+        "generated_at": payload.get("generated_at"),
+        "source": payload.get("source") or "TPEx OpenAPI via GitHub Actions",
+        "rows": rows,
+    }
+
+
+def fetch_tpex_institutional_latest(
+    timeout: int = 30,
+    snapshot_path: str | Path = TPEX_SNAPSHOT_PATH,
+) -> dict[str, Any]:
+    """Prefer the official API and fall back to the last verified GitHub snapshot."""
+    try:
+        return fetch_tpex_institutional_official(timeout=timeout)
+    except RuntimeError as official_error:
+        try:
+            return load_tpex_institutional_snapshot(snapshot_path)
+        except RuntimeError as snapshot_error:
+            raise RuntimeError(f"{official_error}; {snapshot_error}") from official_error
