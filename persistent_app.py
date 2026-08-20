@@ -36,6 +36,10 @@ from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import start_stock_bar_repair_collector
 from triangle_intraday import intraday_triangle_status
 from triangle_intraday_collector import start_triangle_intraday_collector
+from triangle_daily_collector import (
+    start_triangle_daily_collector,
+    triangle_daily_collector_status,
+)
 from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, main_force_storage_status
 
@@ -88,6 +92,7 @@ async def _persistent_lifespan(fastapi_app):
         start_main_force_collector()
         start_stock_bar_repair_collector()
         start_triangle_intraday_collector()
+        start_triangle_daily_collector()
         yield state
 
 
@@ -123,6 +128,10 @@ def get_persistence_status() -> dict[str, Any]:
         "HANSTOCK_TRIANGLE_INTRADAY_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["triangleIntraday"] = intraday_triangle_status()
+    data["triangleDailyCollectorEnabled"] = os.getenv(
+        "HANSTOCK_TRIANGLE_DAILY_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    data["triangleDaily"] = triangle_daily_collector_status()
     return {"status": "ok", "data": data}
 
 
