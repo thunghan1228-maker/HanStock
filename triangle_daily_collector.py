@@ -25,6 +25,8 @@ _status: dict[str, Any] = {
     "lastSuccessAt": None,
     "insertedBars": 0,
     "matchedCount": 0,
+    "twseRowCount": 0,
+    "tpexRowCount": 0,
     "error": None,
 }
 
@@ -74,15 +76,38 @@ def collect_once(
         twse_rows = twse_fetch(target)
         if not twse_rows:
             with _collect_lock:
-                _status.update(status="waiting_official_data")
+                _status.update(
+                    status="waiting_official_data",
+                    twseRowCount=0,
+                    tpexRowCount=0,
+                    error="證交所盤後資料尚未公布或回傳空白",
+                )
                 return dict(_status)
 
-        rows = list(twse_rows)
         try:
-            rows.extend(tpex_fetch(target))
+            tpex_rows = tpex_fetch(target)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("櫃買盤後資料暫時取得失敗，先以上市資料掃描: %s", exc)
+            logger.warning("櫃買盤後資料暫時取得失敗，保留重試狀態: %s", exc)
+            with _collect_lock:
+                _status.update(
+                    status="waiting_official_data",
+                    twseRowCount=len(twse_rows),
+                    tpexRowCount=0,
+                    error=f"櫃買盤後資料取得失敗：{exc}",
+                )
+                return dict(_status)
 
+        if not tpex_rows:
+            with _collect_lock:
+                _status.update(
+                    status="waiting_official_data",
+                    twseRowCount=len(twse_rows),
+                    tpexRowCount=0,
+                    error="櫃買盤後資料尚未公布或回傳空白",
+                )
+                return dict(_status)
+
+        rows = [*twse_rows, *tpex_rows]
         inserted = persist(rows)
         scan = run_scan()
         summary = scan.get("summary") or {}
@@ -94,6 +119,8 @@ def collect_once(
                 lastSuccessAt=success_at,
                 insertedBars=int(inserted),
                 matchedCount=int(summary.get("matched_count") or 0),
+                twseRowCount=len(twse_rows),
+                tpexRowCount=len(tpex_rows),
                 error=None,
             )
             return dict(_status)
