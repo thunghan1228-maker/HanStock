@@ -48,6 +48,11 @@ from broker_branch_weekly import (
     read_latest_broker_branch_weekly,
     save_broker_branch_daily,
 )
+from finmind_broker_branch_collector import (
+    collect_missing_latest_days,
+    finmind_broker_collector_status,
+    start_finmind_broker_branch_collector,
+)
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -112,6 +117,7 @@ async def _persistent_lifespan(fastapi_app):
         start_stock_bar_repair_collector()
         start_triangle_intraday_collector()
         start_triangle_daily_collector()
+        start_finmind_broker_branch_collector()
         yield state
 
 
@@ -140,6 +146,7 @@ def get_persistence_status() -> dict[str, Any]:
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["mainForceHistory"] = main_force_storage_status()
     data["brokerBranchWeekly"] = broker_branch_storage_status()
+    data["finmindBrokerCollector"] = finmind_broker_collector_status()
     data["stockBarAutoRepairEnabled"] = os.getenv(
         "HANSTOCK_STOCK_BAR_REPAIR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
@@ -188,6 +195,15 @@ def get_broker_branch_weekly() -> dict[str, Any]:
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "railway-sqlite-official-broker-branch",
     }
+
+
+@app.post("/api/hub/broker-branch-finmind/backfill")
+def backfill_finmind_broker_branch(
+    x_hub_key: str | None = Header(default=None, alias="X-Hub-Key"),
+) -> dict[str, Any]:
+    """受保護的手動補抓；一般情況由 Railway 背景排程自動執行。"""
+    _require_hub_auth(x_hub_key)
+    return {"status": "ok", "data": collect_missing_latest_days(5)}
 
 
 @app.get("/api/hub/force/bars/{stock_code}")
