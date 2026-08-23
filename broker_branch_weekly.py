@@ -89,15 +89,20 @@ def save_broker_branch_daily(rows: list[dict[str, Any]]) -> int:
 
 
 def read_latest_broker_branch_weekly() -> dict[str, Any]:
-    """以最近五個实际有資料的交易日彙總，且只回傳五日完整股票。"""
+    """以同一公式來源最近五個交易日彙總，且只回傳五日完整股票。"""
     ensure_broker_branch_schema()
     with get_connection() as connection:
+        latest_source_row = connection.execute(
+            "SELECT source FROM broker_branch_daily ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        latest_source = str(latest_source_row["source"]) if latest_source_row else None
         dates = [
             row["trade_date"]
             for row in connection.execute(
-                "SELECT DISTINCT trade_date FROM broker_branch_daily ORDER BY trade_date DESC LIMIT 5"
+                "SELECT DISTINCT trade_date FROM broker_branch_daily WHERE source = ? ORDER BY trade_date DESC LIMIT 5",
+                (latest_source,),
             ).fetchall()
-        ]
+        ] if latest_source else []
         if len(dates) < 5:
             return {"weekEndDate": max(dates).replace("-", "/") if dates else None, "tradeDates": sorted(dates), "rows": [], "complete": False}
         placeholders = ",".join("?" for _ in dates)
@@ -108,12 +113,12 @@ def read_latest_broker_branch_weekly() -> dict[str, Any]:
                    AVG(concentration) AS concentration,
                    ROUND(AVG(active_branches)) AS active_branches
             FROM broker_branch_daily
-            WHERE trade_date IN ({placeholders})
+            WHERE trade_date IN ({placeholders}) AND source = ?
             GROUP BY ticker
             HAVING COUNT(DISTINCT trade_date) = 5
             ORDER BY ticker ASC
             """,
-            dates,
+            [*dates, latest_source],
         ).fetchall()
     week_end_date = max(dates).replace("-", "/")
     return {
@@ -147,11 +152,17 @@ def broker_branch_storage_status() -> dict[str, Any]:
     }
 
 
-def stored_broker_branch_dates(limit: int = 40) -> list[str]:
+def stored_broker_branch_dates(limit: int = 40, source: str | None = None) -> list[str]:
     ensure_broker_branch_schema()
     with get_connection() as connection:
-        rows = connection.execute(
-            "SELECT DISTINCT trade_date FROM broker_branch_daily ORDER BY trade_date DESC LIMIT ?",
-            (max(1, int(limit)),),
-        ).fetchall()
+        if source:
+            rows = connection.execute(
+                "SELECT DISTINCT trade_date FROM broker_branch_daily WHERE source = ? ORDER BY trade_date DESC LIMIT ?",
+                (source, max(1, int(limit))),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT DISTINCT trade_date FROM broker_branch_daily ORDER BY trade_date DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
     return [str(row["trade_date"]) for row in rows]
