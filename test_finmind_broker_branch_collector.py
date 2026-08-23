@@ -1,6 +1,7 @@
 import unittest
 
 from finmind_broker_branch_collector import (
+    BROKER_BRANCH_SOURCE,
     RollingHourlyLimiter,
     _latest_stock_universe,
     aggregate_branch_rows,
@@ -30,7 +31,28 @@ class FinMindBrokerBranchCollectorTests(unittest.TestCase):
         self.assertEqual(result["netAmount"], 1300.0)
         self.assertEqual(result["activeBranches"], 3)
         self.assertEqual(result["concentration"], 100.0)
-        self.assertEqual(result["source"], "FinMind-derived/TWSE-TPEx")
+        self.assertEqual(result["source"], BROKER_BRANCH_SOURCE)
+
+    def test_uses_top_five_imbalance_instead_of_all_branch_sum(self):
+        rows = [
+            {"securities_trader_id": "B1", "price": 10, "buy": 100, "sell": 0},
+            {"securities_trader_id": "B2", "price": 10, "buy": 90, "sell": 0},
+            {"securities_trader_id": "B3", "price": 10, "buy": 80, "sell": 0},
+            {"securities_trader_id": "B4", "price": 10, "buy": 70, "sell": 0},
+            {"securities_trader_id": "B5", "price": 10, "buy": 60, "sell": 0},
+            {"securities_trader_id": "B6", "price": 10, "buy": 50, "sell": 0},
+            {"securities_trader_id": "S1", "price": 10, "buy": 0, "sell": 75},
+            {"securities_trader_id": "S2", "price": 10, "buy": 0, "sell": 75},
+            {"securities_trader_id": "S3", "price": 10, "buy": 0, "sell": 75},
+            {"securities_trader_id": "S4", "price": 10, "buy": 0, "sell": 75},
+            {"securities_trader_id": "S5", "price": 10, "buy": 0, "sell": 75},
+            {"securities_trader_id": "S6", "price": 10, "buy": 0, "sell": 75},
+        ]
+        result = aggregate_branch_rows("2330", "2026-08-21", rows)
+        # 全部分點相加為 0，但買方前五大 4,000 元、賣方前五大
+        # 3,750 元，因此主力分點淨額應為正 250 元。
+        self.assertEqual(result["netAmount"], 250.0)
+        self.assertAlmostEqual(result["concentration"], 400 / 450 * 100, places=4)
 
     def test_empty_day_is_saved_as_zero_not_missing(self):
         result = aggregate_branch_rows("2330", "2026-08-21", [])

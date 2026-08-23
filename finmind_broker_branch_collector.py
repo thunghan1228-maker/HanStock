@@ -29,6 +29,7 @@ FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
 FINMIND_BRANCH_URL = (
     "https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report"
 )
+BROKER_BRANCH_SOURCE = "FinMind-derived/TWSE-TPEx-v2"
 _CODE_PATTERN = re.compile(r"^[0-9]{4,5}[A-Z]?$", re.IGNORECASE)
 _runtime_lock = threading.RLock()
 _start_lock = threading.Lock()
@@ -220,11 +221,18 @@ def aggregate_branch_rows(
             continue
         by_branch[branch] = by_branch.get(branch, 0.0) + price * (buy - sell)
 
-    net_amount = sum(by_branch.values())
+    # 全市場所有分點的買進與賣出互為交易對手，若把全部分點淨額直接
+    # 相加，理論上必然接近 0，不能代表主力方向。改以買方前五大分點
+    # 與賣方前五大分點的金額差，作為可比較的「主力分點淨額」。
+    positive = sorted((value for value in by_branch.values() if value > 0), reverse=True)
+    negative = sorted((-value for value in by_branch.values() if value < 0), reverse=True)
+    top_buy_amount = sum(positive[:5])
+    top_sell_amount = sum(negative[:5])
+    net_amount = top_buy_amount - top_sell_amount
     if net_amount >= 0:
-        directional = sorted((value for value in by_branch.values() if value > 0), reverse=True)
+        directional = positive
     else:
-        directional = sorted((-value for value in by_branch.values() if value < 0), reverse=True)
+        directional = negative
     directional_total = sum(directional)
     concentration = (
         sum(directional[:5]) / directional_total * 100 if directional_total > 0 else 0.0
@@ -235,7 +243,7 @@ def aggregate_branch_rows(
         "netAmount": round(net_amount, 2),
         "concentration": round(min(100.0, max(0.0, concentration)), 4),
         "activeBranches": len(by_branch),
-        "source": "FinMind-derived/TWSE-TPEx",
+        "source": BROKER_BRANCH_SOURCE,
     }
 
 
@@ -303,7 +311,9 @@ def collect_trade_date(trade_date: str, stock_codes: list[str] | None = None) ->
 
 def collect_missing_latest_days(days: int = 5) -> dict[str, Any]:
     targets = fetch_latest_trade_dates(days)
-    existing = set(stored_broker_branch_dates(limit=40))
+    # 只把目前公式版本的日期視為已完成。公式升版時會自動重抓五日，
+    # 以相同主鍵覆寫舊摘要，不需要保存或公開原始分點逐筆資料。
+    existing = set(stored_broker_branch_dates(limit=40, source=BROKER_BRANCH_SOURCE))
     missing = [trade_date for trade_date in targets if trade_date not in existing]
     results = []
     universe = fetch_stock_universe()
