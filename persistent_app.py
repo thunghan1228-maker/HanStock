@@ -42,12 +42,31 @@ from triangle_daily_collector import (
 )
 from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, main_force_storage_status
+from broker_branch_weekly import (
+    broker_branch_storage_status,
+    normalize_daily_rows,
+    read_latest_broker_branch_weekly,
+    save_broker_branch_daily,
+)
 
 
 class GroupStrengthSnapshotBody(BaseModel):
     tradeDate: str = Field(min_length=10, max_length=10)
     bucketTs: int = Field(gt=0)
     ranks: dict[str, int]
+
+
+class BrokerBranchDailyRow(BaseModel):
+    ticker: str = Field(min_length=1, max_length=12)
+    tradeDate: str = Field(min_length=10, max_length=10)
+    netAmount: float
+    concentration: float
+    activeBranches: int = Field(ge=0)
+    source: str = Field(default="official-broker-branch", min_length=1, max_length=80)
+
+
+class BrokerBranchDailyBody(BaseModel):
+    rows: list[BrokerBranchDailyRow]
 
 
 def _validate_trade_date(value: str) -> str:
@@ -120,6 +139,7 @@ def get_persistence_status() -> dict[str, Any]:
         "HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["mainForceHistory"] = main_force_storage_status()
+    data["brokerBranchWeekly"] = broker_branch_storage_status()
     data["stockBarAutoRepairEnabled"] = os.getenv(
         "HANSTOCK_STOCK_BAR_REPAIR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
@@ -133,6 +153,41 @@ def get_persistence_status() -> dict[str, Any]:
     ).strip().lower() not in {"0", "false", "no", "off"}
     data["triangleDaily"] = triangle_daily_collector_status()
     return {"status": "ok", "data": data}
+
+
+@app.post("/api/hub/broker-branch-daily")
+def post_broker_branch_daily(
+    body: BrokerBranchDailyBody,
+    x_hub_key: str | None = Header(default=None, alias="X-Hub-Key"),
+) -> dict[str, Any]:
+    """接收合法資料供應端彙整后的每日券商分點資料；公開瀏覽器不可寫入。"""
+    _require_hub_auth(x_hub_key)
+    if not body.rows:
+        raise HTTPException(status_code=422, detail="rows 不可為空")
+    if len(body.rows) > 5000:
+        raise HTTPException(status_code=413, detail="單次最多同步 5000 筆分點資料")
+    try:
+        rows = normalize_daily_rows(row.model_dump() for row in body.rows)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    saved = save_broker_branch_daily(rows)
+    return {
+        "status": "ok",
+        "saved": saved,
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/api/hub/broker-branch-weekly")
+def get_broker_branch_weekly() -> dict[str, Any]:
+    """公开只读：最近五个交易日的券商分点周净额与集中度。"""
+    result = read_latest_broker_branch_weekly()
+    return {
+        "ok": bool(result["rows"]),
+        **result,
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source": "railway-sqlite-official-broker-branch",
+    }
 
 
 @app.get("/api/hub/force/bars/{stock_code}")

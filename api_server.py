@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hanstock.api")
 
-API_VERSION = "1.4.0"
+API_VERSION = "1.4.1"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 TW_TZ = timezone(timedelta(hours=8))
