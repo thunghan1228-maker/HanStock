@@ -145,3 +145,13 @@ def broker_branch_storage_status() -> dict[str, Any]:
         "latestDate": row["latest_date"],
         "weeklyReady": int(row["trade_days"] or 0) >= 5,
     }
+
+
+def stored_broker_branch_dates(limit: int = 40) -> list[str]:
+    ensure_broker_branch_schema()
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT trade_date FROM broker_branch_daily ORDER BY trade_date DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [str(row["trade_date"]) for row in rows]
