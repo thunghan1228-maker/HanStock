@@ -23,6 +23,10 @@ from daytrade_flow_collector import start_daytrade_flow_collector
 from daytrade_early_sell import early_sell_signal_snapshot, historical_early_sell_demo_snapshot
 from daytrade_early_sell_collector import collect_once as collect_early_sell_once
 from daytrade_early_sell_collector import start_daytrade_early_sell_collector
+from intraday_large_order_collector import (
+    collector_status as intraday_large_order_status,
+    start_intraday_large_order_collector,
+)
 from daytrade_flow_store import load_daytrade_scan_status
 from intraday_signal_store import (
     intraday_signal_count,
@@ -53,7 +57,6 @@ from finmind_broker_branch_collector import (
     finmind_broker_collector_status,
     start_finmind_broker_branch_collector,
 )
-from finmind_active_etf_flow import active_etf_flow_for_ticker
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -114,6 +117,7 @@ async def _persistent_lifespan(fastapi_app):
         start_intraday_signal_collector()
         start_daytrade_flow_collector()
         start_daytrade_early_sell_collector()
+        start_intraday_large_order_collector()
         start_main_force_collector()
         start_stock_bar_repair_collector()
         start_triangle_intraday_collector()
@@ -142,6 +146,7 @@ def get_persistence_status() -> dict[str, Any]:
     data["daytradeEarlySellCollectorEnabled"] = os.getenv(
         "HANSTOCK_EARLY_SELL_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    data["intradayLargeOrder"] = intraday_large_order_status()
     data["mainForceCollectorEnabled"] = os.getenv(
         "HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
@@ -198,20 +203,6 @@ def get_broker_branch_weekly() -> dict[str, Any]:
     }
 
 
-@app.get("/api/hub/active-etf-flow")
-def get_active_etf_flow(
-    ticker: str = Query(..., min_length=1, max_length=16),
-    days: int = Query(5, ge=1, le=10),
-) -> dict[str, Any]:
-    """公開唯讀：FinMind 主動式 ETF 對指定成份股的每日與五日持股異動。"""
-    try:
-        return active_etf_flow_for_ticker(_normalize_stock_code(ticker), trading_days=days)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
 @app.post("/api/hub/broker-branch-finmind/backfill")
 def backfill_finmind_broker_branch(
     x_hub_key: str | None = Header(default=None, alias="X-Hub-Key"),
@@ -265,8 +256,13 @@ def get_daytrade_early_sell_signals(
         for kind in SIGNAL_KIND_BY_STATUS.values()
         for signal in load_latest_signals_by_kind(snapshot["tradeDate"], kind, limit=limit)
     ]
+    instant_large_signals = [
+        signal
+        for kind in ("instantLargeBuy", "instantLargeSell")
+        for signal in load_latest_signals_by_kind(snapshot["tradeDate"], kind, limit=limit)
+    ]
     snapshot["signals"] = sorted(
-        [*snapshot.get("signals", []), *triangle_signals],
+        [*snapshot.get("signals", []), *triangle_signals, *instant_large_signals],
         key=lambda signal: (int(signal.get("barTs") or 0), str(signal.get("ticker") or "")),
         reverse=True,
     )[:limit]
@@ -278,6 +274,22 @@ def get_daytrade_early_sell_signals(
         "failedCount": int(runtime.get("failedCount") or 0),
         "excludedTickers": runtime.get("excludedTickers") or snapshot.get("excludedTickers") or [],
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/api/hub/intraday-large-orders")
+def get_intraday_large_orders(limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+    trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
+    signals = [
+        signal
+        for kind in ("instantLargeBuy", "instantLargeSell")
+        for signal in load_latest_signals_by_kind(trade_date, kind, limit=limit)
+    ]
+    return {
+        "status": "ok",
+        "tradeDate": trade_date,
+        "signals": sorted(signals, key=lambda row: int(row.get("barTs") or 0), reverse=True)[:limit],
+        "collector": intraday_large_order_status(),
     }
 
 
