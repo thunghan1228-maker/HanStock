@@ -333,6 +333,13 @@ class MarketDataHub:
         # 計算 tick timestamp (ms)
         tick_ts_ms = self._extract_tick_ts_ms(tick_data)
 
+        # 逐筆 callback 直接送入同秒大單偵測器；不輪詢、不等待分 K 完成。
+        try:
+            from intraday_large_order import get_intraday_large_order_monitor
+            get_intraday_large_order_monitor().on_tick(tick_data, tick_ts_ms)
+        except Exception:  # noqa: BLE001
+            logger.exception("盤中瞬間大單偵測失敗 code=%s", code)
+
         # 更新 1 分 K Aggregator
         completed_bar_1m = self.bars_1m.on_tick(
             code, price, volume, tick_ts_ms, side, is_main_force, trade_amount
