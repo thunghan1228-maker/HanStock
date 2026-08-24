@@ -17,6 +17,7 @@ ONCE_PER_DAY_KINDS = {
     "triangleVolumeBreakout",
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
+INSTANT_LARGE_KINDS = {"instantLargeBuy", "instantLargeSell"}
 EARLY_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000
 
 
@@ -140,6 +141,22 @@ def save_intraday_signals(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]
                     """,
                     (
                         signal["trade_date"], signal["ticker"],
+                        signal["bar_ts"] - EARLY_SIGNAL_COOLDOWN_MS,
+                        signal["bar_ts"] + EARLY_SIGNAL_COOLDOWN_MS,
+                    ),
+                ).fetchone()
+                if exists is not None:
+                    continue
+            if signal["kind"] in INSTANT_LARGE_KINDS:
+                exists = connection.execute(
+                    """
+                    SELECT id FROM intraday_signals
+                    WHERE trade_date = ? AND ticker = ? AND kind = ?
+                      AND bar_ts > ? AND bar_ts < ?
+                    LIMIT 1
+                    """,
+                    (
+                        signal["trade_date"], signal["ticker"], signal["kind"],
                         signal["bar_ts"] - EARLY_SIGNAL_COOLDOWN_MS,
                         signal["bar_ts"] + EARLY_SIGNAL_COOLDOWN_MS,
                     ),
