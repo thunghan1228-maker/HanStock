@@ -30,7 +30,8 @@ logger = logging.getLogger("hanstock.stock_futures")
 TW_TZ = timezone(timedelta(hours=8))
 StockFuturesMode = Literal["regular", "mini"]
 DEFAULT_POOL_SIZE = 4
-DEFAULT_PER_CONNECTION_CAP = 195
+# Shioaji 官方單連線最多 200 個訂閱；保留 2 個安全餘裕給連線內的股期目標。
+DEFAULT_PER_CONNECTION_CAP = 198
 DEFAULT_CONTRACT_READY_TIMEOUT_SECONDS = 20.0
 DEFAULT_FRONT_MONTH_RECHECK_SECONDS = 300.0
 DEFAULT_CLOSED_SNAPSHOT_RECHECK_SECONDS = 600.0
