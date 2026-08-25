@@ -92,6 +92,19 @@
     <div style="overflow:auto"><table id="triangleTable" class="hidden"><thead><tr><th>狀態</th><th>代號</th><th>名稱</th><th>收盤</th><th>距上緣</th><th>量比</th><th>分數</th></tr></thead><tbody></tbody></table></div>
   </section>
 
+  <section class="card section" id="vcpScreener">
+    <div class="futures-header"><h2>選股程式｜VCP 波動收縮</h2><span class="label" id="vcpGenerated">尚未掃描</span></div>
+    <div class="toolbar" style="margin-bottom:12px">
+      <button class="secondary vcp-filter" data-status="">全部</button>
+      <button class="secondary vcp-filter" data-status="VCP形成中">VCP形成中</button>
+      <button class="secondary vcp-filter" data-status="接近突破">接近突破</button>
+      <button class="secondary vcp-filter" data-status="今日帶量突破">今日帶量突破</button>
+      <button class="secondary vcp-filter" data-status="突破後過熱">突破後過熱</button>
+    </div>
+    <div id="vcpEmpty" class="empty">載入 VCP 掃描結果中…</div>
+    <div style="overflow:auto"><table id="vcpTable" class="hidden"><thead><tr><th>狀態</th><th>代號</th><th>名稱</th><th>收盤</th><th>樞紐價</th><th>距樞紐</th><th>收縮幅度</th><th>量比</th><th>分數</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
   <section class="card section">
     <h2>工具</h2>
     <div class="toolbar"><a class="btn secondary" href="/docs" target="_blank">API 文件</a><a class="btn secondary" href="/api/rule1/latest" target="_blank">原始 Rule1 JSON</a><button id="refreshBtn">重新整理</button></div>
@@ -227,6 +240,20 @@ async function loadTriangles(status=''){
 }
 document.querySelectorAll('.triangle-filter').forEach(button=>button.onclick=()=>loadTriangles(button.dataset.status));
 
+// ===== 選股程式：VCP 波動收縮 =====
+async function loadVcp(status=''){
+  const empty=$('#vcpEmpty'),table=$('#vcpTable'),tbody=$('#vcpTable tbody');
+  empty.textContent='載入 VCP 掃描結果中…';empty.classList.remove('hidden');table.classList.add('hidden');
+  try{
+    const query=status?'?status='+encodeURIComponent(status):'';
+    const d=await jsonFetch('/api/screener/vcp/latest'+query);
+    $('#vcpGenerated').textContent='更新於 '+fmtTime(d.generated_at);tbody.innerHTML='';
+    (d.rows||[]).forEach(row=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+row.status+'</td><td>'+row.stock_code+'</td><td>'+(row.stock_name||'—')+'</td><td>'+fmtNum(row.close)+'</td><td>'+fmtNum(row.pivot_price)+'</td><td>'+signedNum(row.distance_to_pivot_pct)+'%</td><td>'+(row.contractions_pct||[]).map(v=>fmtNum(v,1)+'%').join(' → ')+'</td><td>'+fmtNum(row.volume_ratio_20d)+' 倍</td><td>'+fmtNum(row.score,1)+'</td>';tbody.appendChild(tr)});
+    empty.textContent=(d.rows||[]).length?'':'目前沒有符合條件的股票。';empty.classList.toggle('hidden',!!(d.rows||[]).length);table.classList.toggle('hidden',!(d.rows||[]).length);
+  }catch(e){empty.textContent='尚無 VCP 掃描結果；請先完成日 K 更新並執行盤後掃描。'}
+}
+document.querySelectorAll('.vcp-filter').forEach(button=>button.onclick=()=>loadVcp(button.dataset.status));
+
 // ===== 初始化 =====
 $('#searchBtn').onclick=search;
 $('#showAllBtn').onclick=showAll;
@@ -237,6 +264,7 @@ $('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
 updateFutures();
 loadRule1();
 loadTriangles();
+loadVcp();
 
 // 每 1 秒更新台指期行情（不重新整理整個網頁）
 setInterval(updateFutures, 1000);
