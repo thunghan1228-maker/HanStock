@@ -65,7 +65,13 @@ def collect_once(
             error=None,
         )
 
-    from official_daily_bars import _save_day, fetch_tpex_day, fetch_twse_day
+    from database import get_connection, initialize_database
+    from official_daily_bars import (
+        _save_day,
+        download_official_daily_bars,
+        fetch_tpex_day,
+        fetch_twse_day,
+    )
     from triangle_screener import scan_all_triangles
     from vcp_screener import scan_all_vcp
 
@@ -75,6 +81,26 @@ def collect_once(
     run_scan = scanner or scan_all_triangles
 
     try:
+        # Railway 的 /app/data 在沒有掛載 Volume 時會於部署後重建。正式工作
+        # 不可假設 stocks / bars_1d 已存在，否則掃描器會以「no such table」
+        # 結束，前端再被誤導成 0 檔。首次啟動先建立 schema，若歷史日 K
+        # 不足 VCP 最低需求，於背景補齊約 100 個交易日後才正式掃描。
+        if twse_loader is None and tpex_loader is None and save_day is None and scanner is None:
+            initialize_database()
+            with get_connection() as connection:
+                history_days = int(
+                    connection.execute("SELECT COUNT(DISTINCT bar_time) FROM bars_1d").fetchone()[0]
+                )
+            if history_days < 80:
+                with _collect_lock:
+                    _status.update(status="backfilling_history", error=None)
+                download_official_daily_bars(
+                    days=150,
+                    delay=0.05,
+                    end_date=target,
+                    run_triangle_scan=False,
+                )
+
         twse_rows = twse_fetch(target)
         if not twse_rows:
             with _collect_lock:
