@@ -73,6 +73,11 @@ class IntradayLargeOrderMonitor:
         with self._lock:
             return dict(self._status)
 
+    def update_status(self, **values: Any) -> None:
+        """補充收集器健康狀態，不改動目前的候選名單。"""
+        with self._lock:
+            self._status.update(values)
+
     def on_tick(self, tick: dict[str, Any], tick_ts_ms: int) -> list[dict[str, Any]]:
         code = str(tick.get("code") or "").strip().upper()
         tick_type = int(tick.get("tick_type") or 0)
