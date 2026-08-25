@@ -775,6 +775,26 @@ def get_vcp_screener_results(
     except RuntimeError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     rows = list(result.get("rows") or [])
+    # VCP 只依賴日 K，不應要求股票同時存在於法人籌碼母表。把正式市場別
+    # 隨結果回傳，前端才能在 VCP 單獨掃描時完整顯示上市、上櫃候選股。
+    if rows:
+        from database import get_connection
+
+        codes = [str(row.get("stock_code") or "") for row in rows]
+        placeholders = ",".join("?" for _ in codes)
+        with get_connection() as connection:
+            market_rows = connection.execute(
+                f"SELECT stock_code, market FROM stocks WHERE stock_code IN ({placeholders})",
+                codes,
+            ).fetchall()
+        market_by_code = {str(row["stock_code"]): str(row["market"] or "") for row in market_rows}
+        rows = [
+            {
+                **row,
+                "market": "上市" if market_by_code.get(str(row.get("stock_code"))) == "TSE" else "上櫃",
+            }
+            for row in rows
+        ]
     if status:
         rows = [row for row in rows if row.get("status") == status]
     return {"status": "ok", "strategy": result.get("strategy"), "generated_at": result.get("generated_at"), "summary": result.get("summary", {}), "count": min(len(rows), limit), "rows": rows[:limit]}
