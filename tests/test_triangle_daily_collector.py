@@ -11,6 +11,7 @@ def _reset_status():
         lastSuccessAt=None,
         insertedBars=0,
         matchedCount=0,
+        vcpMatchedCount=0,
         twseRowCount=0,
         tpexRowCount=0,
         error=None,

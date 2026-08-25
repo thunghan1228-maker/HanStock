@@ -1,4 +1,4 @@
-"""交易日盤後自動更新官方日 K，完成後重跑日線三角收斂。"""
+"""交易日盤後自動更新官方日 K，完成後重跑三角收斂與 VCP。"""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ _status: dict[str, Any] = {
     "lastSuccessAt": None,
     "insertedBars": 0,
     "matchedCount": 0,
+    "vcpMatchedCount": 0,
     "twseRowCount": 0,
     "tpexRowCount": 0,
     "error": None,
@@ -66,6 +67,7 @@ def collect_once(
 
     from official_daily_bars import _save_day, fetch_tpex_day, fetch_twse_day
     from triangle_screener import scan_all_triangles
+    from vcp_screener import scan_all_vcp
 
     twse_fetch = twse_loader or fetch_twse_day
     tpex_fetch = tpex_loader or fetch_tpex_day
@@ -110,7 +112,9 @@ def collect_once(
         rows = [*twse_rows, *tpex_rows]
         inserted = persist(rows)
         scan = run_scan()
+        vcp_scan = {"summary": {}} if scanner else scan_all_vcp()
         summary = scan.get("summary") or {}
+        vcp_summary = vcp_scan.get("summary") or {}
         success_at = datetime.now(TW_TZ).isoformat(timespec="seconds")
         with _collect_lock:
             _status.update(
@@ -119,13 +123,14 @@ def collect_once(
                 lastSuccessAt=success_at,
                 insertedBars=int(inserted),
                 matchedCount=int(summary.get("matched_count") or 0),
+                vcpMatchedCount=int(vcp_summary.get("matched_count") or 0),
                 twseRowCount=len(twse_rows),
                 tpexRowCount=len(tpex_rows),
                 error=None,
             )
             return dict(_status)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("盤後三角收斂自動更新失敗")
+        logger.exception("盤後型態選股自動更新失敗")
         with _collect_lock:
             _status.update(status="error", error=str(exc))
             return dict(_status)
@@ -152,7 +157,7 @@ def start_triangle_daily_collector() -> bool:
         ).start()
         _started = True
         logger.info(
-            "盤後三角收斂自動更新已啟動，%02d:%02d 後每 %ss 重試",
+            "盤後三角收斂與 VCP 自動更新已啟動，%02d:%02d 後每 %ss 重試",
             READY_HOUR,
             READY_MINUTE,
             POLL_SECONDS,
