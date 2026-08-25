@@ -761,6 +761,36 @@ def get_daytrade_flow_ranking(
 # 盤後選股：日線三角收斂
 # ------------------------------------------------------------------
 
+@app.get("/api/screener/vcp/latest")
+def get_vcp_screener_results(
+    status: str | None = Query(default=None, description="VCP形成中、接近突破、今日帶量突破、突破後過熱"),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    from vcp_screener import TARGET_STATUSES, load_vcp_results
+
+    if status and status not in TARGET_STATUSES:
+        raise HTTPException(status_code=422, detail="不支援的 VCP 狀態")
+    try:
+        result = load_vcp_results()
+    except RuntimeError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    rows = list(result.get("rows") or [])
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return {"status": "ok", "strategy": result.get("strategy"), "generated_at": result.get("generated_at"), "summary": result.get("summary", {}), "count": min(len(rows), limit), "rows": rows[:limit]}
+
+
+@app.post("/api/screener/vcp/run")
+def run_vcp_screener(x_hanstock_sync_token: str | None = Header(default=None)) -> dict[str, Any]:
+    expected_token = os.getenv("HANSTOCK_SYNC_TOKEN", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="伺服器尚未設定同步金鑰。")
+    if x_hanstock_sync_token != expected_token:
+        raise HTTPException(status_code=401, detail="同步金鑰不正確。")
+    from vcp_screener import scan_all_vcp
+
+    return {"status": "ok", **scan_all_vcp()}
+
 @app.get("/api/screener/triangles/latest")
 def get_triangle_screener_results(
     status: str | None = Query(default=None, description="形成中、接近突破、突破待量、放量突破"),
