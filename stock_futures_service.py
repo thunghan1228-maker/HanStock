@@ -515,6 +515,54 @@ class StockFuturesQuoteService:
             )
             self._pool_recovery_thread.start()
 
+    def trigger_stale_stock_recovery(
+        self,
+        quote_service: Any,
+        reason: str = "台股即時 Tick 逾時，執行自動重連",
+    ) -> bool:
+        """強制重建已登入但停止送 Tick 的五條行情連線。
+
+        一般的暫時性錯誤恢復會等待訂閱自行回復；但行情 Session 有時仍顯示
+        已登入，實際 Tick callback 卻已停止。這種情況不能把「訂閱 API 成功」
+        當成已恢復，必須依序重建主連線與共享池，避免長時間停在舊訊號。
+        """
+        now = time.monotonic()
+        with self._lock:
+            if self._pool_recovery_thread and self._pool_recovery_thread.is_alive():
+                return False
+            if now - self._last_pool_recovery_at < self._pool_recovery_cooldown:
+                return False
+
+            def recover() -> None:
+                try:
+                    recover_primary = getattr(
+                        quote_service,
+                        "recover_transient_p2p_session",
+                        None,
+                    )
+                    if callable(recover_primary):
+                        logger.warning("[Shared Quote] %s；先重建主 Shioaji Session", reason)
+                        recover_primary(reason)
+                        # 主連線重連流程先等待 5 秒；再留時間完成登入與主訂閱，
+                        # 避免五條連線同時搶同一 person_id 的連線名額。
+                        time.sleep(15.0)
+                    logger.warning("[Shared Quote] 重建四條共享現貨行情連線")
+                    self._rebuild_pools()
+                except Exception:
+                    logger.exception("[Shared Quote] 台股 Tick 逾時自動恢復失敗")
+                finally:
+                    with self._lock:
+                        self._last_pool_recovery_at = time.monotonic()
+                        self._pool_recovery_thread = None
+
+            self._pool_recovery_thread = threading.Thread(
+                target=recover,
+                name="shared-stock-tick-watchdog-recovery",
+                daemon=True,
+            )
+            self._pool_recovery_thread.start()
+            return True
+
     @staticmethod
     def _pool_load(pool: _PoolConnection) -> int:
         return len(pool.subscriptions) + len(pool.stock_subscriptions)
