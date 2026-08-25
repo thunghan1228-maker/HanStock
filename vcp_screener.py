@@ -24,6 +24,15 @@ def _pivot_lows(values: list[float], radius: int = 2) -> list[int]:
     return result
 
 
+def _pivot_highs(values: list[float], radius: int = 2) -> list[int]:
+    result: list[int] = []
+    for index in range(radius, len(values) - radius):
+        window = values[index - radius:index + radius + 1]
+        if values[index] == max(window) and window.count(values[index]) == 1:
+            result.append(index)
+    return result
+
+
 def evaluate_vcp(stock_code: str, daily_bars: list[dict[str, Any]]) -> dict[str, Any]:
     """辨識第二階段上升趨勢中的 2～4 次波動與量能收縮。"""
     bars = daily_bars[-MAX_BARS:]
@@ -39,12 +48,21 @@ def evaluate_vcp(stock_code: str, daily_bars: list[dict[str, Any]]) -> dict[str,
     ma50_month_ago = sum(closes[-70:-20]) / 50
     ma200 = _sma(closes, 200) if len(closes) >= 200 else min(closes)
 
-    # Pivot 以近 100 日為主；最後一根不參與樞紐高點，避免突破日改寫買點。
+    # 不可直接取近 100 日最高點：若最高點出現在最近幾天，它後方沒有
+    # 足夠的低點，會把全市場錯誤篩成 0 檔。選擇「後方至少形成兩個
+    # 回檔低點」的最近樞紐高點，才符合 VCP 的實際結構。
     base_start = max(0, len(bars) - 100)
-    pivot = max(highs[base_start:-1])
-    pivot_index = base_start + highs[base_start:-1].index(pivot)
-    low_indexes = [i for i in _pivot_lows(lows[pivot_index:]) if i + pivot_index < len(bars) - 1]
-    low_indexes = [i + pivot_index for i in low_indexes][-4:]
+    all_low_indexes = _pivot_lows(lows)
+    high_candidates = [index for index in _pivot_highs(highs) if index >= base_start and index < len(bars) - 5]
+    pivot_index = next(
+        (index for index in reversed(high_candidates) if len([low for low in all_low_indexes if index < low < len(bars) - 1]) >= 2),
+        max(base_start, len(bars) - 45),
+    )
+    if pivot_index not in high_candidates:
+        fallback_end = max(base_start + 1, len(bars) - 10)
+        pivot_index = base_start + highs[base_start:fallback_end].index(max(highs[base_start:fallback_end]))
+    pivot = highs[pivot_index]
+    low_indexes = [index for index in all_low_indexes if pivot_index < index < len(bars) - 1][-4:]
     contractions = [round((pivot - lows[i]) / pivot * 100, 2) for i in low_indexes]
     # 保留由大到小的有效收縮序列，允許 15% 雜訊。
     shrinking: list[float] = []
@@ -105,8 +123,8 @@ def _unique_stocks() -> Iterable[tuple[str, str]]:
         rows = connection.execute(
             "SELECT stock_code, stock_name FROM stocks ORDER BY stock_code"
         ).fetchall()
-    # 普通股代號為四位數；自然排除期貨、ETF、權證及 ETN。
-    return [(str(row["stock_code"]), str(row["stock_name"])) for row in rows if str(row["stock_code"]).isdigit() and len(str(row["stock_code"])) == 4]
+    # 台股普通股為 1～9 開頭四位數；0 開頭為 ETF，另排除權證、ETN、期貨。
+    return [(str(row["stock_code"]), str(row["stock_name"])) for row in rows if len(str(row["stock_code"])) == 4 and str(row["stock_code"])[0] in "123456789" and str(row["stock_code"]).isdigit()]
 
 
 def scan_all_vcp() -> dict[str, Any]:
