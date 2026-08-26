@@ -21,7 +21,6 @@ from hanstock_app import _normalize_stock_code, app
 from intraday_signal_collector import start_intraday_signal_collector
 from daytrade_flow_collector import start_daytrade_flow_collector
 from daytrade_early_sell import early_sell_signal_snapshot, historical_early_sell_demo_snapshot
-from daytrade_early_sell_collector import collect_once as collect_early_sell_once
 from daytrade_early_sell_collector import start_daytrade_early_sell_collector
 from intraday_large_order_collector import (
     collector_status as intraday_large_order_status,
@@ -275,11 +274,9 @@ def get_daytrade_early_sell_signals(
     limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
     """09:00～13:30（含）逐分鐘累計大單買進／賣出達前日預估賣壓 50% 的訊號。"""
-    # API 被讀取時順手補跑一次；背景執行緒仍是主要來源，因此頁面未開啟也會監控。
-    try:
-        runtime = collect_early_sell_once()
-    except Exception:  # noqa: BLE001
-        runtime = {"prepared": False, "inserted": []}
+    # 背景收集器已每 5 秒計算並永久保存；公開 GET 只讀快照。
+    # 不可在每台裝置的輪詢請求內重跑全候選股，否則同時讀取會塞滿
+    # FastAPI 執行緒池，連健康檢查與後續訊號都會一起停住。
     snapshot = early_sell_signal_snapshot(limit=limit)
     from triangle_intraday import SIGNAL_KIND_BY_STATUS
 
@@ -301,9 +298,10 @@ def get_daytrade_early_sell_signals(
     return {
         "status": "ok",
         **snapshot,
-        "prepared": bool(runtime.get("prepared")),
-        "activeCount": int(runtime.get("activeCount") or 0),
-        "failedCount": int(runtime.get("failedCount") or 0),
+        "prepared": bool(snapshot.get("monitoredCount")),
+        "activeCount": int(snapshot.get("monitoredCount") or 0),
+        "failedCount": 0,
+        "collectorMode": "background_snapshot_only",
         "excludedTickers": runtime.get("excludedTickers") or snapshot.get("excludedTickers") or [],
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
