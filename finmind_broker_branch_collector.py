@@ -256,6 +256,13 @@ def _fetch_stock_day(stock_code: str, trade_date: str) -> dict[str, Any]:
     return aggregate_branch_rows(stock_code, trade_date, rows)
 
 
+def has_meaningful_day_coverage(summaries: list[dict[str, Any]], stock_count: int) -> bool:
+    """防止 FinMind 尚未發布資料時，把全市場空回應當成正式零值日。"""
+    minimum_active = max(1, int(max(1, stock_count) * 0.5))
+    active_count = sum(1 for row in summaries if int(row.get("activeBranches") or 0) > 0)
+    return active_count >= minimum_active
+
+
 def collect_trade_date(trade_date: str, stock_codes: list[str] | None = None) -> dict[str, Any]:
     datetime.strptime(trade_date, "%Y-%m-%d")
     universe = list(stock_codes or fetch_stock_universe())
@@ -289,6 +296,11 @@ def collect_trade_date(trade_date: str, stock_codes: list[str] | None = None) ->
         if len(failures) > maximum_failures:
             raise RuntimeError(
                 f"{trade_date} 分點下載失敗 {len(failures)}/{len(universe)}，未寫入不完整資料"
+            )
+        if not has_meaningful_day_coverage(summaries, len(universe)):
+            active_count = sum(1 for row in summaries if int(row.get("activeBranches") or 0) > 0)
+            raise RuntimeError(
+                f"{trade_date} FinMind 分點尚未完整發布（有效 {active_count}/{len(universe)}），不寫入零值占位資料"
             )
         saved = save_broker_branch_daily(summaries)
         _set_runtime(

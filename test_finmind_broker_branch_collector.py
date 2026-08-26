@@ -5,6 +5,7 @@ from finmind_broker_branch_collector import (
     RollingHourlyLimiter,
     _latest_stock_universe,
     aggregate_branch_rows,
+    has_meaningful_day_coverage,
 )
 
 
@@ -59,6 +60,15 @@ class FinMindBrokerBranchCollectorTests(unittest.TestCase):
         self.assertEqual(result["netAmount"], 0.0)
         self.assertEqual(result["concentration"], 0.0)
         self.assertEqual(result["activeBranches"], 0)
+
+    def test_rejects_an_all_zero_market_day_but_accepts_majority_coverage(self):
+        empty = [{"ticker": str(index), "activeBranches": 0} for index in range(10)]
+        covered = [
+            {"ticker": str(index), "activeBranches": 4 if index < 6 else 0}
+            for index in range(10)
+        ]
+        self.assertFalse(has_meaningful_day_coverage(empty, 10))
+        self.assertTrue(has_meaningful_day_coverage(covered, 10))
 
     def test_limiter_accepts_small_burst(self):
         limiter = RollingHourlyLimiter(limit=3, window_seconds=1)

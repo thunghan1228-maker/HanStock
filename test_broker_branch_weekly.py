@@ -58,6 +58,21 @@ class BrokerBranchWeeklyTest(unittest.TestCase):
         self.assertEqual(result["rows"][1]["netAmount"], 120000000.0)
         self.assertEqual(result["rows"][1]["activeBranches"], 42)
 
+    def test_daily_and_weekly_readers_skip_an_all_zero_placeholder_date(self):
+        rows = []
+        for day in ["2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24"]:
+            rows.append({"ticker": "2330", "tradeDate": day, "netAmount": 100, "concentration": 12, "activeBranches": 4, "source": "FinMind-v2"})
+        rows.append({"ticker": "2330", "tradeDate": "2026-08-25", "netAmount": 0, "concentration": 0, "activeBranches": 0, "source": "FinMind-v2"})
+        target.save_broker_branch_daily(target.normalize_daily_rows(rows))
+
+        daily = target.read_latest_broker_branch_daily()
+        weekly = target.read_latest_broker_branch_weekly()
+
+        self.assertEqual(daily["tradeDate"], "2026/08/24")
+        self.assertEqual(weekly["weekEndDate"], "2026/08/24")
+        self.assertEqual(weekly["tradeDates"], ["2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24"])
+        self.assertEqual(weekly["rows"][0]["netAmount"], 500.0)
+
 
 if __name__ == "__main__":
     unittest.main()
