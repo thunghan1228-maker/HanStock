@@ -218,6 +218,7 @@ def aggregate_branch_rows(
 ) -> dict[str, Any]:
     """轉為每日計分摘要；集中度為同方向前五大分點淨額占比。"""
     by_branch: dict[str, float] = {}
+    by_branch_shares: dict[str, float] = {}
     for item in rows:
         branch = str(item.get("securities_trader_id") or item.get("securities_trader") or "").strip()
         if not branch:
@@ -229,15 +230,27 @@ def aggregate_branch_rows(
         except (TypeError, ValueError):
             continue
         by_branch[branch] = by_branch.get(branch, 0.0) + price * (buy - sell)
+        by_branch_shares[branch] = by_branch_shares.get(branch, 0.0) + buy - sell
 
     # 全市場所有分點的買進與賣出互為交易對手，若把全部分點淨額直接
     # 相加，理論上必然接近 0，不能代表主力方向。改以買方前五大分點
     # 與賣方前五大分點的金額差，作為可比較的「主力分點淨額」。
-    positive = sorted((value for value in by_branch.values() if value > 0), reverse=True)
-    negative = sorted((-value for value in by_branch.values() if value < 0), reverse=True)
+    positive_branches = sorted(
+        ((amount, by_branch_shares[branch]) for branch, amount in by_branch.items() if amount > 0),
+        key=lambda item: item[0], reverse=True,
+    )
+    negative_branches = sorted(
+        ((-amount, -by_branch_shares[branch]) for branch, amount in by_branch.items() if amount < 0),
+        key=lambda item: item[0], reverse=True,
+    )
+    positive = [amount for amount, _shares in positive_branches]
+    negative = [amount for amount, _shares in negative_branches]
     top_buy_amount = sum(positive[:5])
     top_sell_amount = sum(negative[:5])
+    top_buy_shares = sum(shares for _amount, shares in positive_branches[:5])
+    top_sell_shares = sum(shares for _amount, shares in negative_branches[:5])
     net_amount = top_buy_amount - top_sell_amount
+    net_lots = (top_buy_shares - top_sell_shares) / 1000
     if net_amount >= 0:
         directional = positive
     else:
@@ -250,6 +263,7 @@ def aggregate_branch_rows(
         "ticker": stock_code,
         "tradeDate": trade_date,
         "netAmount": round(net_amount, 2),
+        "netLots": round(net_lots, 3),
         "concentration": round(min(100.0, max(0.0, concentration)), 4),
         "activeBranches": len(by_branch),
         "source": BROKER_BRANCH_SOURCE,
@@ -334,8 +348,9 @@ def collect_missing_latest_days(days: int = 5) -> dict[str, Any]:
     targets = fetch_latest_trade_dates(days)
     # 只把目前公式版本的日期視為已完成。公式升版時會自動重抓五日，
     # 以相同主鍵覆寫舊摘要，不需要保存或公開原始分點逐筆資料。
-    existing = set(stored_broker_branch_dates(limit=40, source=BROKER_BRANCH_SOURCE))
-    missing = [trade_date for trade_date in targets if trade_date not in existing]
+    existing = set(stored_broker_branch_dates(limit=40, source=BROKER_BRANCH_SOURCE, require_net_lots=True))
+    # 先補最近交易日，讓日排行優先取得精確張數；其餘四日再依序補齊週資料。
+    missing = sorted((trade_date for trade_date in targets if trade_date not in existing), reverse=True)
     results = []
     universe = fetch_stock_universe()
     for trade_date in missing:
