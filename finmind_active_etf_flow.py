@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
 DATASET = "TaiwanStockActiveETFHoldingChange"
+TAIPEI = ZoneInfo("Asia/Taipei")
 _lock = threading.RLock()
 
 
@@ -65,8 +67,16 @@ def _fetch_day(day: str) -> list[dict[str, Any]]:
         rows = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
             raise RuntimeError(str(payload.get("msg") if isinstance(payload, dict) else "FinMind ETF 回傳格式錯誤"))
-        clean = [row for row in rows if isinstance(row, dict)]
-        _write_cached(day, clean)
+        # FinMind 未給 end_date 時可能回傳 start_date 之後的多日資料；
+        # 每個快取檔只能保存指定交易日，避免五日統計重複計入。
+        clean = [
+            row for row in rows
+            if isinstance(row, dict) and str(row.get("date") or "")[:10] == day
+        ]
+        # 當日資料盤後才發布；空回應不可永久快取，否則收盤後仍會一直
+        # 顯示前一日。已有內容的交易日才落盤，並由 Railway Volume 保存。
+        if clean:
+            _write_cached(day, clean)
         return clean
 
 
@@ -90,7 +100,7 @@ def active_etf_flow_for_ticker(ticker: str, trading_days: int = 5) -> dict[str, 
     day_rows: list[tuple[str, list[dict[str, Any]]]] = []
     last_error: str | None = None
     for offset in range(0, 18):
-        day = (date.today() - timedelta(days=offset)).isoformat()
+        day = (datetime.now(TAIPEI).date() - timedelta(days=offset)).isoformat()
         try:
             rows = _fetch_day(day)
         except Exception as exc:  # noqa: BLE001
