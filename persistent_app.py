@@ -71,6 +71,7 @@ class BrokerBranchDailyRow(BaseModel):
     ticker: str = Field(min_length=1, max_length=12)
     tradeDate: str = Field(min_length=10, max_length=10)
     netAmount: float
+    netLots: float | None = None
     concentration: float
     activeBranches: int = Field(ge=0)
     source: str = Field(default="official-broker-branch", min_length=1, max_length=80)
