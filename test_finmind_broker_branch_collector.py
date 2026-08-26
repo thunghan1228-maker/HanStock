@@ -1,15 +1,25 @@
 import unittest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from finmind_broker_branch_collector import (
     BROKER_BRANCH_SOURCE,
     RollingHourlyLimiter,
     _latest_stock_universe,
     aggregate_branch_rows,
+    broker_branch_collection_allowed,
     has_meaningful_day_coverage,
 )
 
 
 class FinMindBrokerBranchCollectorTests(unittest.TestCase):
+    def test_pauses_full_market_finmind_backfill_during_taipei_market_hours(self):
+        taipei = ZoneInfo("Asia/Taipei")
+        self.assertFalse(broker_branch_collection_allowed(datetime(2026, 8, 26, 9, 0, tzinfo=taipei)))
+        self.assertFalse(broker_branch_collection_allowed(datetime(2026, 8, 26, 13, 30, tzinfo=taipei)))
+        self.assertTrue(broker_branch_collection_allowed(datetime(2026, 8, 26, 15, 10, tzinfo=taipei)))
+        self.assertTrue(broker_branch_collection_allowed(datetime(2026, 8, 30, 10, 0, tzinfo=taipei)))
+
     def test_filters_current_twse_tpex_and_keeps_etf(self):
         rows = [
             {"stock_id": "0050", "stock_name": "元大台灣50", "industry_category": "ETF", "type": "twse", "date": "2026-08-21"},
