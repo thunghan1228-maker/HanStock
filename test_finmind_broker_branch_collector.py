@@ -40,6 +40,7 @@ class FinMindBrokerBranchCollectorTests(unittest.TestCase):
         ]
         result = aggregate_branch_rows("2330", "2026-08-21", rows)
         self.assertEqual(result["netAmount"], 1300.0)
+        self.assertEqual(result["netLots"], 0.13)
         self.assertEqual(result["activeBranches"], 3)
         self.assertEqual(result["concentration"], 100.0)
         self.assertEqual(result["source"], BROKER_BRANCH_SOURCE)
@@ -63,11 +64,13 @@ class FinMindBrokerBranchCollectorTests(unittest.TestCase):
         # 全部分點相加為 0，但買方前五大 4,000 元、賣方前五大
         # 3,750 元，因此主力分點淨額應為正 250 元。
         self.assertEqual(result["netAmount"], 250.0)
+        self.assertEqual(result["netLots"], 0.025)
         self.assertAlmostEqual(result["concentration"], 400 / 450 * 100, places=4)
 
     def test_empty_day_is_saved_as_zero_not_missing(self):
         result = aggregate_branch_rows("2330", "2026-08-21", [])
         self.assertEqual(result["netAmount"], 0.0)
+        self.assertEqual(result["netLots"], 0.0)
         self.assertEqual(result["concentration"], 0.0)
         self.assertEqual(result["activeBranches"], 0)
 
