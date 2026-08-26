@@ -302,7 +302,7 @@ def get_daytrade_early_sell_signals(
         "activeCount": int(snapshot.get("monitoredCount") or 0),
         "failedCount": 0,
         "collectorMode": "background_snapshot_only",
-        "excludedTickers": runtime.get("excludedTickers") or snapshot.get("excludedTickers") or [],
+        "excludedTickers": snapshot.get("excludedTickers") or [],
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
