@@ -63,6 +63,15 @@ def _now_iso() -> str:
     return datetime.now(TAIPEI).isoformat(timespec="seconds")
 
 
+def broker_branch_collection_allowed(now: datetime | None = None) -> bool:
+    """分點是盤後資料；交易日盤中禁止啟動全市場 2,000 多檔補抓。"""
+    current = (now or datetime.now(TAIPEI)).astimezone(TAIPEI)
+    if current.weekday() >= 5:
+        return True
+    minutes = current.hour * 60 + current.minute
+    return minutes < 8 * 60 + 30 or minutes >= 15 * 60 + 10
+
+
 def _set_runtime(**values: Any) -> None:
     with _runtime_lock:
         _runtime.update(values)
@@ -350,12 +359,15 @@ def _collector_loop() -> None:
         time.sleep(startup_delay)
     while True:
         try:
-            if _enabled() and _token():
+            if _enabled() and _token() and broker_branch_collection_allowed():
+                _set_runtime(pausedReason=None)
                 collect_missing_latest_days(5)
+            elif _enabled() and _token():
+                _set_runtime(running=False, currentDate=None, pausedReason="market_hours")
         except Exception as error:  # noqa: BLE001
             logger.exception("FinMind 券商分點收集失敗")
             _set_runtime(running=False, currentDate=None, lastError=str(error))
-        # 啟動時會補資料；之後每 15 分鐘確認，已有日期不會重抓全市場。
+        # 只在非盤中時段補資料；之後每 15 分鐘確認，已有日期不會重抓全市場。
         time.sleep(max(300, int(os.getenv("FINMIND_BROKER_CHECK_SECONDS", "900"))))
 
 
