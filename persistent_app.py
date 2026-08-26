@@ -49,6 +49,7 @@ from main_force_store import load_main_force_bars, main_force_storage_status
 from broker_branch_weekly import (
     broker_branch_storage_status,
     normalize_daily_rows,
+    read_latest_broker_branch_daily,
     read_latest_broker_branch_weekly,
     save_broker_branch_daily,
 )
@@ -200,6 +201,18 @@ def get_broker_branch_weekly() -> dict[str, Any]:
         **result,
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "railway-sqlite-official-broker-branch",
+    }
+
+
+@app.get("/api/hub/broker-branch-daily")
+def get_broker_branch_daily() -> dict[str, Any]:
+    """公開唯讀：最新交易日的券商分點淨額、集中度與分點數。"""
+    result = read_latest_broker_branch_daily()
+    return {
+        "ok": bool(result["rows"]),
+        **result,
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source": "railway-sqlite-official-broker-branch-daily",
     }
 
 

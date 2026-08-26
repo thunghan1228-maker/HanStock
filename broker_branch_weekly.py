@@ -88,6 +88,48 @@ def save_broker_branch_daily(rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
+def read_latest_broker_branch_daily() -> dict[str, Any]:
+    """回傳最新同一公式來源的完整單日分點彙總，不混用較舊來源。"""
+    ensure_broker_branch_schema()
+    with get_connection() as connection:
+        latest_row = connection.execute(
+            """
+            SELECT trade_date, source
+            FROM broker_branch_daily
+            ORDER BY trade_date DESC, updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not latest_row:
+            return {"tradeDate": None, "rows": [], "complete": False}
+        trade_date = str(latest_row["trade_date"])
+        source = str(latest_row["source"])
+        result = connection.execute(
+            """
+            SELECT ticker, net_amount, concentration, active_branches
+            FROM broker_branch_daily
+            WHERE trade_date = ? AND source = ?
+            ORDER BY ticker ASC
+            """,
+            (trade_date, source),
+        ).fetchall()
+    display_date = trade_date.replace("-", "/")
+    return {
+        "tradeDate": display_date,
+        "complete": bool(result),
+        "rows": [
+            {
+                "ticker": row["ticker"],
+                "tradeDate": display_date,
+                "netAmount": round(float(row["net_amount"]), 2),
+                "concentration": round(float(row["concentration"]), 4),
+                "activeBranches": int(row["active_branches"] or 0),
+            }
+            for row in result
+        ],
+    }
+
+
 def read_latest_broker_branch_weekly() -> dict[str, Any]:
     """以同一公式來源最近五個交易日彙總，且只回傳五日完整股票。"""
     ensure_broker_branch_schema()
