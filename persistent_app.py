@@ -58,6 +58,7 @@ from finmind_broker_branch_collector import (
     finmind_broker_collector_status,
     start_finmind_broker_branch_collector,
 )
+from finmind_active_etf_flow import active_etf_flow_for_ticker
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -214,6 +215,23 @@ def get_broker_branch_daily() -> dict[str, Any]:
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "railway-sqlite-official-broker-branch-daily",
     }
+
+
+@app.get("/api/hub/active-etf-flow")
+def get_active_etf_flow(
+    ticker: str = Query(..., min_length=1, max_length=16),
+    days: int = Query(5, ge=1, le=10),
+) -> dict[str, Any]:
+    """公開唯讀：FinMind 主動式 ETF 對指定成份股的每日與五日持股異動。"""
+    try:
+        return active_etf_flow_for_ticker(
+            _normalize_stock_code(ticker),
+            trading_days=days,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/api/hub/broker-branch-finmind/backfill")
