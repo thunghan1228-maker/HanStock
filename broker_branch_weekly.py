@@ -16,6 +16,7 @@ def ensure_broker_branch_schema() -> None:
                 trade_date TEXT NOT NULL,
                 ticker TEXT NOT NULL,
                 net_amount REAL NOT NULL,
+                net_lots REAL,
                 concentration REAL NOT NULL,
                 active_branches INTEGER NOT NULL,
                 source TEXT NOT NULL,
@@ -26,6 +27,9 @@ def ensure_broker_branch_schema() -> None:
                 ON broker_branch_daily (ticker, trade_date DESC);
             """
         )
+        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(broker_branch_daily)").fetchall()}
+        if "net_lots" not in columns:
+            connection.execute("ALTER TABLE broker_branch_daily ADD COLUMN net_lots REAL")
 
 
 def _number(value: Any, field: str) -> float:
@@ -47,11 +51,13 @@ def normalize_daily_rows(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]
         except ValueError as error:
             raise ValueError("tradeDate 必須是 YYYY-MM-DD") from error
         active_branches = int(_number(item.get("activeBranches", item.get("active_branches", 0)), "activeBranches"))
+        raw_net_lots = item.get("netLots", item.get("net_lots"))
         normalized.append(
             {
                 "ticker": ticker,
                 "tradeDate": trade_date,
                 "netAmount": _number(item.get("netAmount", item.get("net_amount")), "netAmount"),
+                "netLots": None if raw_net_lots is None else _number(raw_net_lots, "netLots"),
                 "concentration": _number(item.get("concentration"), "concentration"),
                 "activeBranches": max(0, active_branches),
                 "source": str(item.get("source") or "official-broker-branch").strip(),
@@ -67,11 +73,12 @@ def save_broker_branch_daily(rows: list[dict[str, Any]]) -> int:
         connection.executemany(
             """
             INSERT INTO broker_branch_daily (
-                trade_date, ticker, net_amount, concentration,
+                trade_date, ticker, net_amount, net_lots, concentration,
                 active_branches, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(trade_date, ticker) DO UPDATE SET
                 net_amount = excluded.net_amount,
+                net_lots = excluded.net_lots,
                 concentration = excluded.concentration,
                 active_branches = excluded.active_branches,
                 source = excluded.source,
@@ -80,7 +87,7 @@ def save_broker_branch_daily(rows: list[dict[str, Any]]) -> int:
             [
                 (
                     row["tradeDate"], row["ticker"], row["netAmount"],
-                    row["concentration"], row["activeBranches"], row["source"], now,
+                    row["netLots"], row["concentration"], row["activeBranches"], row["source"], now,
                 )
                 for row in rows
             ],
@@ -108,7 +115,7 @@ def read_latest_broker_branch_daily() -> dict[str, Any]:
         source = str(latest_row["source"])
         result = connection.execute(
             """
-            SELECT ticker, net_amount, concentration, active_branches
+            SELECT ticker, net_amount, net_lots, concentration, active_branches
             FROM broker_branch_daily
             WHERE trade_date = ? AND source = ?
             ORDER BY ticker ASC
@@ -124,6 +131,7 @@ def read_latest_broker_branch_daily() -> dict[str, Any]:
                 "ticker": row["ticker"],
                 "tradeDate": display_date,
                 "netAmount": round(float(row["net_amount"]), 2),
+                "netLots": round(float(row["net_lots"]), 3) if row["net_lots"] is not None else None,
                 "concentration": round(float(row["concentration"]), 4),
                 "activeBranches": int(row["active_branches"] or 0),
             }
@@ -169,6 +177,7 @@ def read_latest_broker_branch_weekly() -> dict[str, Any]:
             f"""
             SELECT ticker,
                    SUM(net_amount) AS net_amount,
+                   CASE WHEN COUNT(net_lots) = COUNT(*) THEN SUM(net_lots) END AS net_lots,
                    AVG(concentration) AS concentration,
                    ROUND(AVG(active_branches)) AS active_branches
             FROM broker_branch_daily
@@ -189,6 +198,7 @@ def read_latest_broker_branch_weekly() -> dict[str, Any]:
                 "ticker": row["ticker"],
                 "weekEndDate": week_end_date,
                 "netAmount": round(float(row["net_amount"]), 2),
+                "netLots": round(float(row["net_lots"]), 3) if row["net_lots"] is not None else None,
                 "concentration": round(float(row["concentration"]), 4),
                 "activeBranches": int(row["active_branches"] or 0),
             }
@@ -216,26 +226,29 @@ def broker_branch_storage_status() -> dict[str, Any]:
     }
 
 
-def stored_broker_branch_dates(limit: int = 40, source: str | None = None) -> list[str]:
+def stored_broker_branch_dates(limit: int = 40, source: str | None = None, *, require_net_lots: bool = False) -> list[str]:
     ensure_broker_branch_schema()
+    lots_having = " AND COUNT(net_lots) = COUNT(*)" if require_net_lots else ""
     with get_connection() as connection:
         if source:
             rows = connection.execute(
-                """
+                f"""
                 SELECT trade_date FROM broker_branch_daily
                 WHERE source = ?
                 GROUP BY trade_date
                 HAVING SUM(CASE WHEN active_branches > 0 THEN 1 ELSE 0 END) > 0
+                    {lots_having}
                 ORDER BY trade_date DESC LIMIT ?
                 """,
                 (source, max(1, int(limit))),
             ).fetchall()
         else:
             rows = connection.execute(
-                """
+                f"""
                 SELECT trade_date FROM broker_branch_daily
                 GROUP BY trade_date
                 HAVING SUM(CASE WHEN active_branches > 0 THEN 1 ELSE 0 END) > 0
+                    {lots_having}
                 ORDER BY trade_date DESC LIMIT ?
                 """,
                 (max(1, int(limit)),),
