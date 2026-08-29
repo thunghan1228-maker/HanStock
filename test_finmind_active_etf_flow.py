@@ -76,6 +76,22 @@ class ActiveEtfFlowTest(unittest.TestCase):
                     "buy": max(second_net, 0),
                     "sell": abs(min(second_net, 0)),
                 },
+                {
+                    "date": day,
+                    "stock_id": "00983A",
+                    "component_stock_id": "WDC US",
+                    "component_stock_name": "WESTERN DIGITAL",
+                    "buy": 500000,
+                    "sell": 0,
+                },
+                {
+                    "date": day,
+                    "stock_id": "00984D",
+                    "component_stock_id": "USU09265AF31",
+                    "component_stock_name": "海外債券",
+                    "buy": 800000,
+                    "sell": 0,
+                },
             ]}
             response = MagicMock()
             response.read.return_value = json.dumps(payload).encode()
@@ -142,6 +158,9 @@ class ActiveEtfFlowTest(unittest.TestCase):
         self.assertEqual(hua_tong["consecutiveDirection"], "buy")
         self.assertEqual(hua_tong["consecutiveDays"], 3)
         self.assertNotIn("TXF", {row["ticker"] for row in result["rows"]})
+        self.assertNotIn("WDC US", {row["ticker"] for row in result["rows"]})
+        self.assertNotIn("USU09265AF31", {row["ticker"] for row in result["rows"]})
+        self.assertNotIn("00984D", result["etfs"])
 
     def test_persistent_app_keeps_the_public_active_etf_route(self):
         source = (Path(__file__).parent / "persistent_app.py").read_text(encoding="utf-8")
