@@ -57,7 +57,7 @@ from finmind_broker_branch_collector import (
     finmind_broker_collector_status,
     start_finmind_broker_branch_collector,
 )
-from finmind_active_etf_flow import active_etf_flow_for_ticker
+from finmind_active_etf_flow import active_etf_flow_for_ticker, active_etf_flow_radar
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -221,13 +221,29 @@ def get_broker_branch_daily() -> dict[str, Any]:
 def get_active_etf_flow(
     ticker: str = Query(..., min_length=1, max_length=16),
     days: int = Query(5, ge=1, le=10),
+    date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> dict[str, Any]:
     """公開唯讀：FinMind 主動式 ETF 對指定成份股的每日與五日持股異動。"""
     try:
         return active_etf_flow_for_ticker(
             _normalize_stock_code(ticker),
             trading_days=days,
+            end_date=date,
         )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/hub/active-etf-radar")
+def get_active_etf_radar(
+    days: int = Query(5, ge=1, le=10),
+    date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+) -> dict[str, Any]:
+    """公開唯讀：全市場主動式 ETF 異動、共同持有與權重排行。"""
+    try:
+        return active_etf_flow_radar(trading_days=days, end_date=date)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except RuntimeError as error:
