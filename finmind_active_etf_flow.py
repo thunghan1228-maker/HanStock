@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from datetime import date as Date
 from datetime import datetime, timedelta
@@ -21,6 +22,11 @@ HOLDING_DATASET = "TaiwanStockActiveETFHolding"
 DATASET = CHANGE_DATASET
 TAIPEI = ZoneInfo("Asia/Taipei")
 _lock = threading.RLock()
+
+
+def _is_taiwan_stock_component(component: str, etf: str) -> bool:
+    """雷達只收台灣股票；排除債券 D 型 ETF、海外 ticker 與債券 CUSIP。"""
+    return etf.endswith("A") and re.fullmatch(r"\d{4,6}[A-Z]?", component) is not None
 
 
 def _token() -> str:
@@ -193,6 +199,8 @@ def _etf_breakdown(rows: list[dict[str, Any]], component: str) -> list[dict[str,
         if str(row.get("component_stock_id") or "").strip().upper() != component:
             continue
         etf = str(row.get("stock_id") or "").strip().upper()
+        if not _is_taiwan_stock_component(component, etf):
+            continue
         net = int(float(row.get("buy") or 0)) - int(float(row.get("sell") or 0))
         if etf and net:
             totals[etf] = totals.get(etf, 0) + net
@@ -224,7 +232,7 @@ def active_etf_flow_radar(
         for row in rows:
             component = str(row.get("component_stock_id") or "").strip().upper()
             etf = str(row.get("stock_id") or "").strip().upper()
-            if not component:
+            if not component or not _is_taiwan_stock_component(component, etf):
                 continue
             name = str(row.get("component_stock_name") or "").strip()
             if name:
@@ -260,7 +268,7 @@ def active_etf_flow_radar(
             continue
         component = str(row.get("component_stock_id") or "").strip().upper()
         etf = str(row.get("stock_id") or "").strip().upper()
-        if not component or not etf:
+        if not component or not etf or not _is_taiwan_stock_component(component, etf):
             continue
         name = str(row.get("component_stock_name") or "").strip()
         if name:
