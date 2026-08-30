@@ -46,7 +46,7 @@ _cache_lock = threading.RLock()
 _scan_lock = threading.Lock()
 _background_lock = threading.Lock()
 _background_dates: set[str] = set()
-_ranking_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict[str, Any]], list[str]]] = {}
+_ranking_cache: dict[tuple[str, tuple[str, ...], bool], tuple[float, list[dict[str, Any]], list[str]]] = {}
 
 TWSE_DAILY_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 TPEX_DAILY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
@@ -337,6 +337,7 @@ def summarize_historical_ticks(
     market: str,
     trade_date: str,
     daily_meta: Optional[Mapping[str, Any]] = None,
+    include_unclassified: bool = False,
 ) -> Optional[dict[str, Any]]:
     """把一日逐筆成交彙總成前端隔日沖模型需要的金額欄位。"""
     timestamps = _field_values(ticks, "ts", "datetime")
@@ -410,7 +411,8 @@ def summarize_historical_ticks(
     if total_turnover_amount <= 0:
         total_turnover_amount = float((daily_meta or {}).get("official_turnover_amount") or 0)
     if total_turnover_amount <= 0 or (
-        large_buy_amount <= 0 and large_sell_amount <= 0 and not reached_limit_up
+        not include_unclassified
+        and large_buy_amount <= 0 and large_sell_amount <= 0 and not reached_limit_up
     ):
         return None
     price_impact_pct = 0.0
@@ -446,7 +448,7 @@ def summarize_historical_ticks(
             row[field] = daily_meta.get(field, 0)
     row["suspicion_score"] = round(_score(row), 2)
     row["category"] = classify_daytrade_row(row)
-    return row if row["category"] else None
+    return row if include_unclassified or row["category"] else None
 
 
 def summarize_persisted_main_force_bars(
@@ -457,6 +459,7 @@ def summarize_persisted_main_force_bars(
     market: str,
     trade_date: str,
     daily_meta: Optional[Mapping[str, Any]] = None,
+    include_unclassified: bool = False,
 ) -> Optional[dict[str, Any]]:
     """歷史 ticks 尚未釋出時，以盤中永久保存的 1 分主力金額回補。"""
     valid: list[Mapping[str, Any]] = []
@@ -484,7 +487,8 @@ def summarize_persisted_main_force_bars(
     turnover = max(0.0, float(meta.get("official_turnover_amount") or 0))
     reached_limit_up = bool(meta.get("reached_limit_up"))
     if turnover <= 0 or (
-        large_buy_amount <= 0 and large_sell_amount <= 0 and not reached_limit_up
+        not include_unclassified
+        and large_buy_amount <= 0 and large_sell_amount <= 0 and not reached_limit_up
     ):
         return None
     open_price = max(0.0, float(meta.get("open_price") or 0))
@@ -512,7 +516,7 @@ def summarize_persisted_main_force_bars(
         row[field] = meta.get(field, 0)
     row["suspicion_score"] = round(_score(row), 2)
     row["category"] = classify_daytrade_row(row)
-    return row if row["category"] else None
+    return row if include_unclassified or row["category"] else None
 
 
 def missing_main_force_row(
@@ -522,10 +526,11 @@ def missing_main_force_row(
     market: str,
     trade_date: str,
     daily_meta: Optional[Mapping[str, Any]] = None,
+    include_unclassified: bool = False,
 ) -> Optional[dict[str, Any]]:
     """保留官方漲停候選，但明確標成待回補，禁止把缺資料冒充成 0。"""
     meta = daily_meta or {}
-    if not bool(meta.get("reached_limit_up")):
+    if not include_unclassified and not bool(meta.get("reached_limit_up")):
         return None
     turnover = max(0.0, float(meta.get("official_turnover_amount") or 0))
     if turnover <= 0:
@@ -552,7 +557,7 @@ def missing_main_force_row(
     ):
         row[field] = meta.get(field, 0)
     row["category"] = classify_daytrade_row(row)
-    return row if row["category"] else None
+    return row if include_unclassified or row["category"] else None
 
 
 def summarize_daytrade_sources(
@@ -563,11 +568,13 @@ def summarize_daytrade_sources(
     market: str,
     trade_date: str,
     daily_meta: Optional[Mapping[str, Any]] = None,
+    include_unclassified: bool = False,
 ) -> Optional[dict[str, Any]]:
     """歷史 ticks 優先、盤中永久資料備援，最後才回傳待回補狀態。"""
     row = summarize_historical_ticks(
         ticks, ticker=ticker, name=name, market=market,
         trade_date=trade_date, daily_meta=daily_meta,
+        include_unclassified=include_unclassified,
     )
     if row is not None:
         return row
@@ -579,12 +586,14 @@ def summarize_daytrade_sources(
     row = summarize_persisted_main_force_bars(
         persisted, ticker=ticker, name=name, market=market,
         trade_date=trade_date, daily_meta=daily_meta,
+        include_unclassified=include_unclassified,
     )
     if row is not None:
         return row
     return missing_main_force_row(
         ticker=ticker, name=name, market=market,
         trade_date=trade_date, daily_meta=daily_meta,
+        include_unclassified=include_unclassified,
     )
 
 
@@ -626,12 +635,13 @@ def scan_daytrade_flow(
     trade_date: str,
     codes: Iterable[str],
     daily_rows: Optional[Iterable[Mapping[str, Any]]] = None,
+    include_unclassified: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """逐檔呼叫 Shioaji api.ticks(date=...)；結果快取 30 分鐘。"""
     normalized = tuple(
         dict.fromkeys(str(code).strip().upper() for code in codes if str(code).strip())
     )
-    cache_key = (trade_date, normalized)
+    cache_key = (trade_date, normalized, include_unclassified)
     now = time.monotonic()
     with _cache_lock:
         cached = _ranking_cache.get(cache_key)
@@ -667,6 +677,7 @@ def scan_daytrade_flow(
                     market=str((daily_by_code.get(code) or {}).get("market") or _market_label(service, code)),
                     trade_date=trade_date,
                     daily_meta=daily_by_code.get(code),
+                    include_unclassified=include_unclassified,
                 )
                 if row is not None:
                     rows.append(row)

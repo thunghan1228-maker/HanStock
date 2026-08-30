@@ -139,6 +139,37 @@ class DaytradeFlowTests(unittest.TestCase):
             "",
         )
 
+    def test_explicit_group_query_can_keep_unclassified_stock_data(self):
+        ticks = {
+            "ts": [datetime(2026, 8, 28, 9, 5, 0, tzinfo=TW_TZ)],
+            "close": [100],
+            "volume": [20],
+            "tick_type": [2],
+            "amount": [2_000_000],
+            "simtrade": [0],
+        }
+        self.assertIsNone(summarize_historical_ticks(
+            ticks,
+            ticker="3317",
+            name="尼克森",
+            market="上櫃",
+            trade_date="2026-08-28",
+            daily_meta={"official_turnover_amount": 50_000_000, "day_change_pct": 0},
+        ))
+        row = summarize_historical_ticks(
+            ticks,
+            ticker="3317",
+            name="尼克森",
+            market="上櫃",
+            trade_date="2026-08-28",
+            daily_meta={"official_turnover_amount": 50_000_000, "day_change_pct": 0},
+            include_unclassified=True,
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["category"], "")
+        self.assertEqual(row["large_buy_amount"] - row["large_sell_amount"], -2_000_000)
+
     def test_equity_universe_excludes_etfs_and_bonds(self):
         self.assertTrue(is_equity_code("1303"))
         self.assertTrue(is_equity_code("2887E"))

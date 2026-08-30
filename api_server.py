@@ -674,6 +674,7 @@ def get_daytrade_flow_ranking(
     limit: int = Query(default=500, ge=1, le=2000),
     scan_limit: int = Query(default=80, ge=1, le=200),
     force: bool = Query(default=False, description="強制重跑指定交易日的全市場掃描"),
+    include_all: bool = Query(default=False, description="指定 codes 時回傳所有有正式逐筆／待回補狀態的股票，不套排行條件"),
 ) -> dict[str, Any]:
     """回補 Shioaji 歷史逐筆成交並產生疑似隔日沖資金流排行。
 
@@ -704,6 +705,7 @@ def get_daytrade_flow_ranking(
                 trade_date=trade_date,
                 codes=candidates,
                 daily_rows=daily,
+                include_unclassified=include_all,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
