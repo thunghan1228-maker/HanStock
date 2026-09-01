@@ -176,6 +176,7 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     trade_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     history = load_group_strength_history(trade_date)
     candidate_source = "stored_group_snapshot"
+    fallback_status: dict[str, Any] = {"localFallbackAttempted": False}
     if not history:
         # 背景族群收集器可能因部署重啟或暫時網路錯誤錯過第一輪；大單偵測
         # 不應因此整個交易日維持 0。候選刷新時主動補抓一次，再重新讀取。
@@ -190,18 +191,28 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
         # 正式主機已持有全市場即時 Tick；若主機呼叫自己的網站 API 逾時，
         # 直接在程序內依族群平均漲跌幅排名，避免候選名單整天維持 0。
         try:
+            fallback_status["localFallbackAttempted"] = True
             _ensure_group_universe_subscriptions(service)
             live_ranks = build_live_group_ranks(service)
+            fallback_status["localRankedGroupCount"] = len(live_ranks)
+            fallback_status["localRankedGroupMinimum"] = MIN_LIVE_GROUPS
             if len(live_ranks) >= MIN_LIVE_GROUPS:
                 now_ms = int(datetime.now(TW_TZ).timestamp() * 1000)
                 bucket_ts = now_ms // 300_000 * 300_000
                 save_group_strength_snapshot(trade_date, bucket_ts, live_ranks)
                 history = [{"bucketTs": bucket_ts, "ranks": live_ranks}]
                 candidate_source = "local_shioaji_group_ranking"
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            fallback_status["localFallbackError"] = type(exc).__name__
             history = []
     if not history:
-        status = {"prepared": False, "reason": "waiting_group_snapshot", "tradeDate": trade_date, "candidateCount": 0}
+        status = {
+            "prepared": False,
+            "reason": "waiting_group_snapshot",
+            "tradeDate": trade_date,
+            "candidateCount": 0,
+            **fallback_status,
+        }
         _monitor.set_candidates({}, {}, status)
         return status
     latest = history[-1]
