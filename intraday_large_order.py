@@ -19,9 +19,9 @@ WINDOW_MS = max(250, int(os.getenv("HANSTOCK_INSTANT_LARGE_WINDOW_MS", "1000")))
 MIN_TICK_LOTS = max(1, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_TICK_LOTS", "20")))
 MIN_TICK_AMOUNT = max(1.0, float(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_TICK_AMOUNT", "1000000")))
 MIN_BURST_LOTS = max(1, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_BURST_LOTS", "100")))
-MIN_BURST_AMOUNT = max(1.0, float(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_BURST_AMOUNT", "10000000")))
+MIN_BURST_AMOUNT = max(1.0, float(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_BURST_AMOUNT", "30000000")))
 EXTRA_BURST_LOTS = max(MIN_BURST_LOTS, int(os.getenv("HANSTOCK_INSTANT_EXTRA_LARGE_LOTS", "300")))
-EXTRA_BURST_AMOUNT = max(MIN_BURST_AMOUNT, float(os.getenv("HANSTOCK_INSTANT_EXTRA_LARGE_AMOUNT", "30000000")))
+EXTRA_BURST_AMOUNT = max(MIN_BURST_AMOUNT, float(os.getenv("HANSTOCK_INSTANT_EXTRA_LARGE_AMOUNT", "50000000")))
 COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
 MIN_LIVE_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", "40"))))
@@ -303,6 +303,11 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
         "candidateSource": candidate_source,
         **fallback_status,
         "groupLimitPerSide": GROUP_LIMIT,
+        "windowMs": WINDOW_MS,
+        "minBurstLots": MIN_BURST_LOTS,
+        "minBurstAmount": MIN_BURST_AMOUNT,
+        "extraBurstLots": EXTRA_BURST_LOTS,
+        "extraBurstAmount": EXTRA_BURST_AMOUNT,
         "buyCandidateCount": len(buy),
         "sellCandidateCount": len(sell),
         "candidateCount": len(codes),
