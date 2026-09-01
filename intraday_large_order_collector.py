@@ -89,6 +89,7 @@ def collect_once() -> dict:
     if not bool(getattr(getattr(service, "state", None), "logged_in", False)):
         return {"prepared": False, "reason": "shioaji_not_ready"}
     status = refresh_intraday_large_order_candidates(service)
+    get_intraday_large_order_monitor().flush_pending_signals()
     return _recover_if_stock_ticks_stale(service, status)
 
 
