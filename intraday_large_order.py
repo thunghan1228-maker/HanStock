@@ -141,6 +141,16 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     trade_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     history = load_group_strength_history(trade_date)
     if not history:
+        # 背景族群收集器可能因部署重啟或暫時網路錯誤錯過第一輪；大單偵測
+        # 不應因此整個交易日維持 0。候選刷新時主動補抓一次，再重新讀取。
+        try:
+            from group_strength_collector import collect_once as collect_group_strength_once
+
+            if collect_group_strength_once():
+                history = load_group_strength_history(trade_date)
+        except Exception:  # noqa: BLE001
+            history = []
+    if not history:
         status = {"prepared": False, "reason": "waiting_group_snapshot", "tradeDate": trade_date, "candidateCount": 0}
         _monitor.set_candidates({}, {}, status)
         return status
