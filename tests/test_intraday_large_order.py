@@ -83,6 +83,7 @@ def test_candidate_refresh_recovers_missing_group_snapshot(monkeypatch):
     status = module.refresh_intraday_large_order_candidates(Service())
 
     assert status["candidateCount"] > 0
+    assert status["prepared"] is True
     assert status["buyCandidateCount"] > 0
     assert status["sellCandidateCount"] > 0
 
@@ -119,6 +120,7 @@ def test_local_candidates_survive_snapshot_persistence_failure(monkeypatch):
     status = module.refresh_intraday_large_order_candidates(Service())
 
     assert status["candidateCount"] > 0
+    assert status["prepared"] is True
     assert status["candidateSource"] == "local_shioaji_group_ranking"
     assert status["snapshotPersisted"] is False
     assert status["snapshotPersistError"] == "OSError"
