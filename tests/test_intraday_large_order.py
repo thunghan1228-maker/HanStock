@@ -50,6 +50,33 @@ def test_same_second_large_buy_emits_once(monkeypatch):
     assert "族群同步 記憶體 漲幅第 4 名" in result[0]["note"]
 
 
+def test_buy_and_sell_amount_thresholds_are_thirty_and_fifty_million(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    assert module.MIN_BURST_AMOUNT == 30_000_000
+    assert module.EXTRA_BURST_AMOUNT == 50_000_000
+
+    cases = [
+        (1, "buy", 29_999_999, None),
+        (1, "buy", 30_000_000, "瞬間大單連續敲進"),
+        (1, "buy", 50_000_000, "瞬間特大買單敲進"),
+        (2, "sell", 29_999_999, None),
+        (2, "sell", 30_000_000, "瞬間大單連續倒出"),
+        (2, "sell", 50_000_000, "瞬間特大賣單倒出"),
+    ]
+    for tick_type, side, amount, expected_label in cases:
+        monitor = IntradayLargeOrderMonitor()
+        candidate = {"2344": {"name": "華邦電", "group": "記憶體", "rank": 4, "direction": "漲幅" if side == "buy" else "跌幅"}}
+        monitor.set_candidates(candidate if side == "buy" else {}, candidate if side == "sell" else {}, {})
+        result = monitor.on_tick({
+            "code": "2344", "close": 100, "volume": 1,
+            "amount": amount, "tick_type": tick_type,
+        }, 1_787_542_347_000)
+        if expected_label is None:
+            assert result == []
+        else:
+            assert result[0]["label"] == expected_label
+
+
 def test_wrong_direction_and_neutral_ticks_are_ignored(monkeypatch):
     monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
     monitor = IntradayLargeOrderMonitor()
@@ -120,6 +147,10 @@ def test_candidate_refresh_recovers_missing_group_snapshot(monkeypatch):
     assert status["prepared"] is True
     assert status["buyCandidateCount"] > 0
     assert status["sellCandidateCount"] > 0
+    assert status["minBurstLots"] == 100
+    assert status["minBurstAmount"] == 30_000_000
+    assert status["extraBurstLots"] == 300
+    assert status["extraBurstAmount"] == 50_000_000
 
 
 def test_local_candidates_survive_snapshot_persistence_failure(monkeypatch):
