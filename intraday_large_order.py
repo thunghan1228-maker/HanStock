@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from math import isfinite
 from collections import defaultdict, deque
@@ -25,6 +26,45 @@ EXTRA_BURST_AMOUNT = max(MIN_BURST_AMOUNT, float(os.getenv("HANSTOCK_INSTANT_EXT
 COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
 MIN_LIVE_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", "40"))))
+_SAVED_LOTS_RE = re.compile(r"合計\s*([\d,.]+)\s*張")
+_SAVED_AMOUNT_RE = re.compile(r"約\s*([\d,.]+)\s*(億|萬|元)")
+
+
+def _saved_signal_facts(note: Any) -> tuple[float, float] | None:
+    text = str(note or "")
+    lots_match = _SAVED_LOTS_RE.search(text)
+    amount_match = _SAVED_AMOUNT_RE.search(text)
+    if not lots_match or not amount_match:
+        return None
+    try:
+        lots = float(lots_match.group(1).replace(",", ""))
+        amount_value = float(amount_match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    multiplier = {"億": 100_000_000, "萬": 10_000, "元": 1}[amount_match.group(2)]
+    return lots, amount_value * multiplier
+
+
+def normalize_intraday_large_order_signal(signal: dict[str, Any]) -> dict[str, Any] | None:
+    """依目前門檻重驗保存的舊訊號；不合格不再由任何公開 API 回傳。"""
+    kind = str(signal.get("kind") or "")
+    if kind not in {"instantLargeBuy", "instantLargeSell"}:
+        return dict(signal)
+    facts = _saved_signal_facts(signal.get("note"))
+    if facts is None:
+        return None
+    lots, amount = facts
+    if lots < MIN_BURST_LOTS and amount < MIN_BURST_AMOUNT:
+        return None
+    extra = lots >= EXTRA_BURST_LOTS or amount >= EXTRA_BURST_AMOUNT
+    is_buy = kind == "instantLargeBuy"
+    normalized = dict(signal)
+    normalized["label"] = (
+        ("瞬間特大買單敲進" if is_buy else "瞬間特大賣單倒出")
+        if extra
+        else ("瞬間大單連續敲進" if is_buy else "瞬間大單連續倒出")
+    )
+    return normalized
 
 
 def _money(value: float) -> str:
