@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import threading
+from math import isfinite
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from group_strength_store import load_group_strength_history
+from group_strength_store import load_group_strength_history, save_group_strength_snapshot
 from intraday_signal_store import save_intraday_signals
 from stock_groups import STOCK_GROUPS
 
@@ -23,6 +24,7 @@ EXTRA_BURST_LOTS = max(MIN_BURST_LOTS, int(os.getenv("HANSTOCK_INSTANT_EXTRA_LAR
 EXTRA_BURST_AMOUNT = max(MIN_BURST_AMOUNT, float(os.getenv("HANSTOCK_INSTANT_EXTRA_LARGE_AMOUNT", "30000000")))
 COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
+MIN_LIVE_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", "40"))))
 
 
 def _money(value: float) -> str:
@@ -54,6 +56,39 @@ def build_group_candidates(ranks: dict[str, int]) -> tuple[dict[str, dict[str, A
                 if old is None or falling[group] < old["rank"]:
                     sell[ticker] = {"name": name, "group": group, "rank": falling[group], "direction": "跌幅"}
     return buy, sell
+
+
+def build_live_group_ranks(service: Any) -> dict[str, int]:
+    """直接用本機 Shioaji 現貨 Tick 建立族群排名，避免依賴自我 HTTP 回呼。"""
+    averages: list[tuple[str, float]] = []
+    for group, members in STOCK_GROUPS.items():
+        if group in EXCLUDED_GROUPS:
+            continue
+        changes: list[float] = []
+        for ticker, _name in members:
+            quote = service.get_stock_quote(ticker)
+            if not isinstance(quote, dict) or quote.get("simtrade") or quote.get("intraday_odd"):
+                continue
+            try:
+                value = float(quote.get("pct_chg"))
+            except (TypeError, ValueError):
+                continue
+            if isfinite(value):
+                changes.append(value)
+        if changes:
+            averages.append((group, sum(changes) / len(changes)))
+    averages.sort(key=lambda item: (-item[1], item[0]))
+    return {group: index + 1 for index, (group, _change) in enumerate(averages)}
+
+
+def _ensure_group_universe_subscriptions(service: Any) -> None:
+    codes = list(dict.fromkeys(
+        ticker
+        for group, members in STOCK_GROUPS.items()
+        if group not in EXCLUDED_GROUPS
+        for ticker, _name in members
+    ))
+    service.ensure_stock_subscriptions(codes)
 
 
 class IntradayLargeOrderMonitor:
@@ -140,6 +175,7 @@ def get_intraday_large_order_monitor() -> IntradayLargeOrderMonitor:
 def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     trade_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     history = load_group_strength_history(trade_date)
+    candidate_source = "stored_group_snapshot"
     if not history:
         # 背景族群收集器可能因部署重啟或暫時網路錯誤錯過第一輪；大單偵測
         # 不應因此整個交易日維持 0。候選刷新時主動補抓一次，再重新讀取。
@@ -148,6 +184,20 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
 
             if collect_group_strength_once():
                 history = load_group_strength_history(trade_date)
+        except Exception:  # noqa: BLE001
+            history = []
+    if not history:
+        # 正式主機已持有全市場即時 Tick；若主機呼叫自己的網站 API 逾時，
+        # 直接在程序內依族群平均漲跌幅排名，避免候選名單整天維持 0。
+        try:
+            _ensure_group_universe_subscriptions(service)
+            live_ranks = build_live_group_ranks(service)
+            if len(live_ranks) >= MIN_LIVE_GROUPS:
+                now_ms = int(datetime.now(TW_TZ).timestamp() * 1000)
+                bucket_ts = now_ms // 300_000 * 300_000
+                save_group_strength_snapshot(trade_date, bucket_ts, live_ranks)
+                history = [{"bucketTs": bucket_ts, "ranks": live_ranks}]
+                candidate_source = "local_shioaji_group_ranking"
         except Exception:  # noqa: BLE001
             history = []
     if not history:
@@ -162,6 +212,7 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     status = {
         "tradeDate": trade_date,
         "snapshotTs": latest["bucketTs"],
+        "candidateSource": candidate_source,
         "groupLimitPerSide": GROUP_LIMIT,
         "buyCandidateCount": len(buy),
         "sellCandidateCount": len(sell),
