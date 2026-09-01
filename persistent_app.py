@@ -26,7 +26,7 @@ from intraday_large_order_collector import (
     collector_status as intraday_large_order_status,
     start_intraday_large_order_collector,
 )
-from intraday_large_order import get_intraday_large_order_monitor
+from intraday_large_order import get_intraday_large_order_monitor, normalize_intraday_large_order_signal
 from daytrade_flow_store import load_daytrade_scan_status
 from intraday_signal_store import (
     intraday_signal_count,
@@ -303,9 +303,10 @@ def get_daytrade_early_sell_signals(
         for signal in load_latest_signals_by_kind(snapshot["tradeDate"], kind, limit=limit)
     ]
     instant_large_signals = [
-        signal
+        normalized
         for kind in ("instantLargeBuy", "instantLargeSell")
         for signal in load_latest_signals_by_kind(snapshot["tradeDate"], kind, limit=limit)
+        if (normalized := normalize_intraday_large_order_signal(signal)) is not None
     ]
     snapshot["signals"] = sorted(
         [*snapshot.get("signals", []), *triangle_signals, *instant_large_signals],
@@ -333,9 +334,14 @@ def get_intraday_large_orders(limit: int = Query(100, ge=1, le=500)) -> dict[str
         for signal in load_latest_signals_by_kind(trade_date, kind, limit=limit)
     ]
     memory_signals = get_intraday_large_order_monitor().recent_signals(trade_date, limit=limit)
+    thresholded_signals = [
+        normalized
+        for signal in [*stored_signals, *memory_signals]
+        if (normalized := normalize_intraday_large_order_signal(signal)) is not None
+    ]
     signals_by_key = {
         (str(signal.get("ticker") or ""), str(signal.get("kind") or ""), int(signal.get("barTs") or 0)): signal
-        for signal in [*stored_signals, *memory_signals]
+        for signal in thresholded_signals
     }
     signals = list(signals_by_key.values())
     return {
