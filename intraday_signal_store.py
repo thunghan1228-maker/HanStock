@@ -221,7 +221,10 @@ def load_latest_signals_by_kind(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     _ensure_table()
-    limit = max(1, min(int(limit), 500))
+    # 族群瞬間大單在活躍盤勢中一日可能超過 500 筆。這裡若先截成
+    # 500，網站即使要求完整交易日也只能拿到最後一小段，早盤紀錄會
+    # 看似消失。公開 API 仍有自己的上限；儲存層允許一次讀回完整日。
+    limit = max(1, min(int(limit), 5000))
     with get_connection() as connection:
         rows = connection.execute(
             """

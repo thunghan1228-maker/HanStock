@@ -326,7 +326,8 @@ def get_daytrade_early_sell_signals(
 
 
 @app.get("/api/hub/intraday-large-orders")
-def get_intraday_large_orders(limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+def get_intraday_large_orders(limit: int = Query(100, ge=1, le=5000)) -> dict[str, Any]:
+    """讀回當日完整族群瞬間大單；上限涵蓋整個交易時段而非最後 500 筆。"""
     trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
     stored_signals = [
         signal

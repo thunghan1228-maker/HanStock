@@ -12,7 +12,7 @@ from daytrade_early_sell import (
     historical_early_sell_signals_for_ticks,
 )
 from daytrade_flow_store import save_daytrade_rows
-from intraday_signal_store import save_intraday_signals
+from intraday_signal_store import load_latest_signals_by_kind, save_intraday_signals
 from otc_index import TW_TZ
 
 
@@ -140,6 +140,30 @@ class DaytradeEarlySellTests(unittest.TestCase):
             "barTs": ts(9, 5),
         }])
         self.assertEqual(len(at_five_minutes), 1)
+
+    def test_instant_large_history_can_return_more_than_five_hundred_rows(self):
+        base = {
+            "tradeDate": "2026-08-17",
+            "name": "測試股",
+            "groupName": "測試族群",
+            "kind": "instantLargeBuy",
+            "label": "瞬間大單連續敲進",
+            "price": 100,
+            "note": "同秒 1 筆｜合計 100 張｜約 1,000.0 萬",
+        }
+        rows = [{
+            **base,
+            "ticker": f"T{index:04d}",
+            "barTs": ts(9, 0) + index,
+        } for index in range(650)]
+
+        self.assertEqual(len(save_intraday_signals(rows)), 650)
+        restored = load_latest_signals_by_kind(
+            "2026-08-17", "instantLargeBuy", limit=5000,
+        )
+        self.assertEqual(len(restored), 650)
+        self.assertEqual(restored[0]["ticker"], "T0649")
+        self.assertEqual(restored[-1]["ticker"], "T0000")
 
     def test_includes_thirteen_thirty_but_excludes_thirteen_thirty_one(self):
         service = FakeService()
