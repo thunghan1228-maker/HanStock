@@ -85,3 +85,40 @@ def test_candidate_refresh_recovers_missing_group_snapshot(monkeypatch):
     assert status["candidateCount"] > 0
     assert status["buyCandidateCount"] > 0
     assert status["sellCandidateCount"] > 0
+
+
+def test_local_candidates_survive_snapshot_persistence_failure(monkeypatch):
+    import group_strength_collector
+
+    groups = list(module.STOCK_GROUPS)[:45]
+    monkeypatch.setattr(module, "load_group_strength_history", lambda _trade_date: [])
+    monkeypatch.setattr(group_strength_collector, "collect_once", lambda: False)
+    monkeypatch.setattr(module, "_ensure_group_universe_subscriptions", lambda _service: None)
+    monkeypatch.setattr(
+        module,
+        "build_live_group_ranks",
+        lambda _service: {group: index + 1 for index, group in enumerate(groups)},
+    )
+    monkeypatch.setattr(
+        module,
+        "save_group_strength_snapshot",
+        lambda *_args: (_ for _ in ()).throw(OSError("database locked")),
+    )
+
+    class Service:
+        @staticmethod
+        def ensure_stock_subscriptions(codes):
+            return {
+                "capacity": 1000,
+                "active_count": len(codes),
+                "already_subscribed": codes,
+                "newly_subscribed": [],
+                "failed": {},
+            }
+
+    status = module.refresh_intraday_large_order_candidates(Service())
+
+    assert status["candidateCount"] > 0
+    assert status["candidateSource"] == "local_shioaji_group_ranking"
+    assert status["snapshotPersisted"] is False
+    assert status["snapshotPersistError"] == "OSError"
