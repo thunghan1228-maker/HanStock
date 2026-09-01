@@ -228,6 +228,7 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     subscription = service.ensure_stock_subscriptions(codes)
     failed = subscription.get("failed") or {}
     status = {
+        "prepared": True,
         "tradeDate": trade_date,
         "snapshotTs": latest["bucketTs"],
         "candidateSource": candidate_source,
