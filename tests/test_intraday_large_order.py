@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import intraday_large_order as module
-from intraday_large_order import IntradayLargeOrderMonitor, build_group_candidates
+from intraday_large_order import IntradayLargeOrderMonitor, build_group_candidates, build_live_group_ranks
 
 
 def test_builds_top_and_bottom_twenty_group_candidates():
@@ -11,6 +11,19 @@ def test_builds_top_and_bottom_twenty_group_candidates():
     assert sell
     assert all(1 <= row["rank"] <= 20 for row in buy.values())
     assert all(1 <= row["rank"] <= 20 for row in sell.values())
+
+
+def test_builds_live_group_ranks_from_local_stock_ticks():
+    class Service:
+        @staticmethod
+        def get_stock_quote(ticker):
+            return {"pct_chg": (sum(ord(char) for char in ticker) % 100 - 50) / 10}
+
+    ranks = build_live_group_ranks(Service())
+
+    assert len(ranks) >= 40
+    assert min(ranks.values()) == 1
+    assert max(ranks.values()) == len(ranks)
 
 
 def test_same_second_large_buy_emits_once(monkeypatch):
