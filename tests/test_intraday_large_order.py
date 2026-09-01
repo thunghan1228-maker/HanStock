@@ -43,3 +43,32 @@ def test_wrong_direction_and_neutral_ticks_are_ignored(monkeypatch):
     monitor.set_candidates({"2344": {"name": "華邦電", "group": "記憶體", "rank": 1, "direction": "漲幅"}}, {}, {})
     assert monitor.on_tick({"code": "2344", "close": 100, "volume": 500, "amount": 50_000_000, "tick_type": 2}, 1_000_000) == []
     assert monitor.on_tick({"code": "2344", "close": 100, "volume": 500, "amount": 50_000_000, "tick_type": 0}, 1_000_100) == []
+
+
+def test_candidate_refresh_recovers_missing_group_snapshot(monkeypatch):
+    import group_strength_collector
+
+    groups = list(module.STOCK_GROUPS)[:45]
+    history_reads = iter([
+        [],
+        [{"bucketTs": 1_788_226_200_000, "ranks": {group: index + 1 for index, group in enumerate(groups)}}],
+    ])
+    monkeypatch.setattr(module, "load_group_strength_history", lambda _trade_date: next(history_reads))
+    monkeypatch.setattr(group_strength_collector, "collect_once", lambda: True)
+
+    class Service:
+        @staticmethod
+        def ensure_stock_subscriptions(codes):
+            return {
+                "capacity": 1000,
+                "active_count": len(codes),
+                "already_subscribed": codes,
+                "newly_subscribed": [],
+                "failed": {},
+            }
+
+    status = module.refresh_intraday_large_order_candidates(Service())
+
+    assert status["candidateCount"] > 0
+    assert status["buyCandidateCount"] > 0
+    assert status["sellCandidateCount"] > 0
