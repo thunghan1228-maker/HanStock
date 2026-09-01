@@ -26,6 +26,7 @@ from intraday_large_order_collector import (
     collector_status as intraday_large_order_status,
     start_intraday_large_order_collector,
 )
+from intraday_large_order import get_intraday_large_order_monitor
 from daytrade_flow_store import load_daytrade_scan_status
 from intraday_signal_store import (
     intraday_signal_count,
@@ -326,11 +327,17 @@ def get_daytrade_early_sell_signals(
 @app.get("/api/hub/intraday-large-orders")
 def get_intraday_large_orders(limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
     trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
-    signals = [
+    stored_signals = [
         signal
         for kind in ("instantLargeBuy", "instantLargeSell")
         for signal in load_latest_signals_by_kind(trade_date, kind, limit=limit)
     ]
+    memory_signals = get_intraday_large_order_monitor().recent_signals(trade_date, limit=limit)
+    signals_by_key = {
+        (str(signal.get("ticker") or ""), str(signal.get("kind") or ""), int(signal.get("barTs") or 0)): signal
+        for signal in [*stored_signals, *memory_signals]
+    }
+    signals = list(signals_by_key.values())
     return {
         "status": "ok",
         "tradeDate": trade_date,

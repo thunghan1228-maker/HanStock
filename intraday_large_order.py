@@ -97,16 +97,38 @@ class IntradayLargeOrderMonitor:
         self._candidates: dict[str, dict[str, dict[str, Any]]] = {"buy": {}, "sell": {}}
         self._windows: dict[tuple[str, str], deque[tuple[int, int, float, float]]] = defaultdict(deque)
         self._last_emitted: dict[tuple[str, str], int] = {}
+        self._recent_signals: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._pending_signals: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+        self._runtime_trade_date = ""
+        self._runtime: dict[str, Any] = {}
         self._status: dict[str, Any] = {"prepared": False, "reason": "waiting_group_snapshot"}
+
+    def _reset_runtime(self, trade_date: str) -> None:
+        self._runtime_trade_date = trade_date
+        self._runtime = {
+            "candidateTickCount": 0,
+            "eligibleTickCount": 0,
+            "burstThresholdCount": 0,
+            "persistedSignalCount": 0,
+            "persistenceErrorCount": 0,
+            "pendingSignalCount": 0,
+        }
+        self._windows.clear()
+        self._last_emitted.clear()
+        self._recent_signals.clear()
+        self._pending_signals.clear()
 
     def set_candidates(self, buy: dict[str, dict[str, Any]], sell: dict[str, dict[str, Any]], status: dict[str, Any]) -> None:
         with self._lock:
+            trade_date = str(status.get("tradeDate") or "")
+            if trade_date and trade_date != self._runtime_trade_date:
+                self._reset_runtime(trade_date)
             self._candidates = {"buy": buy, "sell": sell}
             self._status = {**status, "prepared": bool(buy or sell)}
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._status)
+            return {**self._status, **self._runtime, "pendingSignalCount": len(self._pending_signals)}
 
     def update_status(self, **values: Any) -> None:
         """補充收集器健康狀態，不改動目前的候選名單。"""
@@ -123,6 +145,9 @@ class IntradayLargeOrderMonitor:
             meta = self._candidates[side].get(code)
         if not meta:
             return []
+        with self._lock:
+            self._runtime["candidateTickCount"] = int(self._runtime.get("candidateTickCount") or 0) + 1
+            self._runtime["lastCandidateTickAt"] = datetime.fromtimestamp(tick_ts_ms / 1000, TW_TZ).isoformat()
         try:
             price = float(tick.get("close") or 0)
             lots = max(0, int(tick.get("volume") or 0))
@@ -131,6 +156,8 @@ class IntradayLargeOrderMonitor:
             return []
         if price <= 0 or lots <= 0 or (lots < MIN_TICK_LOTS and amount < MIN_TICK_AMOUNT):
             return []
+        with self._lock:
+            self._runtime["eligibleTickCount"] = int(self._runtime.get("eligibleTickCount") or 0) + 1
         key = (code, side)
         with self._lock:
             window = self._windows[key]
@@ -143,6 +170,8 @@ class IntradayLargeOrderMonitor:
                 return []
             if tick_ts_ms - self._last_emitted.get(key, 0) < COOLDOWN_MS:
                 return []
+            self._runtime["burstThresholdCount"] = int(self._runtime.get("burstThresholdCount") or 0) + 1
+            self._runtime["lastBurstAt"] = datetime.fromtimestamp(tick_ts_ms / 1000, TW_TZ).isoformat()
             self._last_emitted[key] = tick_ts_ms
             snapshot = list(window)
         extra = total_lots >= EXTRA_BURST_LOTS or total_amount >= EXTRA_BURST_AMOUNT
@@ -158,11 +187,51 @@ class IntradayLargeOrderMonitor:
             "price": price,
             "note": f"同秒 {len(snapshot)} 筆｜合計 {total_lots:,} 張｜約 {_money(total_amount)}｜成交價 {min(x[3] for x in snapshot):g}～{max(x[3] for x in snapshot):g}｜族群同步 {meta['group']} {meta['direction']}第 {meta['rank']} 名",
         }
-        inserted = save_intraday_signals([signal])
+        signal_key = (signal["tradeDate"], signal["ticker"], signal["kind"], signal["barTs"])
+        with self._lock:
+            self._recent_signals.append(signal)
+        try:
+            inserted = save_intraday_signals([signal])
+        except Exception as exc:  # noqa: BLE001
+            # SQLite 被其他盤中收集器短暫鎖住時，訊號先保留在記憶體並排隊
+            # 重試，API 仍可立即顯示，不再整筆消失。
+            with self._lock:
+                self._pending_signals[signal_key] = signal
+                self._runtime["persistenceErrorCount"] = int(self._runtime.get("persistenceErrorCount") or 0) + 1
+                self._runtime["lastPersistenceError"] = type(exc).__name__
+                self._runtime["pendingSignalCount"] = len(self._pending_signals)
+            return [signal]
         if inserted:
             with self._lock:
-                self._status["lastSignal"] = inserted[0]
-        return inserted
+                self._runtime["lastSignal"] = inserted[0]
+                self._runtime["persistedSignalCount"] = int(self._runtime.get("persistedSignalCount") or 0) + len(inserted)
+        return inserted or [signal]
+
+    def recent_signals(self, trade_date: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [dict(row) for row in self._recent_signals if row.get("tradeDate") == trade_date]
+        return sorted(rows, key=lambda row: int(row.get("barTs") or 0), reverse=True)[:max(1, limit)]
+
+    def flush_pending_signals(self) -> int:
+        with self._lock:
+            rows = list(self._pending_signals.values())
+        if not rows:
+            return 0
+        try:
+            inserted = save_intraday_signals(rows)
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._runtime["persistenceErrorCount"] = int(self._runtime.get("persistenceErrorCount") or 0) + 1
+                self._runtime["lastPersistenceError"] = type(exc).__name__
+            return 0
+        row_keys = {(row["tradeDate"], row["ticker"], row["kind"], row["barTs"]) for row in rows}
+        with self._lock:
+            for signal_key in row_keys:
+                self._pending_signals.pop(signal_key, None)
+            self._runtime["pendingSignalCount"] = len(self._pending_signals)
+            self._runtime["persistedSignalCount"] = int(self._runtime.get("persistedSignalCount") or 0) + len(inserted)
+            self._runtime["lastPersistenceRecoveredAt"] = datetime.now(TW_TZ).isoformat()
+        return len(inserted)
 
 
 _monitor = IntradayLargeOrderMonitor()

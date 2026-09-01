@@ -58,6 +58,40 @@ def test_wrong_direction_and_neutral_ticks_are_ignored(monkeypatch):
     assert monitor.on_tick({"code": "2344", "close": 100, "volume": 500, "amount": 50_000_000, "tick_type": 0}, 1_000_100) == []
 
 
+def test_persistence_lock_keeps_signal_in_memory_and_retries(monkeypatch):
+    saved = []
+
+    def locked(_rows):
+        raise OSError("database locked")
+
+    monkeypatch.setattr(module, "save_intraday_signals", locked)
+    monitor = IntradayLargeOrderMonitor()
+    monitor.set_candidates(
+        {"2344": {"name": "華邦電", "group": "記憶體", "rank": 1, "direction": "漲幅"}},
+        {},
+        {"tradeDate": "2026-09-01"},
+    )
+    ts = 1_788_232_800_000
+    emitted = monitor.on_tick({
+        "code": "2344", "close": 100, "volume": 120,
+        "amount": 12_000_000, "tick_type": 1,
+    }, ts)
+
+    assert len(emitted) == 1
+    assert monitor.recent_signals("2026-09-01")[0]["ticker"] == "2344"
+    assert monitor.status()["persistenceErrorCount"] == 1
+    assert monitor.status()["pendingSignalCount"] == 1
+
+    def recovered(rows):
+        saved.extend(rows)
+        return rows
+
+    monkeypatch.setattr(module, "save_intraday_signals", recovered)
+    assert monitor.flush_pending_signals() == 1
+    assert saved[0]["ticker"] == "2344"
+    assert monitor.status()["pendingSignalCount"] == 0
+
+
 def test_candidate_refresh_recovers_missing_group_snapshot(monkeypatch):
     import group_strength_collector
 
