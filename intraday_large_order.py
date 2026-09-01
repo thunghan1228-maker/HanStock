@@ -199,9 +199,16 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
             if len(live_ranks) >= MIN_LIVE_GROUPS:
                 now_ms = int(datetime.now(TW_TZ).timestamp() * 1000)
                 bucket_ts = now_ms // 300_000 * 300_000
-                save_group_strength_snapshot(trade_date, bucket_ts, live_ranks)
                 history = [{"bucketTs": bucket_ts, "ranks": live_ranks}]
                 candidate_source = "local_shioaji_group_ranking"
+                try:
+                    save_group_strength_snapshot(trade_date, bucket_ts, live_ranks)
+                    fallback_status["snapshotPersisted"] = True
+                except Exception as exc:  # noqa: BLE001
+                    # SQLite 可能被其他盤中收集器短暫鎖住；候選排名已完整時，
+                    # 仍須立刻啟用大單偵測，下一輪再補存快照即可。
+                    fallback_status["snapshotPersisted"] = False
+                    fallback_status["snapshotPersistError"] = type(exc).__name__
         except Exception as exc:  # noqa: BLE001
             fallback_status["localFallbackError"] = type(exc).__name__
             history = []
@@ -224,6 +231,7 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
         "tradeDate": trade_date,
         "snapshotTs": latest["bucketTs"],
         "candidateSource": candidate_source,
+        **fallback_status,
         "groupLimitPerSide": GROUP_LIMIT,
         "buyCandidateCount": len(buy),
         "sellCandidateCount": len(sell),
