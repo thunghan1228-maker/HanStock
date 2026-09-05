@@ -89,7 +89,7 @@ def _is_main_force_trade(tick_data: dict[str, Any], *, futures: bool = False) ->
     return amount >= MAIN_FORCE_MIN_AMOUNT
 
 
-@dataclass
+@dataclass(slots=True)
 class Bar:
     """通用 OHLCV K 棒。"""
     ts: int  # bar 起始時間 (UTC ms)

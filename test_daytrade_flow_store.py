@@ -19,7 +19,7 @@ class DaytradeFlowStoreTests(unittest.TestCase):
     def test_existing_database_is_migrated_and_data_state_is_persisted(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hanstock.db"
-            with sqlite3.connect(path) as connection:
+            with sqlite3.connect(path, factory=database.ClosingConnection) as connection:
                 connection.executescript(
                     """
                     CREATE TABLE daytrade_flow_daily_v2 (

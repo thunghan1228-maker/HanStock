@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from otc_index import FIVE_MIN_MS, ONE_MIN_MS, TW_TZ, shioaji_kbar_close_to_start_ms
+from history_cache import HistoryCache
 
 logger = logging.getLogger("hanstock.futures_bar_bootstrap")
 RETRY_AFTER_SECONDS = 30.0
@@ -42,7 +43,7 @@ class _HistoryEntry:
 
 
 _cache_lock = threading.RLock()
-_history_cache: dict[tuple[str, int, int], _HistoryEntry] = {}
+_history_cache: dict[tuple[str, int, int], _HistoryEntry] = HistoryCache(max_entries=32, max_bars=400_000)
 _code_locks: dict[tuple[str, int, int], threading.Lock] = {}
 
 
@@ -577,6 +578,10 @@ def get_resilient_futures_bars(
     key = (requested_code, current_window.start_ms, lookback_days)
 
     with _cache_lock:
+        # A new day/night session supersedes this contract's older snapshots.
+        for old_key in list(_history_cache):
+            if old_key[0] == requested_code and old_key[1] != current_window.start_ms:
+                _history_cache.pop(old_key, None)
         entry = _history_cache.get(key)
         if entry and not entry.ok and monotonic_fn() - entry.fetched_at_monotonic >= RETRY_AFTER_SECONDS:
             entry = None

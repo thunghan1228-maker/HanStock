@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 
 from otc_index import TW_TZ, aggregate_1m_to_5m, normalize_kbars_1m, taipei_minute_of_day, taipei_trade_date
 from stock_bar_bootstrap import _default_hub, _default_service, _resolve_stock_contract
+from history_cache import HistoryCache
 
 logger = logging.getLogger("hanstock.stock_history_service")
 
@@ -35,7 +36,7 @@ class _History5mEntry:
 
 _lock = threading.RLock()
 _code_locks: dict[str, threading.Lock] = {}
-_cache: dict[str, _History5mEntry] = {}
+_cache: dict[str, _History5mEntry] = HistoryCache(max_entries=512, max_bars=72_000)
 
 
 def clear_stock_history_cache() -> None:

@@ -142,6 +142,21 @@ class RealtimeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("HanStock", response.text)
 
+    def test_large_market_response_gzip_preserves_payload_and_cors(self):
+        path = "/api/realtime/group/記憶體"
+        plain = self.client.get(path, headers={"Accept-Encoding": "identity"})
+        compressed = self.client.get(path, headers={"Accept-Encoding": "gzip", "Origin": "https://www.hanstock.xyz"})
+        self.assertEqual(compressed.json(), plain.json())
+        self.assertEqual(compressed.headers.get("Content-Encoding"), "gzip")
+        self.assertIn("Accept-Encoding", compressed.headers.get("Vary", ""))
+        self.assertLess(int(compressed.headers["Content-Length"]), len(plain.content))
+        self.assertIn("access-control-allow-origin", compressed.headers)
+        self.assertNotIn("Content-Encoding", plain.headers)
+
+    def test_small_redirect_is_not_compressed(self):
+        response = self.client.get("/", headers={"Accept-Encoding": "gzip"}, follow_redirects=False)
+        self.assertNotIn("Content-Encoding", response.headers)
+
     def test_group_query_returns_ranked_quotes(self):
         response = self.client.get("/api/realtime/group/記憶體")
         self.assertEqual(response.status_code, 200)

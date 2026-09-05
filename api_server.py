@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from config import SHIOAJI_QUOTE_ENABLED
@@ -222,6 +223,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Market history compresses especially well. Small quotes bypass compression;
+# Starlette negotiates gzip, preserves Vary, and leaves WebSocket/SSE untouched.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins(),

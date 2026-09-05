@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import broker_branch_weekly as target
+from database import ClosingConnection
 
 
 class BrokerBranchWeeklyTest(unittest.TestCase):
@@ -12,7 +13,7 @@ class BrokerBranchWeeklyTest(unittest.TestCase):
         self.database_path = Path(self.tempdir.name) / "test.db"
 
         def connection():
-            db = sqlite3.connect(self.database_path)
+            db = sqlite3.connect(self.database_path, factory=ClosingConnection)
             db.row_factory = sqlite3.Row
             return db
 

@@ -14,12 +14,22 @@ ALLOWED_BAR_TABLES = {
 }
 
 
+class ClosingConnection(sqlite3.Connection):
+    """Commit/roll back as usual, then promptly release SQLite pages and handles."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def get_connection() -> sqlite3.Connection:
     """建立資料庫連線。"""
     DATA_DIR.mkdir(exist_ok=True)
 
     # 主力分鐘資料會由背景執行緒持續寫入；讀取 API 不應因短暫寫入鎖直接失敗。
-    connection = sqlite3.connect(DATABASE_PATH, timeout=30)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=30, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout = 30000")
 

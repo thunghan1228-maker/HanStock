@@ -30,6 +30,7 @@ from otc_index import (
     taipei_trade_date,
 )
 from market_data_hub import _is_main_force_trade, _trade_side
+from history_cache import HistoryCache
 
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
@@ -60,7 +61,7 @@ class _HistoryEntry:
 
 
 _cache_lock = threading.RLock()
-_history_cache: dict[str, _HistoryEntry] = {}
+_history_cache: dict[str, _HistoryEntry] = HistoryCache(max_entries=512, max_bars=170_000)
 _code_locks: dict[str, threading.Lock] = {}
 _repair_targets: dict[str, float] = {}
 _repair_state: dict[str, Any] = {
@@ -386,7 +387,12 @@ def _cached_entry(code: str, trade_date: str, now_monotonic: float) -> Optional[
 
 def _store_entry(code: str, entry: _HistoryEntry) -> _HistoryEntry:
     with _cache_lock:
+        previous_codes = set(_history_cache)
         _history_cache[code] = entry
+        # A capacity eviction must not cause background repairs to immediately
+        # fetch the discarded history again. Opening that chart registers it anew.
+        for evicted in previous_codes - _history_cache.keys():
+            _repair_targets.pop(evicted, None)
     return entry
 
 
@@ -505,6 +511,9 @@ def repair_recent_stock_bars_once(
     now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
     trade_date = _latest_weekday_trade_date(now_value)
     now_monotonic = monotonic_fn()
+    local_now = datetime.fromtimestamp(now_value / 1000, TW_TZ)
+    minute = local_now.hour * 60 + local_now.minute
+    active = local_now.weekday() < 5 and 8 * 60 + 45 <= minute < 14 * 60 + 35
     with _cache_lock:
         expired = [
             code for code, seen_at in _repair_targets.items()
@@ -512,6 +521,7 @@ def repair_recent_stock_bars_once(
         ]
         for code in expired:
             _repair_targets.pop(code, None)
+            _history_cache.pop(code, None)
         candidates: list[tuple[int, float, float, str]] = []
         for code, seen_at in _repair_targets.items():
             entry = _history_cache.get(code)
@@ -519,7 +529,7 @@ def repair_recent_stock_bars_once(
                 candidates.append((0, -seen_at, 0.0, code))
                 continue
             age = now_monotonic - entry.fetched_at_monotonic
-            threshold = SUCCESS_REFRESH_SECONDS if entry.ok else RETRY_AFTER_SECONDS
+            threshold = (SUCCESS_REFRESH_SECONDS if entry.ok else RETRY_AFTER_SECONDS) if active else (1800 if entry.ok else 300)
             if age >= threshold:
                 candidates.append((0 if not entry.ok else 1, -seen_at, entry.fetched_at_monotonic, code))
 
