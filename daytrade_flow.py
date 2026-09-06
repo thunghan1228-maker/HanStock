@@ -11,9 +11,11 @@ import logging
 import json
 import math
 import re
+import ssl
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from datetime import date, datetime, time as datetime_time, timedelta
 from typing import Any, Iterable, Mapping, Optional
@@ -69,7 +71,23 @@ def _fetch_json(url: str, params: Mapping[str, str]) -> Any:
         f"{url}?{urllib.parse.urlencode(params)}",
         headers={"Accept": "application/json", "User-Agent": "HanStock-DaytradeFlow/2.0"},
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
+    try:
+        response = urllib.request.urlopen(request, timeout=45)
+    except urllib.error.URLError as exc:
+        # Python 3.13 enables X509_STRICT by default. Some exchange certificate
+        # chains lack the optional Subject Key Identifier accepted by earlier
+        # Python versions. Retry only that compatibility error for exchanges;
+        # trust-chain, expiry and hostname verification remain mandatory.
+        reason = exc.reason
+        official_hosts = {"www.twse.com.tw", "openapi.twse.com.tw", "www.tpex.org.tw", "tpex.org.tw"}
+        if (urllib.parse.urlsplit(url).hostname not in official_hosts
+                or not isinstance(reason, ssl.SSLCertVerificationError)
+                or "Missing Subject Key Identifier" not in str(reason)):
+            raise
+        context = ssl.create_default_context()
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        response = urllib.request.urlopen(request, timeout=45, context=context)
+    with response:
         payload = json.load(response)
     if not isinstance(payload, (dict, list)):
         raise RuntimeError("交易所日行情格式錯誤")
