@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from otc_index import TW_TZ
 from stock_bar_bootstrap import (
@@ -152,6 +155,69 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.service = FakeService()
         self.hub = FakeHub()
         self.now_ms = ts(2026, 8, 7, 9, 7)
+
+    def test_history_concurrency_is_bounded_and_live_data_does_not_wait(self):
+        release = threading.Event()
+        both_started = threading.Event()
+        active = []
+        guard = threading.Lock()
+        original = self.service.api.kbars
+        self.service._resolve_stock_contract = lambda code: object()
+        def slow_kbars(**kwargs):
+            with guard:
+                active.append(1)
+                if len(active) == 2:
+                    both_started.set()
+            if not release.wait(timeout=3):
+                raise TimeoutError("test did not release history")
+            return original(**kwargs)
+        def read(code):
+            return get_resilient_stock_bars(code, "1m", service=self.service,
+                                           hub=self.hub, now_ms=self.now_ms)
+        with patch.object(self.service.api, "kbars", side_effect=slow_kbars):
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                first = pool.submit(read, "2344")
+                second = pool.submit(read, "2330")
+                try:
+                    self.assertTrue(both_started.wait(timeout=1))
+                    # A different stock cannot start a third SDK call, and a duplicate
+                    # stock must return the live bars without waiting for its lock.
+                    third = pool.submit(read, "2408").result(timeout=0.5)
+                    duplicate = pool.submit(read, "2344").result(timeout=0.5)
+                    self.assertFalse(third["bootstrap"]["history_ok"])
+                    self.assertEqual(duplicate["bar_count"], 2)
+                    self.assertEqual(len(active), 2)
+                finally:
+                    release.set()
+                self.assertTrue(first.result(timeout=2)["bootstrap"]["history_ok"])
+                self.assertTrue(second.result(timeout=2)["bootstrap"]["history_ok"])
+
+    def test_session_failure_cools_down_other_stock_history_requests(self):
+        self.service._resolve_stock_contract = lambda code: object()
+        self.service.api.kbars_error = RuntimeError("NotReady SessionNotEstablished")
+        for code, now in [("2344", 100), ("2330", 110)]:
+            get_resilient_stock_bars(code, "1m", service=self.service,
+                                    hub=self.hub, now_ms=self.now_ms,
+                                    monotonic_fn=lambda: now)
+        self.assertEqual(self.service.api.kbars_calls, 1)
+        self.assertEqual(len(self.service.recovery_reasons), 1)
+        get_resilient_stock_bars("2330", "1m", service=self.service,
+                                hub=self.hub, now_ms=self.now_ms,
+                                monotonic_fn=lambda: 131)
+        self.assertEqual(self.service.api.kbars_calls, 2)
+
+    def test_failed_refresh_preserves_completed_history(self):
+        first = get_resilient_stock_bars("2344", "1m", service=self.service,
+                                        hub=self.hub, now_ms=self.now_ms,
+                                        monotonic_fn=lambda: 100)
+        self.service.api.kbars_error = RuntimeError("temporary transport failure")
+        repair_recent_stock_bars_once(service=self.service, now_ms=self.now_ms,
+                                      monotonic_fn=lambda: 281)
+        after = get_resilient_stock_bars("2344", "1m", service=self.service,
+                                        hub=self.hub, now_ms=self.now_ms,
+                                        monotonic_fn=lambda: 282)
+        self.assertFalse(after["bootstrap"]["history_ok"])
+        self.assertEqual(after["bars"], first["bars"])
 
     def test_one_minute_bootstrap_subscribes_and_live_overrides_history(self):
         result = get_resilient_stock_bars(

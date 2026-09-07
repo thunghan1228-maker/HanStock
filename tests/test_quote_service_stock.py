@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import threading
 import time
 import types
 import unittest
@@ -132,6 +133,62 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.service = module.QuoteService()
         self.service.api = FakeAPI()
         self.service.state.logged_in = True
+
+    def test_history_error_preserves_fresh_primary_ticks(self):
+        self.service.state.last_quote_timestamp = time.time()
+        self.service.state.quote_connected = True
+        self.service.state.subscribed = True
+        with patch.object(self.service, "_trigger_reconnect") as reconnect:
+            self.assertFalse(self.service.recover_transient_p2p_session("Kbars NotReady"))
+            reconnect.assert_not_called()
+        self.assertTrue(self.service.state.quote_connected)
+        self.assertTrue(self.service.state.subscribed)
+
+    def test_stale_recovery_requests_have_a_cooldown(self):
+        self.service.state.last_quote_timestamp = time.time() - 180
+        with patch.object(self.service, "_trigger_reconnect") as reconnect:
+            self.assertTrue(self.service.recover_transient_p2p_session("stale"))
+            self.assertFalse(self.service.recover_transient_p2p_session("another history failure"))
+            self.assertEqual(reconnect.call_count, 1)
+
+    def test_concurrent_startup_logs_in_once(self):
+        self.service.state.logged_in = False
+        calls = []
+        def start():
+            calls.append(1)
+            time.sleep(0.02)
+            self.service.state.logged_in = True
+        with patch.object(self.service, "_startup_once", side_effect=start):
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                list(pool.map(lambda _: self.service.startup(), range(32)))
+        self.assertEqual(len(calls), 1)
+
+    def test_concurrent_reconnect_callbacks_launch_one_worker(self):
+        created = []
+        class SlowStartThread:
+            def __init__(self, **kwargs):
+                self.alive = False
+                created.append(self)
+            def is_alive(self):
+                return self.alive
+            def start(self):
+                time.sleep(0.02)
+                self.alive = True
+        callers = [threading.Thread(target=self.service._trigger_reconnect) for _ in range(24)]
+        with patch.object(module.threading, "Thread", SlowStartThread):
+            for caller in callers:
+                caller.start()
+            for caller in callers:
+                caller.join(timeout=2)
+                self.assertFalse(caller.is_alive())
+        self.assertEqual(len(created), 1)
+
+    def test_broker_login_throttle_waits_at_least_one_minute(self):
+        self.service.state.quote_connected = False
+        self.service.state.error_message = "StatusCode: 503, 請1分鐘後再重新登入"
+        with patch.object(self.service._shutdown_event, "wait", return_value=True) as wait:
+            self.service._reconnect_loop()
+        wait.assert_called_once_with(timeout=60)
 
     def test_transient_p2p_recovery_forces_main_reconnect(self):
         calls = []

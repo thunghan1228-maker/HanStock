@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Optional
 
@@ -61,6 +61,9 @@ class _HistoryEntry:
 
 
 _cache_lock = threading.RLock()
+# 避免全市場圖表同時回補逐筆資料，佔滿 HTTP 執行緒與主 Shioaji Session。
+_history_slots = threading.BoundedSemaphore(2)
+_session_retry_at = 0.0
 _history_cache: dict[str, _HistoryEntry] = HistoryCache(max_entries=512, max_bars=170_000)
 _code_locks: dict[str, threading.Lock] = {}
 _repair_targets: dict[str, float] = {}
@@ -74,7 +77,9 @@ _repair_state: dict[str, Any] = {
 
 def clear_stock_bar_bootstrap_cache() -> None:
     """清空歷史 K 棒快取；主要供測試與日後維運使用。"""
+    global _session_retry_at
     with _cache_lock:
+        _session_retry_at = 0.0
         _history_cache.clear()
         _code_locks.clear()
         _repair_targets.clear()
@@ -109,8 +114,7 @@ def _request_session_recovery(service: Any, error: Any) -> bool:
     if not callable(recover):
         return False
     try:
-        recover(f"K 線歷史回補連線異常：{error}")
-        return True
+        return recover(f"K 線歷史回補連線異常：{error}") is not False
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Stock KBar] 觸發行情連線自動復原失敗: %s", exc)
         return False
@@ -387,6 +391,10 @@ def _cached_entry(code: str, trade_date: str, now_monotonic: float) -> Optional[
 
 def _store_entry(code: str, entry: _HistoryEntry) -> _HistoryEntry:
     with _cache_lock:
+        previous = _history_cache.get(code)
+        if (not entry.ok and previous is not None
+                and previous.trade_date == entry.trade_date and previous.bars_1m):
+            entry = replace(entry, bars_1m=previous.bars_1m, bars_5m=previous.bars_5m)
         previous_codes = set(_history_cache)
         _history_cache[code] = entry
         # A capacity eviction must not cause background repairs to immediately
@@ -396,7 +404,43 @@ def _store_entry(code: str, entry: _HistoryEntry) -> _HistoryEntry:
     return entry
 
 
+def _deferred_history(code: str, trade_date: str, now: float, error: str) -> _HistoryEntry:
+    with _cache_lock:
+        previous = _history_cache.get(code)
+        if previous is not None and previous.trade_date == trade_date:
+            return replace(previous, ok=False, error=error)
+    return _HistoryEntry(trade_date, [], [], now, False, error)
+
+
 def _bootstrap_history(
+    code: str,
+    trade_date: str,
+    *,
+    service: Any,
+    now_ms: int,
+    monotonic_fn: Callable[[], float],
+) -> _HistoryEntry:
+    global _session_retry_at
+    now = monotonic_fn()
+    with _cache_lock:
+        cooling_down = now < _session_retry_at
+    if cooling_down:
+        return _deferred_history(code, trade_date, now, "歷史連線稍後重試；即時行情持續顯示")
+    if not _history_slots.acquire(blocking=False):
+        return _deferred_history(code, trade_date, now, "歷史回補處理中；即時行情持續顯示")
+    try:
+        entry = _bootstrap_history_once(
+            code, trade_date, service=service, now_ms=now_ms, monotonic_fn=monotonic_fn,
+        )
+        if _is_transient_session_error(entry.error) or _is_transient_session_error(entry.main_force_error):
+            with _cache_lock:
+                _session_retry_at = max(_session_retry_at, monotonic_fn() + RETRY_AFTER_SECONDS)
+        return entry
+    finally:
+        _history_slots.release()
+
+
+def _bootstrap_history_once(
     code: str,
     trade_date: str,
     *,
@@ -653,17 +697,22 @@ def get_resilient_stock_bars(
     entry = _cached_entry(code, trade_date, now_monotonic)
     if entry is None:
         lock = _get_code_lock(code)
-        with lock:
+        if lock.acquire(blocking=False):
             # 1m/5m 可能同時進來；進鎖後再查一次避免雙重 kbars()。
-            entry = _cached_entry(code, trade_date, monotonic_fn())
-            if entry is None:
-                entry = _bootstrap_history(
-                    code,
-                    trade_date,
-                    service=service,
-                    now_ms=now_value,
-                    monotonic_fn=monotonic_fn,
-                )
+            try:
+                entry = _cached_entry(code, trade_date, monotonic_fn())
+                if entry is None:
+                    entry = _bootstrap_history(
+                        code,
+                        trade_date,
+                        service=service,
+                        now_ms=now_value,
+                        monotonic_fn=monotonic_fn,
+                    )
+            finally:
+                lock.release()
+        else:
+            entry = _deferred_history(code, trade_date, now_monotonic, "此股歷史回補處理中")
 
     if interval == "1m":
         history = entry.bars_1m

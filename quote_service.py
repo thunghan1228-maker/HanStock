@@ -187,6 +187,9 @@ class QuoteService:
         self.state = QuoteState()
         self._shutdown_event = threading.Event()
         self._reconnect_thread: Optional[threading.Thread] = None
+        self._reconnect_lock = threading.RLock()
+        self._startup_lock = threading.Lock()
+        self._last_p2p_recovery_at = float("-inf")
         self._target_code = os.getenv("SHIOAJI_FUTURES_CODE", "TXFR1").strip() or "TXFR1"
         self._resolved_futures_code: Optional[str] = None
         self._extra_futures_lock = threading.RLock()
@@ -220,6 +223,12 @@ class QuoteService:
 
     def startup(self) -> None:
         """同步啟動：初始化 → 登入 → 憑證 → 設定回呼 → 訂閱台指期。"""
+        with self._startup_lock:
+            if self.state.logged_in or self._shutdown_event.is_set():
+                return
+            self._startup_once()
+
+    def _startup_once(self) -> None:
         if quote_deployment_role() != "primary":
             self.state.data_source = "standby_no_shioaji_login"
             logger.info(
@@ -277,15 +286,25 @@ class QuoteService:
         with self.state._lock:
             return dict(self.state.last_tick_data) if self.state.last_tick_data else None
 
-    def recover_transient_p2p_session(self, reason: str = "P2P SessionNotEstablished") -> None:
-        """行情仍有連線但商品／Kbars P2P 卡住時，強制走既有背景重連流程。"""
+    def recover_transient_p2p_session(self, reason: str = "P2P SessionNotEstablished") -> bool:
+        """歷史查詢失敗時，只有主 Tick 也停止才重建登入，避免中斷健康行情。"""
         if quote_deployment_role() != "primary":
-            return
-        with self.state._lock:
-            self.state.quote_connected = False
-            self.state.subscribed = False
-            self.state.error_message = reason
-        self._trigger_reconnect()
+            return False
+        with self._reconnect_lock:
+            now = time.monotonic()
+            if now - self._last_p2p_recovery_at < 60.0:
+                return False
+            with self.state._lock:
+                last_tick = self.state.last_quote_timestamp
+                if (self.state.logged_in and last_tick is not None
+                        and 0 <= time.time() - last_tick <= 120.0):
+                    return False
+                self.state.quote_connected = False
+                self.state.subscribed = False
+                self.state.error_message = reason
+            self._last_p2p_recovery_at = now
+            self._trigger_reconnect()
+            return True
 
     def get_stock_health(self) -> dict[str, Any]:
         """取得台股多連線訂閱健康狀態。"""
@@ -793,16 +812,22 @@ class QuoteService:
     # ------------------------------------------------------------------
 
     def _trigger_reconnect(self) -> None:
-        if self._shutdown_event.is_set():
-            return
-        if self._reconnect_thread and self._reconnect_thread.is_alive():
-            return
-        self._reconnect_thread = threading.Thread(
-            target=self._reconnect_loop,
-            name="shioaji-reconnect",
-            daemon=True,
-        )
-        self._reconnect_thread.start()
+        # SDK callbacks、歷史補齊與健康檢查可能同時進來；檢查和啟動必須原子化。
+        with self._reconnect_lock:
+            if self._shutdown_event.is_set() or quote_deployment_role() != "primary":
+                return
+            if self._reconnect_thread and self._reconnect_thread.is_alive():
+                return
+            self._reconnect_thread = threading.Thread(
+                target=self._reconnect_serialized,
+                name="shioaji-reconnect",
+                daemon=True,
+            )
+            self._reconnect_thread.start()
+
+    def _reconnect_serialized(self) -> None:
+        with self._startup_lock:
+            self._reconnect_loop()
 
     def _reconnect_loop(self) -> None:
         attempt = 0
@@ -814,6 +839,8 @@ class QuoteService:
                 RECONNECT_BASE_INTERVAL * (2 ** (attempt - 1)),
                 RECONNECT_MAX_INTERVAL,
             )
+            if "503" in str(self.state.error_message) or "1分鐘" in str(self.state.error_message):
+                interval = max(interval, 60)
             logger.info(
                 "[Shioaji] 重連嘗試 %d/%d，等待 %d 秒...",
                 attempt,
