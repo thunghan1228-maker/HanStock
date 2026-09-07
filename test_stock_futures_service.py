@@ -185,6 +185,7 @@ class FakeQuote(SimpleNamespace):
 
 
 ENV = {
+    "SHIOAJI_STOCK_FUTURES_ENABLED": "true",
     "SHIOAJI_API_KEY": "fake-key",
     "SHIOAJI_SECRET_KEY": "fake-secret",
     "SHIOAJI_STOCK_FUTURES_POOL_SIZE": "2",

@@ -26,6 +26,8 @@ from typing import Any, Callable, Iterable, Literal, Optional
 
 import shioaji as sj
 
+from quote_features import STOCK_FUTURES_DISABLED_MESSAGE, stock_futures_enabled
+
 logger = logging.getLogger("hanstock.stock_futures")
 TW_TZ = timezone(timedelta(hours=8))
 StockFuturesMode = Literal["regular", "mini"]
@@ -250,6 +252,7 @@ class _PoolConnection:
 
 class StockFuturesQuoteService:
     def __init__(self, api_factory: Optional[Callable[[], Any]] = None) -> None:
+        self._stock_futures_enabled = stock_futures_enabled()
         self._lock = threading.RLock()
         self._pool_init_lock = threading.Lock()
         self._api_factory = api_factory
@@ -739,6 +742,8 @@ class StockFuturesQuoteService:
         K 線歷史查詢必須使用與股票期貨訂閱相同、已完成 Session 初始化的
         API 連線；冷啟動時主現貨連線可能仍在 NotReady，不能拿它查股期。
         """
+        if not self._stock_futures_enabled:
+            return None
         requested = str(futures_code).strip().upper()
         if not requested:
             return None
@@ -769,6 +774,8 @@ class StockFuturesQuoteService:
 
     def history_api_candidates(self) -> list[Any]:
         """回傳已登入的共享 API，供歷史 Kbars 在 P2P Session 間備援。"""
+        if not self._stock_futures_enabled:
+            return []
         with self._lock:
             return [pool.api for pool in self._pools if pool.api is not None]
 
@@ -874,6 +881,11 @@ class StockFuturesQuoteService:
             "failed": {},
             "contract_policy": "R1-front-month-auto-roll",
         }
+        if not self._stock_futures_enabled:
+            result.update(status="disabled", enabled=False, active_count=0,
+                          reason=STOCK_FUTURES_DISABLED_MESSAGE)
+            result["failed"] = {code: STOCK_FUTURES_DISABLED_MESSAGE for code in codes}
+            return result
         if mode not in ("regular", "mini"):
             result["failed"] = {code: f"不支援模式：{mode}" for code in codes}
             return result
@@ -932,7 +944,7 @@ class StockFuturesQuoteService:
 
     def _refresh_closed_snapshots(self, codes: list[str], mode: StockFuturesMode) -> None:
         """休市時以單次 Snapshot 補最近交易日 R1 收盤；盤中永遠不用此方法。"""
-        if is_stock_futures_day_session():
+        if not self._stock_futures_enabled or is_stock_futures_day_session():
             return
         now_ts = time.time()
         grouped: dict[int, list[tuple[tuple[StockFuturesMode, str], Any]]] = {}
@@ -1028,6 +1040,8 @@ class StockFuturesQuoteService:
                     self._errors.pop(key, None)
 
     def on_quote(self, pool_index: int, exchange: Any, quote: Any) -> bool:
+        if not self._stock_futures_enabled:
+            return False
         callback_code = str(getattr(quote, "code", "") or "").strip().upper()
         with self._lock:
             key = self._reverse_codes.get((pool_index, callback_code))
@@ -1106,6 +1120,12 @@ class StockFuturesQuoteService:
 
     def get_quotes(self, quote_service: Any, underlying_codes: Iterable[str], mode: StockFuturesMode, *, subscribe: bool = True) -> dict[str, Any]:
         codes = _normalize_codes(underlying_codes)
+        if not self._stock_futures_enabled:
+            return {
+                "status": "disabled", "enabled": False, "mode": mode,
+                "reason": STOCK_FUTURES_DISABLED_MESSAGE, "requested": codes,
+                "count": 0, "data": {}, "subscription": None,
+            }
         subscription = self.ensure_subscriptions(quote_service, codes, mode) if subscribe else None
         session_open = is_stock_futures_day_session()
         if not session_open:
@@ -1168,7 +1188,10 @@ class StockFuturesQuoteService:
                 mappings[f"{mode}:{underlying}"] = item
             snapshot_count = sum(1 for quote in self._quotes.values() if quote.get("data_source") == "shioaji_snapshot_stock_futures")
             return {
-                "enabled": bool(self._pools) and all(pool.healthy for pool in self._pools),
+                "enabled": self._stock_futures_enabled and bool(self._pools) and all(pool.healthy for pool in self._pools),
+                "stock_futures_enabled": self._stock_futures_enabled,
+                "disabled_reason": None if self._stock_futures_enabled else STOCK_FUTURES_DISABLED_MESSAGE,
+                "shared_stock_quotes_enabled": bool(self._pools) and any(pool.healthy for pool in self._pools),
                 "session": "08:45-13:45 Asia/Taipei",
                 "session_clock_open": is_stock_futures_day_session(),
                 "contract_policy": "R1-front-month-auto-roll",

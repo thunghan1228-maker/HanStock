@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -162,6 +164,9 @@ class EmptyHub:
 
 class FuturesBarTests(unittest.TestCase):
     def setUp(self) -> None:
+        feature = patch.dict(os.environ, {"SHIOAJI_STOCK_FUTURES_ENABLED": "true"})
+        feature.start()
+        self.addCleanup(feature.stop)
         clear_futures_bar_bootstrap_cache()
 
     def test_futures_ticks_form_independent_five_minute_bars(self):

@@ -564,6 +564,17 @@ def get_resilient_futures_bars(
     if interval not in {"1m", "5m", "1d"}:
         raise ValueError(f"不支援 interval: {interval}")
     requested_code = str(futures_code).strip().upper()
+    # Day-only contracts are stock futures in this API. Do not let old clients
+    # consume broker history calls after the optional product is disabled.
+    from quote_features import STOCK_FUTURES_DISABLED_MESSAGE, stock_futures_enabled
+
+    if not _has_night_session(requested_code) and not stock_futures_enabled():
+        return {
+            "status": "disabled", "enabled": False,
+            "reason": STOCK_FUTURES_DISABLED_MESSAGE,
+            "requested_code": requested_code, "code": requested_code,
+            "interval": interval, "bar_count": 0, "bars": [],
+        }
     now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
     current_window = _session_window(now_value, requested_code)
     default_days = 180 if interval == "1d" else 7
