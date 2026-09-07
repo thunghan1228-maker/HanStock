@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import sys
 import tempfile
 import types
 import unittest
+import anyio
+import httpx
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -211,6 +215,43 @@ class RealtimeApiTests(unittest.TestCase):
         self.assertEqual(payload["requested_count"], 2)
         self.assertIn("2330", payload["data"])
         self.assertIn("2344", payload["data"])
+
+
+class RealtimeApiSaturationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_reads_bypass_exhausted_history_worker_pool(self):
+        # Occupy every synchronous request token, as hanging SDK queries do.
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        previous_limit = limiter.total_tokens
+        limiter.total_tokens = 1
+        owner = object()
+        await limiter.acquire_on_behalf_of(owner)
+        from market_data_hub import MarketDataHub
+        hub = MarketDataHub()
+        hub_patch = patch.object(api_module, "get_market_data_hub", return_value=hub)
+        hub_patch.start()
+        hub.on_stock_tick({
+            "code": "2330", "close": 102.0, "volume": 2,
+            "tick_time": "2026-08-06T09:02:01+08:00",
+        })
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=api_module.app), base_url="http://test",
+            ) as client:
+                responses = await asyncio.wait_for(asyncio.gather(
+                    client.get("/api/health"),
+                    client.get("/api/hub/ticks?codes=2330"),
+                    client.post("/api/hub/bars1m/batch", json={"codes": ["2330"]}),
+                    client.post("/api/hub/bars/batch", json={"codes": ["2330"]}),
+                ), timeout=1)
+                self.assertEqual([r.status_code for r in responses], [200] * 4)
+                self.assertEqual(responses[0].json()["api_status"], "ok")
+                self.assertEqual(responses[1].json()["data"]["2330"]["close"], 102.0)
+                for response in responses[2:]:
+                    self.assertEqual(response.json()["data"]["2330"][-1]["close"], 102.0)
+        finally:
+            hub_patch.stop()
+            limiter.release_on_behalf_of(owner)
+            limiter.total_tokens = previous_limit
 
 
 if __name__ == "__main__":

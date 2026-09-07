@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
 from otc_index import TW_TZ, aggregate_1m_to_5m, normalize_kbars_1m, taipei_minute_of_day, taipei_trade_date
-from stock_bar_bootstrap import _default_hub, _default_service, _resolve_stock_contract
+from stock_bar_bootstrap import _default_hub, _default_service, _history_slots, _resolve_stock_contract
 from history_cache import HistoryCache
 
 logger = logging.getLogger("hanstock.stock_history_service")
@@ -69,8 +69,20 @@ def _cached(code: str, trade_date: str, start_date: str, now_mono: float) -> Opt
 
 def _store(code: str, entry: _History5mEntry) -> _History5mEntry:
     with _lock:
+        previous = _cache.get(code)
+        if not entry.ok and previous is not None and previous.trade_date == entry.trade_date:
+            entry = replace(entry, bars_5m=previous.bars_5m)
         _cache[code] = entry
     return entry
+
+
+def _deferred_history(code: str, trade_date: str, start_date: str, now: float) -> _History5mEntry:
+    error = "歷史回補處理中；即時行情持續顯示"
+    with _lock:
+        previous = _cache.get(code)
+        if previous is not None and previous.trade_date == trade_date:
+            return replace(previous, ok=False, error=error)
+    return _History5mEntry(trade_date, start_date, [], now, False, error)
 
 
 def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
@@ -103,6 +115,28 @@ def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
 
 
 def _fetch_history(
+    code: str,
+    trade_date: str,
+    start_date: str,
+    *,
+    service: Any,
+    now_ms: int,
+    monotonic_fn: Callable[[], float],
+) -> _History5mEntry:
+    # Share the broker budget with same-day backfill. Requests must not queue
+    # behind slow SDK calls while current Hub bars are already available.
+    if not _history_slots.acquire(blocking=False):
+        return _deferred_history(code, trade_date, start_date, monotonic_fn())
+    try:
+        return _fetch_history_once(
+            code, trade_date, start_date,
+            service=service, now_ms=now_ms, monotonic_fn=monotonic_fn,
+        )
+    finally:
+        _history_slots.release()
+
+
+def _fetch_history_once(
     code: str,
     trade_date: str,
     start_date: str,
@@ -160,7 +194,7 @@ def _fetch_history(
             ok=bool(bars_5m),
             error=None if bars_5m else "Shioaji 多日 Kbars 暫無資料",
         )
-        _store(code, entry)
+        entry = _store(code, entry)
         logger.info(
             "[Stock History5m] %s 多日補齊: start=%s end=%s bars=%d",
             code,
@@ -209,17 +243,23 @@ def get_stock_history_bars_5m(
 
     entry = _cached(code, trade_date, start_date, monotonic_fn())
     if entry is None:
-        with _code_lock(code):
-            entry = _cached(code, trade_date, start_date, monotonic_fn())
-            if entry is None:
-                entry = _fetch_history(
-                    code,
-                    trade_date,
-                    start_date,
-                    service=service,
-                    now_ms=now_value,
-                    monotonic_fn=monotonic_fn,
-                )
+        code_lock = _code_lock(code)
+        if not code_lock.acquire(blocking=False):
+            entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
+        else:
+            try:
+                entry = _cached(code, trade_date, start_date, monotonic_fn())
+                if entry is None:
+                    entry = _fetch_history(
+                        code,
+                        trade_date,
+                        start_date,
+                        service=service,
+                        now_ms=now_value,
+                        monotonic_fn=monotonic_fn,
+                    )
+            finally:
+                code_lock.release()
 
     # 歷史先放、即時後放；同 timestamp 由即時 Hub 覆蓋。
     merged: dict[int, dict[str, Any]] = {}

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from otc_index import TW_TZ
 from stock_history_service import clear_stock_history_cache, get_stock_history_bars_5m
+from stock_history_service import _code_lock
+from stock_bar_bootstrap import _history_slots
 
 
 def ts(year: int, month: int, day: int, hour: int, minute: int) -> int:
@@ -131,6 +135,52 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertGreater(first["bar_count"], 0)
         self.assertEqual(first["bar_count"], second["bar_count"])
         self.assertEqual(len(self.service.api.calls), 1)
+
+    def test_busy_shared_broker_budget_returns_live_bars_without_rpc(self):
+        self.assertTrue(_history_slots.acquire(blocking=False))
+        self.assertTrue(_history_slots.acquire(blocking=False))
+        try:
+            result = get_stock_history_bars_5m(
+                "2344", service=self.service, hub=self.hub, now_ms=self.now_ms,
+            )
+            self.assertFalse(result["bootstrap"]["history_ok"])
+            self.assertEqual(result["bars"][-1]["close"], 111)
+            self.assertEqual(self.service.api.calls, [])
+        finally:
+            _history_slots.release()
+            _history_slots.release()
+        retry = get_stock_history_bars_5m(
+            "2344", service=self.service, hub=self.hub, now_ms=self.now_ms,
+        )
+        self.assertTrue(retry["bootstrap"]["history_ok"])
+
+    def test_duplicate_request_does_not_wait_for_running_history(self):
+        code_lock = _code_lock("2344")
+        code_lock.acquire()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                pending = executor.submit(
+                    get_stock_history_bars_5m, "2344",
+                    service=self.service, hub=self.hub, now_ms=self.now_ms,
+                )
+                result = pending.result(timeout=1)
+                self.assertEqual(result["bars"][-1]["close"], 111)
+                self.assertFalse(result["bootstrap"]["history_ok"])
+                self.assertEqual(self.service.api.calls, [])
+            finally:
+                code_lock.release()
+
+    def test_failed_expanded_history_preserves_known_bars(self):
+        first = get_stock_history_bars_5m(
+            "2344", calendar_days=3, service=self.service, hub=self.hub, now_ms=self.now_ms,
+        )
+        with patch.object(self.service.api, "kbars", side_effect=RuntimeError("broker unavailable")):
+            failed = get_stock_history_bars_5m(
+                "2344", calendar_days=14, service=self.service, hub=self.hub, now_ms=self.now_ms,
+            )
+        self.assertFalse(failed["bootstrap"]["history_ok"])
+        self.assertEqual(failed["bars"], first["bars"])
+        self.assertEqual(failed["bootstrap"]["error"], "broker unavailable")
 
 
 if __name__ == "__main__":

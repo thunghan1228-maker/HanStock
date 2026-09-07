@@ -265,7 +265,7 @@ def realtime_client_asset() -> FileResponse:
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     now = datetime.now(TW_TZ).isoformat(timespec="seconds")
     base: dict[str, Any] = {
         "api_status": "ok",
@@ -566,10 +566,10 @@ def get_hub_status() -> dict[str, Any]:
 
 
 @app.get("/api/hub/ticks")
-def get_hub_ticks(
+async def get_hub_ticks(
     codes: str | None = Query(default=None, description="逗號分隔股票代號"),
 ) -> dict[str, Any]:
-    """從 Hub 取得最新 tick（REST 備援）。"""
+    """Read in-memory ticks without waiting for the SDK request thread pool."""
     hub = get_market_data_hub()
     if codes:
         code_list = [c.strip().upper() for c in codes.split(",") if c.strip()]
@@ -595,7 +595,7 @@ def get_hub_bars_1m(stock_code: str) -> dict[str, Any]:
 
 
 @app.post("/api/hub/bars1m/batch")
-def get_hub_bars_1m_batch(
+async def get_hub_bars_1m_batch(
     payload: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
     """批次取得多檔今日 1 分 K，最多 200 檔。"""
@@ -637,7 +637,7 @@ def get_hub_bars(stock_code: str) -> dict[str, Any]:
 
 
 @app.post("/api/hub/bars/batch")
-def get_hub_bars_batch(
+async def get_hub_bars_batch(
     payload: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
     """批次取得多檔今日 5 分 K（供 intradayScan 批次使用）。"""
