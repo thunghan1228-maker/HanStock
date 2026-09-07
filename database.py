@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import datetime
 from typing import Iterable
 
@@ -6,6 +7,8 @@ from typing import Iterable
 from paths import DATA_DIR
 
 DATABASE_PATH = DATA_DIR / "hanstock.db"
+_journal_lock = threading.Lock()
+_journal_ready_path: str | None = None
 
 ALLOWED_BAR_TABLES = {
     "bars_1m",
@@ -26,13 +29,28 @@ class ClosingConnection(sqlite3.Connection):
 
 def get_connection() -> sqlite3.Connection:
     """建立資料庫連線。"""
+    global _journal_ready_path
     DATA_DIR.mkdir(exist_ok=True)
 
     # 主力分鐘資料會由背景執行緒持續寫入；讀取 API 不應因短暫寫入鎖直接失敗。
     connection = sqlite3.connect(DATABASE_PATH, timeout=30, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout = 30000")
-
+    # A large minute-bar write must not stall signal readers for 30 seconds.
+    # WAL permits readers to use the last committed snapshot during writes.
+    # Configure once per database, outside any application transaction.
+    database_path = str(DATABASE_PATH.resolve())
+    if _journal_ready_path != database_path:
+        try:
+            with _journal_lock:
+                if _journal_ready_path != database_path:
+                    mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                    if str(mode).lower() != "wal":
+                        raise sqlite3.OperationalError("Unable to enable concurrent SQLite reads")
+                    _journal_ready_path = database_path
+        except Exception:
+            connection.close()
+            raise
     return connection
 
 
