@@ -31,6 +31,7 @@ from otc_index import (
 )
 from market_data_hub import _is_main_force_trade, _trade_side
 from history_cache import HistoryCache
+from history_quota import history_quota
 
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
@@ -392,6 +393,9 @@ def _cached_entry(code: str, trade_date: str, now_monotonic: float) -> Optional[
 def _store_entry(code: str, entry: _HistoryEntry) -> _HistoryEntry:
     with _cache_lock:
         previous = _history_cache.get(code)
+        # A queued repair of an earlier date must not replace today's live cache.
+        if previous is not None and previous.trade_date > entry.trade_date:
+            return entry
         if (not entry.ok and previous is not None
                 and previous.trade_date == entry.trade_date and previous.bars_1m):
             entry = replace(entry, bars_1m=previous.bars_1m, bars_5m=previous.bars_5m)
@@ -429,6 +433,9 @@ def _bootstrap_history(
     if not _history_slots.acquire(blocking=False):
         return _deferred_history(code, trade_date, now, "歷史回補處理中；即時行情持續顯示")
     try:
+        quota_error = history_quota.check(getattr(service, "api", None))
+        if quota_error:
+            return _deferred_history(code, trade_date, now, quota_error)
         entry = _bootstrap_history_once(
             code, trade_date, service=service, now_ms=now_ms, monotonic_fn=monotonic_fn,
         )

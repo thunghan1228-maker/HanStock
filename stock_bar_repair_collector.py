@@ -8,6 +8,7 @@ import threading
 import time
 
 from stock_bar_bootstrap import repair_recent_stock_bars_once
+from main_force_backfill_jobs import process_main_force_backfill_job
 
 logger = logging.getLogger("hanstock.stock_bar_repair_collector")
 POLL_SECONDS = max(10, int(os.getenv("HANSTOCK_STOCK_BAR_REPAIR_SECONDS", "15")))
@@ -16,6 +17,9 @@ _lock = threading.Lock()
 
 
 def collect_once(*, service=None) -> dict:
+    job = process_main_force_backfill_job(service=service)
+    if job is not None:
+        logger.info("指定交易日主力回補: %s", job)
     return repair_recent_stock_bars_once(service=service)
 
 

@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional
 from otc_index import TW_TZ, aggregate_1m_to_5m, normalize_kbars_1m, taipei_minute_of_day, taipei_trade_date
 from stock_bar_bootstrap import _default_hub, _default_service, _history_slots, _resolve_stock_contract
 from history_cache import HistoryCache
+from history_quota import history_quota
 
 logger = logging.getLogger("hanstock.stock_history_service")
 
@@ -128,6 +129,9 @@ def _fetch_history(
     if not _history_slots.acquire(blocking=False):
         return _deferred_history(code, trade_date, start_date, monotonic_fn())
     try:
+        quota_error = history_quota.check(getattr(service, "api", None))
+        if quota_error:
+            return replace(_deferred_history(code, trade_date, start_date, monotonic_fn()), error=quota_error)
         return _fetch_history_once(
             code, trade_date, start_date,
             service=service, now_ms=now_ms, monotonic_fn=monotonic_fn,

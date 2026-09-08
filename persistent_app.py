@@ -46,6 +46,7 @@ from triangle_daily_collector import (
 )
 from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, main_force_storage_status
+from main_force_backfill_jobs import request_main_force_backfill
 from broker_branch_weekly import (
     broker_branch_storage_status,
     normalize_daily_rows,
@@ -274,10 +275,14 @@ def get_persisted_main_force_bars(
     date = _validate_trade_date(trade_date) if trade_date else None
     bars = load_main_force_bars(code, interval, trade_date=date, days=days, limit=limit)
     backfill_result = None
-    if date and not bars and backfill:
-        from stock_bar_bootstrap import backfill_main_force_date
-        backfill_result = backfill_main_force_date(code, date)
-        bars = load_main_force_bars(code, interval, trade_date=date, days=days, limit=limit)
+    if date and backfill:
+        # A date with some saved bars can still have a large missing tail.
+        # Persist the request and return existing bars promptly; the bounded
+        # worker retries it after quota recovery, even across process restarts.
+        try:
+            backfill_result = request_main_force_backfill(code, date)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
     return {
         "status": "ok", "code": code, "interval": interval,
         "tradeDate": date, "bar_count": len(bars), "bars": bars,
