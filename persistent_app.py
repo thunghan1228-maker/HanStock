@@ -60,6 +60,7 @@ from finmind_broker_branch_collector import (
     start_finmind_broker_branch_collector,
 )
 from finmind_active_etf_flow import active_etf_flow_for_ticker, active_etf_flow_radar
+from daily_pick_collector import start_daily_pick_collector, stop_daily_pick_collector, daily_pick_collector_status
 
 
 class GroupStrengthSnapshotBody(BaseModel):
@@ -127,10 +128,19 @@ async def _persistent_lifespan(fastapi_app):
         start_triangle_intraday_collector()
         start_triangle_daily_collector()
         start_finmind_broker_branch_collector()
-        yield state
+        start_daily_pick_collector()
+        try:
+            yield state
+        finally:
+            stop_daily_pick_collector()
 
 
 app.router.lifespan_context = _persistent_lifespan
+
+
+@app.get("/api/hub/daily-picks/status")
+def get_daily_pick_status() -> dict[str, Any]:
+    return {"status": "ok", "data": daily_pick_collector_status()}
 
 
 @app.get("/api/hub/persistence/status")

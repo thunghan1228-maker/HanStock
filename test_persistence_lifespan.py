@@ -18,6 +18,8 @@ class PersistenceLifespanTests(unittest.TestCase):
             patch.object(persistent_app, "start_intraday_signal_collector") as signal_worker,
             patch.object(persistent_app, "start_stock_bar_repair_collector") as repair_worker,
             patch.object(persistent_app, "start_triangle_intraday_collector") as triangle_worker,
+            patch.object(persistent_app, "start_daily_pick_collector") as daily_pick_worker,
+            patch.object(persistent_app, "stop_daily_pick_collector") as daily_pick_stop,
         ):
             asyncio.run(exercise_lifespan())
 
@@ -25,6 +27,8 @@ class PersistenceLifespanTests(unittest.TestCase):
         signal_worker.assert_called_once_with()
         repair_worker.assert_called_once_with()
         triangle_worker.assert_called_once_with()
+        daily_pick_worker.assert_called_once_with()
+        daily_pick_stop.assert_called_once_with()
 
 
 if __name__ == "__main__":
