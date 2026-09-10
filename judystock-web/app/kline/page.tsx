@@ -81,6 +81,7 @@ export default function KlinePage() {
   const [showForce, setShowForce] = useState(true);
   const [showDailyForce, setShowDailyForce] = useState(true);
   const [showVwap, setShowVwap] = useState(true);
+  const [showMa, setShowMa] = useState(true);
   const [indicatorMenuOpen, setIndicatorMenuOpen] = useState(false);
   const [forceBars, setForceBars] = useState<ForceBar[]>([]);
   const [forceDayNet, setForceDayNet] = useState(0);
@@ -679,7 +680,7 @@ export default function KlinePage() {
       <section className="pinned-kline-grid">
         <article className="pinned-kline-card">
           <div><strong>{ticker} {name}</strong><span>{period === "1m" ? "1分" : period === "5m" ? "5分" : "日線"}</span><button onClick={closePinnedBoard} aria-label={`解除置頂 ${ticker} ${name}`}>×</button></div>
-          <KlineCandleChart key={ticker} ticker={ticker} interval={period === "day" ? "1d" : period} name={name} />
+          <KlineCandleChart key={ticker} ticker={ticker} interval={period === "day" ? "1d" : period} name={name} forceBars={forceBars} showMa={showMa} />
         </article>
       </section>
     </main>,
@@ -727,12 +728,13 @@ export default function KlinePage() {
       </div>
       <div className="kline-commandbar-right">
         <div className="indicator-picker" ref={indicatorPickerRef}>
-          <button className={showForce || showDailyForce || (period !== "day" && showVwap) ? "active" : ""} onClick={()=>setIndicatorMenuOpen((value)=>!value)} aria-expanded={indicatorMenuOpen}>技術指標 <b>已開 {(showForce ? 1 : 0) + (showDailyForce ? 1 : 0) + (period !== "day" && showVwap ? 1 : 0)} 項</b></button>
+          <button className={showForce || showDailyForce || showMa || (period !== "day" && showVwap) ? "active" : ""} onClick={()=>setIndicatorMenuOpen((value)=>!value)} aria-expanded={indicatorMenuOpen}>技術指標 <b>已開 {(showForce ? 1 : 0) + (showDailyForce ? 1 : 0) + (showMa ? 1 : 0) + (period !== "day" && showVwap ? 1 : 0)} 項</b></button>
           {indicatorMenuOpen&&<div className="indicator-menu" role="group" aria-label="技術指標選單">
             <header><strong>技術指標</strong><small>勾選要顯示在 K 線上的資訊</small></header>
             <label className={period === "day" ? "is-disabled" : ""}><input type="checkbox" checked={period !== "day" && showVwap} disabled={period === "day"} onChange={(event)=>setShowVwap(event.target.checked)} /><span><b>VWAP 成交量加權均價</b><small>亮黃色粗線疊加在 1 分／5 分 K 主圖</small></span><i>分</i></label>
             <label><input type="checkbox" checked={showForce} onChange={(event)=>setShowForce(event.target.checked)} /><span><b>盤中主力大單進出</b><small>1 分／5 分 K 浮動訊息框</small></span><i>分</i></label>
             <label><input type="checkbox" checked={showDailyForce} onChange={(event)=>setShowDailyForce(event.target.checked)} /><span><b>日線主力大單累積</b><small>每日淨量柱狀＋累積趨勢線</small></span><i>日</i></label>
+            <label><input type="checkbox" checked={showMa} onChange={(event)=>setShowMa(event.target.checked)} /><span><b>MA5／MA20 均線</b><small>疊加在 K 線主圖上的移動平均線</small></span></label>
           </div>}
         </div>
         <button className="kline-grid-open" onClick={() => {
@@ -757,6 +759,8 @@ export default function KlinePage() {
           ticker={ticker}
           interval={period === "day" ? "1d" : period}
           name={name}
+          forceBars={forceBars}
+          showMa={showMa}
         />
       )}
       {false&&period !== "day"&&showForce&&<aside

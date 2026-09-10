@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { ForceHistoryBar } from "../lib/kline-force";
 
 type Bar = { ts: number; open: number; high: number; low: number; close: number; volume: number };
 type CandlesResponse = { ok: boolean; bars?: Bar[]; error?: string };
@@ -48,12 +49,13 @@ function average(values: number[], index: number, period: number) {
   return sum / period;
 }
 
-export default function KlineCandleChart({ ticker, interval, name }: { ticker: string; interval: "1m" | "5m" | "1d"; name: string }) {
+export default function KlineCandleChart({ ticker, interval, name, forceBars, showMa = true }: { ticker: string; interval: "1m" | "5m" | "1d"; name: string; forceBars?: ForceHistoryBar[]; showMa?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<import("lightweight-charts").IChartApi | null>(null);
   const seriesRef = useRef<{
     candle: import("lightweight-charts").ISeriesApi<"Candlestick">;
     volume: import("lightweight-charts").ISeriesApi<"Histogram">;
+    force: import("lightweight-charts").ISeriesApi<"Histogram">;
     ma5: import("lightweight-charts").ISeriesApi<"Line">;
     ma20: import("lightweight-charts").ISeriesApi<"Line">;
   } | null>(null);
@@ -79,16 +81,21 @@ export default function KlineCandleChart({ ticker, interval, name }: { ticker: s
         wickUpColor: "#ff5b5f", wickDownColor: "#22c55e",
         priceScaleId: "right",
       });
-      candle.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.28 } });
+      candle.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.48 } });
+      const force = chart.addHistogramSeries({
+        priceFormat: { type: "volume" },
+        priceScaleId: "force",
+      });
+      force.priceScale().applyOptions({ scaleMargins: { top: 0.58, bottom: 0.22 } });
       const volume = chart.addHistogramSeries({
         priceFormat: { type: "volume" },
         priceScaleId: "volume",
       });
-      volume.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+      volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
       const ma5 = chart.addLineSeries({ color: "#ffd45d", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
       const ma20 = chart.addLineSeries({ color: "#55a8ff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
       chartRef.current = chart;
-      seriesRef.current = { candle, volume, ma5, ma20 };
+      seriesRef.current = { candle, volume, force, ma5, ma20 };
 
       resizeObserver = new ResizeObserver(() => chart.applyOptions({}));
       resizeObserver.observe(containerRef.current);
@@ -148,6 +155,29 @@ export default function KlineCandleChart({ ticker, interval, name }: { ticker: s
     const timer = window.setInterval(load, 30_000);
     return () => { active = false; window.clearInterval(timer); };
   }, [ticker, interval]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    if (interval === "1d" || !forceBars || forceBars.length === 0) {
+      series.force.setData([]);
+      return;
+    }
+    const points = forceBars
+      .filter((bar): bar is ForceHistoryBar & { ts: number } => typeof bar.ts === "number" && bar.ts > 0)
+      .map((bar) => ({
+        time: chartTime(bar.ts) as import("lightweight-charts").UTCTimestamp,
+        value: Math.abs(bar.net),
+        color: bar.net >= 0 ? "rgba(255,91,95,.65)" : "rgba(34,197,94,.65)",
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number));
+    series.force.setData(points);
+  }, [forceBars, interval]);
+
+  useEffect(() => {
+    seriesRef.current?.ma5.applyOptions({ visible: showMa });
+    seriesRef.current?.ma20.applyOptions({ visible: showMa });
+  }, [showMa]);
 
   return (
     <div className="self-kline-chart" style={{ position: "relative", width: "100%", height: "100%", minHeight: 360 }}>
