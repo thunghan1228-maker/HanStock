@@ -16,22 +16,47 @@
     table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:13px}.down{color:#7db7ff}.up{color:#ff7b88}
     .empty{color:var(--muted);padding:18px 0}.groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.group{padding:12px;border:1px solid var(--line);border-radius:10px;background:#10172a}
     .status-ok{color:var(--good)}.status-bad{color:var(--bad)}.hidden{display:none}
+    .price-main{display:flex;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+    .price-main .price{font-size:38px;font-weight:900}.price-main .change{font-size:18px;font-weight:700}
+    .signal-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
+    .signal-row .note{color:var(--muted);font-size:12px}
+    .pick-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
     @media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.groups{grid-template-columns:1fr 1fr}}
-    @media(max-width:520px){.grid,.groups{grid-template-columns:1fr}h1{font-size:26px}}
+    @media(max-width:520px){.grid,.groups{grid-template-columns:1fr}h1{font-size:26px}.pick-cols{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
 <main>
   <div class="top">
-    <div><h1>Judy Stock 控制台</h1><div class="sub">台灣股票族群與 Rule1 最新掃描結果（簡化版）</div></div>
+    <div><h1>Judy Stock 控制台</h1><div class="sub">即時行情、族群篩選、盤中大戶訊號與 Rule1（簡化版）</div></div>
     <div class="pill">服務狀態：<span id="healthText">檢查中…</span></div>
   </div>
+
+  <section class="card section" id="futuresSection">
+    <h2>台指期即時行情</h2>
+    <div id="futuresContent"><div class="empty">載入中…</div></div>
+  </section>
 
   <div class="grid">
     <div class="card"><div class="label">族群總數</div><div class="metric" id="groupCount">—</div></div>
     <div class="card"><div class="label">符合 Rule1 紀錄</div><div class="metric" id="passedCount">—</div></div>
     <div class="card"><div class="label">最新產生時間</div><div class="metric" style="font-size:17px" id="generatedAt">—</div></div>
   </div>
+
+  <section class="card section">
+    <h2>盤中大戶訊號（主力瞬間大單／特大買賣單）</h2>
+    <div id="largeOrderEmpty" class="empty">載入中…</div>
+    <div id="largeOrderList"></div>
+  </section>
+
+  <section class="card section">
+    <h2>今日精選（多／空）</h2>
+    <div id="picksEmpty" class="empty">載入中…</div>
+    <div id="picksContent" class="pick-cols hidden">
+      <div><div class="label" style="margin-bottom:8px">做多精選</div><div id="picksBull"></div></div>
+      <div><div class="label" style="margin-bottom:8px">做空精選</div><div id="picksBear"></div></div>
+    </div>
+  </section>
 
   <section class="card section">
     <h2>符合 Rule1 的股票</h2>
@@ -55,9 +80,51 @@ const $=s=>document.querySelector(s);
 function fmtTime(v){if(!v)return '—';try{return new Date(v).toLocaleString('zh-TW',{hour12:false})}catch{return v}}
 async function jsonFetch(url){const r=await fetch(url);if(!r.ok){const t=await r.text();throw new Error(t||`HTTP ${r.status}`)}return r.json()}
 
+function fmtNum(v,d=2){if(v==null||v==='')return '—';return Number(v).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function signedNum(v,d=2){if(v==null||v==='')return '—';const n=Number(v);return (n>0?'+':'')+n.toFixed(d)}
+function chgClass(v){if(v==null)return '';return Number(v)>0?'up':Number(v)<0?'down':''}
+
 async function loadHealth(){
   try{const h=await jsonFetch('/api/health');$('#healthText').textContent='正常';$('#healthText').className='status-ok';$('#groupCount').textContent=h.group_count}
   catch(e){$('#healthText').textContent='異常';$('#healthText').className='status-bad'}
+}
+
+async function updateFutures(){
+  const content=$('#futuresContent');
+  try{
+    const res=await jsonFetch('/api/quote/futures');
+    const tick=res.data||{};
+    const cls=chgClass(tick.price_chg);
+    content.innerHTML=`<div class="price-main"><span class="price ${cls}">${fmtNum(tick.close,0)}</span><span class="change ${cls}">${signedNum(tick.price_chg,0)} (${signedNum(tick.pct_chg)}%)</span></div><div class="label">成交時間：${tick.tick_time||'—'}</div>`;
+  }catch(e){content.innerHTML='<div class="empty">即時行情尚未啟用或尚未收到資料。</div>'}
+}
+
+async function loadLargeOrders(){
+  const empty=$('#largeOrderEmpty'),list=$('#largeOrderList');
+  try{
+    const d=await jsonFetch('/api/hub/intraday-large-orders?limit=30');
+    const signals=d.signals||[];
+    empty.classList.toggle('hidden',!!signals.length);
+    if(!signals.length){empty.textContent='今日尚無大戶訊號。';list.innerHTML='';return}
+    list.innerHTML=signals.map(s=>{
+      const isBuy=String(s.kind||'').toLowerCase().includes('buy');
+      return `<div class="signal-row"><div><strong class="${isBuy?'up':'down'}">${s.label||s.kind}</strong> ${s.ticker||''} ${s.name||''}<div class="note">${s.note||''}</div></div><div class="label">${s.groupName||''}</div></div>`;
+    }).join('');
+  }catch(e){empty.textContent='大戶訊號尚未啟用（需要開啟即時行情）。';empty.classList.remove('hidden');list.innerHTML=''}
+}
+
+async function loadDailyPicks(){
+  const empty=$('#picksEmpty'),content=$('#picksContent');
+  try{
+    const d=await jsonFetch('/api/battle/daily-picks');
+    const bull=d.bull||[],bear=d.bear||[];
+    empty.classList.toggle('hidden',!!(bull.length||bear.length));
+    content.classList.toggle('hidden',!(bull.length||bear.length));
+    if(!bull.length && !bear.length){empty.textContent='今日精選尚未產生。';return}
+    const row=item=>`<div class="signal-row"><span>${item.ticker||''} ${item.name||''}</span><span>${item.score!=null?fmtNum(item.score,1):''}</span></div>`;
+    $('#picksBull').innerHTML=bull.map(row).join('')||'<div class="empty">無</div>';
+    $('#picksBear').innerHTML=bear.map(row).join('')||'<div class="empty">無</div>';
+  }catch(e){empty.textContent='今日精選暫時無法取得。';empty.classList.remove('hidden');content.classList.add('hidden')}
 }
 
 async function loadRule1(){
@@ -72,11 +139,16 @@ async function showAll(){const box=$('#searchResult');box.textContent='載入中
 
 $('#searchBtn').onclick=search;
 $('#showAllBtn').onclick=showAll;
-$('#refreshBtn').onclick=()=>{loadHealth();loadRule1()};
+$('#refreshBtn').onclick=()=>{loadHealth();loadRule1();updateFutures();loadLargeOrders();loadDailyPicks()};
 $('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
 
 loadHealth();
 loadRule1();
+updateFutures();
+loadLargeOrders();
+loadDailyPicks();
+setInterval(updateFutures,3000);
+setInterval(loadLargeOrders,10000);
 </script>
 </body>
 </html>

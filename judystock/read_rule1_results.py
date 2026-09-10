@@ -7,12 +7,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path(os.getenv("JUDYSTOCK_DATA_DIR", "") or (Path(__file__).resolve().parent / "data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+from paths import DATA_DIR
 
 RESULT_PATH = DATA_DIR / "rule1_all_latest.json"
 FALLBACK_RESULT_PATH = Path(__file__).resolve().parent / "seed_data" / "rule1_all_latest.json"

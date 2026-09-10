@@ -1,21 +1,44 @@
 # Judy Stock
 
-Judy Stock 是從 HanStock 簡化出來的獨立網站：只保留「股票族群查詢」跟「Rule1 掃描結果」
-這兩個核心功能，拿掉即時行情、永豐證券連線等比較複雜的部分。這個資料夾跟 HanStock 本身
-完全分開執行，不會互相影響。
+Judy Stock 是從 HanStock 簡化出來的獨立網站：保留「即時行情」「族群查詢」「盤中大戶
+訊號（主力瞬間大單／特大買賣單／主力累積）」「Rule1 掃描結果」，拿掉當沖隔日沖、券商
+分點（需要另一個 FinMind 付費帳號）、三角收斂／VCP 盤後選股等比較進階或需要額外付費
+帳號的部分。這個資料夾跟 HanStock 本身完全分開執行，不會互相影響。
 
 ## 部署（完全免費，不用買網址）
 
 1. 到 [render.com](https://render.com) 用 GitHub 帳號登入。
 2. 右上角 **New +** → **Web Service** → 選這個 repo。
 3. **Root Directory** 填 `judystock`（一定要填，Render 才知道只用這個資料夾建站）。
-4. Environment／Runtime 選 **Docker**，Plan 選 **Free**，其他欄位不用填，按 **Create Web Service**。
-5. 等幾分鐘建置完成，Render 會給一個網址，例如 `https://judystock.onrender.com`，打開就是網站首頁。
+4. Environment／Runtime 選 **Docker**，Plan 選 **Free**。
+5. 加環境變數（見下方「開啟即時行情」），按 **Create Web Service**。
+6. 等幾分鐘建置完成，Render 會給一個網址，例如 `https://judystock.onrender.com`，打開就是網站首頁。
 
 不用申請網域，也不用額外付費，Render 的免費方案就夠用。免費方案閒置 15 分鐘會自動休眠，
 下次有人連線時大約 1 分鐘內會自動醒來，之後就正常。
 
-## 之後想放真的資料
+## 開啟即時行情、大戶訊號
+
+這些功能需要永豐證券的 API 金鑰（跟 HanStock 用同一組即可，這只是讀行情，不會下單）。
+在 Render 後台幫這個服務加以下環境變數：
+
+- `SHIOAJI_QUOTE_ENABLED` = `true`
+- `SHIOAJI_API_KEY` = 你的永豐 API Key
+- `SHIOAJI_SECRET_KEY` = 你的永豐 Secret Key
+
+不設定的話，網站一樣能開啟，只是即時行情、大戶訊號那幾個區塊會顯示「尚未啟用」，
+族群查詢跟 Rule1 不受影響。
+
+同一組永豐帳號在 HanStock 跟 Judy Stock 兩邊同時登入行情是正常的（永豐允許同一帳號
+開多條唯讀行情連線），不會互相干擾。
+
+## 今日精選
+
+首頁「今日精選」區塊會去讀你另一個 Battle 網站（`hanstock-battle-minimal`）已經算好
+的多空清單，預設網址已經指向你目前在用的那個。如果之後那個網站的網址改變，可以用
+環境變數 `JUDYSTOCK_BATTLE_SITE_URL` 覆寫。
+
+## 之後想放真的 Rule1 資料
 
 網站一開始會先顯示內建的範例資料。如果之後想放真正的 Rule1 掃描結果，可以：
 
