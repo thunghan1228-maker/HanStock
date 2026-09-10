@@ -44,7 +44,7 @@
   </div>
 
   <section class="card section">
-    <h2>盤中大戶訊號（主力瞬間大單／特大買賣單）</h2>
+    <h2>四項精選／特大買賣單</h2>
     <div id="largeOrderEmpty" class="empty">載入中…</div>
     <div id="largeOrderList"></div>
   </section>
@@ -99,18 +99,21 @@ async function updateFutures(){
   }catch(e){content.innerHTML='<div class="empty">即時行情尚未啟用或尚未收到資料。</div>'}
 }
 
+function renderSignalRow(s){
+  const isBuy=String(s.kind||'').toLowerCase().includes('buy')||String(s.kind||'').includes('Bullish');
+  const noteText=String(s.note||'').replace(/\n/g,' ');
+  return `<div class="signal-row"><div><strong class="${isBuy?'up':'down'}">${s.label||s.kind}</strong> ${s.ticker||''} ${s.name||''}<div class="note">${noteText}</div></div></div>`;
+}
+
 async function loadLargeOrders(){
   const empty=$('#largeOrderEmpty'),list=$('#largeOrderList');
   try{
-    const d=await jsonFetch('/api/hub/intraday-large-orders?limit=30');
-    const signals=d.signals||[];
+    const d=await jsonFetch('/api/battle/daytrade-signals');
+    const signals=[...(d.fourGateSignals||[]),...(d.extraLargeSignals||[])];
     empty.classList.toggle('hidden',!!signals.length);
-    if(!signals.length){empty.textContent='今日尚無大戶訊號。';list.innerHTML='';return}
-    list.innerHTML=signals.map(s=>{
-      const isBuy=String(s.kind||'').toLowerCase().includes('buy');
-      return `<div class="signal-row"><div><strong class="${isBuy?'up':'down'}">${s.label||s.kind}</strong> ${s.ticker||''} ${s.name||''}<div class="note">${s.note||''}</div></div><div class="label">${s.groupName||''}</div></div>`;
-    }).join('');
-  }catch(e){empty.textContent='大戶訊號尚未啟用（需要開啟即時行情）。';empty.classList.remove('hidden');list.innerHTML=''}
+    if(!signals.length){empty.textContent='今日尚無四項精選或特大買賣單訊號。';list.innerHTML='';return}
+    list.innerHTML=signals.map(renderSignalRow).join('');
+  }catch(e){empty.textContent='訊號暫時無法取得。';empty.classList.remove('hidden');list.innerHTML=''}
 }
 
 async function loadDailyPicks(){

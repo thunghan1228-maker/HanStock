@@ -475,10 +475,10 @@ def get_persisted_main_force_bars(
 
 
 # ------------------------------------------------------------------
-# 主力瞬間大單／特大買賣單
+# 主力瞬間大單（Judy Stock 自行用 Shioaji tick 偵測的簡化版，非官方演算法）
 # ------------------------------------------------------------------
 
-@app.get("/api/hub/intraday-large-orders")
+@app.get("/api/hub/intraday-large-orders", include_in_schema=False)
 def get_intraday_large_orders(limit: int = Query(100, ge=1, le=5000)) -> dict[str, Any]:
     trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
     stored_signals = [
@@ -562,7 +562,7 @@ def get_intraday_signal_dates(limit: int = Query(10, ge=1, le=60)) -> dict[str, 
 
 
 # ------------------------------------------------------------------
-# 四項精選（讀取另一個「Battle」網站已經算好的每日多空清單）
+# 盤中訊號與今日精選（都是讀取另一個「Battle」網站已經算好的正式結果）
 # ------------------------------------------------------------------
 
 _battle_cache: dict[str, Any] = {"payload": None, "fetched_at": 0.0}
@@ -573,25 +573,57 @@ BATTLE_SITE_URL = os.getenv(
 ).rstrip("/")
 
 
+def _fetch_battle_json(path: str, cache: dict[str, Any], cache_seconds: float) -> dict[str, Any]:
+    """唯讀轉發到 Battle 網站已經算好、天天在跑的正式結果；不重算、不觸發它的收集流程。"""
+    now = time.monotonic()
+    cached = cache.get("payload")
+    if cached is not None and now - cache.get("fetched_at", 0.0) < cache_seconds:
+        return cached
+    url = f"{BATTLE_SITE_URL}{path}"
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "JudyStock-BattleProxy/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+    cache["payload"] = payload
+    cache["fetched_at"] = now
+    return payload
+
+
+_daytrade_signal_cache: dict[str, Any] = {"payload": None, "fetched_at": 0.0}
+DAYTRADE_SIGNAL_CACHE_SECONDS = 20
+
+
+@app.get("/api/battle/daytrade-signals")
+def get_battle_daytrade_signals() -> dict[str, Any]:
+    """四項精選（fourGateBullish/Bearish）＋特大買賣單：讀 Battle 網站已經算好的正式結果。"""
+    try:
+        payload = _fetch_battle_json(
+            "/api/daytrade-early-sell?snapshot=1", _daytrade_signal_cache, DAYTRADE_SIGNAL_CACHE_SECONDS
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"盤中訊號暫時無法取得：{exc}") from exc
+
+    all_signals = payload.get("signals") or []
+    four_gate = [s for s in all_signals if str(s.get("kind") or "").startswith("fourGate")]
+    extra_large = [s for s in all_signals if str(s.get("kind") or "").startswith("intradayExtraLarge")]
+    return {
+        "status": "ok",
+        "tradeDate": payload.get("tradeDate"),
+        "fourGateSignals": four_gate,
+        "extraLargeSignals": extra_large,
+        "otherSignals": [s for s in all_signals if s not in four_gate and s not in extra_large],
+    }
+
+
 @app.get("/api/battle/daily-picks")
 def get_battle_daily_picks() -> dict[str, Any]:
-    now = time.monotonic()
-    cached = _battle_cache["payload"]
-    if cached is not None and now - _battle_cache["fetched_at"] < BATTLE_CACHE_SECONDS:
-        payload = cached
-    else:
-        url = f"{BATTLE_SITE_URL}/api/daily-pick-list"
-        request = urllib.request.Request(
-            url,
-            headers={"Accept": "application/json", "User-Agent": "JudyStock-DailyPicks/1.0"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                payload = json.load(response)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"四項精選暫時無法取得：{exc}") from exc
-        _battle_cache["payload"] = payload
-        _battle_cache["fetched_at"] = now
+    """跟四項精選是不同功能：這是 Battle 網站每天收盤後另外算的多空選股清單。"""
+    try:
+        payload = _fetch_battle_json("/api/daily-pick-list", _battle_cache, BATTLE_CACHE_SECONDS)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"今日精選暫時無法取得：{exc}") from exc
 
     snapshot = payload.get("snapshot") or {}
     return {
