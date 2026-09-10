@@ -1,114 +1,22 @@
-"""每天 00:05 後自動補存上一個有效交易日的全市場隔日沖推估。"""
+"""隔日沖全市場推估已停用。
+
+HanStock 不再背景執行全市場隔日沖歷史掃描，以降低 Railway CPU、記憶體與
+網路流量。主力副圖、1m/5m K 線與其他即時功能不受影響。
+"""
 
 from __future__ import annotations
 
 import logging
-import os
-import threading
-import time
-from datetime import datetime
-
-from daytrade_flow import latest_completed_trade_date, start_full_market_scan
-from daytrade_flow_store import has_completed_daytrade_scan, load_daytrade_scan_status
-from otc_index import TW_TZ
 
 logger = logging.getLogger("hanstock.daytrade_flow_collector")
 
-POLL_SECONDS = max(60, int(os.getenv("HANSTOCK_DAYTRADE_COLLECTOR_SECONDS", "300")))
-RETRY_COOLDOWN_SECONDS = max(
-    30 * 60,
-    int(os.getenv("HANSTOCK_DAYTRADE_RETRY_COOLDOWN_SECONDS", "1800")),
-)
-_started = False
-_lock = threading.Lock()
 
-
-def _scan_retry_allowed(trade_date: str, now: datetime) -> bool:
-    """失敗/部分完成時不要每 5 分鐘重啟一次昂貴的全市場歷史掃描。"""
-    status = load_daytrade_scan_status(trade_date)
-    state = str(status.get("status") or "not_started")
-    if state == "completed":
-        return False
-    if state == "running":
-        return False
-    if state not in {"failed", "partial"}:
-        return True
-
-    updated_at = str(
-        status.get("updated_at")
-        or status.get("completed_at")
-        or status.get("started_at")
-        or ""
-    ).strip()
-    if not updated_at:
-        return True
-    try:
-        updated = datetime.fromisoformat(updated_at)
-        if updated.tzinfo is None:
-            updated = updated.replace(tzinfo=TW_TZ)
-        age = (now - updated.astimezone(TW_TZ)).total_seconds()
-    except (TypeError, ValueError):
-        return True
-    if age < RETRY_COOLDOWN_SECONDS:
-        logger.info(
-            "每日隔日沖掃描暫停重試: trade_date=%s status=%s age=%.0fs cooldown=%ss",
-            trade_date,
-            state,
-            max(0.0, age),
-            RETRY_COOLDOWN_SECONDS,
-        )
-        return False
-    return True
-
-
-def collect_once(now: datetime | None = None) -> bool:
-    current = now.astimezone(TW_TZ) if now is not None else datetime.now(TW_TZ)
-    # 00:00~00:04 讓前一日資料來源完成結算；其後任何時間都可補漏。
-    if current.hour == 0 and current.minute < 5:
-        return False
-    trade_date = latest_completed_trade_date(current)
-    if has_completed_daytrade_scan(trade_date):
-        return False
-    if not _scan_retry_allowed(trade_date, current):
-        return False
-    from quote_service import get_quote_service
-
-    service = get_quote_service()
-    if not bool(getattr(getattr(service, "state", None), "logged_in", False)):
-        return False
-    # SQLite 的 running 可能是上一個容器被部署中止所留下；是否真的正在
-    # 執行由本行程的 _background_dates 判斷，重啟後必須能自動續跑。
-    started = start_full_market_scan(service, trade_date)
-    if started:
-        logger.info("每日隔日沖全市場備份已啟動: trade_date=%s", trade_date)
-    return started
-
-
-def _loop() -> None:
-    while True:
-        try:
-            collect_once()
-        except Exception:  # noqa: BLE001
-            # 失敗不刪舊資料；下一輪或服務重啟後會自動續跑。
-            logger.exception("每日隔日沖備份排程例外，稍後重試")
-        time.sleep(POLL_SECONDS)
+def collect_once(*_args, **_kwargs) -> bool:
+    """保留相容介面，但不再執行昂貴的隔日沖全市場掃描。"""
+    return False
 
 
 def start_daytrade_flow_collector() -> bool:
-    global _started
-    with _lock:
-        if _started:
-            return False
-        disabled = os.getenv("HANSTOCK_DAYTRADE_COLLECTOR_ENABLED", "true").strip().lower()
-        if disabled in {"0", "false", "no", "off"}:
-            logger.info("每日隔日沖備份排程已停用")
-            return False
-        thread = threading.Thread(
-            target=_loop,
-            name="hanstock-daytrade-flow-collector",
-            daemon=True,
-        )
-        thread.start()
-        _started = True
-        logger.info("每日隔日沖備份排程已啟動：00:05 後補存最近交易日，間隔=%ss", POLL_SECONDS)
-        return True
+    """隔日沖全市場背景收集器永久停用。"""
+    logger.info("每日隔日沖全市場備份已停用（成本/效能最佳化）")
+    return False
