@@ -30,6 +30,8 @@ import {
   isExtraLargeBuySignal,
   isLargeForceSignal,
   isInstantLargeSignal,
+  isFiveMinuteTwelveShortSignal,
+  isFiveMinuteOnePlusTwoLongSignal,
   intradaySignalKey,
   taipeiTradeDate,
   taipeiSessionState,
@@ -206,6 +208,7 @@ export function useEarlySellSignals({
           signal && typeof signal.ticker === "string" && typeof signal.tradeDate === "string" && Number.isFinite(signal.barTs)
             && isActiveIntradayCenterSignal(signal)
             && signal.barTs >= tenDaysAgo
+            && !isFiveMinuteTwelveShortSignal(signal) && !isFiveMinuteOnePlusTwoLongSignal(signal)
             && !(signal.demo === true && signal.tradeDate === "2026-08-20" && signal.label.includes("四項通過")),
         ).slice(-2000);
       }
@@ -291,7 +294,7 @@ export function useEarlySellSignals({
           ...extraLargeBuy,
           ...instantLarge,
         ]);
-        const orderedSignals = [...payload.signals.filter((signal) => isActiveIntradayCenterSignal(signal) && !signal.kind.startsWith("mainForce") && !isInstantLargeSignal(signal) && !isLargeForceSignal(signal)), ...instantLarge, ...mainForce, ...extraLargeSell, ...extraLargeBuy, ...largeForce].sort((left, right) => right.barTs - left.barTs);
+        const orderedSignals = [...payload.signals.filter((signal) => isActiveIntradayCenterSignal(signal) && !signal.kind.startsWith("mainForce") && !isInstantLargeSignal(signal) && !isLargeForceSignal(signal) && !isFiveMinuteTwelveShortSignal(signal) && !isFiveMinuteOnePlusTwoLongSignal(signal)), ...instantLarge, ...mainForce, ...extraLargeSell, ...extraLargeBuy, ...largeForce].sort((left, right) => right.barTs - left.barTs);
         // 四項精選由獨立陣列回傳；必須一起合併進「今日即時」與跳窗，
         // 否則頁籤明明有筆數，總清單與第一次開啟的提醒卻完全看不到。
         const popupSnapshotSignals = [...orderedSignals, ...fourGate].sort((left, right) => right.barTs - left.barTs);
