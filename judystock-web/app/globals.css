@@ -12,6 +12,8 @@
   --hot-soft: rgba(255, 91, 95, .13);
   --good: #64d38b;
   --cold: #55a8ff;
+  --font-geist-sans: 'Geist', Arial, "Noto Sans TC", sans-serif;
+  --font-geist-mono: 'Geist Mono', monospace;
 }
 
 * { box-sizing: border-box; }

@@ -1,20 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import "./stock-screener-advanced.css";
 import { PwaRegister } from "./pwa-register";
 import { WatchlistCloudSync } from "./watchlist-cloud-sync";
 import { IntradayTrackingCloudSync } from "./intraday-tracking-cloud-sync";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "HanStock 盤中戰鬥版",
@@ -62,6 +51,12 @@ export default function RootLayout({
   return (
     <html lang="zh-Hant">
       <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap"
+        />
         <link
           rel="modulepreload"
           as="script"
@@ -70,13 +65,10 @@ export default function RootLayout({
         <link
           rel="preload"
           as="style"
-          href="https://www.hanstock.xyz/assets/index-CC6d_WMB.css"
-          crossOrigin="anonymous"
+          href="/kline-assets/index-CC6d_WMB.css"
         />
       </head>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         <PwaRegister />
         <WatchlistCloudSync />
         <IntradayTrackingCloudSync />

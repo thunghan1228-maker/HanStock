@@ -1054,6 +1054,21 @@ function openKlineByTicker(ticker: string, stockName: string, signalTs?: number)
   if (!child) window.location.assign(url.toString());
 }
 
+function openOriginalKline(ticker: string) {
+  openKlineByTicker(ticker, "");
+}
+
+function StrengthGauge({ score }: { score: number }) {
+  const level = Math.min(5, Math.max(0, Math.ceil(Math.abs(score) / 20)));
+  return (
+    <div className="rank-strength-gauge">
+      {[1, 2, 3, 4, 5].map((bar) => (
+        <i key={bar} className={bar <= level ? "active" : ""} />
+      ))}
+    </div>
+  );
+}
+
 function TriangleScreenerPanel() {
   const [payload, setPayload] = useState<TrianglePayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -3695,7 +3710,6 @@ function BattleHome() {
       <nav className="direction-tabs" aria-label="多空方向">
         <button className={direction === "strong" ? "active" : ""} onClick={() => setDirection("strong")}>強勢</button>
         <button className={direction === "weak" ? "active" : ""} onClick={() => setDirection("weak")}>弱勢</button>
-        <StockKlineSearch />
       </nav>
 
       <section className="battle-card">

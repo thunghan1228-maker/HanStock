@@ -28,6 +28,83 @@ export type ResultRow = {
   judgement: string;
 };
 
+const SCREENER_WARM_CACHE_KEY = "hanstock-screener-warm-cache-v1";
+type ScreenerWarmCache = { savedAt: number; dataDate: string; quoteDataDate: string; updatedAt: string; rows: ResultRow[] };
+
+function readScreenerWarmCache(): ScreenerWarmCache | null {
+  try {
+    const raw = window.localStorage.getItem(SCREENER_WARM_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ScreenerWarmCache;
+    return Array.isArray(parsed?.rows) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeScreenerWarmCache(cache: ScreenerWarmCache) {
+  try {
+    window.localStorage.setItem(SCREENER_WARM_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // 儲存空間不可用（無痕模式、配額已滿）時放棄快取即可，不影響畫面顯示。
+  }
+}
+
+function newestTimestamp(...values: Array<string | undefined | null>): string {
+  let best = "";
+  for (const value of values) {
+    if (value && value > best) best = value;
+  }
+  return best || "—";
+}
+
+const SCREENER_REFRESH_CLAIM_KEY = "hanstock-screener-refresh-claim-v1";
+const SCREENER_REFRESH_CLAIM_INTERVAL_MS = 60_000;
+
+function claimBackgroundRefresh(): boolean {
+  try {
+    const now = Date.now();
+    const last = Number(window.localStorage.getItem(SCREENER_REFRESH_CLAIM_KEY) ?? "0");
+    if (now - last < SCREENER_REFRESH_CLAIM_INTERVAL_MS) return false;
+    window.localStorage.setItem(SCREENER_REFRESH_CLAIM_KEY, String(now));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function latestMarketRanking(signal: AbortSignal, previous: MarketRankingPayload): Promise<MarketRankingPayload> {
+  const response = await fetch("/api/market-ranking", { cache: "no-store", signal });
+  const payload = await response.json() as MarketRankingPayload;
+  if (!payload.rows?.length) return previous;
+  if (previous.fetchedAt && payload.fetchedAt && payload.fetchedAt <= previous.fetchedAt) return previous;
+  return payload;
+}
+
+function formatUpdateTime(value: string) {
+  if (!value || value === "—") return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-TW", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function judgement(today: number, fiveDay: number, combined: number): string {
+  if (today >= 60 && fiveDay >= 60) return "多方雙強";
+  if (today <= -60 && fiveDay <= -60) return "空方雙弱";
+  if (combined >= 60) return "偏多";
+  if (combined <= -60) return "偏空";
+  return "中性";
+}
+
 export default function StockScreenerPage() {
   const [rankingRows, setRankingRows] = useState<RankingRow[]>([]);
   const [cachedRows, setCachedRows] = useState<ResultRow[]>([]);
