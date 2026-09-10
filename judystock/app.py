@@ -64,13 +64,14 @@ async def lifespan(app: FastAPI):
         try:
             from quote_service import get_quote_service
             from main_force_collector import start_main_force_collector
-            from intraday_large_order_collector import start_intraday_large_order_collector
 
             quote_svc = get_quote_service()
             quote_svc.startup()
             monitor.start()
             start_main_force_collector()
-            start_intraday_large_order_collector()
+            # 不啟動 intraday_large_order_collector：它會每 15 秒嘗試訂閱全部族群
+            # （近 800 檔），把使用者在 K 線圖／即時報價當下要看的股票擠出訂閱池；
+            # 它算出來的訊號現在也已經改成從 Battle 網站讀正式結果，不再需要。
         except Exception as exc:
             logger.error("永豐即時行情啟動失敗（網站其他功能仍正常運作）：%s", exc)
     yield
