@@ -1,0 +1,22 @@
+import { mergeForceHistory } from "./kline-force.ts";
+
+export function intradayForceBootstrap(ticker: string, interval: string) {
+  return `<script id="hanstock-force-cache">
+(()=>{
+const ticker=${JSON.stringify(ticker)},interval=${JSON.stringify(interval)},mergeForceHistory=${mergeForceHistory.toString()},originalFetch=window.fetch.bind(window),key="hanstock-candle-force-v4:"+ticker+":"+interval;
+let stored=[],pending=null,loadedAt=0;
+const read=key=>{try{return JSON.parse(localStorage.getItem(key)||"null")}catch{return null}};
+for(const version of ["v3","v4"]){const cache=read("hanstock-candle-force-"+version+":"+ticker+":"+interval);if(!cache||Date.now()-Number(cache.savedAt||0)>400*864e5)continue;const rows=Object.entries(cache.bars||{}).map(([key,row])=>({ts:key.startsWith("ts:")?Number(key.slice(3)):null,date:key.startsWith("date:")?key.slice(5):"",net:row.mainNetVolume/1e6,buyAmount:row.mainBuyAmount,sellAmount:row.mainSellAmount,netAmount:row.mainNetAmount,mainForceAvailable:row.mainForceAvailable,amountsAvailable:row.amountsAvailable}));stored=mergeForceHistory(stored,rows)}
+const panel=read("hanstock-force-bars-v1:"+ticker+":"+interval);if(panel&&Date.now()-Number(panel.savedAt||0)<400*864e5)stored=mergeForceHistory(stored,panel.bars||[]);
+const publish=()=>{window.__hanstockForceBars=stored;const bars={};for(const row of stored)bars["date:"+row.date]={mainNetVolume:row.net*1e6,mainBuyAmount:row.buyAmount,mainSellAmount:row.sellAmount,mainNetAmount:row.netAmount,mainForceAvailable:true,amountsAvailable:row.amountsAvailable};try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),bars}))}catch{};return stored};
+const loadSaved=()=>{if(pending)return pending;if(Date.now()-loadedAt<8000)return Promise.resolve(stored);pending=(async()=>{try{const response=await originalFetch("/api/force-bars?ticker="+encodeURIComponent(ticker)+"&interval="+encodeURIComponent(interval),{cache:"no-store",signal:AbortSignal.timeout(12000)});if(response.ok){const payload=await response.json(),before=JSON.stringify(stored);stored=mergeForceHistory(stored,payload.bars||[]);publish();if(JSON.stringify(stored)!==before)window.dispatchEvent(new Event("hanstock-force-ready"))}}catch{}finally{loadedAt=Date.now();pending=null}return stored})();window.__hanstockForceBarsPromise=pending;return pending};
+const refresh=()=>{if(window.document?.visibilityState!=="hidden")void loadSaved()};
+const visit=(value,arrays=[])=>{if(Array.isArray(value)){if(value.some(item=>item&&typeof item.date==="string"&&"open"in item&&"close"in item))arrays.push(value);for(const item of value)visit(item,arrays)}else if(value&&typeof value==="object")for(const item of Object.values(value))visit(item,arrays);return arrays};
+publish();void loadSaved();window.setInterval?.(refresh,10000);window.addEventListener?.("focus",refresh);window.document?.addEventListener?.("visibilitychange",refresh);
+window.fetch=async(...args)=>{const url=String(typeof args[0]==="string"?args[0]:args[0]?.url||""),response=await originalFetch(...args);if(!url.includes("stocks.candles")||!response.ok||window.__hanstockActiveInterval&&window.__hanstockActiveInterval!==interval)return response;
+try{const payload=await response.clone().json(),arrays=visit(payload);void loadSaved();
+for(const candles of arrays){const incoming=candles.map(bar=>({ts:bar.ts,date:bar.date,net:bar.mainNetVolume/1e6,buyAmount:bar.mainBuyAmount,sellAmount:bar.mainSellAmount,netAmount:bar.mainNetAmount,mainForceAvailable:bar.mainForceAvailable,amountsAvailable:bar.mainBuyAmount!=null&&bar.mainSellAmount!=null}));stored=mergeForceHistory(incoming,stored);const byDate=new Map(stored.map(row=>[row.date,row]));for(const bar of candles){const date=bar.ts?new Date(bar.ts+28800000).toISOString().slice(5,16).replace("-","/").replace("T"," "):bar.date,saved=byDate.get(date);if(saved){bar.mainForceAvailable=true;bar.mainNetVolume=saved.net*1e6;if(saved.amountsAvailable){bar.mainBuyAmount=saved.buyAmount;bar.mainSellAmount=saved.sellAmount;bar.mainNetAmount=saved.netAmount}}}}
+publish();window.__hanstockAllCandles=arrays.slice().sort((a,b)=>b.length-a.length)[0]||[];window.dispatchEvent(new Event("hanstock-candles-updated"));const headers=new Headers(response.headers);headers.delete("content-length");headers.delete("content-encoding");return new Response(JSON.stringify(payload),{status:response.status,statusText:response.statusText,headers})}catch{return response}};
+})();
+</script>`;
+}

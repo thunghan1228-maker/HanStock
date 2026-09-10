@@ -1,0 +1,10 @@
+import { readEarlySellSources } from "./helpers/early-sell-sources.mjs";
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import ts from 'typescript';
+const source=readFileSync(new URL('../app/api/stock-search/route.ts',import.meta.url),'utf8');
+const compiled=ts.transpileModule(source.slice(source.indexOf('type LiveChangeRow'),source.indexOf('function matchRank(')),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+test('overlapping signal viewers share pending quote reads; null is not a zero change',async()=>{
+ let calls=0;const load=new Function('fetch',compiled+';return fetchLiveChanges')(async()=>{calls++;await new Promise(r=>setTimeout(r,10));return {ok:true,json:async()=>({result:{data:{json:{rows:[{code:'2327',changePct:9.98},{code:'2492',changePct:null},{code:'3090',changePct:0}]}}}})};});
+ const [a,b]=await Promise.all([load(['2327','2492','3090']),load(['3090','2492','2327'])]);assert.equal(calls,1);assert.equal(a.get('2327'),9.98);assert.equal(b.has('2492'),false);assert.equal(b.get('3090'),0);
+});
+test('failed quote requests can retry immediately',async()=>{let calls=0;const load=new Function('fetch',compiled+';return fetchLiveChanges')(async()=>{calls++;return {ok:calls>1,json:async()=>({result:{data:{json:{rows:[{code:'2327',changePct:9.98}]}}}})};});assert.equal((await load(['2327'])).size,0);assert.equal((await load(['2327'])).get('2327'),9.98);assert.equal(calls,2);});
+test('all signal categories use quote path and stored group; metadata keys ignore ordering',()=>{const p=readEarlySellSources();assert.ok(p.includes('const currentRuleTickers = signalTickers;'));assert.ok(p.includes('item.ticker))].sort().join'));assert.ok(p.includes('meta?.group ?? extractMainForceGroupRank(item.note)?.group'));assert.ok(p.includes('changePct: stock.changePct ?? current[stock.ticker]?.changePct ?? null'));assert.ok(p.includes('=== dateByTicker.get(row.code)'));});
