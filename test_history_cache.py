@@ -10,7 +10,7 @@ from test_futures_bar_bootstrap import FakeApi, ts
 
 
 def entry(count=1):
-    return SimpleNamespace(bars_1m=[{}] * count, bars_5m=[])
+    return SimpleNamespace(bars_1m=[{}] * count, bars_5m=[], ok=True)
 
 
 class HistoryCacheTests(unittest.TestCase):
