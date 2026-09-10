@@ -1,4 +1,4 @@
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 const ALLOWED_STATUSES = new Set(["接近突破", "突破待量", "放量突破"]);
 
 export async function GET(request: Request) {

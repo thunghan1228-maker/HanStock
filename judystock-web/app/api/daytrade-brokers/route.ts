@@ -4,7 +4,7 @@ import { readDaytradeFlow, saveDaytradeFlow, type DaytradeFlowRecord } from "../
 type Category = DaytradeFlowRecord["category"];
 type HubFlowRow = { ticker?: string; name?: string; market?: string; trade_date?: string; category?: string; close_price?: number; reference_price?: number; limit_up_price?: number; day_change_pct?: number; large_buy_amount?: number; large_sell_amount?: number; total_turnover_amount?: number; late_large_buy_amount?: number; price_impact_pct?: number; previous_large_buy_amount?: number; next_day_large_sell_amount?: number; suspicion_score?: number; main_force_data_available?: boolean | number; main_force_data_status?: string };
 type HubPayload = { status?: string; scan_status?: string; data_date?: string; updated_at?: string; requested_count?: number; processed_count?: number; data_missing_count?: number; rows?: HubFlowRow[]; errors?: string[] };
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 const finite = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const validCategories = new Set<Category>(["漲停鎖定", "曾達漲停", "強勢大單"]);

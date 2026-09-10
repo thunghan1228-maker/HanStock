@@ -11,7 +11,7 @@ import {
   readIntradayLargeForceScanProgress,
 } from "../../../db/intraday-large-force-scan";
 
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 const MAX_TICKERS = 200;
 const LIVE_CACHE_MS = 5_000;
 const HISTORICAL_CACHE_MS = 6 * 60 * 60_000;

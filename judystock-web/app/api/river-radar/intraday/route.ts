@@ -34,7 +34,7 @@ type DispositionPayload = { dispositions?: Array<{ code?: string; status?: strin
 type ConfiguredGroup = { name?: string; members?: Array<{ code?: string; name?: string }> };
 type FocusRankingPayload = { rankings?: { strong?: { signalGroups?: Array<{ name?: string }> }; weak?: { signalGroups?: Array<{ name?: string }> } } };
 
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 const CANDLE_BATCH_SIZE = 8;
 const EXCLUDED_GROUPS = new Set(["股期標的", "小型股票期貨", "ETF"]);
 const MINIMUM_CONFIGURED_GROUP_COVERAGE = 60;

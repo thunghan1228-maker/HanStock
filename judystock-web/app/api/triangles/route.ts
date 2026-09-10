@@ -1,4 +1,4 @@
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 
 export async function GET() {
   for (const base of HUB_BASES) {

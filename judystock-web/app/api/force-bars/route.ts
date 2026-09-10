@@ -41,8 +41,7 @@ type HubForcePayload = {
 };
 
 const HUB_BASES = [
-  // Railway 的主要 HanStock API 掛在裸網域；www 是前端站，/api/hub 會回 404。
-  "https://hanstock.xyz",
+  // hanstock.xyz 原本掛在 Vercel 上，已因費用爭議永久關閉，直接打 Railway。
   "https://hanstock-production.up.railway.app",
 ];
 

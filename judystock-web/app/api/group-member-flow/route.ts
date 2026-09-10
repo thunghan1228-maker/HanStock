@@ -9,7 +9,7 @@ import {
 type FlowStatus = "ready" | "force_pending" | "turnover_pending";
 type HubPayload = { data_date?: string; rows?: GroupDaytradeFlowRow[] };
 
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 const MAX_TICKERS = 60;
 
 function parseTickers(value: string | null) {

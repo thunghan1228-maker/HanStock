@@ -1,6 +1,6 @@
 // Railway 是 VCP 盤後掃描的產生端，優先取用；主站只作備援，避免主站
 // 邊緣快取尚未更新時回傳較舊的候選名單。
-const HUB_BASES = ["https://hanstock-production.up.railway.app", "https://hanstock.xyz"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 
 export async function GET() {
   for (const base of HUB_BASES) {

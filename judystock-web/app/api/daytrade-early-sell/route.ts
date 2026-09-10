@@ -97,7 +97,7 @@ import {
 
 import { isActiveIntradayCenterSignal } from "../../../lib/intraday-center-signals";
 
-const HUB_BASES = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HUB_BASES = ["https://hanstock-production.up.railway.app"];
 const SIGNAL_WINDOW_START = "09:00";
 const SIGNAL_WINDOW_END = "13:30";
 const SIGNAL_GRANULARITY = "1m";
