@@ -136,10 +136,10 @@ class RealtimeApiTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.client_context.__exit__(None, None, None)
 
-    def test_root_redirects_to_public_website(self):
+    def test_root_serves_dashboard(self):
         response = self.client.get("/", follow_redirects=False)
-        self.assertEqual(response.status_code, 308)
-        self.assertEqual(response.headers["location"], "https://www.hanstock.xyz/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("HanStock", response.text)
 
     def test_hub_dashboard_remains_available(self):
         response = self.client.get("/hub-dashboard")
@@ -157,8 +157,8 @@ class RealtimeApiTests(unittest.TestCase):
         self.assertIn("access-control-allow-origin", compressed.headers)
         self.assertNotIn("Content-Encoding", plain.headers)
 
-    def test_small_redirect_is_not_compressed(self):
-        response = self.client.get("/", headers={"Accept-Encoding": "gzip"}, follow_redirects=False)
+    def test_small_health_response_is_not_compressed(self):
+        response = self.client.get("/api/health", headers={"Accept-Encoding": "gzip"})
         self.assertNotIn("Content-Encoding", response.headers)
 
     def test_group_query_returns_ranked_quotes(self):

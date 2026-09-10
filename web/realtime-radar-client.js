@@ -2,7 +2,7 @@
  * HanStock 台股族群雷達即時行情連接器。
  *
  * 用法：
- *   HanStockRealtime.setApiBase('https://hanstock.xyz');
+ *   HanStockRealtime.setApiBase(window.location.origin);
  *   const stop = HanStockRealtime.pollGroup('記憶體', {
  *     onData: payload => renderGroup(payload),
  *     onError: error => showError(error),
@@ -13,7 +13,8 @@
 (function attachHanStockRealtime(global) {
   'use strict';
 
-  let apiBase = 'https://hanstock.xyz';
+  // 預設同源（相對路徑），部署到任何網域或雲端子網域都不用改程式碼。
+  let apiBase = '';
 
   function normalizeBase(value) {
     return String(value || '').trim().replace(/\/$/, '');

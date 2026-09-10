@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: hanstock
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: SHIOAJI_QUOTE_ENABLED
+        value: "false"
+      - key: SHIOAJI_API_KEY
+        sync: false
+      - key: SHIOAJI_SECRET_KEY
+        sync: false

@@ -133,6 +133,55 @@ HANSTOCK_CORS_ORIGINS=https://hanstock.xyz,https://www.hanstock.xyz
 
 控制台可顯示最新 Rule1 結果、查詢族群名稱或股票代號，以及查看全部族群。
 
+## 部署到雲端（免申請網域）
+
+不想額外申請網域的話，可以把 HanStock 部署到 Render 或 Zeabur。兩者都對 Docker 專案友善，
+部署完成後會自動附贈一組免費子網域＋HTTPS（例如 `https://hanstock.onrender.com` 或
+`https://hanstock.zeabur.app`），不需要另外購買網域或設定 DNS，開啟網址就是 HanStock 首頁。
+之後如果真的要正式對外服務、需要更大流量或更穩定連線，再考慮換成 Google Cloud Run 或自架
+VPS，屆時才需要評估是否要用自己的網域。
+
+### 方式一：Render（推薦，專案內附 `render.yaml` 可一鍵帶入設定）
+
+1. 到 [render.com](https://render.com) 用 GitHub 帳號登入。
+2. 右上角 **New +** → **Blueprint**，選擇這個 GitHub repo，Render 會自動讀取專案裡的
+   `render.yaml` 並帶入建議設定。
+3. 依畫面提示填入環境變數（沒有永豐 API Key 也可以先跳過，網站與 API 一樣能啟動，
+   只是即時行情功能會停用）：
+   - `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY`：選填，要看即時行情才需要。
+   - `SHIOAJI_QUOTE_ENABLED`：預設 `false`；要開啟即時行情就改成 `true` 並補上金鑰。
+4. 按 **Apply**（或 **Create**）開始部署，等待 Build 完成。
+5. 完成後 Render 會自動給一組網址，格式類似 `https://hanstock.onrender.com`，開啟就是
+   HanStock 網站首頁；`/docs` 是 API 文件，`/api/health` 是健康檢查。
+
+若不想用 Blueprint，也可以手動建立：**New +** → **Web Service** → 選擇這個 repo →
+Environment / Runtime 選擇 **Docker** → Plan 選 **Free** → 視需要新增環境變數 →
+**Create Web Service**。
+
+> 免費方案在 15 分鐘無人連線後會自動休眠，下一次有人連線時約 1 分鐘內會自動喚醒，
+> 不影響資料正確性，只是第一次連線會稍微慢一點。
+
+### 方式二：Zeabur
+
+1. 到 [zeabur.com](https://zeabur.com) 用 GitHub 帳號登入。
+2. 建立新專案後選擇「從 GitHub 部署」，選這個 repo，Zeabur 會自動偵測專案裡的
+   `Dockerfile` 並建置（實際按鈕名稱可能隨版本更新略有不同，選擇類似「Deploy from
+   GitHub」的選項即可）。
+3. 在服務的 Variables（環境變數）分頁新增變數，內容同 Render 那一步。
+4. 部署完成後，到服務的 Domains / Networking 分頁按 **Generate Domain**，會拿到一組
+   免費網址，格式類似 `https://hanstock.zeabur.app`，並自動附 HTTPS。
+
+### 共同注意事項
+
+- 兩個平台的免費方案，容器重建或重新部署時本機硬碟會被清空，`data/` 裡的 SQLite
+  檔案不會永久保存，Rule1 掃描結果、族群強弱歷史等資料會在重新部署後歸零；純粹瀏覽
+  網站與即時行情不受影響。要長期保存歷史資料，之後可考慮 Render 付費方案的 Persistent
+  Disk，或改用下面「Railway 雲端部署」搭配 Volume 的做法。
+- `.env` 裡的永豐 API Key／Secret 絕對不要寫進程式碼或推上 GitHub，一律在平台後台的
+  環境變數設定裡輸入。
+- 平台自動給的網址可以直接分享給別人使用，不需要另外申請網域；之後若想換成好記的
+  自訂網域，隨時可以在平台的 Domain 設定裡另外綁定，屬於可選項目，不是必要條件。
+
 ## Railway 雲端部署
 
 此版本已包含 `Dockerfile` 與 `railway.json`。
