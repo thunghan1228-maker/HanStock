@@ -18,7 +18,6 @@ from group_strength_store import (
     save_group_strength_snapshot,
 )
 from hanstock_app import _normalize_stock_code, app
-from daytrade_flow_collector import start_daytrade_flow_collector
 from daytrade_early_sell import early_sell_signal_snapshot, historical_early_sell_demo_snapshot
 from daytrade_early_sell_collector import start_daytrade_early_sell_collector
 from intraday_large_order_collector import (
@@ -26,7 +25,6 @@ from intraday_large_order_collector import (
     start_intraday_large_order_collector,
 )
 from intraday_large_order import get_intraday_large_order_monitor, normalize_intraday_large_order_signal
-from daytrade_flow_store import load_daytrade_scan_status
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import start_stock_bar_repair_collector
@@ -100,7 +98,6 @@ _market_data_lifespan = app.router.lifespan_context
 async def _persistent_lifespan(fastapi_app):
     async with _market_data_lifespan(fastapi_app) as state:
         start_group_strength_collector()
-        start_daytrade_flow_collector()
         start_daytrade_early_sell_collector()
         start_intraday_large_order_collector()
         # 主力副圖是保留的核心功能。
@@ -128,10 +125,6 @@ def get_persistence_status() -> dict[str, Any]:
     data["collectorEnabled"] = os.getenv(
         "HANSTOCK_GROUP_STRENGTH_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
-    data["daytradeFlowCollectorEnabled"] = os.getenv(
-        "HANSTOCK_DAYTRADE_COLLECTOR_ENABLED", "true"
-    ).strip().lower() not in {"0", "false", "no", "off"}
-    data["daytradeFlowLatestScan"] = load_daytrade_scan_status()
     data["daytradeEarlySellCollectorEnabled"] = os.getenv(
         "HANSTOCK_EARLY_SELL_COLLECTOR_ENABLED", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
