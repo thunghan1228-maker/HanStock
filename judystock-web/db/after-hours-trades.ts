@@ -32,7 +32,7 @@ export const refreshAfterHoursTrades = timedKeyedSingleFlight(15_000, async (tra
   const updates = enriched.filter(row => existingByKey.get(`${row.ticker}:${row.kind}:${row.barTs}`)?.note !== row.note);
   await saveEarlySellSignals(updates);
   let sourceError: unknown;
-  for (const base of ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"]) {
+  for (const base of ["https://hanstock-production.up.railway.app"]) {
     try {
       const path = tradeDate === today ? "/api/hub/intraday-large-orders?limit=5000"
         : `/api/hub/intraday-signals/latest?trade_date=${encodeURIComponent(tradeDate)}&limit=200&market_only=false`;

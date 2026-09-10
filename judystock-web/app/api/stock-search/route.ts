@@ -93,7 +93,7 @@ async function fetchLiveChanges(tickers: string[]) {
     if (cached && cached.expiresAt > Date.now()) return cached.pending;
     const pending = (async () => {
       const input = encodeURIComponent(JSON.stringify({ json: { tickers: batch } }));
-      const response = await fetch(`https://www.hanstock.xyz/api/trpc/stocks.liveQuotes?input=${input}`, {
+      const response = await fetch(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.liveQuotes?input=${input}`, {
         cache: "no-store", headers: { Accept: "application/json", "User-Agent": "HanStock-Battle/3.1" }, signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) throw new Error("live-quotes-unavailable");

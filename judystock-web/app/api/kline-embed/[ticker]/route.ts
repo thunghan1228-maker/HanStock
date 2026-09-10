@@ -7,7 +7,7 @@ import { intradayForceBootstrap } from "../../../../lib/kline-force-bootstrap";
 import { loadTwseClosedTradingDates } from "@/lib/intraday-signal-session";
 import { createKlineSignalSessionBootstrap } from "@/lib/kline-signal-session";
 
-const HANSTOCK_ORIGIN = "https://www.hanstock.xyz";
+const HANSTOCK_ORIGIN = "https://hanstock-battle-minimal.thunghan8.chatgpt.site";
 const KLINE_RUNTIME_REVISION = "20260908-force-gap-stability-v40";
 const KLINE_RUNTIME_ASSET = "/assets/index-CCs-RpRr.js";
 const KLINE_STYLESHEET_ASSET = "/assets/index-CC6d_WMB.css";

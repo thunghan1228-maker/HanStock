@@ -23,7 +23,7 @@ function validRow(row: BrokerBranchDailyRecord) {
 export async function GET() {
   const configuredHub = typeof process !== "undefined" ? process.env.HANSTOCK_HUB_URL : undefined;
   const token = typeof process !== "undefined" ? process.env.HANSTOCK_SYNC_TOKEN : undefined;
-  const hubBases = [...new Set(["https://hanstock.xyz", configuredHub, "https://hanstock-production.up.railway.app"].filter((value): value is string => Boolean(value)))];
+  const hubBases = [...new Set([configuredHub, "https://hanstock-production.up.railway.app"].filter((value): value is string => Boolean(value)))];
   let pendingMessage = "資料中心尚無完整分點日資料";
   for (const hubBase of hubBases) {
     try {

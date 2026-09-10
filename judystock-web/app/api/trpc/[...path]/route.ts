@@ -9,8 +9,8 @@ import { replayKlineSignals, mergeKlineSignals, type KlineReplaySignal } from ".
 import { hasSparseMinuteVolume, hubLotsToShares, preferCompleteCumulativeVolume, sumMinuteVolumesToShares } from "../../../../lib/kline-volume";
 import { successfulSourcesInCompletionOrder } from "../../../../lib/successful-source-stream";
 
-const HANSTOCK_ORIGIN = "https://www.hanstock.xyz";
-const HANSTOCK_HUB_ORIGINS = ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"];
+const HANSTOCK_ORIGIN = "https://hanstock-battle-minimal.thunghan8.chatgpt.site";
+const HANSTOCK_HUB_ORIGINS = ["https://hanstock-production.up.railway.app"];
 const YAHOO_CHART_ORIGIN = "https://query2.finance.yahoo.com";
 
 type RepairTarget = { ticker: string; interval: "1m" | "5m" | "1d"; responseIndex: number | null };

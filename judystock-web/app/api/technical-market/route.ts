@@ -287,7 +287,7 @@ async function fetchHanstockHistoryBatch(codes: string[], market: "twse" | "tpex
   if (!codes.length) return [] as DailyBar[][];
   const path = codes.map(() => "stocks.candles").join(",");
   const input = Object.fromEntries(codes.map((code, index) => [index, { json: { ticker: code, interval: "1d" } }]));
-  const response = await fetch(`https://www.hanstock.xyz/api/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`, {
+  const response = await fetch(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`, {
     headers: { Accept: "application/json", "User-Agent": "HanStock-Technical-Screener/3.0" },
     cache: "no-store",
     signal: AbortSignal.timeout(30_000),

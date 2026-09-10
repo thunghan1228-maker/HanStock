@@ -1,5 +1,4 @@
 const hubBases = () => [...new Set([
-  "https://hanstock.xyz",
   typeof process !== "undefined" ? process.env.HANSTOCK_HUB_URL : undefined,
   "https://hanstock-production.up.railway.app",
 ].filter((value): value is string => Boolean(value)))];

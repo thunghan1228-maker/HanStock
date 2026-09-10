@@ -11,7 +11,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{tic
   let httpStatus: number | undefined;
   let stage = 'fetch';
   try {
-    const response = await fetchCachedMarket(`https://www.hanstock.xyz/api/live-bars/${encodeURIComponent(ticker)}`, {
+    const response = await fetchCachedMarket(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/live-bars/${encodeURIComponent(ticker)}`, {
       cache:'no-store', signal:AbortSignal.timeout(8_000), headers:{Accept:'application/json'},
     }, {ticker, activeMs:3_000});
     httpStatus = response.status;

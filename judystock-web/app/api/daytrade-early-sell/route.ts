@@ -473,7 +473,7 @@ function fiveMinutePatternHistoryContext(rows: Array<Record<string, unknown>>, t
 async function fetchFiveMinutePatternHistoryBatch(codes: string[], tradeDate: string) {
   const path = codes.map(() => "stocks.candles").join(",");
   const input = Object.fromEntries(codes.map((code, index) => [index, { json: { ticker: code, interval: "5m" } }]));
-  const payload = await fetchBoundedMarketJson<PatternCandleEnvelope[]>(`https://www.hanstock.xyz/api/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`, () => ({
+  const payload = await fetchBoundedMarketJson<PatternCandleEnvelope[]>(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`, () => ({
     cache: "no-store",
     headers: { Accept: "application/json", "User-Agent": "HanStock-Five-Minute-Patterns/1.0" },
     signal: AbortSignal.timeout(18_000),
@@ -1033,7 +1033,7 @@ async function loadExtraLargeHistoricalBars(base: string, tradeDate: string, tic
   const path = codes.map(() => "stocks.candles").join(",");
   const input = Object.fromEntries(codes.map((ticker, index) => [index, { json: { ticker, interval: "1m" } }]));
   const [prices, forces] = await Promise.all([
-    fetch(`https://www.hanstock.xyz/api/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) })
+    fetch(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) })
       .then(async (response) => response.ok ? response.json() as Promise<PatternCandleEnvelope[]> : []).catch(() => [] as PatternCandleEnvelope[]),
     Promise.all(codes.map(async (ticker) => {
       try {

@@ -86,7 +86,7 @@ async function loadRealtimeGroup(groupName: string) {
   const timer = setTimeout(() => controller.abort(), 4500);
   try {
     const response = await fetch(
-      `https://hanstock.xyz/api/realtime/group/${encodeURIComponent(groupName)}?subscribe=true&sort=change_desc`,
+      `https://hanstock-production.up.railway.app/api/realtime/group/${encodeURIComponent(groupName)}?subscribe=true&sort=change_desc`,
       { cache: "no-store", signal: controller.signal, headers: { Accept: "application/json" } },
     );
     if (!response.ok) return [] as UpstreamStock[];
@@ -103,7 +103,7 @@ async function loadLatestQuotes(tickers: string[]) {
   const batches = Array.from({ length: Math.ceil(tickers.length / 50) }, (_, index) => tickers.slice(index * 50, index * 50 + 50));
   const settled = await Promise.allSettled(batches.map(async (batch) => {
     const input = encodeURIComponent(JSON.stringify({ json: { tickers: batch } }));
-    const response = await fetch(`https://www.hanstock.xyz/api/trpc/stocks.liveQuotes?input=${input}`, {
+    const response = await fetch(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.liveQuotes?input=${input}`, {
       cache: "no-store",
       headers: { Accept: "application/json", "User-Agent": "HanStock-Battle/1.0" },
       signal: AbortSignal.timeout(4_500),

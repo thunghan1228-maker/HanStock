@@ -72,7 +72,7 @@ export async function loadRankingForceValues(tickers: string[], clock: RankingFo
   const missing = unique.filter(ticker => !values.has(ticker));
   const batches = Array.from({ length: Math.ceil(missing.length / 200) }, (_, i) => missing.slice(i * 200, i * 200 + 200));
   await Promise.all(batches.map(async batch => {
-    for (const base of ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"]) {
+    for (const base of ["https://hanstock-production.up.railway.app"]) {
       const remaining = batch.filter(ticker => !values.has(ticker));
       if (!remaining.length) break;
       try {

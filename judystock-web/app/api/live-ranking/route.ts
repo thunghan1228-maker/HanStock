@@ -38,7 +38,7 @@ function buildStockCatalog(groups: GroupMap) {
 }
 
 async function loadConfiguredUniverse() {
-  const response = await fetch("https://www.hanstock.xyz/api/trpc/stocks.groups", {
+  const response = await fetch("https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.groups", {
     headers: { Accept: "application/json", "User-Agent": "HanStock-Battle-Ranking/1.0" },
     next: { revalidate: 60 },
     signal: AbortSignal.timeout(18_000),
@@ -178,7 +178,7 @@ async function loadOfficialQuotes(stockCatalog: Map<string, { code: string; name
 
 async function fetchQuoteBatch(tickers: string[]) {
   const input = encodeURIComponent(JSON.stringify({ json: { tickers } }));
-  const response = await fetch(`https://www.hanstock.xyz/api/trpc/stocks.liveQuotes?input=${input}`, {
+  const response = await fetch(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.liveQuotes?input=${input}`, {
     headers: { Accept: "application/json", "User-Agent": "HanStock-Battle-Ranking/1.0" },
     next: { revalidate: 15 },
     signal: AbortSignal.timeout(18_000),

@@ -163,7 +163,7 @@ async function fetchHubForceCandles(ticker: string, interval: ForceInterval) {
 
 async function fetchLegacyForceCandles(ticker: string, interval: ForceInterval) {
   const input = encodeURIComponent(JSON.stringify({ json: { ticker, interval } }));
-  const response = await fetchCachedMarket(`https://www.hanstock.xyz/api/trpc/stocks.candles?input=${input}`, {
+  const response = await fetchCachedMarket(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.candles?input=${input}`, {
     headers: { Accept: "application/json", "User-Agent": "HanStock-Battle/1.0" },
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),

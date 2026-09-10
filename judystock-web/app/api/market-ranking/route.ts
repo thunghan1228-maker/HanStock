@@ -403,7 +403,6 @@ async function fetchTpexLatest(minimumDate: string): Promise<{ date: string; row
   const officialUrl = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading";
   const attempts = [
     fetchTpexHub("https://raw.githubusercontent.com/thunghan1228-maker/HanStock/main/data/tpex-institutional-latest.json"),
-    fetchTpexHub("https://hanstock.xyz/api/hub/official/tpex-institutional-latest"),
     fetchTpexHub("https://hanstock-production.up.railway.app/api/hub/official/tpex-institutional-latest"),
     fetchTpexOpenApi(officialUrl),
     fetchTpexOpenApi(`https://r.jina.ai/${officialUrl}`),

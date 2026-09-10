@@ -16,10 +16,7 @@ export async function GET() {
   // force data is deliberately never substituted here.
   const configuredHub = typeof process !== "undefined" ? process.env.HANSTOCK_HUB_URL : undefined;
   const token = typeof process !== "undefined" ? process.env.HANSTOCK_SYNC_TOKEN : undefined;
-  // hanstock.xyz is the canonical Railway service. Keep it first so a stale
-  // legacy Railway hostname cannot return `complete: false` and mask the
-  // finished v2 five-day dataset.
-  const hubBases = [...new Set(["https://hanstock.xyz", configuredHub, "https://hanstock-production.up.railway.app"].filter((value): value is string => Boolean(value)))];
+  const hubBases = [...new Set([configuredHub, "https://hanstock-production.up.railway.app"].filter((value): value is string => Boolean(value)))];
   for (const hubBase of hubBases) {
     try {
       const headers = token ? { "x-hanstock-sync-token": token } : undefined;

@@ -21,7 +21,7 @@ const MINIMUM_CONFIGURED_GROUP_COVERAGE = 60;
 
 
 export const loadConfiguredGroups = timedSingleFlight(5 * 60_000, async () => {
-  const response = await fetch("https://www.hanstock.xyz/api/trpc/stocks.groups", {
+  const response = await fetch("https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.groups", {
     cache: "no-store",
     headers: { Accept: "application/json", "User-Agent": "HanStock-Battle-Focus/2.0" },
     signal: AbortSignal.timeout(8_000),
@@ -50,7 +50,7 @@ export const loadConfiguredGroups = timedSingleFlight(5 * 60_000, async () => {
 
 async function loadQuoteBatch(tickers: string[]) {
   const input = encodeURIComponent(JSON.stringify({ json: { tickers } }));
-  const response = await fetch(`https://www.hanstock.xyz/api/trpc/stocks.liveQuotes?input=${input}`, {
+  const response = await fetch(`https://hanstock-battle-minimal.thunghan8.chatgpt.site/api/trpc/stocks.liveQuotes?input=${input}`, {
     cache: "no-store",
     headers: { Accept: "application/json", "User-Agent": "HanStock-Battle-Focus/2.0" },
     signal: AbortSignal.timeout(8_000),

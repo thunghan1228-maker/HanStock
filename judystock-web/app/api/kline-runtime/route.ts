@@ -3,7 +3,7 @@ import { createForceChartScale } from "@/lib/kline-force-scale";
 import { selectWatchlistCandleWindow } from "@/lib/watchlist-candle-window";
 import bundledRuntimeSource from "../../../vendor/hanstock-kline-runtime.txt?raw";
 
-const HANSTOCK_ORIGIN = "https://www.hanstock.xyz";
+const HANSTOCK_ORIGIN = "https://hanstock-battle-minimal.thunghan8.chatgpt.site";
 const KLINE_RUNTIME_REVISION = "20260908-force-gap-stability-v40";
 const runtimeSourceCache = new Map<string, Promise<string>>();
 

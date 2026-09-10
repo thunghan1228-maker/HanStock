@@ -35,7 +35,7 @@ export async function backfillRankingForceClose(tickers: string[], tradeDate: st
   if (!task) {
     task = (async () => {
       const recovered = new Map<string, RankingForceClose>();
-      for (const base of ["https://hanstock.xyz", "https://hanstock-production.up.railway.app"]) {
+      for (const base of ["https://hanstock-production.up.railway.app"]) {
         const remaining = missing.filter(ticker => !recovered.has(ticker));
         if (!remaining.length) break;
         try {
