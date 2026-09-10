@@ -29,7 +29,10 @@
 <main>
   <div class="top">
     <div><h1>Judy Stock 控制台</h1><div class="sub">即時行情、族群篩選、盤中大戶訊號與 Rule1（簡化版）</div></div>
-    <div class="pill">服務狀態：<span id="healthText">檢查中…</span></div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <a class="btn secondary" href="/kline">K線圖</a>
+      <div class="pill">服務狀態：<span id="healthText">檢查中…</span></div>
+    </div>
   </div>
 
   <section class="card section" id="futuresSection">
@@ -137,7 +140,7 @@ async function loadRule1(){
   }catch(e){$('#passedEmpty').textContent='尚無 Rule1 結果。';$('#passedEmpty').classList.remove('hidden');$('#passedTable').classList.add('hidden')}
 }
 
-async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await jsonFetch('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<div class="group">${s.stock_code} ${s.stock_name}</div>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
+async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await jsonFetch('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<a class="group" style="text-decoration:none;color:inherit;display:block" href="/kline?code=${encodeURIComponent(s.stock_code)}">${s.stock_code} ${s.stock_name}</a>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
 async function showAll(){const box=$('#searchResult');box.textContent='載入中…';try{const d=await jsonFetch('/api/groups');box.innerHTML=`<div class="groups">${d.groups.map(g=>`<div class="group"><strong>${g.group_name}</strong><br><span class="label">${g.stock_count} 檔</span></div>`).join('')}</div>`}catch(e){box.textContent='載入失敗'}}
 
 $('#searchBtn').onclick=search;

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Judy Stock K線圖</title>
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1020;--card:#151c30;--muted:#9aa6bf;--line:#2a3554;--good:#46d59a;--bad:#ff6b7a;--accent:#6ea8fe;--up:#ff6b7a;--down:#46a0ff}
+    *{box-sizing:border-box} body{margin:0;background:linear-gradient(140deg,#0b1020,#11172a);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#eef3ff}
+    main{max-width:1100px;margin:0 auto;padding:20px 18px 60px}
+    .top{display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+    a.back{color:var(--muted);text-decoration:none;font-size:14px}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .toolbar input{background:#0c1325;color:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:15px;width:160px}
+    button{background:var(--accent);color:#07101f;border:0;border-radius:10px;padding:10px 16px;font-weight:800;cursor:pointer}
+    button.secondary{background:#25304d;color:#fff}
+    button.tab{background:#0c1325;color:#9aa6bf;border:1px solid var(--line)}
+    button.tab.active{background:var(--accent);color:#07101f;border-color:var(--accent)}
+    .card{background:rgba(21,28,48,.9);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 35px rgba(0,0,0,.18);margin-bottom:16px}
+    .price-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+    .price-head h1{margin:0;font-size:24px}
+    .price-head .price{font-size:32px;font-weight:900}
+    .price-head .change{font-size:18px;font-weight:700}
+    .stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
+    .stat{background:#0d1420;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+    .stat .label{color:var(--muted);font-size:12px}
+    .stat .value{font-size:17px;font-weight:800;margin-top:4px}
+    .up{color:var(--up)}.down{color:var(--down)}
+    .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:10px 0}
+    .legend span{display:inline-flex;align-items:center;gap:6px}
+    .dot{width:10px;height:3px;border-radius:2px;display:inline-block}
+    #chart{width:100%;height:420px}
+    .empty{color:var(--muted);padding:40px;text-align:center}
+    @media(max-width:700px){.stat-grid{grid-template-columns:repeat(2,1fr)}#chart{height:320px}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <a class="back" href="/">← 回 Judy Stock 首頁</a>
+    <div class="toolbar">
+      <input id="codeInput" placeholder="輸入股票代號，例如 2330">
+      <button id="loadBtn">查看K線圖</button>
+      <button class="tab active" data-interval="5m" id="tab5m">5分</button>
+      <button class="tab" data-interval="1m" id="tab1m">1分</button>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="price-head">
+      <h1 id="stockTitle">請輸入股票代號</h1>
+      <span class="price" id="stockPrice">—</span>
+      <span class="change" id="stockChange"></span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="label">今日主力買進</div><div class="value up" id="mfBuy">—</div></div>
+      <div class="stat"><div class="label">今日主力賣出</div><div class="value down" id="mfSell">—</div></div>
+      <div class="stat"><div class="label">今日主力淨額</div><div class="value" id="mfNet">—</div></div>
+      <div class="stat"><div class="label">資料筆數</div><div class="value" id="barCount">—</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="legend">
+      <span><i class="dot" style="background:#ffd166"></i>MA5</span>
+      <span><i class="dot" style="background:#ff6b7a"></i>MA20</span>
+      <span><i class="dot" style="background:#6ea8fe"></i>VWAP</span>
+    </div>
+    <div id="chart"></div>
+    <div id="chartEmpty" class="empty">輸入股票代號後查看今日盤中 K 線；只顯示今天已經收到的行情，沒有多日歷史。</div>
+  </section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const params=new URLSearchParams(location.search);
+let currentInterval='5m';
+let chart=null,candleSeries=null,volumeSeries=null,ma5Series=null,ma20Series=null,vwapSeries=null;
+let pollTimer=null;
+
+async function jsonFetch(url){const r=await fetch(url);if(!r.ok){const t=await r.text();throw new Error(t||`HTTP ${r.status}`)}return r.json()}
+function fmtNum(v,d=2){if(v==null)return '—';return Number(v).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function signedNum(v,d=2){if(v==null)return '—';const n=Number(v);return (n>0?'+':'')+n.toFixed(d)}
+function fmtAmount(v){if(v==null)return '—';const n=Number(v);const abs=Math.abs(n);const sign=n<0?'-':'';
+  if(abs>=100000000)return sign+(abs/100000000).toFixed(2)+' 億';
+  if(abs>=10000)return sign+(abs/10000).toFixed(1)+' 萬';
+  return sign+Math.round(abs).toLocaleString('zh-TW')+' 元';
+}
+
+function ensureChart(){
+  if(chart)return;
+  const container=$('#chart');
+  chart=LightweightCharts.createChart(container,{
+    width:container.clientWidth,height:420,
+    layout:{background:{color:'transparent'},textColor:'#eef3ff'},
+    grid:{vertLines:{color:'#1c2540'},horzLines:{color:'#1c2540'}},
+    timeScale:{timeVisible:true,secondsVisible:false,borderColor:'#2a3554'},
+    rightPriceScale:{borderColor:'#2a3554'},
+    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+  });
+  candleSeries=chart.addCandlestickSeries({upColor:'#ff6b7a',downColor:'#46a0ff',borderVisible:false,wickUpColor:'#ff6b7a',wickDownColor:'#46a0ff'});
+  volumeSeries=chart.addHistogramSeries({priceFormat:{type:'volume'},priceScaleId:'vol',color:'#3a4568'});
+  chart.priceScale('vol').applyOptions({scaleMargins:{top:0.82,bottom:0}});
+  ma5Series=chart.addLineSeries({color:'#ffd166',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  ma20Series=chart.addLineSeries({color:'#ff6b7a',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  vwapSeries=chart.addLineSeries({color:'#6ea8fe',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false});
+  window.addEventListener('resize',()=>chart.applyOptions({width:container.clientWidth}));
+}
+
+function movingAverage(values,window){
+  const out=[];
+  for(let i=0;i<values.length;i++){
+    if(i<window-1){out.push(null);continue}
+    let sum=0;for(let j=i-window+1;j<=i;j++)sum+=values[j];
+    out.push(sum/window);
+  }
+  return out;
+}
+
+function renderChart(bars){
+  ensureChart();
+  $('#chartEmpty').classList.toggle('hidden',!!bars.length);
+  $('#chart').style.display=bars.length?'block':'none';
+  if(!bars.length)return;
+
+  const sorted=[...bars].sort((a,b)=>a.ts-b.ts);
+  const candles=sorted.map(b=>({time:Math.floor(b.ts/1000),open:b.open,high:b.high,low:b.low,close:b.close}));
+  const volumes=sorted.map(b=>({time:Math.floor(b.ts/1000),value:b.volume,color:b.close>=b.open?'rgba(255,107,122,.5)':'rgba(70,160,255,.5)'}));
+  const closes=sorted.map(b=>b.close);
+  const ma5=movingAverage(closes,5);
+  const ma20=movingAverage(closes,20);
+  let cumPV=0,cumVol=0;
+  const vwap=sorted.map((b,i)=>{
+    const typical=(b.high+b.low+b.close)/3;
+    cumPV+=typical*(b.volume||0);cumVol+=(b.volume||0);
+    return cumVol>0?cumPV/cumVol:b.close;
+  });
+
+  candleSeries.setData(candles);
+  volumeSeries.setData(volumes);
+  ma5Series.setData(candles.map((c,i)=>ma5[i]==null?null:{time:c.time,value:ma5[i]}).filter(Boolean));
+  ma20Series.setData(candles.map((c,i)=>ma20[i]==null?null:{time:c.time,value:ma20[i]}).filter(Boolean));
+  vwapSeries.setData(candles.map((c,i)=>({time:c.time,value:vwap[i]})));
+  chart.timeScale().fitContent();
+}
+
+async function loadCode(code){
+  if(!code)return;
+  $('#stockTitle').textContent=code+' 載入中…';
+  try{
+    const d=await jsonFetch(`/api/hub/live-bars/${encodeURIComponent(code)}?interval=${currentInterval}`);
+    const q=d.quote||{};
+    $('#stockTitle').textContent=code;
+    $('#stockPrice').textContent=fmtNum(q.close,q.close>=1000?0:2);
+    const cls=q.price_chg>0?'up':q.price_chg<0?'down':'';
+    $('#stockChange').className='change '+cls;
+    $('#stockChange').textContent=`${signedNum(q.price_chg)} (${signedNum(q.pct_chg)}%)`;
+    $('#mfBuy').textContent=fmtAmount(d.mainForce?.buyAmount);
+    $('#mfSell').textContent=fmtAmount(d.mainForce?.sellAmount);
+    const net=d.mainForce?.netAmount;
+    $('#mfNet').textContent=fmtAmount(net);
+    $('#mfNet').className='value '+(net>0?'up':net<0?'down':'');
+    $('#barCount').textContent=d.bar_count;
+    renderChart(d.bars||[]);
+  }catch(e){
+    $('#stockTitle').textContent=code+'：無法取得資料';
+    $('#stockPrice').textContent='—';$('#stockChange').textContent='';
+    $('#chartEmpty').textContent='即時行情尚未啟用，或這檔股票暫時沒有資料：'+e.message;
+    $('#chartEmpty').classList.remove('hidden');
+    $('#chart').style.display='none';
+  }
+}
+
+function currentCode(){return $('#codeInput').value.trim().toUpperCase()}
+
+function startPolling(){
+  if(pollTimer)clearInterval(pollTimer);
+  pollTimer=setInterval(()=>{const c=currentCode();if(c)loadCode(c)},5000);
+}
+
+$('#loadBtn').onclick=()=>{const c=currentCode();if(c){history.replaceState(null,'','/kline?code='+encodeURIComponent(c));loadCode(c)}};
+$('#codeInput').addEventListener('keydown',e=>{if(e.key==='Enter')$('#loadBtn').click()});
+$('#tab5m').onclick=()=>{currentInterval='5m';$('#tab5m').classList.add('active');$('#tab1m').classList.remove('active');const c=currentCode();if(c)loadCode(c)};
+$('#tab1m').onclick=()=>{currentInterval='1m';$('#tab1m').classList.add('active');$('#tab5m').classList.remove('active');const c=currentCode();if(c)loadCode(c)};
+
+const initialCode=params.get('code');
+if(initialCode){$('#codeInput').value=initialCode;loadCode(initialCode)}
+startPolling();
+</script>
+</body>
+</html>

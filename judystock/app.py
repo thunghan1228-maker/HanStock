@@ -206,6 +206,12 @@ def dashboard() -> str:
     return dashboard_path.read_text(encoding="utf-8")
 
 
+@app.get("/kline", response_class=HTMLResponse, include_in_schema=False)
+def kline_page() -> str:
+    kline_path = Path(__file__).parent / "web" / "kline.html"
+    return kline_path.read_text(encoding="utf-8")
+
+
 # ------------------------------------------------------------------
 # 健康檢查
 # ------------------------------------------------------------------
@@ -471,6 +477,35 @@ def get_persisted_main_force_bars(
         "tradeDate": date,
         "bar_count": len(bars),
         "bars": bars,
+    }
+
+
+@app.get("/api/hub/live-bars/{stock_code}")
+def get_live_bars(stock_code: str, interval: str = Query("5m", pattern="^(1m|5m)$")) -> dict[str, Any]:
+    """今日盤中 K 線（OHLC＋成交量＋主力買賣進出），供 K 線圖頁面畫圖用。"""
+    code = _normalize_stock_code(stock_code)
+    svc = _quote_service_or_503()
+    svc.ensure_stock_subscriptions([code])
+
+    from market_data_hub import get_market_data_hub
+
+    hub = get_market_data_hub()
+    bars = hub.get_live_bars_1m(code) if interval == "1m" else hub.get_live_bars(code)
+    quote = svc.get_stock_quote(code)
+    main_buy_total = sum(float(bar.get("main_buy_amount") or 0) for bar in bars)
+    main_sell_total = sum(float(bar.get("main_sell_amount") or 0) for bar in bars)
+    return {
+        "status": "ok",
+        "code": code,
+        "interval": interval,
+        "bar_count": len(bars),
+        "bars": bars,
+        "quote": quote,
+        "mainForce": {
+            "buyAmount": round(main_buy_total),
+            "sellAmount": round(main_sell_total),
+            "netAmount": round(main_buy_total - main_sell_total),
+        },
     }
 
 
