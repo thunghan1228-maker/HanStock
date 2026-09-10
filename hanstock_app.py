@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from fastapi.responses import HTMLResponse
 
 from api_server import app
 from stock_bar_bootstrap import get_resilient_stock_bars
@@ -32,6 +34,23 @@ def _remove_route(path: str, methods: set[str] | None = None) -> None:
             continue
         kept.append(route)
     app.router.routes[:] = kept
+
+
+# 正式首頁直接使用精簡版前端，避免舊的首頁/快取路由再次出現已移除功能。
+_remove_route("/", {"GET"})
+_remove_route("/hub-dashboard", {"GET"})
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def production_homepage() -> HTMLResponse:
+    """正式首頁只展示台股即時行情與主力副圖。"""
+    path = Path(__file__).parent / "web" / "index.html"
+    if not path.exists():
+        return HTMLResponse("<h1>HanStock</h1><p>首頁資源暫時無法載入。</p>", status_code=503)
+    return HTMLResponse(
+        path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 # Railway 重啟會清空 MarketDataHub 記憶體；正式 app 使用歷史 Kbars + 即時 Hub
