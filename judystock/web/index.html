@@ -5,54 +5,94 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Judy Stock 控制台</title>
   <style>
-    :root{color-scheme:dark;--bg:#0b1020;--card:#151c30;--muted:#9aa6bf;--line:#2a3554;--good:#46d59a;--bad:#ff6b7a;--accent:#6ea8fe}
-    *{box-sizing:border-box} body{margin:0;background:linear-gradient(140deg,#0b1020,#11172a);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#eef3ff}
-    main{max-width:1000px;margin:0 auto;padding:28px 18px 60px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}
-    h1{margin:0;font-size:32px}.sub{color:var(--muted);margin-top:8px}.pill{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--muted)}
-    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:24px 0}.card{background:rgba(21,28,48,.9);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 35px rgba(0,0,0,.18)}
-    .metric{font-size:30px;font-weight:800;margin-top:6px}.label{color:var(--muted);font-size:14px}.section{margin-top:18px}.section h2{font-size:20px;margin:0 0 14px}
-    .toolbar{display:flex;gap:10px;flex-wrap:wrap}.toolbar input{flex:1;min-width:220px;background:#0c1325;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:16px}
-    button,a.btn{background:var(--accent);color:#07101f;border:0;border-radius:10px;padding:12px 16px;font-weight:800;cursor:pointer;text-decoration:none}.secondary{background:#25304d!important;color:#fff!important}
-    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:13px}.down{color:#7db7ff}.up{color:#ff7b88}
-    .empty{color:var(--muted);padding:18px 0}.groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.group{padding:12px;border:1px solid var(--line);border-radius:10px;background:#10172a}
-    .status-ok{color:var(--good)}.status-bad{color:var(--bad)}.hidden{display:none}
-    .price-main{display:flex;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap}
-    .price-main .price{font-size:38px;font-weight:900}.price-main .change{font-size:18px;font-weight:700}
-    .signal-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
-    .signal-row .note{color:var(--muted);font-size:12px}
-    .pick-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    @media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.groups{grid-template-columns:1fr 1fr}}
-    @media(max-width:520px){.grid,.groups{grid-template-columns:1fr}h1{font-size:26px}.pick-cols{grid-template-columns:1fr}}
+    :root{color-scheme:dark;--bg:#05070d;--card:#10141f;--card2:#151b2b;--muted:#8b96b3;--line:#232b42;
+      --up:#ff3b5c;--down:#22c55e;--gold:#f5b942;--purple:#a855f7;--blue:#3b82f6;--accent:#6ea8fe}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#eef2ff}
+    main{max-width:1180px;margin:0 auto;padding:16px 14px 60px}
+    a{color:inherit}
+    .topbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:14px}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:900;font-size:18px}
+    .brand .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--up),var(--purple));display:flex;align-items:center;justify-content:center;font-size:15px}
+    .ticker{display:flex;align-items:baseline;gap:8px;font-size:14px;color:var(--muted)}
+    .ticker b{font-size:17px;color:#fff;font-weight:800}
+    .spacer{flex:1}
+    .pill{border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--muted);font-size:13px;white-space:nowrap}
+    a.btn,button{background:var(--accent);color:#07101f;border:0;border-radius:10px;padding:10px 16px;font-weight:800;cursor:pointer;text-decoration:none;font-size:14px}
+    button.secondary,a.btn.secondary{background:#1c2438;color:#fff}
+
+    .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+    .card h2{font-size:15px;margin:0 0 12px;color:#dfe6ff;display:flex;align-items:center;justify-content:space-between}
+    .metric{font-size:26px;font-weight:900;margin-top:4px}.label{color:var(--muted);font-size:12px;letter-spacing:.02em}
+    .toolbar{display:flex;gap:8px;flex-wrap:wrap}.toolbar input{flex:1;min-width:200px;background:#0a0e17;color:#fff;border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-size:15px}
+
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);font-size:13.5px}
+    th{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+    .up{color:var(--up)}.down{color:var(--down)}
+    .empty{color:var(--muted);padding:16px 4px;font-size:13.5px}.hidden{display:none}
+    .status-ok{color:var(--down)}.status-bad{color:var(--up)}
+
+    .price-main{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+    .price-main .price{font-size:34px;font-weight:900}.price-main .change{font-size:16px;font-weight:800}
+
+    .groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    .grow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#0d1220;text-decoration:none;font-size:13.5px}
+    .grow:hover{border-color:var(--accent)}
+    .grow .code{font-weight:800;color:#fff}.grow .chg{font-weight:800}
+
+    .badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:800;background:#1c2438;color:var(--muted)}
+    .badge.gold{background:rgba(245,185,66,.18);color:var(--gold)}
+    .badge.purple{background:rgba(168,85,247,.18);color:var(--purple)}
+
+    .sig-card{display:flex;gap:14px;padding:12px 14px;margin-bottom:10px;border-radius:10px;background:#0d1220;border-left:4px solid var(--line)}
+    .sig-card.buy{border-left-color:var(--up)}
+    .sig-card.sell{border-left-color:var(--down)}
+    .sig-time{min-width:56px;color:var(--muted);font-size:12px;line-height:1.3}
+    .sig-time b{display:block;color:#fff;font-size:15px}
+    .sig-body{flex:1;min-width:0}
+    .sig-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+    .sig-stock{font-weight:800;color:#fff;background:#1c2438;padding:2px 8px;border-radius:6px;font-size:13px}
+    .sig-label{font-weight:800;font-size:13px;padding:3px 10px;border-radius:6px}
+    .sig-label.buy{background:rgba(255,59,92,.15);color:var(--up)}
+    .sig-label.sell{background:rgba(34,197,94,.15);color:var(--down)}
+    .sig-note{color:var(--muted);font-size:12px;white-space:pre-line;line-height:1.5}
+    .sig-price{font-weight:800;font-size:16px;align-self:center;white-space:nowrap}
+
+    .pick-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .pick-row{display:flex;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--line);font-size:13.5px}
+
+    @media(max-width:800px){.grid3{grid-template-columns:repeat(2,1fr)}.groups{grid-template-columns:1fr 1fr}}
+    @media(max-width:520px){.grid3,.groups{grid-template-columns:1fr}.pick-cols{grid-template-columns:1fr}.sig-card{flex-wrap:wrap}}
   </style>
 </head>
 <body>
 <main>
-  <div class="top">
-    <div><h1>Judy Stock 控制台</h1><div class="sub">即時行情、族群篩選、盤中大戶訊號與 Rule1（簡化版）</div></div>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <a class="btn secondary" href="/kline">K線圖</a>
-      <div class="pill">服務狀態：<span id="healthText">檢查中…</span></div>
-    </div>
+  <div class="topbar">
+    <div class="brand"><span class="logo">📈</span> Judy Stock</div>
+    <div class="ticker">台指期 <b id="futPrice">—</b> <span id="futChange">—</span></div>
+    <div class="spacer"></div>
+    <a class="btn secondary" href="/kline">K線圖</a>
+    <div class="pill">服務狀態：<span id="healthText">檢查中…</span></div>
   </div>
 
-  <section class="card section" id="futuresSection">
+  <div class="grid3">
+    <div class="card"><div class="label">族群總數</div><div class="metric" id="groupCount">—</div></div>
+    <div class="card"><div class="label">符合 Rule1 紀錄</div><div class="metric" id="passedCount">—</div></div>
+    <div class="card"><div class="label">最新產生時間</div><div class="metric" style="font-size:16px" id="generatedAt">—</div></div>
+  </div>
+
+  <section class="card" id="futuresSection">
     <h2>台指期即時行情</h2>
     <div id="futuresContent"><div class="empty">載入中…</div></div>
   </section>
 
-  <div class="grid">
-    <div class="card"><div class="label">族群總數</div><div class="metric" id="groupCount">—</div></div>
-    <div class="card"><div class="label">符合 Rule1 紀錄</div><div class="metric" id="passedCount">—</div></div>
-    <div class="card"><div class="label">最新產生時間</div><div class="metric" style="font-size:17px" id="generatedAt">—</div></div>
-  </div>
-
-  <section class="card section">
-    <h2>四項精選／特大買賣單</h2>
+  <section class="card">
+    <h2>盤中大戶訊號<span class="badge gold">四項精選／特大買賣單</span></h2>
     <div id="largeOrderEmpty" class="empty">載入中…</div>
     <div id="largeOrderList"></div>
   </section>
 
-  <section class="card section">
+  <section class="card">
     <h2>今日精選（多／空）</h2>
     <div id="picksEmpty" class="empty">載入中…</div>
     <div id="picksContent" class="pick-cols hidden">
@@ -61,19 +101,19 @@
     </div>
   </section>
 
-  <section class="card section">
+  <section class="card">
     <h2>符合 Rule1 的股票</h2>
     <div id="passedEmpty" class="empty hidden">目前沒有符合 Rule1 的股票。</div>
     <div style="overflow:auto"><table id="passedTable"><thead><tr><th>族群</th><th>代號</th><th>名稱</th><th>漲跌幅</th><th>價差</th><th>收盤</th></tr></thead><tbody></tbody></table></div>
   </section>
 
-  <section class="card section">
+  <section class="card">
     <h2>查詢族群或股票代號</h2>
     <div class="toolbar"><input id="keyword" placeholder="例如：記憶體、2344"><button id="searchBtn">查詢</button><button class="secondary" id="showAllBtn">查看全部族群</button></div>
-    <div id="searchResult" style="margin-top:16px"></div>
+    <div id="searchResult" style="margin-top:14px"></div>
   </section>
 
-  <section class="card section">
+  <section class="card">
     <h2>工具</h2>
     <div class="toolbar"><a class="btn secondary" href="/docs" target="_blank">API 文件</a><a class="btn secondary" href="/api/rule1/latest" target="_blank">原始 Rule1 JSON</a><button id="refreshBtn">重新整理</button></div>
   </section>
@@ -98,14 +138,29 @@ async function updateFutures(){
     const res=await jsonFetch('/api/quote/futures');
     const tick=res.data||{};
     const cls=chgClass(tick.price_chg);
-    content.innerHTML=`<div class="price-main"><span class="price ${cls}">${fmtNum(tick.close,0)}</span><span class="change ${cls}">${signedNum(tick.price_chg,0)} (${signedNum(tick.pct_chg)}%)</span></div><div class="label">成交時間：${tick.tick_time||'—'}</div>`;
-  }catch(e){content.innerHTML='<div class="empty">即時行情尚未啟用或尚未收到資料。</div>'}
+    $('#futPrice').className=cls;$('#futPrice').textContent=fmtNum(tick.close,0);
+    $('#futChange').className=cls;$('#futChange').textContent=`${signedNum(tick.price_chg,0)} (${signedNum(tick.pct_chg)}%)`;
+    content.innerHTML=`<div class="price-main"><span class="price ${cls}">${fmtNum(tick.close,0)}</span><span class="change ${cls}">${signedNum(tick.price_chg,0)} (${signedNum(tick.pct_chg)}%)</span></div><div class="label" style="margin-top:6px">成交時間：${tick.tick_time||'—'}</div>`;
+  }catch(e){content.innerHTML='<div class="empty">即時行情尚未啟用或尚未收到資料。</div>';$('#futPrice').textContent='—';$('#futChange').textContent='—'}
 }
 
 function renderSignalRow(s){
-  const isBuy=String(s.kind||'').toLowerCase().includes('buy')||String(s.kind||'').includes('Bullish');
-  const noteText=String(s.note||'').replace(/\n/g,' ');
-  return `<div class="signal-row"><div><strong class="${isBuy?'up':'down'}">${s.label||s.kind}</strong> ${s.ticker||''} ${s.name||''}<div class="note">${noteText}</div></div></div>`;
+  const kind=String(s.kind||'');
+  const isBuy=kind.toLowerCase().includes('buy')||kind.includes('Bullish');
+  const dir=isBuy?'buy':'sell';
+  const noteText=String(s.note||'').replace(/\|/g,'｜');
+  const time=s.barTs?new Date(Number(s.barTs)).toLocaleTimeString('zh-TW',{hour12:false,hour:'2-digit',minute:'2-digit'}):'—';
+  return `<div class="sig-card ${dir}">
+    <div class="sig-time"><b>${time}</b></div>
+    <div class="sig-body">
+      <div class="sig-head">
+        <a class="sig-stock" href="/kline?code=${encodeURIComponent(s.ticker||'')}">${s.ticker||''} ${s.name||''}</a>
+        <span class="sig-label ${dir}">${s.label||kind}</span>
+      </div>
+      <div class="sig-note">${noteText}</div>
+    </div>
+    <div class="sig-price ${dir}">${s.price!=null?fmtNum(s.price):''}</div>
+  </div>`;
 }
 
 async function loadLargeOrders(){
@@ -127,7 +182,7 @@ async function loadDailyPicks(){
     empty.classList.toggle('hidden',!!(bull.length||bear.length));
     content.classList.toggle('hidden',!(bull.length||bear.length));
     if(!bull.length && !bear.length){empty.textContent='今日精選尚未產生。';return}
-    const row=item=>`<div class="signal-row"><span>${item.ticker||''} ${item.name||''}</span><span>${item.score!=null?fmtNum(item.score,1):''}</span></div>`;
+    const row=item=>`<div class="pick-row"><a href="/kline?code=${encodeURIComponent(item.ticker||'')}"><span class="sig-stock">${item.ticker||''} ${item.name||''}</span></a><span>${item.score!=null?fmtNum(item.score,1):''}</span></div>`;
     $('#picksBull').innerHTML=bull.map(row).join('')||'<div class="empty">無</div>';
     $('#picksBear').innerHTML=bear.map(row).join('')||'<div class="empty">無</div>';
   }catch(e){empty.textContent='今日精選暫時無法取得。';empty.classList.remove('hidden');content.classList.add('hidden')}
@@ -136,12 +191,12 @@ async function loadDailyPicks(){
 async function loadRule1(){
   try{const d=await jsonFetch('/api/rule1/passed');$('#passedCount').textContent=d.count;$('#generatedAt').textContent=fmtTime(d.generated_at);
     const tbody=$('#passedTable tbody');tbody.innerHTML='';const stocks=d.stocks||[];$('#passedTable').classList.toggle('hidden',!stocks.length);$('#passedEmpty').classList.toggle('hidden',!!stocks.length);
-    stocks.forEach(s=>{const tr=document.createElement('tr');const cls=s.price_change>0?'up':s.price_change<0?'down':'';tr.innerHTML=`<td>${s.group_name}</td><td>${s.stock_code}</td><td>${s.stock_name}</td><td class="${cls}">${Number(s.change_rate).toFixed(2)}%</td><td class="${cls}">${Number(s.price_change).toFixed(2)}</td><td>${Number(s.today_close).toFixed(2)}</td>`;tbody.appendChild(tr)})
+    stocks.forEach(s=>{const tr=document.createElement('tr');const cls=s.price_change>0?'up':s.price_change<0?'down':'';tr.innerHTML=`<td>${s.group_name}</td><td><a href="/kline?code=${encodeURIComponent(s.stock_code)}">${s.stock_code}</a></td><td>${s.stock_name}</td><td class="${cls}">${Number(s.change_rate).toFixed(2)}%</td><td class="${cls}">${Number(s.price_change).toFixed(2)}</td><td>${Number(s.today_close).toFixed(2)}</td>`;tbody.appendChild(tr)})
   }catch(e){$('#passedEmpty').textContent='尚無 Rule1 結果。';$('#passedEmpty').classList.remove('hidden');$('#passedTable').classList.add('hidden')}
 }
 
-async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await jsonFetch('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<a class="group" style="text-decoration:none;color:inherit;display:block" href="/kline?code=${encodeURIComponent(s.stock_code)}">${s.stock_code} ${s.stock_name}</a>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
-async function showAll(){const box=$('#searchResult');box.textContent='載入中…';try{const d=await jsonFetch('/api/groups');box.innerHTML=`<div class="groups">${d.groups.map(g=>`<div class="group"><strong>${g.group_name}</strong><br><span class="label">${g.stock_count} 檔</span></div>`).join('')}</div>`}catch(e){box.textContent='載入失敗'}}
+async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await jsonFetch('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<a class="grow" href="/kline?code=${encodeURIComponent(s.stock_code)}"><span class="code">${s.stock_code} ${s.stock_name}</span></a>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
+async function showAll(){const box=$('#searchResult');box.textContent='載入中…';try{const d=await jsonFetch('/api/groups');box.innerHTML=`<div class="groups">${d.groups.map(g=>`<div class="grow"><strong>${g.group_name}</strong><span class="label">${g.stock_count} 檔</span></div>`).join('')}</div>`}catch(e){box.textContent='載入失敗'}}
 
 $('#searchBtn').onclick=search;
 $('#showAllBtn').onclick=showAll;
