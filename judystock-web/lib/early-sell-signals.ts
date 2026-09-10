@@ -99,7 +99,8 @@ export type AjLargeForceFilterPayload = {
 };
 export type AjLargeForceFilterStatus = "idle" | "loading" | "ready" | "error";
 export type IntradaySignalCenterMode = "today" | "blackDragon" | "fiveMinuteTwelveShort" | "fiveMinuteOnePlusTwoLong" | "instantLarge" | "mainForce" | "fourGate" | "extraLargeSell" | "extraLargeBuy" | "largeForce" | "history";
-export const INTRADAY_SIGNAL_CENTER_MODES: IntradaySignalCenterMode[] = ["today", "blackDragon", "fiveMinuteTwelveShort", "fiveMinuteOnePlusTwoLong", "instantLarge", "mainForce", "fourGate", "extraLargeSell", "extraLargeBuy", "largeForce", "history"];
+// 黑龍、12空、1+2多已從盤中即時訊號中心完全移除；保留 type 字面值只為相容舊資料與型別。
+export const INTRADAY_SIGNAL_CENTER_MODES: IntradaySignalCenterMode[] = ["today", "instantLarge", "mainForce", "fourGate", "extraLargeSell", "extraLargeBuy", "largeForce", "history"];
 export type RiverCenterRow = { code: string; name?: string; tradeDate: string; barTs: number; price?: number; changePct?: number; score: number; direction?: "bull" | "bear"; label?: string; signalType?: "river" | "daily-strategy" | "black-dragon"; strategyKind?: string; strategyName?: string; groupName?: string; groupRank?: number; stockRank?: number; groupScore?: number; selectionSource?: "focus-ranking-67"; volumeRatio?: number | null; vwap?: number | null };
 export type BlackDragonIntradayCenterRow = RiverCenterRow & { selectionRuleVersion?: string; sessionOpen?: number; signalHigh?: number; referenceHigh5?: number; referenceThrough?: string; maScore?: number; newHighPeriods?: number[]; cumulativeVolume?: number; averageVolume20d?: number; projectedVolumeRatio?: number; cumulativeTurnover?: number; blackBodyPct?: number; tier?: "all" | "selected" | "surge" };
 export type BlackDragonIntradayCenterPayload = { ok?: boolean; signalDate?: string; signals?: BlackDragonIntradayCenterRow[]; baseCoverage?: { ready?: number; total?: number; missing?: number } };
