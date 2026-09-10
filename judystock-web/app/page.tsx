@@ -1054,8 +1054,8 @@ function openKlineByTicker(ticker: string, stockName: string, signalTs?: number)
   if (!child) window.location.assign(url.toString());
 }
 
-function openOriginalKline(ticker: string) {
-  openKlineByTicker(ticker, "");
+function openOriginalKline(ticker: string, name?: string) {
+  openKlineByTicker(ticker, name ?? "");
 }
 
 function StrengthGauge({ score }: { score: number }) {
@@ -3776,7 +3776,7 @@ function BattleHome() {
                       const name = rankStockName(stock.symbol);
                       return <button
                         key={stock.symbol}
-                        onClick={() => openOriginalKline(stock.symbol)}
+                        onClick={() => openOriginalKline(ticker, name)}
                         aria-label={`開啟 ${stock.symbol} 完整 K 線`}
                         title="開啟原始版完整 K 線（預設五分 K，可切換週期）"
                       >
@@ -4048,7 +4048,7 @@ function BattleHome() {
                 const tone = changePercent < 0 ? "negative" : changePercent > 0 ? "positive" : "neutral";
                 const afterHoursForce = rankingAfterHoursForceByTicker.get(ticker);
                 return (
-                  <button className="rank-row desktop-stock-row" key={`desktop-stock-${direction}-${row.name}`} onClick={() => openOriginalKline(row.name)} title="開啟原始版完整 K 線">
+                  <button className="rank-row desktop-stock-row" key={`desktop-stock-${direction}-${row.name}`} onClick={() => openOriginalKline(ticker, rankStockName(row.name))} title="開啟原始版完整 K 線">
                     <span className="rank-number">{row.rank.toString().padStart(2, "0")}</span>
                     <span className="rank-ticker">{ticker}</span>
                     <span className="rank-name"><strong>{rankStockName(row.name)}</strong><StockTradingBadges ticker={ticker} compact /><small>{row.leadChange}</small><em className={`ranking-after-hours-force ${afterHoursForce === undefined ? "pending" : afterHoursForce < 0 ? "negative" : afterHoursForce > 0 ? "positive" : "neutral"}`}>盤後大戶力 {afterHoursForce === undefined ? "待補" : formatSigned(afterHoursForce, 1)}</em></span>
@@ -4244,7 +4244,7 @@ function BattleHome() {
                 <button
                   className={`rank-row ${rankMode === "stocks" ? "stock-rank-row" : ""}`}
                   key={`${bottomMode}-${rankMode}-${row.name}`}
-                  onClick={() => isGroupRow ? setSelectedGroup(row.name) : clickable && openOriginalKline((row.name.match(/^\d{4}/) ? row.name : row.lead))}
+                  onClick={() => isGroupRow ? setSelectedGroup(row.name) : clickable && openOriginalKline((row.name.match(/^\d{4}/) ? ticker : row.lead))}
                   aria-label={isGroupRow ? `查看 ${row.name} 全部個股` : clickable ? `開啟 ${(row.name.match(/^\d{4}/) ? row.name : row.lead)} 完整 K 線` : undefined}
                   title={isGroupRow ? `查看 ${row.name} 即時個股清單` : clickable ? "開啟原始版完整 K 線（預設五分 K，可切換週期）" : undefined}
                 >
@@ -4349,7 +4349,6 @@ function BattleHome() {
             <div className="group-stock-table">
               <div className="group-stock-header"><span>代號</span><span>名稱</span><span>處置狀況</span><span>大單淨額資金占比<br />（隔日沖占比）</span><span>漲跌幅</span><span>漲跌</span><span>成交價</span></div>
               {selectedGroupStocks.map((stock) => {
-                const stockLabel = `${stock.ticker} ${stock.name}`;
                 const memberMeta = groupMemberMetaByTicker[stock.ticker];
                 const disposition = memberMeta ?? {
                   dispositionLabel: groupMemberMetaLoading ? "讀取中" : "非處置股",
@@ -4369,8 +4368,8 @@ function BattleHome() {
                   : disposition.netFundingValue < 0 ? "negative" : "positive";
                 return (
                   <div className="group-stock-row" key={stock.ticker}>
-                    <button className={`group-stock-code ${quoteTone}`} onClick={() => openOriginalKline(stockLabel)} title="開啟原始版完整 K 線">{disposition.isActiveDisposition && <i aria-label="處置中">＊</i>}{stock.ticker}</button>
-                    <button className={`group-stock-name ${quoteTone}`} onClick={() => openOriginalKline(stockLabel)} title="開啟原始版完整 K 線"><span>{stock.name}</span><StockTradingBadges ticker={stock.ticker} compact /></button>
+                    <button className={`group-stock-code ${quoteTone}`} onClick={() => openOriginalKline(stock.ticker, stock.name)} title="開啟原始版完整 K 線">{disposition.isActiveDisposition && <i aria-label="處置中">＊</i>}{stock.ticker}</button>
+                    <button className={`group-stock-name ${quoteTone}`} onClick={() => openOriginalKline(stock.ticker, stock.name)} title="開啟原始版完整 K 線"><span>{stock.name}</span><StockTradingBadges ticker={stock.ticker} compact /></button>
                     <span className={`group-stock-disposition is-${disposition.dispositionTone}`}>{disposition.dispositionLabel}</span>
                     <span className={`group-stock-funding ${fundingTone}`} title={disposition.netFundingDataDate ? `大單資料日 ${disposition.netFundingDataDate.replaceAll("-", "/")}` : disposition.netFundingLabel}>{disposition.netFundingLabel}</span>
                     <b className={`group-stock-change ${quoteTone}`}>{stock.change}</b>
