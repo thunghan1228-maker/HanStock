@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import StockTradingBadges from "../StockTradingBadges";
+import KlineCandleChart from "../KlineCandleChart";
 import { createVisibilityGatedInterval } from "../../lib/useVisibilityGatedInterval";
 import { mergeForceHistory, type ForceHistoryBar } from "../../lib/kline-force";
 import { alignDailyForce, readDailyCandleSlots, retainDailyForcePoints, type DailyCandleSlot } from "../../lib/kline-daily-force";
@@ -678,7 +679,7 @@ export default function KlinePage() {
       <section className="pinned-kline-grid">
         <article className="pinned-kline-card">
           <div><strong>{ticker} {name}</strong><span>{period === "1m" ? "1分" : period === "5m" ? "5分" : "日線"}</span><button onClick={closePinnedBoard} aria-label={`解除置頂 ${ticker} ${name}`}>×</button></div>
-          <iframe src={`${window.location.origin}/api/kline-embed/${encodeURIComponent(ticker)}?interval=${period === "day" ? "1d" : period}&name=${encodeURIComponent(name)}&uiRev=20260905-kline-signal-toggle-v35`} title={`${ticker} ${name} 置頂 K 線`} />
+          <KlineCandleChart key={ticker} ticker={ticker} interval={period === "day" ? "1d" : period} name={name} />
         </article>
       </section>
     </main>,
@@ -750,18 +751,14 @@ export default function KlinePage() {
       </div>
     </header>
     <section className={`price-chart original-kline-panel ${period === "day" ? "is-day" : ""}${chartKeyboardActive ? " is-keyboard-active" : ""}`} aria-label={`${period} 原始版 K線圖`} onPointerDown={() => { if (window.matchMedia("(max-width: 700px)").matches) return; setChartKeyboardActive(true); setQuickCode(""); setQuickStatus("idle"); }}>
-      {symbolReady&&<iframe
-        key={`${klineFrameUrl}:${frameReloadRevision}`}
-        ref={klineFrameRef}
-        className="original-kline-frame"
-        src={klineFrameUrl}
-        title={`${ticker} ${name} 原始版完整 K 線`}
-        loading="eager"
-        onLoad={() => {
-          klineFrameRef.current?.contentWindow?.postMessage({ type: "hanstock-vwap-visibility", visible: period !== "day" && showVwap }, window.location.origin);
-          bindFrameKeyboard();
-        }}
-      />}
+      {symbolReady && (
+        <KlineCandleChart
+          key={ticker}
+          ticker={ticker}
+          interval={period === "day" ? "1d" : period}
+          name={name}
+        />
+      )}
       {false&&period !== "day"&&showForce&&<aside
         ref={forcePanelRef}
         className="force-chart-sidecar"
