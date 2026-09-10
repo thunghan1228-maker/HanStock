@@ -30,8 +30,6 @@ import {
   isExtraLargeBuySignal,
   isLargeForceSignal,
   isInstantLargeSignal,
-  isFiveMinuteTwelveShortSignal,
-  isFiveMinuteOnePlusTwoLongSignal,
   intradaySignalKey,
   taipeiTradeDate,
   taipeiSessionState,
@@ -633,9 +631,7 @@ export function useEarlySellSignals({
     };
   }, [largeForceAjRequestKey]);
   const focusedSignalTickers = useMemo(() => {
-    const focusedSignals = centerMode === "fiveMinuteTwelveShort" ? todaySignals.filter(isFiveMinuteTwelveShortSignal)
-      : centerMode === "fiveMinuteOnePlusTwoLong" ? todaySignals.filter(isFiveMinuteOnePlusTwoLongSignal)
-      : centerMode === "instantLarge" ? instantLargeSignals
+    const focusedSignals = centerMode === "instantLarge" ? instantLargeSignals
       : centerMode === "mainForce" ? mainForceSignals
       : centerMode === "fourGate" ? fourGateSignals
       : centerMode === "extraLargeSell" ? extraLargeSellSignals
@@ -814,8 +810,6 @@ export function useEarlySellSignals({
     : [];
   // 各頁籤以訊號種類硬性隔離；切換時不能沿用上一頁的清單內容。
   const selectedCenterSignals = centerMode === "today" ? combinedTodaySignals
-    : centerMode === "fiveMinuteTwelveShort" ? combinedTodaySignals.filter(isFiveMinuteTwelveShortSignal)
-    : centerMode === "fiveMinuteOnePlusTwoLong" ? combinedTodaySignals.filter(isFiveMinuteOnePlusTwoLongSignal)
     : centerMode === "instantLarge" ? instantLargeSignals.filter(isInstantLargeSignal)
     : centerMode === "mainForce" ? mainForceSignals.filter((signal) => signal.kind.startsWith("mainForce"))
     : centerMode === "fourGate" ? strictFourGateSignals
