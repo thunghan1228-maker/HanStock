@@ -1069,67 +1069,6 @@ function StrengthGauge({ score }: { score: number }) {
   );
 }
 
-function TriangleScreenerPanel() {
-  const [payload, setPayload] = useState<TrianglePayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
-  const [activeStatus, setActiveStatus] = useState<"全部" | TriangleStatus>("全部");
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    fetch("/api/triangles", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json() as TrianglePayload;
-        if (!response.ok || !data.ok) throw new Error(data.message || "三角收斂名單暫時無法取得");
-        setPayload(data);
-        setMessage("");
-      })
-      .catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) setMessage(error instanceof Error ? error.message : "三角收斂名單暫時無法取得");
-      })
-      .finally(() => setLoading(false));
-    return () => controller.abort();
-  }, []);
-
-  const rows = payload?.rows ?? [];
-  const visibleRows = activeStatus === "全部" ? rows : rows.filter((row) => row.status === activeStatus);
-  const statuses: Array<"全部" | TriangleStatus> = ["全部", "放量突破", "突破待量", "接近突破", "形成中"];
-  const statusCount = (status: "全部" | TriangleStatus) => status === "全部" ? rows.length : rows.filter((row) => row.status === status).length;
-
-  return (
-    <section className="triangle-console" aria-label="盤後日線三角收斂選股">
-      <header className="triangle-head">
-        <div><span className="eyebrow">DAILY TRIANGLE CONVERGENCE</span><h2>盤後日線三角收斂</h2><p>依 2,337 檔官方日 K 掃描；放量突破優先，其次為突破待量、接近突破與形成中。</p><a className="triangle-live-link" href="/triangles-intraday">開啟盤中即時名單 ›</a></div>
-        <div className="triangle-summary">
-          <span>符合名單</span>
-          <strong>{(payload?.summary?.matched_count ?? rows.length) || "—"} 檔</strong>
-          <small>資料不足 {payload?.summary?.unavailable_count ?? "—"} 檔</small>
-          <time>資料樣本時間 {formatTriangleSampleTime(payload?.sampleAt)}</time>
-          <time>最新更新時間 {payload?.updatedAt || payload?.generatedAt ? formatTaipeiDateTime(payload.updatedAt ?? payload.generatedAt) : "—"}</time>
-        </div>
-      </header>
-      <div className="triangle-filters" role="tablist" aria-label="三角收斂狀態篩選">
-        {statuses.map((status) => <button type="button" role="tab" aria-selected={activeStatus === status} className={activeStatus === status ? "active" : ""} onClick={() => setActiveStatus(status)} key={status}>{status}<b>{statusCount(status)}</b></button>)}
-      </div>
-      <div className="triangle-table-scroll" role="region" aria-label="三角收斂股票名單" tabIndex={0}>
-        <div className="triangle-table">
-          <div className="triangle-row triangle-row-head"><span>狀態</span><span>代號／名稱</span><span>分數</span><span>收盤價</span><span>距上緣</span><span>20 日量比</span><span>操作</span></div>
-          {loading && <div className="triangle-empty">正在讀取最新盤後掃描結果…</div>}
-          {!loading && message && <div className="triangle-empty is-error">{message}</div>}
-          {!loading && !message && visibleRows.map((row) => (
-            <button type="button" className={`triangle-row status-${row.status}`} key={row.stock_code} onClick={() => openKlineByTicker(row.stock_code, row.stock_name)} aria-label={`開啟 ${row.stock_code} ${row.stock_name} 五分鐘 K 線`}>
-              <span><i />{row.status}</span><span><b>{row.stock_code}</b><strong>{row.stock_name}</strong></span><strong>{row.score.toFixed(1)}</strong><span>{row.close.toLocaleString("zh-TW")}</span><span className={row.distance_to_upper_pct <= 0 ? "is-breakout" : ""}>{row.distance_to_upper_pct > 0 ? "+" : ""}{row.distance_to_upper_pct.toFixed(2)}%</span><span className={row.volume_ratio_20d >= 1.5 ? "is-volume" : ""}>{row.volume_ratio_20d.toFixed(2)}×</span><em>查看 5 分 K ›</em>
-            </button>
-          ))}
-          {!loading && !message && visibleRows.length === 0 && <div className="triangle-empty">這個分類目前沒有股票</div>}
-        </div>
-      </div>
-      <footer>名單為盤後技術線型篩選結果，不代表投資建議；點任一個股可直接查看五分鐘 K 線。</footer>
-    </section>
-  );
-}
-
 function earlySellTime(barTs: number) {
   const displayed = new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -1370,8 +1309,6 @@ function DaytradeEarlySellNotifier({
     signalAlertsEnabled,
     extraLargeCheck,
     todaySignals,
-    blackDragonSignals,
-    blackDragonReady,
     fourGateSignals,
     mainForceSignals,
     extraLargeSellSignals,
@@ -1911,7 +1848,7 @@ function DaytradeEarlySellNotifier({
       .sort((left, right) => right.barTs - left.barTs || left.ticker.localeCompare(right.ticker)),
   }));
   const largeForceStockCount = new Set(largeForceAjSignals.map((signal) => signal.ticker)).size;
-  const activeDate = centerMode === "today" ? (combinedTodaySignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "blackDragon" ? (blackDragonSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "fiveMinuteTwelveShort" ? (combinedTodaySignals.find(isFiveMinuteTwelveShortSignal)?.tradeDate ?? taipeiTradeDate()) : centerMode === "fiveMinuteOnePlusTwoLong" ? (combinedTodaySignals.find(isFiveMinuteOnePlusTwoLongSignal)?.tradeDate ?? taipeiTradeDate()) : centerMode === "instantLarge" ? (instantLargeSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "mainForce" ? (mainForceSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "fourGate" ? (fourGateSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "extraLargeSell" ? (extraLargeSellSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "extraLargeBuy" ? (extraLargeBuySignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "largeForce" ? (largeForceSignals[0]?.tradeDate ?? todaySignals[0]?.tradeDate ?? selectedDate) : selectedDate;
+  const activeDate = centerMode === "today" ? (combinedTodaySignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "fiveMinuteTwelveShort" ? (combinedTodaySignals.find(isFiveMinuteTwelveShortSignal)?.tradeDate ?? taipeiTradeDate()) : centerMode === "fiveMinuteOnePlusTwoLong" ? (combinedTodaySignals.find(isFiveMinuteOnePlusTwoLongSignal)?.tradeDate ?? taipeiTradeDate()) : centerMode === "instantLarge" ? (instantLargeSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "mainForce" ? (mainForceSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "fourGate" ? (fourGateSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "extraLargeSell" ? (extraLargeSellSignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "extraLargeBuy" ? (extraLargeBuySignals[0]?.tradeDate ?? taipeiTradeDate()) : centerMode === "largeForce" ? (largeForceSignals[0]?.tradeDate ?? todaySignals[0]?.tradeDate ?? selectedDate) : selectedDate;
   const fourGateSignalTotal = strictFourGateSignals.length;
   const mainForceSignalTotal = mainForceSignals.length;
   // 頁籤徽章必須與點入後的實際訊號清單共用同一個計數來源；候選股票
@@ -1945,7 +1882,6 @@ function DaytradeEarlySellNotifier({
   const fiveMinuteTwelveShortSignalTotal = combinedTodaySignals.filter(isFiveMinuteTwelveShortSignal).length;
   const fiveMinuteOnePlusTwoLongSignalTotal = combinedTodaySignals.filter(isFiveMinuteOnePlusTwoLongSignal).length;
   const todaySignalTotal = combinedTodaySignals.length;
-  const blackDragonSignalTotal = blackDragonSignals.length;
   const coreCount = (value: number) => signalSnapshotReady ? value : "…";
   const todayCount = signalSnapshotReady ? todaySignalTotal : "…";
   const allSignalTotal = new Set(combinedTodaySignals.map(intradaySignalKey)).size;
@@ -2101,7 +2037,6 @@ function DaytradeEarlySellNotifier({
           <datalist id="early-signal-dates">{availableDates.map((date) => <option value={date} key={date} />)}</datalist>
           <div className="early-signal-tabs" role="tablist" aria-label="盤中訊號檢視方式">
             <button className={centerMode === "today" ? "active" : ""} type="button" role="tab" aria-selected={centerMode === "today"} onClick={() => setCenterMode("today")}>今日即時 <b>{todayCount}</b></button>
-            <button className={centerMode === "blackDragon" ? "active daily-strategies" : "daily-strategies"} type="button" role="tab" aria-selected={centerMode === "blackDragon"} onClick={() => setCenterMode("blackDragon")}><span>🐉 創高的黑龍 <b>{blackDragonReady ? blackDragonSignalTotal : "…"}</b></span><small>11:00 前暫不顯示訊號</small></button>
             <button className={centerMode === "fiveMinuteTwelveShort" ? "active five-minute-twelve-short" : "five-minute-twelve-short"} type="button" role="tab" aria-selected={centerMode === "fiveMinuteTwelveShort"} onClick={() => setCenterMode("fiveMinuteTwelveShort")}>📉 12空（五分K） <b>{coreCount(fiveMinuteTwelveShortSignalTotal)}</b></button>
             <button className={centerMode === "fiveMinuteOnePlusTwoLong" ? "active five-minute-one-plus-two-long" : "five-minute-one-plus-two-long"} type="button" role="tab" aria-selected={centerMode === "fiveMinuteOnePlusTwoLong"} onClick={() => setCenterMode("fiveMinuteOnePlusTwoLong")}>📈 1+2多（五分K） <b>{coreCount(fiveMinuteOnePlusTwoLongSignalTotal)}</b></button>
             <button className={centerMode === "instantLarge" ? "active" : ""} type="button" role="tab" aria-selected={centerMode === "instantLarge"} onClick={() => setCenterMode("instantLarge")}>⚡ 族群瞬間大單 <b>{coreCount(instantLargeSignalTotal)}</b></button>
@@ -2112,7 +2047,7 @@ function DaytradeEarlySellNotifier({
             <button className={centerMode === "largeForce" ? "active large-force" : "large-force"} type="button" role="tab" aria-selected={centerMode === "largeForce"} onClick={() => setCenterMode("largeForce")}>🐋 盤中大戶力 <b>{signalSnapshotReady && (largeForceSignals.length === 0 || largeForceAjStatus === "ready") ? largeForceSignalTotal : largeForceAjStatus === "error" ? "重試中" : "…"}</b></button>
             <button className={centerMode === "history" ? "active" : ""} type="button" role="tab" aria-selected={centerMode === "history"} onClick={() => setCenterMode("history")}>歷史查詢</button>
           </div>
-          {<div className="early-signal-summary"><span><i />{centerMode === "today" ? "今日全部盤中訊號 · 同步包含 12空（五分K）、1+2多（五分K）、盤中大戶力 · 原始紀錄永久保留" : centerMode === "blackDragon" ? "創高的黑龍 · 11:00 前暫不顯示訊號 · 11:00 起每 5 分 K 掃描 · 同根最高價須突破前五日高點，當時價須低於今日 09:00 開盤 · 不沿用較早創高 · 以下保留盤中成立紀錄，盤後日 K 名單請至選股程式" : centerMode === "fiveMinuteTwelveShort" ? "12空（五分K） · 先破 905低 · 形成 1高 · 跌破 MA20 且均線下彎 · 2高不過 1高後轉弱 · 今日由 09:00 起完整回補" : centerMode === "fiveMinuteOnePlusTwoLong" ? "1+2多（五分K） · 五分K同時站上昨日高與 905高才成立 · 只過其中一高不算 · 今日由 09:00 起完整回補" : centerMode === "instantLarge" ? "漲幅前 20 族群偵測外盤買進、跌幅前 20 族群偵測內盤賣出 · 敲進須觸發當分鐘大戶力為正，倒出須為負 · 一般達 100 張或 3,000 萬元；特大達 300 張或 5,000 萬元 · 同方向 5 分鐘冷卻 · 逐筆即時" : centerMode === "mainForce" ? "A～D 同步發動濾網 · 09:05 起正式顯示 · 每方向僅一次 · 永久保留" : centerMode === "fourGate" ? "前日預估賣壓金額 > 1 億元 · 今日即時計算 · 隔日沖加強 · 四項同時通過才顯示" : centerMode === "extraLargeSell" ? "前日大單淨買超 > 5,000 萬元、隔日沖淨額資金占比 > 10%，且盤中大單賣出累計 ≥ 前日大單淨買超、觸發時大戶力為負 · 同步標示族群漲跌前 10 與前日籌碼減少前 100 · 永久保留" : centerMode === "extraLargeBuy" ? "前日大單淨賣超 > 5,000 萬元、隔日沖淨額資金占比 > 10%，且盤中大單買進累計 ≥ 前日大單淨賣超、觸發時大戶力為正 · 同步標示族群漲跌前 10 與前日籌碼減少前 100 · 永久保留" : centerMode === "largeForce" ? `盤中大戶力多空達標條件：多方須大戶力 ≥ +10%（正式訊號仍採 +12%）、成交額 ≥ 3 億、同一族群近 3 交易日曾在後 20、今日進入前 20；空方為大戶力 ≤ -10%（正式訊號仍採 -12%）、成交額 ≥ 3 億、同一族群近 3 交易日曾進前 20、今日跌出前 20${largeForceAjPreviousDates.length === 3 ? `｜回看 ${largeForceAjPreviousDates.join("、")}` : ""}` : historyLoading ? "正在更新歷史紀錄 · 原清單保持顯示" : "永久歷史紀錄 · 每筆標示掃描來源"}{centerMode === "today" && signalFeed?.polledAt ? <small className={`early-signal-feed-status${signalFeed.degraded ? " is-degraded" : ""}`}>{signalFeed.degraded ? `逐筆來源延遲｜1 分 K 備援${signalFeed.fallbackAt ? `已接手至 ${earlySellTime(signalFeed.fallbackAt)}` : "接手中"}` : "已存快照即時顯示"}｜畫面更新 {earlySellTime(signalFeed.polledAt)}｜最新符合訊號 {combinedTodaySignals[0] ? earlySellTime(combinedTodaySignals[0].barTs) : "尚無"}</small> : null}</span><strong>{centerMode === "largeForce" ? `${largeForceVisibleSignals.length} 則／${largeForceStockCount} 檔` : `${selectedCenterReady ? visibleSignals.length : "…"} 則訊號`}</strong></div>}
+          {<div className="early-signal-summary"><span><i />{centerMode === "today" ? "今日全部盤中訊號 · 同步包含 12空（五分K）、1+2多（五分K）、盤中大戶力 · 原始紀錄永久保留" : centerMode === "fiveMinuteTwelveShort" ? "12空（五分K） · 先破 905低 · 形成 1高 · 跌破 MA20 且均線下彎 · 2高不過 1高後轉弱 · 今日由 09:00 起完整回補" : centerMode === "fiveMinuteOnePlusTwoLong" ? "1+2多（五分K） · 五分K同時站上昨日高與 905高才成立 · 只過其中一高不算 · 今日由 09:00 起完整回補" : centerMode === "instantLarge" ? "漲幅前 20 族群偵測外盤買進、跌幅前 20 族群偵測內盤賣出 · 敲進須觸發當分鐘大戶力為正，倒出須為負 · 一般達 100 張或 3,000 萬元；特大達 300 張或 5,000 萬元 · 同方向 5 分鐘冷卻 · 逐筆即時" : centerMode === "mainForce" ? "A～D 同步發動濾網 · 09:05 起正式顯示 · 每方向僅一次 · 永久保留" : centerMode === "fourGate" ? "前日預估賣壓金額 > 1 億元 · 今日即時計算 · 隔日沖加強 · 四項同時通過才顯示" : centerMode === "extraLargeSell" ? "前日大單淨買超 > 5,000 萬元、隔日沖淨額資金占比 > 10%，且盤中大單賣出累計 ≥ 前日大單淨買超、觸發時大戶力為負 · 同步標示族群漲跌前 10 與前日籌碼減少前 100 · 永久保留" : centerMode === "extraLargeBuy" ? "前日大單淨賣超 > 5,000 萬元、隔日沖淨額資金占比 > 10%，且盤中大單買進累計 ≥ 前日大單淨賣超、觸發時大戶力為正 · 同步標示族群漲跌前 10 與前日籌碼減少前 100 · 永久保留" : centerMode === "largeForce" ? `盤中大戶力多空達標條件：多方須大戶力 ≥ +10%（正式訊號仍採 +12%）、成交額 ≥ 3 億、同一族群近 3 交易日曾在後 20、今日進入前 20；空方為大戶力 ≤ -10%（正式訊號仍採 -12%）、成交額 ≥ 3 億、同一族群近 3 交易日曾進前 20、今日跌出前 20${largeForceAjPreviousDates.length === 3 ? `｜回看 ${largeForceAjPreviousDates.join("、")}` : ""}` : historyLoading ? "正在更新歷史紀錄 · 原清單保持顯示" : "永久歷史紀錄 · 每筆標示掃描來源"}{centerMode === "today" && signalFeed?.polledAt ? <small className={`early-signal-feed-status${signalFeed.degraded ? " is-degraded" : ""}`}>{signalFeed.degraded ? `逐筆來源延遲｜1 分 K 備援${signalFeed.fallbackAt ? `已接手至 ${earlySellTime(signalFeed.fallbackAt)}` : "接手中"}` : "已存快照即時顯示"}｜畫面更新 {earlySellTime(signalFeed.polledAt)}｜最新符合訊號 {combinedTodaySignals[0] ? earlySellTime(combinedTodaySignals[0].barTs) : "尚無"}</small> : null}</span><strong>{centerMode === "largeForce" ? `${largeForceVisibleSignals.length} 則／${largeForceStockCount} 檔` : `${selectedCenterReady ? visibleSignals.length : "…"} 則訊號`}</strong></div>}
           {(centerMode === "extraLargeSell" || centerMode === "extraLargeBuy") && <p className="early-signal-data-status" role="status">{extraLargeCheck === "complete" ? "資料核對完成；僅顯示達到金額、方向及族群條件的訊號。" : "目前數字是已驗證並保存的訊號，不代表市場沒有大單。正在核對前日基準與盤中資料；資料未完整時會繼續補查。"}</p>}
           <div className="early-signal-list" role="list" key={centerMode}>
             {centerMode === "largeForce" ? !selectedCenterReady ? <div className="early-signal-empty"><strong>正在套用盤中大戶力多空條件…</strong><span>正在比對訊號成交額、近三個交易日族群強弱與今日反轉排名。</span></div> : largeForceVisibleSignals.length ? largeForceStageGroups.map((stage) => <section className="large-force-stage-group" key={stage.code} aria-label={`階段 ${stage.code} ${stage.time}`}>
@@ -3802,9 +3737,6 @@ function BattleHome() {
         <button className={bottomMode === "ranking" && rankMode === "groups" ? "selected" : ""} onClick={() => { selectBottomMode("ranking"); setRankMode("groups"); }}>
           <span className="action-icon">群</span><div><strong>前二十大族群強弱排行</strong><small>67 族群前 20 名即時排名</small></div><b>›</b>
         </button>
-        <button className={bottomMode === "triangles" ? "selected" : ""} onClick={() => selectBottomMode("triangles")}>
-          <span className="action-icon">△</span><div><strong>日線三角收斂選股</strong><small>盤後官方日 K 全市場掃描</small></div><b>›</b>
-        </button>
         <button className={bottomMode === "revenue-records" ? "selected" : ""} onClick={() => selectBottomMode("revenue-records")}>
           <span className="action-icon">營</span><div><strong>每月營收分析</strong><small>成長榜・族群檢視・高低點</small></div><b>›</b>
         </button>
@@ -3896,7 +3828,7 @@ function BattleHome() {
       <IntradayTrackingNotifier onOpenTracker={openIntradayTracker} onOpenStock={openKlineByTicker} />
       <MaScreenerSignalNotifier stocks={officialChipData?.rows ?? []} onOpenStock={openKlineByTicker} />
       <MonthlyRevenueRecords active={bottomMode === "revenue-records"} onOpenStock={openKlineByTicker} />
-      {bottomMode === "revenue-records" ? null : bottomMode === "intraday-tracking" ? <IntradayStockTrackingPanel onOpenStock={openKlineByTicker} /> : bottomMode === "triangles" ? <TriangleScreenerPanel /> : bottomMode === "daytrade" ? <DaytradeBrokerPanel thresholds={daytradeThresholds} /> : bottomMode === "weekly-chips" ? (
+      {bottomMode === "revenue-records" ? null : bottomMode === "intraday-tracking" ? <IntradayStockTrackingPanel onOpenStock={openKlineByTicker} /> : bottomMode === "daytrade" ? <DaytradeBrokerPanel thresholds={daytradeThresholds} /> : bottomMode === "weekly-chips" ? (
         <WeeklyChipAnalysisPanel
           rows={weeklyChipData?.rows ?? []}
           groups={groupChipMembers?.groups ?? []}
@@ -4396,10 +4328,6 @@ function BattleHome() {
 
       <nav className="bottom-nav" aria-label="主要選單">
         <button className={bottomMode === "watchlist" ? "active" : ""} onClick={() => selectBottomMode("watchlist")}><strong>自選股</strong></button>
-        <button className={bottomMode === "triangles" ? "active" : ""} onClick={() => selectBottomMode("triangles")}><strong>三角收斂</strong></button>
-        <button className={bottomMode === "daytrade" ? "active" : ""} onClick={() => selectBottomMode("daytrade")}><span>沖</span><strong>疑似隔日沖大單籌碼</strong></button>
-        <button className={bottomMode === "stock-analysis" ? "active" : ""} onClick={() => selectBottomMode("stock-analysis")} title="開啟基本面河流圖、歷史價位位置均線與機構大戶追蹤" aria-label="開啟個股研究中心"><span>本</span><strong>個股研究中心</strong></button>
-        <button type="button" className={bottomMode === "weekly-chips" ? "active" : ""} onClick={() => selectBottomMode("weekly-chips")} title="開啟每週五日平均籌碼分析" aria-label="每週籌碼分析"><span>週</span><strong>每週籌碼分析</strong></button>
         <button className={bottomMode === "chips" ? "active" : ""} onClick={() => selectBottomMode("chips")}><span>籌</span><strong>今日盤後籌碼排行</strong></button>
         <button onClick={() => window.location.assign("/stock-screener")}><span>選</span><strong>選股程式</strong></button>
         <button type="button" className={bottomMode === "intraday-tracking" ? "active" : ""} onClick={() => selectBottomMode("intraday-tracking")} title="追蹤自選個股的盤中訊號" aria-label="個股盤中訊號追蹤"><span>追</span><strong>個股盤中訊號追蹤</strong></button>

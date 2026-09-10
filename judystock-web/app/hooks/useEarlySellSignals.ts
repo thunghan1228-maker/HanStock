@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createVisibilityGatedInterval } from "../../lib/useVisibilityGatedInterval";
 import { type MainForceGroupRankings } from "../../lib/main-force-group-ranks";
 import { isActiveIntradayCenterSignal } from "../../lib/intraday-center-signals";
-import { BLACK_DRAGON_SELECTION_VERSION, isBlackDragonScanAllowed, isBlackDragonSignalWindow } from "../../lib/black-dragon-session";
 import { normalizeInstantLargeOrderSignal } from "../../lib/instant-large-thresholds.mjs";
 import { hasQualifiedExtraLargeTriggerForce } from "../../lib/intraday-extra-large-sell";
 import { filterAjIntradayLargeForceSignals, filterCandidateIntradayLargeForceSignals, type AjLargeForceGroupTransition } from "../../lib/intraday-large-force";
@@ -17,7 +16,6 @@ import {
   type AjLargeForceFilterPayload,
   type AjLargeForceFilterStatus,
   type IntradaySignalCenterMode,
-  type BlackDragonIntradayCenterPayload,
   type FloatingPanelPosition,
   type FloatingPanelSize,
   EARLY_SELL_SEEN_KEY,
@@ -106,8 +104,6 @@ export function useEarlySellSignals({
   const [extraLargeCheck, setExtraLargeCheck] = useState<"checking" | "complete" | "incomplete">("checking");
 
   const [todaySignals, setTodaySignals] = useState<DaytradeEarlySellSignal[]>([]);
-  const [blackDragonSignals, setBlackDragonSignals] = useState<DaytradeEarlySellSignal[]>([]);
-  const [blackDragonReady, setBlackDragonReady] = useState(false);
   const [fourGateSignals, setFourGateSignals] = useState<DaytradeEarlySellSignal[]>([]);
   const [mainForceSignals, setMainForceSignals] = useState<DaytradeEarlySellSignal[]>([]);
   const [extraLargeSellSignals, setExtraLargeSellSignals] = useState<DaytradeEarlySellSignal[]>([]);
@@ -149,106 +145,6 @@ export function useEarlySellSignals({
   const largeForceAjTradeDateRef = useRef("");
   const dismissedPopupSignalKeys = useRef<Set<string>>(new Set());
   const historyDateChanged = useRef(false);
-
-  useEffect(() => {
-    let stopped = false;
-    let collectorInFlight = false;
-    let baseBackfillStarted = false;
-    const waitingForBlackDragonStart = () => {
-      if (isBlackDragonScanAllowed()) return false;
-      if (!stopped) {
-        setBlackDragonSignals(current => current.length ? [] : current);
-        setBlackDragonReady(true);
-        setQueue(current => current.some(signal => signal.strategyKind === "blackDragon")
-          ? current.filter(signal => signal.strategyKind !== "blackDragon") : current);
-      }
-      return true;
-    };
-    const liveRows = (payload: BlackDragonIntradayCenterPayload) => (payload.signals ?? []).flatMap((row): DaytradeEarlySellSignal[] => {
-      const tradeDate = String(row.tradeDate ?? payload.signalDate ?? "").replaceAll("/", "-");
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate) || !row.code || !isBlackDragonSignalWindow(Number(row.barTs)) || row.selectionRuleVersion !== BLACK_DRAGON_SELECTION_VERSION) return [];
-      const tier = row.tier === "surge" ? "強爆量" : row.tier === "selected" ? "精選" : "全部";
-      const cumulativeLots = Math.round((Number(row.cumulativeVolume) || 0) / 1_000);
-      const averageLots = Math.round((Number(row.averageVolume20d) || 0) / 1_000);
-      return [{
-        tradeDate,
-        ticker: row.code,
-        name: row.name?.trim() || row.code,
-        kind: "riverBear",
-        label: `創高的黑龍｜盤中${tier}`,
-        barTs: Number(row.barTs),
-        price: Number(row.price) || 0,
-        changePct: Number.isFinite(row.changePct) ? Number(row.changePct) : undefined,
-        note: `同根五分K最高 ${formatWatchlistPrice(row.signalHigh, "—")} ＞ 前五日高 ${formatWatchlistPrice(row.referenceHigh5, "—")}｜當時價 ${formatWatchlistPrice(row.price, "—")} ＜ 今日開盤 ${formatWatchlistPrice(row.sessionOpen, "—")}（日K暫收黑）｜盤中首次成立｜正式 67 族群 ${row.groupName ?? "—"}｜創高 ${row.newHighPeriods?.map((period) => `${period}日`).join("、") || "—"}｜均線總分 ${Number(row.maScore ?? row.score).toFixed(0)}｜同時段量比 ${Number(row.projectedVolumeRatio || 0).toFixed(2)}×｜當時累計成交量 ${cumulativeLots.toLocaleString("zh-TW")} 張｜20日均量 ${averageLots.toLocaleString("zh-TW")} 張｜當時累計成交金額 ${formatTwd(Number(row.cumulativeTurnover) || 0)}｜黑K實體 ${Number(row.blackBodyPct || 0).toFixed(2)}%`,
-        sourceUniverse: "riverRadar",
-        riverSignalType: "black-dragon",
-        strategyKind: "blackDragon",
-      }];
-    }).sort((left, right) => right.barTs - left.barTs);
-    const ensureBases = async () => {
-      if (baseBackfillStarted || waitingForBlackDragonStart()) return;
-      baseBackfillStarted = true;
-      const tasks = (["twse", "tpex"] as const).flatMap((market) => Array.from({ length: market === "twse" ? 10 : 7 }, (_, indicatorStep) => () =>
-        fetch(`/api/technical-market?compact=1&stockIndicatorBackfill=1&dailyStrategies=1&indicatorMarket=${market}&indicatorStep=${indicatorStep}&blackDragon=1`, { cache: "no-store" })));
-      // Each batch carries long candle histories. Keep this background repair
-      // serial so concurrent batches cannot exhaust the Worker memory limit.
-      for (const task of tasks) {
-        if (stopped) break;
-        await Promise.allSettled([task()]);
-      }
-    };
-    const applyLive = (payload: BlackDragonIntradayCenterPayload) => {
-      if (stopped || waitingForBlackDragonStart()) return;
-      const mapped = liveRows(payload);
-      const activeTradeDate = payload.signalDate?.replaceAll("/", "-") ?? mapped[0]?.tradeDate;
-      setBlackDragonSignals((current) => activeTradeDate && current.some((signal) => signal.tradeDate > activeTradeDate)
-        ? current
-        : mapped);
-      const approvedBlackDragonKeys = new Set(mapped.map(intradaySignalKey));
-      setQueue((current) => current.filter((signal) => signal.strategyKind !== "blackDragon"
-        || approvedBlackDragonKeys.has(intradaySignalKey(signal))));
-      setBlackDragonReady(true);
-      if (Number(payload.baseCoverage?.missing) > 0) void ensureBases();
-      const now = Date.now();
-      const fresh = mapped.filter((signal) => {
-        const key = intradaySignalKey(signal);
-        if (seenKeys.current.has(key) || now - signal.barTs > 120_000) return false;
-        seenKeys.current.add(key);
-        return true;
-      });
-      if (fresh.length && signalAlertsEnabledRef.current) setQueue((current) => {
-        const queued = new Set(current.map(intradaySignalKey));
-        return [...current, ...fresh.filter((signal) => !queued.has(intradaySignalKey(signal)))].slice(-2000);
-      });
-    };
-    const loadLive = async () => {
-      if (waitingForBlackDragonStart()) return;
-      try {
-        const response = await fetch("/api/black-dragon-intraday?fast=1", { cache: "no-store", signal: AbortSignal.timeout(12_000) });
-        if (response.ok) applyLive(await response.json() as BlackDragonIntradayCenterPayload);
-      } catch {
-        // 保留最後一次成功結果，下一輪繼續讀取。
-      }
-    };
-    const collectLive = async () => {
-      if (collectorInFlight || waitingForBlackDragonStart()) return;
-      collectorInFlight = true;
-      try {
-        const endpoint = isIntradaySignalCollectionWindow() ? "/api/black-dragon-intraday" : "/api/black-dragon-intraday?backfill=1";
-        const response = await fetch(endpoint, { cache: "no-store", signal: AbortSignal.timeout(55_000) });
-        if (response.ok) applyLive(await response.json() as BlackDragonIntradayCenterPayload);
-      } catch {
-        // 本批失敗不清除既有訊號；下一批會從永久進度繼續掃描。
-      } finally {
-        collectorInFlight = false;
-      }
-    };
-    void loadLive();
-    void collectLive();
-    const readTimer = createVisibilityGatedInterval(() => void loadLive(), 5_000);
-    const collectTimer = createVisibilityGatedInterval(() => void collectLive(), 8_000);
-    return () => { stopped = true; readTimer.cancel(); collectTimer.cancel(); };
-  }, []);
 
   useEffect(() => {
     if (groupRankings?.strong?.length || groupRankings?.weak?.length) {
@@ -682,7 +578,7 @@ export function useEarlySellSignals({
     };
   }, [centerMode, centerOpen, selectedDate]);
 
-  const signalTickers = useMemo(() => [...new Set([...todaySignals, ...blackDragonSignals, ...instantLargeSignals, ...mainForceSignals, ...fourGateSignals, ...extraLargeSellSignals, ...extraLargeBuySignals, ...largeForceSignals, ...historySignals, ...queue].map((item) => item.ticker))].sort().join(","), [blackDragonSignals, extraLargeBuySignals, extraLargeSellSignals, fourGateSignals, historySignals, instantLargeSignals, largeForceSignals, mainForceSignals, queue, todaySignals]);
+  const signalTickers = useMemo(() => [...new Set([...todaySignals, ...instantLargeSignals, ...mainForceSignals, ...fourGateSignals, ...extraLargeSellSignals, ...extraLargeBuySignals, ...largeForceSignals, ...historySignals, ...queue].map((item) => item.ticker))].sort().join(","), [extraLargeBuySignals, extraLargeSellSignals, fourGateSignals, historySignals, instantLargeSignals, largeForceSignals, mainForceSignals, queue, todaySignals]);
   const largeForceAjRequestKey = useMemo(() => {
     const tradeDate = largeForceSignals[0]?.tradeDate;
     const tickers = [...new Set(largeForceSignals.map((signal) => signal.ticker.trim().toUpperCase()).filter(Boolean))].sort();
@@ -737,8 +633,7 @@ export function useEarlySellSignals({
     };
   }, [largeForceAjRequestKey]);
   const focusedSignalTickers = useMemo(() => {
-    const focusedSignals = centerMode === "blackDragon" ? blackDragonSignals
-      : centerMode === "fiveMinuteTwelveShort" ? todaySignals.filter(isFiveMinuteTwelveShortSignal)
+    const focusedSignals = centerMode === "fiveMinuteTwelveShort" ? todaySignals.filter(isFiveMinuteTwelveShortSignal)
       : centerMode === "fiveMinuteOnePlusTwoLong" ? todaySignals.filter(isFiveMinuteOnePlusTwoLongSignal)
       : centerMode === "instantLarge" ? instantLargeSignals
       : centerMode === "mainForce" ? mainForceSignals
@@ -750,7 +645,7 @@ export function useEarlySellSignals({
       : centerMode === "history" ? historySignals
       : [...todaySignals, ...instantLargeSignals, ...mainForceSignals, ...extraLargeSellSignals, ...extraLargeBuySignals].sort((a, b) => b.barTs - a.barTs);
     return [...new Set(focusedSignals.map((signal) => signal.ticker).filter(Boolean))].join(",");
-  }, [blackDragonSignals, centerMode, extraLargeBuySignals, extraLargeSellSignals, fourGateSignals, historySignals, instantLargeSignals, largeForceSignals, mainForceSignals, todaySignals]);
+  }, [centerMode, extraLargeBuySignals, extraLargeSellSignals, fourGateSignals, historySignals, instantLargeSignals, largeForceSignals, mainForceSignals, todaySignals]);
   useEffect(() => {
     if (!signalTickers) return;
     let active = true;
@@ -919,7 +814,6 @@ export function useEarlySellSignals({
     : [];
   // 各頁籤以訊號種類硬性隔離；切換時不能沿用上一頁的清單內容。
   const selectedCenterSignals = centerMode === "today" ? combinedTodaySignals
-    : centerMode === "blackDragon" ? blackDragonSignals
     : centerMode === "fiveMinuteTwelveShort" ? combinedTodaySignals.filter(isFiveMinuteTwelveShortSignal)
     : centerMode === "fiveMinuteOnePlusTwoLong" ? combinedTodaySignals.filter(isFiveMinuteOnePlusTwoLongSignal)
     : centerMode === "instantLarge" ? instantLargeSignals.filter(isInstantLargeSignal)
@@ -933,8 +827,6 @@ export function useEarlySellSignals({
     ? !historyLoading
     : centerMode === "today"
       ? signalSnapshotReady
-      : centerMode === "blackDragon"
-        ? blackDragonReady
       : centerMode === "largeForce"
         ? signalSnapshotReady && (largeForceSignals.length === 0 || largeForceAjStatus === "ready" || largeForceAjStatus === "error")
         : signalSnapshotReady;
@@ -1009,8 +901,6 @@ export function useEarlySellSignals({
     signalAlertsEnabled,
     extraLargeCheck,
     todaySignals,
-    blackDragonSignals,
-    blackDragonReady,
     fourGateSignals,
     mainForceSignals,
     extraLargeSellSignals,
