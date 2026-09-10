@@ -66,7 +66,9 @@ function isIntradaySignalCollectionWindow() {
 
 function isLargeForceBackfillWindow() {
   const now = taipeiSessionState();
-  return now.weekday !== "Sat" && now.weekday !== "Sun" && now.minutes >= 9 * 60;
+  // 收盤後留 1.5 小時緩衝讓官方資料回補；過了 15:00 再沒完成就停到隔天，
+  // 避免來源離線時每 8 秒重試到半夜。
+  return now.weekday !== "Sat" && now.weekday !== "Sun" && now.minutes >= 9 * 60 && now.minutes <= 15 * 60;
 }
 
 function normalizeDisplayedInstantLargeSignals(signals: DaytradeEarlySellSignal[]) {
