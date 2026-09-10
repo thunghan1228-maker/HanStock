@@ -117,6 +117,11 @@ function movingAverage(values,window){
   return out;
 }
 
+// Lightweight Charts 把數字時間戳當 UTC 顯示；bar.ts 是 UTC 毫秒，
+// 這裡先加 8 小時，讓圖表顯示的時鐘直接對上台北時間，不用另外處理時區。
+const TAIPEI_OFFSET_SECONDS=8*3600;
+function chartTime(tsMs){return Math.floor(tsMs/1000)+TAIPEI_OFFSET_SECONDS}
+
 function renderChart(bars){
   ensureChart();
   $('#chartEmpty').classList.toggle('hidden',!!bars.length);
@@ -124,8 +129,8 @@ function renderChart(bars){
   if(!bars.length)return;
 
   const sorted=[...bars].sort((a,b)=>a.ts-b.ts);
-  const candles=sorted.map(b=>({time:Math.floor(b.ts/1000),open:b.open,high:b.high,low:b.low,close:b.close}));
-  const volumes=sorted.map(b=>({time:Math.floor(b.ts/1000),value:b.volume,color:b.close>=b.open?'rgba(255,107,122,.5)':'rgba(70,160,255,.5)'}));
+  const candles=sorted.map(b=>({time:chartTime(b.ts),open:b.open,high:b.high,low:b.low,close:b.close}));
+  const volumes=sorted.map(b=>({time:chartTime(b.ts),value:b.volume,color:b.close>=b.open?'rgba(255,107,122,.5)':'rgba(70,160,255,.5)'}));
   const closes=sorted.map(b=>b.close);
   const ma5=movingAverage(closes,5);
   const ma20=movingAverage(closes,20);
@@ -146,7 +151,7 @@ function renderChart(bars){
 
 async function loadCode(code){
   if(!code)return;
-  $('#stockTitle').textContent=code+' 載入中…';
+  if($('#stockTitle').dataset.code!==code){$('#stockTitle').textContent=code+' 載入中…';$('#stockTitle').dataset.code=code}
   try{
     const d=await jsonFetch(`/api/hub/live-bars/${encodeURIComponent(code)}?interval=${currentInterval}`);
     const q=d.quote||{};

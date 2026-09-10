@@ -390,6 +390,19 @@ def get_latest_stock_quotes(
     }
 
 
+@app.get("/api/group-strength")
+def get_group_strength_ranking() -> dict[str, Any]:
+    """全市場族群漲跌幅平均排行；用快照 API，不佔用即時行情訂閱池。"""
+    svc = _quote_service_or_503()
+    from group_snapshot import compute_group_strength
+
+    try:
+        result = compute_group_strength(svc)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"族群強弱排行暫時無法取得：{exc}") from exc
+    return {"status": "ok", **result}
+
+
 @app.get("/api/realtime/group/{keyword}")
 def get_group_realtime(
     keyword: str,
@@ -644,13 +657,35 @@ def get_battle_daytrade_signals() -> dict[str, Any]:
     all_signals = payload.get("signals") or []
     four_gate = [s for s in all_signals if str(s.get("kind") or "").startswith("fourGate")]
     extra_large = [s for s in all_signals if str(s.get("kind") or "").startswith("intradayExtraLarge")]
+    instant_large = [s for s in all_signals if str(s.get("kind") or "").startswith("instantLarge")]
+    categorized_ids = {id(s) for s in (*four_gate, *extra_large, *instant_large)}
     return {
         "status": "ok",
         "tradeDate": payload.get("tradeDate"),
         "fourGateSignals": four_gate,
         "extraLargeSignals": extra_large,
-        "otherSignals": [s for s in all_signals if s not in four_gate and s not in extra_large],
+        "instantLargeSignals": instant_large,
+        "otherSignals": [s for s in all_signals if id(s) not in categorized_ids],
     }
+
+
+_large_force_cache: dict[str, Any] = {"payload": None, "fetched_at": 0.0}
+LARGE_FORCE_CACHE_SECONDS = 15
+
+
+@app.get("/api/battle/large-force")
+def get_battle_large_force(limit: int = Query(30, ge=1, le=200)) -> dict[str, Any]:
+    """盤中大戶力：讀 Battle 網站全市場即時大戶力排行的正式結果。"""
+    try:
+        payload = _fetch_battle_json(
+            "/api/intraday-large-force-values?scope=market", _large_force_cache, LARGE_FORCE_CACHE_SECONDS
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"盤中大戶力暫時無法取得：{exc}") from exc
+
+    rows = payload.get("rows") or []
+    rows = sorted(rows, key=lambda r: abs(float(r.get("forcePct") or 0)), reverse=True)[:limit]
+    return {"status": "ok", "tradeDate": payload.get("tradeDate"), "count": len(rows), "rows": rows}
 
 
 @app.get("/api/battle/daily-picks")

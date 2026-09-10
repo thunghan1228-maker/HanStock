@@ -87,9 +87,21 @@
   </section>
 
   <section class="card">
-    <h2>盤中大戶訊號<span class="badge gold">四項精選／特大買賣單</span></h2>
+    <h2>族群強弱排行<span class="badge purple" id="groupStrengthMeta"></span></h2>
+    <div id="groupStrengthEmpty" class="empty">載入中…</div>
+    <div class="groups hidden" id="groupStrengthGrid"></div>
+  </section>
+
+  <section class="card">
+    <h2>盤中大戶訊號<span class="badge gold">四項精選／特大買賣單／族群瞬間大單</span></h2>
     <div id="largeOrderEmpty" class="empty">載入中…</div>
     <div id="largeOrderList"></div>
+  </section>
+
+  <section class="card">
+    <h2>盤中大戶力</h2>
+    <div id="largeForceEmpty" class="empty">載入中…</div>
+    <div class="groups hidden" id="largeForceGrid"></div>
   </section>
 
   <section class="card">
@@ -167,11 +179,42 @@ async function loadLargeOrders(){
   const empty=$('#largeOrderEmpty'),list=$('#largeOrderList');
   try{
     const d=await jsonFetch('/api/battle/daytrade-signals');
-    const signals=[...(d.fourGateSignals||[]),...(d.extraLargeSignals||[])];
+    const signals=[...(d.fourGateSignals||[]),...(d.extraLargeSignals||[]),...(d.instantLargeSignals||[])]
+      .sort((a,b)=>(Number(b.barTs)||0)-(Number(a.barTs)||0));
     empty.classList.toggle('hidden',!!signals.length);
-    if(!signals.length){empty.textContent='今日尚無四項精選或特大買賣單訊號。';list.innerHTML='';return}
-    list.innerHTML=signals.map(renderSignalRow).join('');
+    if(!signals.length){empty.textContent='今日尚無四項精選、特大買賣單或族群瞬間大單訊號。';list.innerHTML='';return}
+    list.innerHTML=signals.slice(0,50).map(renderSignalRow).join('');
   }catch(e){empty.textContent='訊號暫時無法取得。';empty.classList.remove('hidden');list.innerHTML=''}
+}
+
+async function loadGroupStrength(){
+  const empty=$('#groupStrengthEmpty'),grid=$('#groupStrengthGrid'),meta=$('#groupStrengthMeta');
+  try{
+    const d=await jsonFetch('/api/group-strength');
+    const groups=d.groups||[];
+    empty.classList.toggle('hidden',!!groups.length);
+    grid.classList.toggle('hidden',!groups.length);
+    if(!groups.length){empty.textContent='族群強弱排行暫時沒有資料。';return}
+    meta.textContent=`快照 ${d.quote_count}/${d.requested_count} 檔`;
+    const rising=groups.slice(0,6),falling=groups.slice(-6).reverse();
+    const row=(g,rank)=>`<div class="grow"><span>${rank}　${g.group_name}</span><span class="chg ${chgClass(g.avg_change_rate)}">${signedNum(g.avg_change_rate)}%</span></div>`;
+    grid.innerHTML=`<div style="grid-column:1/-1;color:var(--muted);font-size:12px;margin-bottom:-2px">漲幅前六大族群</div>`
+      +rising.map((g,i)=>row(g,i+1)).join('')
+      +`<div style="grid-column:1/-1;color:var(--muted);font-size:12px;margin:6px 0 -2px">跌幅前六大族群</div>`
+      +falling.map((g,i)=>row(g,i+1)).join('');
+  }catch(e){empty.textContent='即時行情尚未啟用，或族群強弱排行暫時無法取得。';empty.classList.remove('hidden');grid.classList.add('hidden')}
+}
+
+async function loadLargeForce(){
+  const empty=$('#largeForceEmpty'),grid=$('#largeForceGrid');
+  try{
+    const d=await jsonFetch('/api/battle/large-force?limit=12');
+    const rows=d.rows||[];
+    empty.classList.toggle('hidden',!!rows.length);
+    grid.classList.toggle('hidden',!rows.length);
+    if(!rows.length){empty.textContent='盤中大戶力暫時沒有資料。';return}
+    grid.innerHTML=rows.map(r=>`<a class="grow" href="/kline?code=${encodeURIComponent(r.ticker||r.code||'')}"><span class="code">${r.ticker||r.code||''} ${r.name||''}</span><span class="chg ${chgClass(r.forcePct)}">${signedNum(r.forcePct)}%</span></a>`).join('');
+  }catch(e){empty.textContent='盤中大戶力暫時無法取得。';empty.classList.remove('hidden');grid.classList.add('hidden')}
 }
 
 async function loadDailyPicks(){
@@ -200,7 +243,7 @@ async function showAll(){const box=$('#searchResult');box.textContent='載入中
 
 $('#searchBtn').onclick=search;
 $('#showAllBtn').onclick=showAll;
-$('#refreshBtn').onclick=()=>{loadHealth();loadRule1();updateFutures();loadLargeOrders();loadDailyPicks()};
+$('#refreshBtn').onclick=()=>{loadHealth();loadRule1();updateFutures();loadLargeOrders();loadDailyPicks();loadGroupStrength();loadLargeForce()};
 $('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
 
 loadHealth();
@@ -208,8 +251,12 @@ loadRule1();
 updateFutures();
 loadLargeOrders();
 loadDailyPicks();
+loadGroupStrength();
+loadLargeForce();
 setInterval(updateFutures,3000);
 setInterval(loadLargeOrders,10000);
+setInterval(loadGroupStrength,20000);
+setInterval(loadLargeForce,15000);
 </script>
 </body>
 </html>
