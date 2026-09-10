@@ -24,7 +24,11 @@ _market_data_lifespan = app.router.lifespan_context
 async def _persistent_lifespan(fastapi_app):
     async with _market_data_lifespan(fastapi_app) as state:
         # 主力副圖是唯一保留的持久化背景工作。
-        start_main_force_collector()
+        # 備援 Railway 專案不登入 Shioaji，因此不啟動沒有工作的保存執行緒。
+        from quote_service import quote_deployment_role
+
+        if quote_deployment_role() == "primary":
+            start_main_force_collector()
         try:
             yield state
         finally:
