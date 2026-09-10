@@ -520,7 +520,7 @@ export default function KlinePage() {
     };
     queueMicrotask(() => { if (active && !restored) setForceStatus("loading"); });
     void load();
-    const timer = createVisibilityGatedInterval(() => { void load(); }, 30_000);
+    const timer = createVisibilityGatedInterval(() => { void load(); }, 60_000);
     return () => { active = false; controller.abort(); timer.cancel(); };
   }, [ticker, forceInterval, symbolReady]);
   useEffect(() => {
