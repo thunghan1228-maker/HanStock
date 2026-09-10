@@ -6,7 +6,7 @@ import StockTradingBadges from "../StockTradingBadges";
 import { BLACK_DRAGON_MODEL_VERSION, buildBlackDragonRows, type BlackDragonRow, type BlackDragonSourceRow } from "../../lib/black-dragon";
 import BlackDragonEvidence from "./BlackDragonEvidence";
 
-type RuleKey = "today" | "threeDay" | "fiveDay" | "combined" | "acceleration" | "surge" | "strongDays" | "trustDays" | "maScore" | "candle" | "price" | "changePct" | "bullish" | "bearish" | "triangle" | "vcp" | "blackDragon" | "avoidRisk";
+type RuleKey = "today" | "threeDay" | "fiveDay" | "combined" | "acceleration" | "surge" | "strongDays" | "trustDays" | "maScore" | "candle" | "price" | "changePct" | "bullish" | "bearish" | "vcp" | "blackDragon" | "avoidRisk";
 type ScoreRuleKey = Extract<RuleKey, "today" | "threeDay" | "fiveDay" | "combined" | "acceleration" | "surge" | "strongDays" | "trustDays" | "maScore">;
 type Comparator = "min" | "max";
 type CandleMode = "red" | "black";
@@ -104,7 +104,6 @@ const ruleCards: Array<{
   { key: "changePct", group: "價格面", title: "漲跌幅區間", note: "依最新行情的漲跌幅範圍篩選。" },
   { key: "bullish", group: "快速判斷", title: "多方雙強", note: "今天分數至少 60，且五日平均至少 20。" },
   { key: "bearish", group: "快速判斷", title: "空方雙弱", note: "今天分數至多 -60，且五日平均至多 -20。" },
-  { key: "triangle", group: "型態面", title: "三角收斂候選", note: "只保留 HanStock 日線三角收斂正式掃描名單。" },
   { key: "vcp", group: "型態面", title: "VCP 波動收縮", note: "高檔回檔與量能逐次收縮，可選形成中、接近突破、帶量突破或過熱。" },
   { key: "blackDragon", group: "型態面", title: "創高黑龍", note: "只限 HanStock 正式 67 族群；最近 5 個完成交易日內，當日最高價須高於前五個交易日最高點（不含當日、不含平高），同日收黑 K，且六均線排列至少 10 分。" },
   { key: "avoidRisk", group: "風險面", title: "排除處置風險", note: "排除疑似處置、處置中與即將處置的股票。" },
@@ -196,7 +195,6 @@ export default function StrategyWorkbench({ rows, loading, dataDate, quoteDataDa
   const [technicalDataDate, setTechnicalDataDate] = useState("—");
   const [technicalUpdatedAt, setTechnicalUpdatedAt] = useState("—");
   const [riskCodes, setRiskCodes] = useState<Set<string>>(new Set());
-  const [triangleCodes, setTriangleCodes] = useState<Set<string>>(new Set());
   const [vcpRows, setVcpRows] = useState<Record<string, VcpCandidate>>({});
   const [vcpStatus, setVcpStatus] = useState<VcpStatus>("接近突破");
   const [vcpDataState, setVcpDataState] = useState<VcpDataState>("loading");
@@ -232,19 +230,6 @@ export default function StrategyWorkbench({ rows, loading, dataDate, quoteDataDa
       .catch(() => undefined);
     return () => controller.abort();
   }, [enabled, riskCodes.size]);
-
-  useEffect(() => {
-    if (!enabled.has("triangle") || triangleCodes.size > 0) return;
-    const controller = new AbortController();
-    void fetch("/api/triangles", { cache: "no-store", signal: controller.signal })
-      .then((response) => response.ok ? response.json() as Promise<{ rows?: Array<Record<string, unknown>> }> : null)
-      .then((payload) => {
-        if (!payload || controller.signal.aborted) return;
-        setTriangleCodes(new Set((payload.rows ?? []).map((row) => String(row.stock_code ?? row.code ?? row.ticker ?? "").trim().toUpperCase()).filter(Boolean)));
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [enabled, triangleCodes.size]);
 
   useEffect(() => {
     if (!enabled.has("blackDragon") || blackDragonRows && Object.keys(blackDragonRows).length > 0) return;
@@ -433,7 +418,6 @@ export default function StrategyWorkbench({ rows, loading, dataDate, quoteDataDa
       if (enabled.has("changePct") && (row.changePct === null || row.changePct < changeRange[0] || row.changePct > changeRange[1])) return false;
       if (enabled.has("bullish") && row.judgement !== "多方雙強") return false;
       if (enabled.has("bearish") && row.judgement !== "空方雙弱") return false;
-      if (enabled.has("triangle") && !triangleCodes.has(row.code)) return false;
       if (enabled.has("vcp") && (!vcpRows[row.code] || (vcpStatus !== "全部VCP" && vcpRows[row.code].status !== vcpStatus))) return false;
       if (enabled.has("blackDragon") && !blackDragonRows[row.code]) return false;
       if (enabled.has("avoidRisk") && riskCodes.has(row.code)) return false;
@@ -452,7 +436,7 @@ export default function StrategyWorkbench({ rows, loading, dataDate, quoteDataDa
         ? String(av).localeCompare(String(bv), "zh-TW")
         : String(bv).localeCompare(String(av), "zh-TW");
     });
-  }, [ran, rows, market, group, enabled, thresholds, comparators, priceRange, changeRange, candleRange, candleMode, technical, riskCodes, triangleCodes, vcpRows, vcpStatus, blackDragonRows, sort]);
+  }, [ran, rows, market, group, enabled, thresholds, comparators, priceRange, changeRange, candleRange, candleMode, technical, riskCodes, vcpRows, vcpStatus, blackDragonRows, sort]);
 
   useEffect(() => {
     if (!ran || !results.length || Object.keys(exRights).length > 0) return;
