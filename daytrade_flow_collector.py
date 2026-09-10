@@ -9,14 +9,56 @@ import time
 from datetime import datetime
 
 from daytrade_flow import latest_completed_trade_date, start_full_market_scan
-from daytrade_flow_store import has_completed_daytrade_scan
+from daytrade_flow_store import has_completed_daytrade_scan, load_daytrade_scan_status
 from otc_index import TW_TZ
 
 logger = logging.getLogger("hanstock.daytrade_flow_collector")
 
 POLL_SECONDS = max(60, int(os.getenv("HANSTOCK_DAYTRADE_COLLECTOR_SECONDS", "300")))
+RETRY_COOLDOWN_SECONDS = max(
+    30 * 60,
+    int(os.getenv("HANSTOCK_DAYTRADE_RETRY_COOLDOWN_SECONDS", "1800")),
+)
 _started = False
 _lock = threading.Lock()
+
+
+def _scan_retry_allowed(trade_date: str, now: datetime) -> bool:
+    """失敗/部分完成時不要每 5 分鐘重啟一次昂貴的全市場歷史掃描。"""
+    status = load_daytrade_scan_status(trade_date)
+    state = str(status.get("status") or "not_started")
+    if state == "completed":
+        return False
+    if state == "running":
+        return False
+    if state not in {"failed", "partial"}:
+        return True
+
+    updated_at = str(
+        status.get("updated_at")
+        or status.get("completed_at")
+        or status.get("started_at")
+        or ""
+    ).strip()
+    if not updated_at:
+        return True
+    try:
+        updated = datetime.fromisoformat(updated_at)
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=TW_TZ)
+        age = (now - updated.astimezone(TW_TZ)).total_seconds()
+    except (TypeError, ValueError):
+        return True
+    if age < RETRY_COOLDOWN_SECONDS:
+        logger.info(
+            "每日隔日沖掃描暫停重試: trade_date=%s status=%s age=%.0fs cooldown=%ss",
+            trade_date,
+            state,
+            max(0.0, age),
+            RETRY_COOLDOWN_SECONDS,
+        )
+        return False
+    return True
 
 
 def collect_once(now: datetime | None = None) -> bool:
@@ -26,6 +68,8 @@ def collect_once(now: datetime | None = None) -> bool:
         return False
     trade_date = latest_completed_trade_date(current)
     if has_completed_daytrade_scan(trade_date):
+        return False
+    if not _scan_retry_allowed(trade_date, current):
         return False
     from quote_service import get_quote_service
 
