@@ -1,15 +1,9 @@
-"""啟動 HanStock FastAPI 服務（含 Shioaji 即時行情）。"""
+"""啟動 HanStock FastAPI 服務（含 Shioaji 台股即時行情）。"""
 
 import os
 import logging
 
 import uvicorn
-
-# 股票期貨若同月份同時存在標準與調整型 R1，優先標準契約；
-# 休市 Snapshot 時間同時做正規化，避免 +8 小時或 ts 無效時拿查詢時間冒充行情時間。
-# policy 模組載入後會修改同一個 stock_futures_service module，之後 hanstock_app 直接沿用。
-import stock_futures_standard_policy  # noqa: F401,E402
-import stock_futures_snapshot_policy  # noqa: F401,E402
 
 
 # 設定根日誌
@@ -28,7 +22,6 @@ if __name__ == "__main__":
     logger.info("＝＝＝＝ HanStock API 啟動中 ＝＝＝＝")
     logger.info("監聽：http://%s:%d", host, port)
     logger.info("SHIOAJI_QUOTE_ENABLED=%s", os.getenv("SHIOAJI_QUOTE_ENABLED", "true"))
-    logger.info("SHIOAJI_FUTURES_CODE=%s", os.getenv("SHIOAJI_FUTURES_CODE", "TXFR1"))
     logger.info("SHIOAJI_SIMULATION=%s", os.getenv("SHIOAJI_SIMULATION", "false"))
 
     # 確認關鍵環境變數是否存在（不印出值）
@@ -42,8 +35,7 @@ if __name__ == "__main__":
         "已設定" if has_ca else "未設定",
     )
 
-    # persistent_app 先載入既有 hanstock_app 的所有行情功能，
-    # 再增加 Railway SQLite 族群強弱歷史持久化 API；既有網址完全不變。
+    # 啟動既有 HanStock API；持久化層只保留目前需要的股票行情與主力副圖功能。
     uvicorn.run(
         "persistent_app:app",
         host=host,
