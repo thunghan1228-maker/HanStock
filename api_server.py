@@ -1,9 +1,7 @@
-"""HanStock 網站 API。
+"""HanStock 精簡版 API。
 
-提供族群、Rule1、台指期及台股動態即時行情，供 hanstock.xyz、
-台股族群雷達、LINE Bot 或 App 使用。
-
-v1.3.1: Railway 部署交接時完整釋放並延遲重建 Shioaji 行情連線。
+只保留：台股即時行情、股票 1m/5m Hub、族群查詢與 WebSocket。
+Rule1、三角收斂、VCP、台指期、OTC 指數與疑似隔日沖資金流已移除。
 """
 
 from __future__ import annotations
@@ -17,17 +15,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from config import SHIOAJI_QUOTE_ENABLED
-from read_rule1_results import RESULT_PATH, load_rule1_results
-from stock_groups import STOCK_GROUPS, resolve_group_names
 from market_data_hub import get_market_data_hub
-from ws_server import websocket_endpoint
 from reconnect_monitor import get_reconnect_monitor
+from stock_groups import STOCK_GROUPS, resolve_group_names
+from ws_server import websocket_endpoint
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +33,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hanstock.api")
 
-API_VERSION = "1.4.1"
+API_VERSION = "2.0.0-lean"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 TW_TZ = timezone(timedelta(hours=8))
@@ -46,10 +43,9 @@ TW_TZ = timezone(timedelta(hours=8))
 async def lifespan(app: FastAPI):
     quote_svc = None
     quote_startup_thread = None
-    hub = get_market_data_hub()
     monitor = get_reconnect_monitor()
+
     if SHIOAJI_QUOTE_ENABLED:
-        logger.info("＝＝＝＝ 啟動 Shioaji 即時行情服務 ＝＝＝＝")
         try:
             from quote_service import get_quote_service, quote_startup_delay_seconds
 
@@ -62,9 +58,9 @@ async def lifespan(app: FastAPI):
                     try:
                         quote_svc.startup()
                         monitor.start()
-                        logger.info("＝＝＝＝ Market Data Hub 延遲啟動完成 ＝＝＝＝")
+                        logger.info("Market Data Hub 延遲啟動完成")
                     except Exception as exc:
-                        logger.error("Shioaji 延遲啟動失敗（API 仍繼續運作）: %s", exc)
+                        logger.error("Shioaji 延遲啟動失敗: %s", exc)
 
                 quote_startup_thread = threading.Thread(
                     target=delayed_startup,
@@ -72,14 +68,11 @@ async def lifespan(app: FastAPI):
                     daemon=True,
                 )
                 quote_startup_thread.start()
-                logger.info(
-                    "Railway 部署切換：API 先上線，Shioaji 延遲 %.0f 秒登入，避免新舊連線重疊。",
-                    startup_delay,
-                )
+                logger.info("API 先上線，Shioaji 延遲 %.0f 秒登入。", startup_delay)
             else:
                 quote_svc.startup()
                 monitor.start()
-                logger.info("＝＝＝＝ Market Data Hub 已啟動 ＝＝＝＝")
+                logger.info("Market Data Hub 已啟動")
         except Exception as exc:
             logger.error("Shioaji 即時行情啟動失敗（API 仍繼續運作）: %s", exc)
     else:
@@ -88,14 +81,8 @@ async def lifespan(app: FastAPI):
     yield
 
     if quote_svc is not None:
-        logger.info("＝＝＝＝ 關閉 Shioaji 即時行情服務 ＝＝＝＝")
         try:
             monitor.stop()
-            # 先登出 c1～c4 共享池，再登出 c0 主線；避免 Railway 舊容器
-            # 結束後，券商端仍保留四條孤兒 Session 阻擋新版登入。
-            from stock_futures_service import shutdown_stock_futures_quote_service
-
-            shutdown_stock_futures_quote_service()
             quote_svc.shutdown()
             if quote_startup_thread and quote_startup_thread.is_alive():
                 quote_startup_thread.join(timeout=5)
@@ -106,42 +93,9 @@ async def lifespan(app: FastAPI):
 def _allowed_origins() -> list[str]:
     raw = os.getenv(
         "HANSTOCK_CORS_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000,https://hanstock.xyz,https://www.hanstock.xyz",
+        "http://localhost:3000,http://127.0.0.1:3000",
     )
     return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _flatten_passed_stocks(results: dict[str, Any]) -> list[dict[str, Any]]:
-    flattened: list[dict[str, Any]] = []
-    for group in results.get("groups", []):
-        group_name = group.get("group_name", "")
-        for stock in group.get("passed_stocks", []):
-            flattened.append({"group_name": group_name, **stock})
-    return flattened
-
-
-def _latest_results_or_404() -> dict[str, Any]:
-    try:
-        return load_rule1_results()
-    except RuntimeError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-
-
-def _validate_sync_payload(payload: dict[str, Any]) -> None:
-    required_keys = {"generated_at", "summary", "groups"}
-    if not required_keys.issubset(payload):
-        raise HTTPException(status_code=422, detail="Rule1 JSON 格式不完整。")
-
-
-def _save_synced_results(payload: dict[str, Any]) -> None:
-    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = RESULT_PATH.with_suffix(".tmp")
-    import json
-
-    temporary_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    temporary_path.replace(RESULT_PATH)
 
 
 @lru_cache(maxsize=1)
@@ -165,7 +119,6 @@ def _quote_service_or_503():
 
 
 def _normalize_stock_code(raw: str) -> str:
-    """正規化並驗證單一股票代號。"""
     code = str(raw).strip().upper()
     if not code or len(code) > 12 or not code.replace("-", "").isalnum():
         raise HTTPException(status_code=422, detail=f"股票代號格式不正確：{raw}")
@@ -202,8 +155,6 @@ def _sort_group_stocks(stocks: list[dict[str, Any]], sort: str) -> list[dict[str
         return stocks
     if sort == "code":
         return sorted(stocks, key=lambda item: item["stock_code"])
-
-    # 預設依漲跌幅由高到低；無行情排在最後。
     return sorted(
         stocks,
         key=lambda item: (
@@ -218,13 +169,11 @@ def _sort_group_stocks(stocks: list[dict[str, Any]], sort: str) -> list[dict[str
 
 app = FastAPI(
     title="HanStock API",
-    description="HanStock 台灣股票族群、Rule1、台指期及台股即時行情 API",
+    description="HanStock 台灣股票即時行情與主力副圖 API",
     version=API_VERSION,
     lifespan=lifespan,
 )
 
-# Market history compresses especially well. Small quotes bypass compression;
-# Starlette negotiates gzip, preserves Vary, and leaves WebSocket/SSE untouched.
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 app.add_middleware(
     CORSMiddleware,
@@ -237,7 +186,7 @@ app.add_middleware(
 
 @app.get("/", include_in_schema=False)
 def website_redirect() -> RedirectResponse:
-    return RedirectResponse(url="https://www.hanstock.xyz/", status_code=308)
+    return RedirectResponse(url="/hub-dashboard", status_code=307)
 
 
 @app.get("/hub-dashboard", response_class=HTMLResponse, include_in_schema=False)
@@ -272,10 +221,7 @@ async def health() -> dict[str, Any]:
         "service": "HanStock API",
         "version": API_VERSION,
         "server_time": now,
-        "rule1_result_exists": RESULT_PATH.exists(),
         "group_count": len(STOCK_GROUPS),
-        # Railway project/service UUID 並非密鑰；公開於 health 只用來辨識兩個
-        # GitHub 自動部署中，哪一個實際承載 hanstock.xyz 正式流量。
         "deployment": {
             "provider": "railway" if os.getenv("RAILWAY_PROJECT_ID") else "local",
             "project_id": os.getenv("RAILWAY_PROJECT_ID"),
@@ -302,7 +248,6 @@ async def health() -> dict[str, Any]:
             base.update(svc.get_health())
             base["stock_realtime"] = svc.get_stock_health()
         except Exception as exc:
-            logger.exception("無法取得行情服務狀態")
             base.update({
                 "shioaji_initialized": False,
                 "shioaji_logged_in": False,
@@ -339,15 +284,6 @@ async def health() -> dict[str, Any]:
     return base
 
 
-@app.get("/api/quote/futures")
-def get_futures_quote() -> dict[str, Any]:
-    svc = _quote_service_or_503()
-    tick = svc.get_latest_tick()
-    if tick is None:
-        raise HTTPException(status_code=404, detail="尚未收到任何台指期行情資料。")
-    return {"status": "ok", "data": tick}
-
-
 @app.get("/api/realtime/status")
 def get_realtime_status() -> dict[str, Any]:
     svc = _quote_service_or_503()
@@ -362,15 +298,8 @@ def get_latest_stock_quotes(
 ) -> dict[str, Any]:
     svc = _quote_service_or_503()
     requested_codes = _split_codes(codes)
-    if not requested_codes:
-        requested_codes = svc.get_active_stock_codes()[:limit]
-    else:
-        requested_codes = requested_codes[:limit]
-
-    subscription = None
-    if subscribe and requested_codes:
-        subscription = svc.ensure_stock_subscriptions(requested_codes)
-
+    requested_codes = (requested_codes or svc.get_active_stock_codes())[:limit]
+    subscription = svc.ensure_stock_subscriptions(requested_codes) if subscribe and requested_codes else None
     quotes = svc.get_stock_quotes(requested_codes)
     data = [_stock_payload(code, quotes.get(code)) for code in requested_codes]
     return {
@@ -403,27 +332,21 @@ def get_group_realtime(
                 seen.add(code)
                 unique_codes.append(code)
 
-    max_codes = int(os.getenv("HANSTOCK_REALTIME_GROUP_MAX_CODES", "100"))
-    max_codes = max(1, min(190, max_codes))
+    max_codes = max(1, min(190, int(os.getenv("HANSTOCK_REALTIME_GROUP_MAX_CODES", "100"))))
     limited_codes = unique_codes[:max_codes]
     truncated_codes = unique_codes[max_codes:]
-
-    subscription = None
-    if subscribe:
-        subscription = svc.ensure_stock_subscriptions(limited_codes)
-
+    subscription = svc.ensure_stock_subscriptions(limited_codes) if subscribe else None
     quotes = svc.get_stock_quotes(limited_codes)
+
     groups: list[dict[str, Any]] = []
     for group_name in group_names:
         rows: list[dict[str, Any]] = []
         for code, name in STOCK_GROUPS[group_name]:
             code = str(code).upper()
-            if code not in quotes:
-                continue
-            item = _stock_payload(code, quotes.get(code))
-            item["stock_name"] = name
-            rows.append(item)
-
+            if code in quotes:
+                item = _stock_payload(code, quotes.get(code))
+                item["stock_name"] = name
+                rows.append(item)
         rows = _sort_group_stocks(rows, sort)
         for index, item in enumerate(rows, start=1):
             item["rank"] = index
@@ -447,22 +370,15 @@ def get_group_realtime(
 
 
 @app.get("/api/realtime/{stock_code}")
-def get_stock_realtime(
-    stock_code: str,
-    subscribe: bool = Query(default=True),
-) -> dict[str, Any]:
+def get_stock_realtime(stock_code: str, subscribe: bool = Query(default=True)) -> dict[str, Any]:
     svc = _quote_service_or_503()
-    code = _split_codes(stock_code)
-    if len(code) != 1:
-        raise HTTPException(status_code=422, detail="請提供一個股票代號。")
-    code_value = code[0]
-
-    subscription = svc.ensure_stock_subscriptions([code_value]) if subscribe else None
-    quote = svc.get_stock_quote(code_value)
+    code = _normalize_stock_code(stock_code)
+    subscription = svc.ensure_stock_subscriptions([code]) if subscribe else None
+    quote = svc.get_stock_quote(code)
     return {
         "status": "ok" if quote else "waiting",
         "subscription": subscription,
-        "data": _stock_payload(code_value, quote),
+        "data": _stock_payload(code, quote),
     }
 
 
@@ -470,10 +386,7 @@ def get_stock_realtime(
 def list_groups(include_stocks: bool = Query(default=False)) -> dict[str, Any]:
     groups = []
     for group_name, stocks in STOCK_GROUPS.items():
-        item: dict[str, Any] = {
-            "group_name": group_name,
-            "stock_count": len(stocks),
-        }
+        item: dict[str, Any] = {"group_name": group_name, "stock_count": len(stocks)}
         if include_stocks:
             item["stocks"] = [
                 {"stock_code": code, "stock_name": name} for code, name in stocks
@@ -488,121 +401,54 @@ def get_groups_by_keyword(keyword: str) -> dict[str, Any]:
         group_names = resolve_group_names(keyword)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-
-    groups = []
-    for group_name in group_names:
-        stocks = STOCK_GROUPS[group_name]
-        groups.append({
-            "group_name": group_name,
-            "stock_count": len(stocks),
-            "stocks": [
-                {"stock_code": code, "stock_name": name} for code, name in stocks
-            ],
-        })
-    return {"keyword": keyword, "matched_groups": groups}
-
-
-@app.get("/api/rule1/latest")
-def latest_rule1(passed_only: bool = Query(default=False)) -> dict[str, Any]:
-    results = _latest_results_or_404()
-    if not passed_only:
-        return results
     return {
-        "strategy": results.get("strategy"),
-        "generated_at": results.get("generated_at"),
-        "summary": results.get("summary", {}),
-        "passed_stocks": _flatten_passed_stocks(results),
-    }
-
-
-@app.get("/api/rule1/passed")
-def passed_rule1() -> dict[str, Any]:
-    results = _latest_results_or_404()
-    stocks = _flatten_passed_stocks(results)
-    return {
-        "strategy": results.get("strategy"),
-        "generated_at": results.get("generated_at"),
-        "count": len(stocks),
-        "stocks": stocks,
-    }
-
-
-@app.post("/api/rule1/sync")
-def sync_rule1(
-    payload: dict[str, Any] = Body(...),
-    x_hanstock_sync_token: str | None = Header(default=None),
-) -> dict[str, Any]:
-    expected_token = os.getenv("HANSTOCK_SYNC_TOKEN", "")
-    if not expected_token:
-        raise HTTPException(status_code=503, detail="伺服器尚未設定同步金鑰。")
-    if x_hanstock_sync_token != expected_token:
-        raise HTTPException(status_code=401, detail="同步金鑰不正確。")
-
-    _validate_sync_payload(payload)
-    _save_synced_results(payload)
-    return {
-        "status": "ok",
-        "message": "Rule1 結果同步成功",
-        "generated_at": payload.get("generated_at"),
-        "total_groups": payload.get("summary", {}).get("total_groups"),
-        "total_passed_records": payload.get("summary", {}).get("total_passed_records"),
+        "keyword": keyword,
+        "matched_groups": [
+            {
+                "group_name": name,
+                "stock_count": len(STOCK_GROUPS[name]),
+                "stocks": [
+                    {"stock_code": code, "stock_name": stock_name}
+                    for code, stock_name in STOCK_GROUPS[name]
+                ],
+            }
+            for name in group_names
+        ],
     }
 
 
 # ------------------------------------------------------------------
-# Market Data Hub API
+# Market Data Hub：只保留股票即時 1m/5m 資料。
 # ------------------------------------------------------------------
 
 @app.get("/api/hub/status")
 def get_hub_status() -> dict[str, Any]:
-    """Market Data Hub 狀態摘要。"""
     hub = get_market_data_hub()
     monitor = get_reconnect_monitor()
-    return {
-        "status": "ok",
-        "data": hub.get_hub_status(),
-        "reconnect": monitor.get_status(),
-    }
+    return {"status": "ok", "data": hub.get_hub_status(), "reconnect": monitor.get_status()}
 
 
 @app.get("/api/hub/ticks")
-async def get_hub_ticks(
-    codes: str | None = Query(default=None, description="逗號分隔股票代號"),
-) -> dict[str, Any]:
-    """Read in-memory ticks without waiting for the SDK request thread pool."""
+async def get_hub_ticks(codes: str | None = Query(default=None)) -> dict[str, Any]:
     hub = get_market_data_hub()
-    if codes:
-        code_list = [c.strip().upper() for c in codes.split(",") if c.strip()]
-        ticks = hub.get_ticks(code_list)
-    else:
-        ticks = hub.get_all_ticks()
+    code_list = _split_codes(codes)
+    ticks = hub.get_ticks(code_list) if code_list else hub.get_all_ticks()
     return {"status": "ok", "count": len(ticks), "data": ticks}
 
 
 @app.get("/api/hub/bars1m/{stock_code}")
 def get_hub_bars_1m(stock_code: str) -> dict[str, Any]:
-    """從 Hub 取得指定股票今日 1 分 K（含進行中的 K 棒）。"""
     hub = get_market_data_hub()
     code = _normalize_stock_code(stock_code)
     bars = hub.get_live_bars_1m(code)
-    return {
-        "status": "ok",
-        "code": code,
-        "interval": "1m",
-        "bar_count": len(bars),
-        "bars": bars,
-    }
+    return {"status": "ok", "code": code, "interval": "1m", "bar_count": len(bars), "bars": bars}
 
 
 @app.post("/api/hub/bars1m/batch")
-async def get_hub_bars_1m_batch(
-    payload: dict[str, Any] = Body(...),
-) -> dict[str, Any]:
-    """批次取得多檔今日 1 分 K，最多 200 檔。"""
+async def get_hub_bars_1m_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     raw_codes = payload.get("codes", [])
     if not isinstance(raw_codes, list):
         raise HTTPException(status_code=422, detail="codes 必須為陣列")
-
     codes: list[str] = []
     seen: set[str] = set()
     for raw_code in raw_codes[:200]:
@@ -610,285 +456,28 @@ async def get_hub_bars_1m_batch(
         if code not in seen:
             codes.append(code)
             seen.add(code)
-
-    hub = get_market_data_hub()
-    result = hub.get_live_bars_1m_batch(codes)
-    return {
-        "status": "ok",
-        "interval": "1m",
-        "requested_count": len(codes),
-        "data": result,
-    }
+    result = get_market_data_hub().get_live_bars_1m_batch(codes)
+    return {"status": "ok", "interval": "1m", "requested_count": len(codes), "data": result}
 
 
 @app.get("/api/hub/bars/{stock_code}")
 def get_hub_bars(stock_code: str) -> dict[str, Any]:
-    """從 Hub 取得指定股票今日 5 分 K（供 intradayScan 使用）。"""
     hub = get_market_data_hub()
     code = _normalize_stock_code(stock_code)
     bars = hub.get_live_bars(code)
-    return {
-        "status": "ok",
-        "code": code,
-        "interval": "5m",
-        "bar_count": len(bars),
-        "bars": bars,
-    }
+    return {"status": "ok", "code": code, "interval": "5m", "bar_count": len(bars), "bars": bars}
 
 
 @app.post("/api/hub/bars/batch")
-async def get_hub_bars_batch(
-    payload: dict[str, Any] = Body(...),
-) -> dict[str, Any]:
-    """批次取得多檔今日 5 分 K（供 intradayScan 批次使用）。"""
-    hub = get_market_data_hub()
-    codes = payload.get("codes", [])
-    if not isinstance(codes, list):
+async def get_hub_bars_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    raw_codes = payload.get("codes", [])
+    if not isinstance(raw_codes, list):
         raise HTTPException(status_code=422, detail="codes 必須為陣列")
-    codes = [str(c).strip().upper() for c in codes[:200] if c]
-    result = hub.get_live_bars_batch(codes)
-    return {
-        "status": "ok",
-        "requested_count": len(codes),
-        "data": result,
-    }
+    codes = [_normalize_stock_code(str(code)) for code in raw_codes[:200] if code]
+    result = get_market_data_hub().get_live_bars_batch(codes)
+    return {"status": "ok", "requested_count": len(codes), "data": result}
 
-
-@app.get("/api/hub/official/tpex-institutional-latest")
-def get_tpex_institutional_latest() -> dict[str, Any]:
-    """轉接櫃買中心最新完整三大法人資料，供正式前端穩定取用。"""
-    from institutional_flow import fetch_tpex_institutional_latest
-
-    try:
-        result = fetch_tpex_institutional_latest()
-    except RuntimeError as exc:
-        logger.warning("櫃買三大法人資料取得失敗：%s", exc)
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {
-        "status": "ok",
-        "source": "TPEx OpenAPI",
-        **result,
-    }
-
-
-@app.get("/api/hub/daytrade-flow-ranking")
-def get_daytrade_flow_ranking(
-    date: str | None = Query(default=None, description="指定交易日 YYYY-MM-DD；未指定取最近已收盤平日"),
-    codes: str | None = Query(default=None, description="可選：逗號分隔股票代號"),
-    limit: int = Query(default=500, ge=1, le=2000),
-    scan_limit: int = Query(default=80, ge=1, le=200),
-    force: bool = Query(default=False, description="強制重跑指定交易日的全市場掃描"),
-    include_all: bool = Query(default=False, description="指定 codes 時回傳所有有正式逐筆／待回補狀態的股票，不套排行條件"),
-) -> dict[str, Any]:
-    """回補 Shioaji 歷史逐筆成交並產生疑似隔日沖資金流排行。
-
-    不含券商分點身分；大單門檻與盤中主力副圖相同。未傳日期時，
-    週末會自動回到星期五，避免把星期六誤當成資料日。
-    """
-    from daytrade_flow import (
-        daytrade_flow_snapshot,
-        fetch_daily_market_snapshot,
-        resolve_trade_date,
-        scan_daytrade_flow,
-        start_full_market_scan,
-    )
-
-    try:
-        trade_date = resolve_trade_date(date)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    requested = _split_codes(codes)
-    if requested:
-        svc = _quote_service_or_503()
-        candidates = requested[:scan_limit]
-        try:
-            daily = fetch_daily_market_snapshot(trade_date)
-            rows, errors = scan_daytrade_flow(
-                svc,
-                trade_date=trade_date,
-                codes=candidates,
-                daily_rows=daily,
-                include_unclassified=include_all,
-            )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        selected = rows[:limit]
-        return {
-            "status": "ok",
-            "source": "shioaji_historical_ticks_estimate",
-            "scan_status": "diagnostic",
-            "data_date": trade_date,
-            "updated_at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
-            "requested_count": len(candidates),
-            "processed_count": len(candidates),
-            "available_count": len(rows),
-            "count": len(selected),
-            "rows": selected,
-            "errors": errors[:20],
-            "disclaimer": "由逐筆成交的大單方向推估，不含券商分點身分。",
-        }
-
-    # 全市場模式永不阻塞 HTTP：啟動背景工作後立即回傳已永久保存的進度與名單。
-    svc = None
-    if SHIOAJI_QUOTE_ENABLED:
-        from quote_service import get_quote_service
-
-        candidate_service = get_quote_service()
-        if bool(getattr(getattr(candidate_service, "state", None), "logged_in", False)):
-            svc = candidate_service
-    rows, scan = daytrade_flow_snapshot(trade_date, limit=limit)
-    started = False
-    if svc is not None and (force or scan.get("status") != "completed"):
-        started = start_full_market_scan(svc, trade_date, force=force)
-        if started:
-            # 讓前端立即知道工作已排入，不必等待第一批 SQLite progress。
-            scan = {**scan, "status": "starting"}
-
-    return {
-        "status": "ok",
-        "source": "twse_tpex_daily_and_shioaji_historical_ticks_estimate",
-        "scan_status": scan.get("status", "not_started"),
-        "scan_started": started,
-        "data_date": trade_date,
-        "updated_at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
-        "requested_count": int(scan.get("requested_count") or 0),
-        "processed_count": int(scan.get("processed_count") or 0),
-        "data_missing_count": int(scan.get("data_missing_count") or 0),
-        "available_count": len(rows),
-        "count": len(rows),
-        "rows": rows,
-        "errors": list(scan.get("errors") or [])[:20],
-        "disclaimer": "由逐筆成交的大單方向推估，不含券商分點身分。",
-    }
-
-
-# ------------------------------------------------------------------
-# 盤後選股：日線三角收斂
-# ------------------------------------------------------------------
-
-@app.get("/api/screener/vcp/latest")
-def get_vcp_screener_results(
-    status: str | None = Query(default=None, description="VCP形成中、接近突破、今日帶量突破、突破後過熱"),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict[str, Any]:
-    from vcp_screener import TARGET_STATUSES, load_vcp_results
-
-    if status and status not in TARGET_STATUSES:
-        raise HTTPException(status_code=422, detail="不支援的 VCP 狀態")
-    try:
-        result = load_vcp_results()
-    except RuntimeError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    rows = list(result.get("rows") or [])
-    # VCP 只依賴日 K，不應要求股票同時存在於法人籌碼母表。把正式市場別
-    # 隨結果回傳，前端才能在 VCP 單獨掃描時完整顯示上市、上櫃候選股。
-    if rows:
-        from database import get_connection
-
-        codes = [str(row.get("stock_code") or "") for row in rows]
-        placeholders = ",".join("?" for _ in codes)
-        with get_connection() as connection:
-            market_rows = connection.execute(
-                f"SELECT stock_code, market FROM stocks WHERE stock_code IN ({placeholders})",
-                codes,
-            ).fetchall()
-        market_by_code = {str(row["stock_code"]): str(row["market"] or "") for row in market_rows}
-        rows = [
-            {
-                **row,
-                "market": "上市" if market_by_code.get(str(row.get("stock_code"))) == "TSE" else "上櫃",
-            }
-            for row in rows
-        ]
-    if status:
-        rows = [row for row in rows if row.get("status") == status]
-    return {"status": "ok", "strategy": result.get("strategy"), "generated_at": result.get("generated_at"), "summary": result.get("summary", {}), "count": min(len(rows), limit), "rows": rows[:limit]}
-
-
-@app.post("/api/screener/vcp/run")
-def run_vcp_screener(x_hanstock_sync_token: str | None = Header(default=None)) -> dict[str, Any]:
-    expected_token = os.getenv("HANSTOCK_SYNC_TOKEN", "")
-    if not expected_token:
-        raise HTTPException(status_code=503, detail="伺服器尚未設定同步金鑰。")
-    if x_hanstock_sync_token != expected_token:
-        raise HTTPException(status_code=401, detail="同步金鑰不正確。")
-    from vcp_screener import scan_all_vcp
-
-    return {"status": "ok", **scan_all_vcp()}
-
-@app.get("/api/screener/triangles/latest")
-def get_triangle_screener_results(
-    status: str | None = Query(default=None, description="形成中、接近突破、突破待量、放量突破"),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict[str, Any]:
-    from triangle_screener import load_triangle_results
-
-    try:
-        result = load_triangle_results()
-    except RuntimeError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    rows = list(result.get("rows") or [])
-    if status:
-        rows = [row for row in rows if row.get("status") == status]
-    return {
-        "status": "ok",
-        "strategy": result.get("strategy"),
-        "generated_at": result.get("generated_at"),
-        "summary": result.get("summary", {}),
-        "count": min(len(rows), limit),
-        "rows": rows[:limit],
-    }
-
-
-@app.post("/api/screener/triangles/run")
-def run_triangle_screener(
-    x_hanstock_sync_token: str | None = Header(default=None),
-) -> dict[str, Any]:
-    expected_token = os.getenv("HANSTOCK_SYNC_TOKEN", "")
-    if not expected_token:
-        raise HTTPException(status_code=503, detail="伺服器尚未設定同步金鑰。")
-    if x_hanstock_sync_token != expected_token:
-        raise HTTPException(status_code=401, detail="同步金鑰不正確。")
-    from triangle_screener import scan_all_triangles
-
-    return {"status": "ok", **scan_all_triangles()}
-
-
-@app.get("/api/screener/triangles/intraday/latest")
-def get_intraday_triangle_screener_results(
-    status: str | None = Query(default=None, description="接近突破、突破待量、放量突破"),
-    limit: int = Query(default=200, ge=1, le=500),
-) -> dict[str, Any]:
-    from triangle_intraday import TARGET_STATUSES, load_intraday_triangle_results
-
-    if status and status not in TARGET_STATUSES:
-        raise HTTPException(status_code=422, detail="不支援的盤中三角收斂狀態")
-    try:
-        result = load_intraday_triangle_results()
-    except RuntimeError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    rows = list(result.get("rows") or [])
-    if status:
-        rows = [row for row in rows if row.get("status") == status]
-    return {
-        "status": "ok",
-        "strategy": result.get("strategy"),
-        "mode": result.get("mode"),
-        "trade_date": result.get("trade_date"),
-        "generated_at": result.get("generated_at"),
-        "bucket_ts": result.get("bucket_ts"),
-        "summary": result.get("summary", {}),
-        "count": min(len(rows), limit),
-        "rows": rows[:limit],
-    }
-
-
-# ------------------------------------------------------------------
-# WebSocket 端點
-# ------------------------------------------------------------------
 
 @app.websocket("/ws/market")
 async def ws_market(websocket: WebSocket):
-    """即時行情 WebSocket 端點。"""
     await websocket_endpoint(websocket)
