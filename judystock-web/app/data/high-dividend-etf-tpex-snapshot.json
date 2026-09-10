@@ -1,0 +1,15 @@
+{
+  "generatedAt": "2026-09-03T03:00:28.116Z",
+  "dataDate": "2026-09-02",
+  "source": "TPEx ETF 配息資訊與上櫃每日收盤行情",
+  "rows": [
+    {"code":"00888","name":"永豐台灣ESG","exchange":"tpex","category":"股票型 ETF","annualYield":11.37,"trailingDistributionAmount":3.813,"distributionMonths":[1,4,7,10],"nextDistributionDate":null,"nextDistributionAmount":null,"price":33.54,"priceDate":"2026-09-02"},
+    {"code":"00842B","name":"台新美元銀行債","exchange":"tpex","category":"投資級／其他債券","annualYield":9.95,"trailingDistributionAmount":2.9,"distributionMonths":[1,4,7,10],"nextDistributionDate":null,"nextDistributionAmount":null,"price":29.14,"priceDate":"2026-09-02"},
+    {"code":"00928","name":"中信上櫃ESG30","exchange":"tpex","category":"股票型 ETF","annualYield":9.81,"trailingDistributionAmount":3.25,"distributionMonths":[1,7],"nextDistributionDate":null,"nextDistributionAmount":null,"price":33.12,"priceDate":"2026-09-02"},
+    {"code":"00981B","name":"第一金優選非投債","exchange":"tpex","category":"投資級／其他債券","annualYield":8.48,"trailingDistributionAmount":0.776,"distributionMonths":[1,3,4,5,6,7,8,9,10,11,12],"nextDistributionDate":"2026-09-14","nextDistributionAmount":0.064,"price":9.15,"priceDate":"2026-09-02"},
+    {"code":"00768B","name":"復華20年美債","exchange":"tpex","category":"美國公債","annualYield":7.97,"trailingDistributionAmount":3.8,"distributionMonths":[3,5,8,11],"nextDistributionDate":"2026-09-14","nextDistributionAmount":0.85,"price":47.7,"priceDate":"2026-09-02"},
+    {"code":"00858","name":"永豐美國500大","exchange":"tpex","category":"美國股票","annualYield":7.87,"trailingDistributionAmount":2.8,"distributionMonths":[1,7],"nextDistributionDate":null,"nextDistributionAmount":null,"price":35.59,"priceDate":"2026-09-02"},
+    {"code":"00727B","name":"國泰優選非投等債","exchange":"tpex","category":"非投資級債","annualYield":7.24,"trailingDistributionAmount":2.84,"distributionMonths":[1,4,7,10],"nextDistributionDate":null,"nextDistributionAmount":null,"price":39.23,"priceDate":"2026-09-02"},
+    {"code":"00781B","name":"國泰A級科技債","exchange":"tpex","category":"投資級／其他債券","annualYield":7.04,"trailingDistributionAmount":1.9,"distributionMonths":[3,6,9,12],"nextDistributionDate":"2026-10-15","nextDistributionAmount":null,"price":26.98,"priceDate":"2026-09-02"}
+  ]
+}

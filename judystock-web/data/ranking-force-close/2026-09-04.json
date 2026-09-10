@@ -1,0 +1,2939 @@
+{
+  "tradeDate": "2026-09-04",
+  "recoveredAt": "2026-09-05T01:55:34.924Z",
+  "source": "Shioaji AllDay historical trades",
+  "classification": "Existing HanStock MarketDataHub: >=20 lots OR >=TWD 1,000,000; TickType 1 buy / 2 sell; formal 09:00-13:30 session",
+  "coverage": {
+    "requested": 325,
+    "recovered": 325,
+    "hub": 282,
+    "directHistoricalRecovery": 43
+  },
+  "rows": [
+    {
+      "ticker": "1316",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 460100,
+      "large_sell_amount": 9964100,
+      "total_turnover_amount": 24171250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1319",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 33398200,
+      "large_sell_amount": 9888900,
+      "total_turnover_amount": 134037600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1325",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 3573500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1409",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 49206150,
+      "large_sell_amount": 77363200,
+      "total_turnover_amount": 259525250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1419",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2928400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1503",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 97197000,
+      "large_sell_amount": 31899000,
+      "total_turnover_amount": 254872000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1519",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 412708000,
+      "large_sell_amount": 249031000,
+      "total_turnover_amount": 1162215000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1522",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1505150,
+      "large_sell_amount": 775750,
+      "total_turnover_amount": 13753250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1524",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 643200,
+      "total_turnover_amount": 6804650,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1529",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 360800,
+      "total_turnover_amount": 8048400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1539",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 746000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1540",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2310750,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1568",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 7771250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1569",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1607100,
+      "large_sell_amount": 2350000,
+      "total_turnover_amount": 27072500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1582",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2190000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 21870700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1595",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2523600,
+      "large_sell_amount": 2270400,
+      "total_turnover_amount": 42035100,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1597",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 392017000,
+      "large_sell_amount": 186534000,
+      "total_turnover_amount": 1057594000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1708",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 14043200,
+      "large_sell_amount": 14830600,
+      "total_turnover_amount": 119089500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1709",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 57027000,
+      "large_sell_amount": 23525050,
+      "total_turnover_amount": 277633600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1714",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 27579500,
+      "large_sell_amount": 47742550,
+      "total_turnover_amount": 153352550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1718",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 50924050,
+      "large_sell_amount": 91353950,
+      "total_turnover_amount": 187386600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1732",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1037000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1795",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 11457000,
+      "large_sell_amount": 45661500,
+      "total_turnover_amount": 131950000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "1903",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2565400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2049",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 635573000,
+      "large_sell_amount": 364151500,
+      "total_turnover_amount": 1588480500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2204",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 4758500,
+      "total_turnover_amount": 27779000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2228",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 10283300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2233",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 12463000,
+      "large_sell_amount": 9992500,
+      "total_turnover_amount": 75252500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2236",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 4287500,
+      "total_turnover_amount": 15834000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2241",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 15927700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2303",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 8747403000,
+      "large_sell_amount": 5539562000,
+      "total_turnover_amount": 18205771500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2308",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 9691150000,
+      "large_sell_amount": 5781445000,
+      "total_turnover_amount": 15472595000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2313",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 5047041000,
+      "large_sell_amount": 3904171000,
+      "total_turnover_amount": 12638851000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2327",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 18989865000,
+      "large_sell_amount": 6091426000,
+      "total_turnover_amount": 30203282000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2328",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2182400,
+      "large_sell_amount": 3814900,
+      "total_turnover_amount": 46092150,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2342",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 3497600,
+      "total_turnover_amount": 62104250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2348",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1225700,
+      "large_sell_amount": 1001000,
+      "total_turnover_amount": 20172000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2349",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2047000,
+      "large_sell_amount": 4297850,
+      "total_turnover_amount": 12270500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2356",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 790303300,
+      "large_sell_amount": 282424000,
+      "total_turnover_amount": 1799261300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2357",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3239120000,
+      "large_sell_amount": 1446163000,
+      "total_turnover_amount": 4847269000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2363",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 21192200,
+      "large_sell_amount": 3330800,
+      "total_turnover_amount": 98306300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2364",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1078400,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 18919400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2367",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 13570100,
+      "large_sell_amount": 9192500,
+      "total_turnover_amount": 155278350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2368",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3842750000,
+      "large_sell_amount": 5772290000,
+      "total_turnover_amount": 9615040000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2374",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 8187400,
+      "large_sell_amount": 10201600,
+      "total_turnover_amount": 101799200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2375",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 218522000,
+      "large_sell_amount": 112184000,
+      "total_turnover_amount": 724489500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2376",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1398773000,
+      "large_sell_amount": 552274000,
+      "total_turnover_amount": 2625319500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2377",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1683516000,
+      "large_sell_amount": 651439500,
+      "total_turnover_amount": 3627405500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2382",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3136913000,
+      "large_sell_amount": 2527607000,
+      "total_turnover_amount": 6846314500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2383",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4469245000,
+      "large_sell_amount": 4093950000,
+      "total_turnover_amount": 8563195000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2393",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 6219000,
+      "total_turnover_amount": 50189900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2395",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1501410000,
+      "large_sell_amount": 1052198000,
+      "total_turnover_amount": 3430573000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2399",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 67229700,
+      "large_sell_amount": 92192550,
+      "total_turnover_amount": 547768550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2404",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 991880000,
+      "large_sell_amount": 751075000,
+      "total_turnover_amount": 1742955000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2406",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 11369750,
+      "large_sell_amount": 12851150,
+      "total_turnover_amount": 81855600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2413",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 43668700,
+      "large_sell_amount": 5823000,
+      "total_turnover_amount": 198309900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2421",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 398458000,
+      "large_sell_amount": 278309000,
+      "total_turnover_amount": 1358704000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2425",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2399200,
+      "large_sell_amount": 1793400,
+      "total_turnover_amount": 35521750,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2426",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2691034100,
+      "large_sell_amount": 996154400,
+      "total_turnover_amount": 6233846000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2428",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 263726000,
+      "large_sell_amount": 70013000,
+      "total_turnover_amount": 623324500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2454",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 18462140000,
+      "large_sell_amount": 18097250000,
+      "total_turnover_amount": 36559390000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2455",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4254607000,
+      "large_sell_amount": 4177452500,
+      "total_turnover_amount": 12211510000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2464",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4543421500,
+      "large_sell_amount": 3835112000,
+      "total_turnover_amount": 11547733000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2465",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 106289700,
+      "large_sell_amount": 51507800,
+      "total_turnover_amount": 559399500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2472",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 258178000,
+      "large_sell_amount": 121743000,
+      "total_turnover_amount": 762770500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2478",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 401653500,
+      "large_sell_amount": 58430000,
+      "total_turnover_amount": 715384500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2485",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1618500,
+      "large_sell_amount": 2684500,
+      "total_turnover_amount": 79580600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2486",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 901382000,
+      "large_sell_amount": 1091241500,
+      "total_turnover_amount": 3193321000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2489",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 312280400,
+      "large_sell_amount": 235666200,
+      "total_turnover_amount": 1241294800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2492",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4696014500,
+      "large_sell_amount": 1164626000,
+      "total_turnover_amount": 7828224000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2516",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1836050,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2524",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1797000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2537",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 590000,
+      "large_sell_amount": 2574600,
+      "total_turnover_amount": 7883300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2540",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 11591050,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2542",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 96608850,
+      "large_sell_amount": 31342900,
+      "total_turnover_amount": 332479750,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2543",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 769000,
+      "large_sell_amount": 1150500,
+      "total_turnover_amount": 16293850,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2545",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 7102000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2603",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 893931000,
+      "large_sell_amount": 2127058500,
+      "total_turnover_amount": 3998400500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2605",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 70393600,
+      "large_sell_amount": 89751300,
+      "total_turnover_amount": 323198300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2606",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 121237900,
+      "large_sell_amount": 103200700,
+      "total_turnover_amount": 594772300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2609",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 400307400,
+      "large_sell_amount": 614663600,
+      "total_turnover_amount": 1692054700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2610",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 78500300,
+      "large_sell_amount": 108870150,
+      "total_turnover_amount": 270838850,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2612",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 11082600,
+      "large_sell_amount": 2637400,
+      "total_turnover_amount": 62049900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2613",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 474600,
+      "total_turnover_amount": 7987950,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2615",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 680527000,
+      "large_sell_amount": 801015000,
+      "total_turnover_amount": 2253828000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2618",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 110434050,
+      "large_sell_amount": 103040300,
+      "total_turnover_amount": 421382950,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2637",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 153054800,
+      "large_sell_amount": 132951300,
+      "total_turnover_amount": 616079700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2641",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 6900950,
+      "large_sell_amount": 9456550,
+      "total_turnover_amount": 39696350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2722",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 952800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2731",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1865500,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 19790500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2734",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 134300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2736",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 321250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2739",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2728150,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2743",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1880600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2745",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 5378200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2748",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1397300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2753",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 4312000,
+      "total_turnover_amount": 14018000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "2886",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 368405400,
+      "large_sell_amount": 741131100,
+      "total_turnover_amount": 1576223350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3008",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4720855000,
+      "large_sell_amount": 5397770000,
+      "total_turnover_amount": 10118625000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3016",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 77663600,
+      "large_sell_amount": 55497200,
+      "total_turnover_amount": 354166700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3017",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 9325620000,
+      "large_sell_amount": 5373620000,
+      "total_turnover_amount": 14699240000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3019",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 281796000,
+      "large_sell_amount": 318912500,
+      "total_turnover_amount": 1119207000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3022",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 149189300,
+      "large_sell_amount": 4424400,
+      "total_turnover_amount": 438696600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3025",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1820000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 6835000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3026",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3387447000,
+      "large_sell_amount": 474377000,
+      "total_turnover_amount": 4908575000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3031",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2085550,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 23210850,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3037",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 11611140000,
+      "large_sell_amount": 14906226000,
+      "total_turnover_amount": 34851091000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3050",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 460000,
+      "large_sell_amount": 668000,
+      "total_turnover_amount": 3260000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3073",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1285300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3081",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 8653575000,
+      "large_sell_amount": 7852230000,
+      "total_turnover_amount": 16505805000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3086",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 3258800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3090",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1020333500,
+      "large_sell_amount": 242022000,
+      "total_turnover_amount": 2071293500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3105",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3279438500,
+      "large_sell_amount": 3494036000,
+      "total_turnover_amount": 10663911000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3128",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 520000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2261800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3138",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 14046500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3149",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 61583800,
+      "large_sell_amount": 41440000,
+      "total_turnover_amount": 367183800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3163",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 549309000,
+      "large_sell_amount": 148557000,
+      "total_turnover_amount": 711972000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3189",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 6132009000,
+      "large_sell_amount": 4526004000,
+      "total_turnover_amount": 15283004000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3211",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 392316000,
+      "large_sell_amount": 348296500,
+      "total_turnover_amount": 1257849000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3213",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 23563500,
+      "large_sell_amount": 18815000,
+      "total_turnover_amount": 114849500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3231",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 8026423000,
+      "large_sell_amount": 4138200000,
+      "total_turnover_amount": 16032855500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3234",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 302774000,
+      "large_sell_amount": 304393500,
+      "total_turnover_amount": 1082390000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3236",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 18226200,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 154957300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3294",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 7956500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3297",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1506600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3313",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 687250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3323",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 5038600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3324",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2995315000,
+      "large_sell_amount": 966470000,
+      "total_turnover_amount": 3961785000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3338",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 24037500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3339",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 6317000,
+      "large_sell_amount": 2019500,
+      "total_turnover_amount": 105660050,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3356",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 4792800,
+      "total_turnover_amount": 37562400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3357",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 108695500,
+      "large_sell_amount": 39360000,
+      "total_turnover_amount": 341730000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3362",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 193816000,
+      "large_sell_amount": 70792500,
+      "total_turnover_amount": 285377500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3363",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1541357000,
+      "large_sell_amount": 2576509000,
+      "total_turnover_amount": 6377979000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3373",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 441200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3376",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 265297500,
+      "large_sell_amount": 150742000,
+      "total_turnover_amount": 725529500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3379",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2175250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3406",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1533993000,
+      "large_sell_amount": 1029433000,
+      "total_turnover_amount": 2563426000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3434",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1403200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3437",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 975550,
+      "total_turnover_amount": 14262050,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3441",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 508190000,
+      "large_sell_amount": 130690000,
+      "total_turnover_amount": 653223500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3443",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4578290000,
+      "large_sell_amount": 4235115000,
+      "total_turnover_amount": 8813405000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3447",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2698300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3450",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 525129000,
+      "large_sell_amount": 359070000,
+      "total_turnover_amount": 885325000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3479",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 12602500,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 49937500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3483",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3600000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 36606900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3491",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1595495000,
+      "large_sell_amount": 1166215000,
+      "total_turnover_amount": 2761710000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3504",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 43440800,
+      "large_sell_amount": 13673600,
+      "total_turnover_amount": 290763800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3515",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 38418500,
+      "large_sell_amount": 15389500,
+      "total_turnover_amount": 120504000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3529",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1255695000,
+      "large_sell_amount": 1417700000,
+      "total_turnover_amount": 2673395000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3532",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 843970500,
+      "large_sell_amount": 641125500,
+      "total_turnover_amount": 2661649500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3535",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1822800,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 37650800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3537",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1108000,
+      "total_turnover_amount": 31963000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3546",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 3777700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3548",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1252500,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 11833700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3576",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 8402400,
+      "large_sell_amount": 17601150,
+      "total_turnover_amount": 61499500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3580",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1762000,
+      "total_turnover_amount": 26453300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3583",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 187951000,
+      "large_sell_amount": 638262000,
+      "total_turnover_amount": 1361397000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3594",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1572800,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 36352400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3624",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 313626900,
+      "large_sell_amount": 27594700,
+      "total_turnover_amount": 830273500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3630",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 10178250,
+      "large_sell_amount": 6814900,
+      "total_turnover_amount": 115362950,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3645",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 11971700,
+      "large_sell_amount": 15418900,
+      "total_turnover_amount": 151634100,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3653",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2739025000,
+      "large_sell_amount": 2514875000,
+      "total_turnover_amount": 5253900000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3663",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2625000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 25675800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3665",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1449660000,
+      "large_sell_amount": 1578815000,
+      "total_turnover_amount": 3028475000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3673",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 29067700,
+      "large_sell_amount": 11683600,
+      "total_turnover_amount": 177792600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3686",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 739850,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3687",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 6068700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3691",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1485000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 16872800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3707",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 24257900,
+      "large_sell_amount": 4219200,
+      "total_turnover_amount": 148502900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "3714",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 828482400,
+      "large_sell_amount": 272976800,
+      "total_turnover_amount": 2305996700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4121",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 270700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4128",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 979350,
+      "large_sell_amount": 289000,
+      "total_turnover_amount": 11060550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4133",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1721450,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4142",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1912200,
+      "total_turnover_amount": 7771000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4164",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 877200,
+      "total_turnover_amount": 7792350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4303",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 726600,
+      "large_sell_amount": 2220800,
+      "total_turnover_amount": 28756300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4510",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 35916750,
+      "large_sell_amount": 23382250,
+      "total_turnover_amount": 308408850,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4526",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 26981550,
+      "large_sell_amount": 32913600,
+      "total_turnover_amount": 248981300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4533",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 822400,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 9465500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4540",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 12098500,
+      "large_sell_amount": 10163200,
+      "total_turnover_amount": 148180300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4541",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2809800,
+      "large_sell_amount": 11712800,
+      "total_turnover_amount": 110717500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4561",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 8572950,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4571",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1938000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 35867000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4576",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 219164500,
+      "large_sell_amount": 143713500,
+      "total_turnover_amount": 799672000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4583",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1392000,
+      "large_sell_amount": 2824500,
+      "total_turnover_amount": 26547500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4707",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 8320200,
+      "large_sell_amount": 7322450,
+      "total_turnover_amount": 86955650,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4714",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 212000,
+      "large_sell_amount": 728400,
+      "total_turnover_amount": 4834250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4720",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 407000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 5285100,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4722",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 16334500,
+      "large_sell_amount": 8361500,
+      "total_turnover_amount": 75947000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4743",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 4420350,
+      "total_turnover_amount": 47202450,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4760",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 13804000,
+      "large_sell_amount": 20835500,
+      "total_turnover_amount": 112850500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4763",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 43620000,
+      "large_sell_amount": 34673000,
+      "total_turnover_amount": 247305350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4768",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 30788000,
+      "large_sell_amount": 11177000,
+      "total_turnover_amount": 131731500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4770",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 65612500,
+      "large_sell_amount": 10655000,
+      "total_turnover_amount": 190135500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4772",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 20932000,
+      "large_sell_amount": 29553500,
+      "total_turnover_amount": 123115000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4903",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4483350,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 38256550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4908",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 251477500,
+      "large_sell_amount": 102228500,
+      "total_turnover_amount": 368225000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4909",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 2103300,
+      "total_turnover_amount": 11697800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4916",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1064800,
+      "large_sell_amount": 7083200,
+      "total_turnover_amount": 91179700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4931",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 267975500,
+      "large_sell_amount": 180814500,
+      "total_turnover_amount": 891182000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4946",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 626200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4949",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3271400,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 50989400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4956",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 18958800,
+      "large_sell_amount": 16124550,
+      "total_turnover_amount": 194926550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4958",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4645448500,
+      "large_sell_amount": 5276908500,
+      "total_turnover_amount": 14957749000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4960",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2295900,
+      "large_sell_amount": 1386900,
+      "total_turnover_amount": 24117900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4971",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 758326000,
+      "large_sell_amount": 1022772000,
+      "total_turnover_amount": 3044752000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4974",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 15432800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4976",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 5517700,
+      "large_sell_amount": 14426200,
+      "total_turnover_amount": 110379450,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4977",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 337706000,
+      "large_sell_amount": 144160500,
+      "total_turnover_amount": 1072985500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4979",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 6113172000,
+      "large_sell_amount": 2610072000,
+      "total_turnover_amount": 11439090000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "4991",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 301574500,
+      "large_sell_amount": 230505500,
+      "total_turnover_amount": 551912000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5234",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4104500,
+      "large_sell_amount": 9618000,
+      "total_turnover_amount": 63389500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5244",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 4961200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5251",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 987550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5289",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 687080000,
+      "large_sell_amount": 976940000,
+      "total_turnover_amount": 1664020000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5309",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4628000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 40330000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5314",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 60256900,
+      "large_sell_amount": 30650950,
+      "total_turnover_amount": 112051250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5324",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 896100,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5328",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 43374300,
+      "large_sell_amount": 34529000,
+      "total_turnover_amount": 390047600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5347",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 277242000,
+      "large_sell_amount": 130250000,
+      "total_turnover_amount": 712044500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5386",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 37545500,
+      "large_sell_amount": 31770500,
+      "total_turnover_amount": 219811000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5439",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 85522500,
+      "large_sell_amount": 130280500,
+      "total_turnover_amount": 413991500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5478",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 6282200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5483",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 709284500,
+      "large_sell_amount": 541190000,
+      "total_turnover_amount": 1957064000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5489",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1851100,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5508",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2472400,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 18723300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5522",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2752000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 23451400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5534",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1078000,
+      "large_sell_amount": 2451200,
+      "total_turnover_amount": 33466700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5704",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1211200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "5706",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1430400,
+      "total_turnover_amount": 4783000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6111",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 6530550,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6125",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 5324000,
+      "large_sell_amount": 1026000,
+      "total_turnover_amount": 59319200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6127",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 14464750,
+      "large_sell_amount": 13171550,
+      "total_turnover_amount": 151442250,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6150",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 10138300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6155",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 5952800,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 74251800,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6166",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 103889000,
+      "large_sell_amount": 44602500,
+      "total_turnover_amount": 343793500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6173",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2045049500,
+      "large_sell_amount": 1162544000,
+      "total_turnover_amount": 4752310000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6175",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 10557000,
+      "large_sell_amount": 7042800,
+      "total_turnover_amount": 89794000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6177",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 17527500,
+      "large_sell_amount": 14161000,
+      "total_turnover_amount": 152005600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6180",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2466200,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 23263500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6182",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1779798500,
+      "large_sell_amount": 928644500,
+      "total_turnover_amount": 3927203500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6187",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1264735000,
+      "large_sell_amount": 1242170000,
+      "total_turnover_amount": 2506905000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6197",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 270674500,
+      "large_sell_amount": 157291500,
+      "total_turnover_amount": 940002000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6206",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 39038000,
+      "large_sell_amount": 7904500,
+      "total_turnover_amount": 132819000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6207",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 371861000,
+      "large_sell_amount": 200308000,
+      "total_turnover_amount": 1055085500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6209",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 157006400,
+      "large_sell_amount": 108695900,
+      "total_turnover_amount": 835640200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6217",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 296820500,
+      "large_sell_amount": 468966500,
+      "total_turnover_amount": 1636080500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6218",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4346550,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 54776450,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6223",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1068860000,
+      "large_sell_amount": 1563560000,
+      "total_turnover_amount": 2632420000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6230",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 4350500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6237",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 6272200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6244",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3472750,
+      "large_sell_amount": 5522400,
+      "total_turnover_amount": 34090200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6278",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 188898500,
+      "large_sell_amount": 210425500,
+      "total_turnover_amount": 846604500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6285",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 239719500,
+      "large_sell_amount": 230934000,
+      "total_turnover_amount": 797827000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6290",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 944248500,
+      "large_sell_amount": 138573000,
+      "total_turnover_amount": 1566283000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6405",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1042600,
+      "total_turnover_amount": 25942300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6414",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 203857000,
+      "large_sell_amount": 71438000,
+      "total_turnover_amount": 531442000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6418",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2375050,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6419",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 5821500,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 35640000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6426",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 207519500,
+      "large_sell_amount": 152310500,
+      "total_turnover_amount": 848366000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6442",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3154395000,
+      "large_sell_amount": 3568955000,
+      "total_turnover_amount": 6723350000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6443",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 17280950,
+      "large_sell_amount": 8772850,
+      "total_turnover_amount": 76038600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6446",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1404810000,
+      "large_sell_amount": 2980445000,
+      "total_turnover_amount": 4385255000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6449",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 116713500,
+      "large_sell_amount": 25206500,
+      "total_turnover_amount": 356459500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6451",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 461966000,
+      "large_sell_amount": 683389000,
+      "total_turnover_amount": 2217323500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6456",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 13181900,
+      "large_sell_amount": 6192000,
+      "total_turnover_amount": 115938000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6472",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 14546000,
+      "large_sell_amount": 31998000,
+      "total_turnover_amount": 126672000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6477",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 19469700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6485",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1178000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 17422900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6488",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 3612283000,
+      "large_sell_amount": 1471563000,
+      "total_turnover_amount": 7796387000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6510",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2076325000,
+      "large_sell_amount": 2084670000,
+      "total_turnover_amount": 4160995000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6515",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2295325000,
+      "large_sell_amount": 2436245000,
+      "total_turnover_amount": 4731570000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6530",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 29656600,
+      "large_sell_amount": 11880000,
+      "total_turnover_amount": 253563200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6547",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 29390300,
+      "large_sell_amount": 31287400,
+      "total_turnover_amount": 198538700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6558",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 2483000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6596",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 4761700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6605",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 13760500,
+      "large_sell_amount": 8096500,
+      "total_turnover_amount": 44853500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6609",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 4215350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6625",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 7141600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6657",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 4232600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6668",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 6968200,
+      "large_sell_amount": 2708600,
+      "total_turnover_amount": 59331850,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6672",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 946545500,
+      "large_sell_amount": 96676000,
+      "total_turnover_amount": 1619904000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6683",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 736570000,
+      "large_sell_amount": 998475000,
+      "total_turnover_amount": 1735045000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6706",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 48948500,
+      "large_sell_amount": 12667000,
+      "total_turnover_amount": 180725500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6715",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 88827000,
+      "large_sell_amount": 50085500,
+      "total_turnover_amount": 362258000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6742",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 891000,
+      "large_sell_amount": 880000,
+      "total_turnover_amount": 14996750,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6757",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1006200,
+      "large_sell_amount": 4317800,
+      "total_turnover_amount": 21481400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6781",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 227720000,
+      "large_sell_amount": 133150000,
+      "total_turnover_amount": 360870000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6805",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 793850000,
+      "large_sell_amount": 332505000,
+      "total_turnover_amount": 1126355000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6821",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 3980050,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6830",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 449117000,
+      "large_sell_amount": 406829000,
+      "total_turnover_amount": 1771735000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6834",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 92992700,
+      "large_sell_amount": 4888300,
+      "total_turnover_amount": 398339100,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6862",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2284000,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 28828000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6869",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 2515500,
+      "total_turnover_amount": 19456600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6873",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 1157700,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 13275700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "6919",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 66454900,
+      "large_sell_amount": 171309900,
+      "total_turnover_amount": 717340000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "7715",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 973200,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "7717",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 340930500,
+      "large_sell_amount": 12018500,
+      "total_turnover_amount": 503774500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "7734",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 268340000,
+      "large_sell_amount": 178950000,
+      "total_turnover_amount": 447290000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8027",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 152473500,
+      "large_sell_amount": 121274500,
+      "total_turnover_amount": 702759500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8042",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 566739000,
+      "large_sell_amount": 69628500,
+      "total_turnover_amount": 965629500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8043",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 187826000,
+      "large_sell_amount": 178298500,
+      "total_turnover_amount": 826821500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8044",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 10035300,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8046",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 7483840000,
+      "large_sell_amount": 11363735000,
+      "total_turnover_amount": 18847575000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8064",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 835867000,
+      "large_sell_amount": 152787500,
+      "total_turnover_amount": 1503051000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8072",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1096450,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8080",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 632400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8086",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 36818000,
+      "large_sell_amount": 82568000,
+      "total_turnover_amount": 284533000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8089",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 340000,
+      "total_turnover_amount": 2268900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8104",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 5745000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8111",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 138146200,
+      "large_sell_amount": 224007500,
+      "total_turnover_amount": 1119329000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8155",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 21470000,
+      "large_sell_amount": 38387500,
+      "total_turnover_amount": 180904500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8171",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 443900,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1601450,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8240",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 5613500,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 63746750,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8299",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2093740000,
+      "large_sell_amount": 3410000000,
+      "total_turnover_amount": 5503740000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8341",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1203200,
+      "total_turnover_amount": 11673600,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8422",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 2515200,
+      "large_sell_amount": 26835350,
+      "total_turnover_amount": 77224350,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8438",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 12288900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8440",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 540500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8476",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 1615300,
+      "total_turnover_amount": 4333500,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "8996",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 4472420000,
+      "large_sell_amount": 2264640000,
+      "total_turnover_amount": 6737060000,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "9902",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 449900,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "9906",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 0,
+      "total_turnover_amount": 1949700,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    },
+    {
+      "ticker": "9919",
+      "trade_date": "2026-09-04",
+      "large_buy_amount": 0,
+      "large_sell_amount": 276000,
+      "total_turnover_amount": 3124400,
+      "main_force_data_available": true,
+      "main_force_data_status": "historical_ticks"
+    }
+  ]
+}

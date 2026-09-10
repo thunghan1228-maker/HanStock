@@ -41,3 +41,14 @@ next-env.d.ts
 /outputs/
 /work/
 /.vinext/
+
+# HanStock (the parent repo this folder lives in) ignores any directory
+# named "data" anywhere in the tree. This app has three real, required
+# data directories (source files the build imports, not generated
+# output) that would otherwise be silently dropped from every commit.
+!/data/
+!/data/**
+!/app/data/
+!/app/data/**
+!/lib/data/
+!/lib/data/**
