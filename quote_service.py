@@ -1,14 +1,7 @@
 """HanStock 即時行情服務模組。
 
-負責 Shioaji 登入、台指期與台股即時行情訂閱、行情快取，
-以及斷線重連邏輯。設計為 FastAPI lifespan 內啟動的長駐服務。
-
-狀態設定原則：
-- futures subscribed = True：僅在收到期貨 Event Code 16 或首筆期貨 Tick 後設定
-- quote_connected = True：僅在收到 SESSION_UP 或實際行情後設定
-- 台股採動態訂閱：主連線先承載 190 檔，其餘分配到 4 條共享連線池
-- 全市場訂閱不使用 LRU 淘汰；現貨與股票期貨共用連線池，總連線數不超過 5
-- 不以 snapshots/ticks/kbars 輪詢取代盤中即時行情
+負責 Shioaji 登入、台股即時行情訂閱、行情快取，以及斷線重連邏輯。
+台指期功能已停用；保留相容介面，避免舊 API 匯入失敗。
 """
 
 from __future__ import annotations
@@ -34,10 +27,8 @@ MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_BASE_INTERVAL = 5
 RECONNECT_MAX_INTERVAL = 300
 DEFAULT_STALE_SECONDS = 60.0
-DEFAULT_STOCK_SUBSCRIPTION_LIMIT = 190  # 主連線預留台指期、OTC 指數與安全餘裕
+DEFAULT_STOCK_SUBSCRIPTION_LIMIT = 190
 DEFAULT_RAILWAY_STARTUP_DELAY_SECONDS = 15.0
-# hanstock.xyz 於 2026-08-10 實機辨識到的 Railway 正式 Hub。
-# 可用環境變數覆寫，方便日後把正式流量切到備援專案。
 DEFAULT_PRIMARY_RAILWAY_PROJECT_ID = "4b2403bb-cd2d-4917-bd8f-80dffe894d00"
 
 
@@ -58,7 +49,6 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
 
 
 def quote_deployment_role() -> str:
-    """限制同一永豐 person_id 只由正式 Railway 專案登入行情。"""
     current_project = os.getenv("RAILWAY_PROJECT_ID", "").strip()
     primary_project = os.getenv(
         "HANSTOCK_PRIMARY_RAILWAY_PROJECT_ID",
@@ -70,7 +60,6 @@ def quote_deployment_role() -> str:
 
 
 def quote_startup_delay_seconds() -> float:
-    """Railway 新版先健康、舊版才終止；行情登入需延後以免五連線重疊。"""
     if quote_deployment_role() != "primary" or not os.getenv("RAILWAY_PROJECT_ID", "").strip():
         return 0.0
     return _env_float(
@@ -100,7 +89,6 @@ def _safe_int(value: Any) -> Optional[int]:
 
 
 def _format_tick_datetime(value: Any, fallback: str) -> str:
-    """把 Shioaji datetime（datetime 或 tuple）轉成含台灣時區的 ISO 字串。"""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=TW_TZ)
@@ -125,8 +113,6 @@ def _format_tick_datetime(value: Any, fallback: str) -> str:
 
 @dataclass
 class QuoteState:
-    """台指期即時行情狀態追蹤。"""
-
     initialized: bool = False
     logged_in: bool = False
     certificate_active: bool = False
@@ -180,7 +166,7 @@ class QuoteState:
 
 
 class QuoteService:
-    """Shioaji 即時行情長駐服務（台指期 + 動態台股）。"""
+    """Shioaji 即時行情長駐服務（台股；台指期已停用）。"""
 
     def __init__(self) -> None:
         self.api: Optional[sj.Shioaji] = None
@@ -217,12 +203,7 @@ class QuoteService:
             190,
         )
 
-    # ------------------------------------------------------------------
-    # 公開方法
-    # ------------------------------------------------------------------
-
     def startup(self) -> None:
-        """同步啟動：初始化 → 登入 → 憑證 → 設定回呼 → 訂閱台指期。"""
         with self._startup_lock:
             if self.state.logged_in or self._shutdown_event.is_set():
                 return
@@ -231,9 +212,7 @@ class QuoteService:
     def _startup_once(self) -> None:
         if quote_deployment_role() != "primary":
             self.state.data_source = "standby_no_shioaji_login"
-            logger.info(
-                "[Shioaji] Railway 備援專案不登入行情，避免超過同一 person_id 5 條連線上限。"
-            )
+            logger.info("[Shioaji] Railway 備援專案不登入行情。")
             return
         try:
             self._initialize()
@@ -244,6 +223,7 @@ class QuoteService:
                 return
             self._activate_ca()
             self._setup_callbacks()
+            # 台指期已永久停用；只保留台股即時行情。
             self._do_subscribe_futures()
             self._subscribe_bootstrap_stocks()
         except Exception as exc:
@@ -251,7 +231,6 @@ class QuoteService:
             self.state.error_message = str(exc)
 
     def shutdown(self) -> None:
-        """安全關閉 Shioaji 連線。"""
         self._shutdown_event.set()
         if self._reconnect_thread and self._reconnect_thread.is_alive():
             self._reconnect_thread.join(timeout=5)
@@ -265,7 +244,6 @@ class QuoteService:
 
         try:
             from stock_futures_service import get_stock_futures_quote_service
-
             get_stock_futures_quote_service().shutdown()
             logger.info("共享行情連線池已安全登出。")
         except Exception as exc:
@@ -276,18 +254,16 @@ class QuoteService:
         self.state.subscribed = False
 
     def get_health(self) -> dict[str, Any]:
-        """取得台指期行情服務健康狀態。"""
         health = self.state.to_dict(self._stale_seconds)
         health["quote_role"] = quote_deployment_role()
+        health["futures_enabled"] = False
         return health
 
     def get_latest_tick(self) -> Optional[dict[str, Any]]:
-        """取得最新一筆台指期 tick。"""
         with self.state._lock:
             return dict(self.state.last_tick_data) if self.state.last_tick_data else None
 
     def recover_transient_p2p_session(self, reason: str = "P2P SessionNotEstablished") -> bool:
-        """歷史查詢失敗時，只有主 Tick 也停止才重建登入，避免中斷健康行情。"""
         if quote_deployment_role() != "primary":
             return False
         with self._reconnect_lock:
@@ -307,7 +283,6 @@ class QuoteService:
             return True
 
     def get_stock_health(self) -> dict[str, Any]:
-        """取得台股多連線訂閱健康狀態。"""
         with self._stock_lock:
             timestamps = list(self._stock_tick_timestamps.values())
             latest_ts = max(timestamps) if timestamps else None
@@ -316,7 +291,6 @@ class QuoteService:
             shared_count = len(self._stock_assignments) - main_count
             try:
                 from stock_futures_service import get_stock_futures_quote_service
-
                 shared_capacity = get_stock_futures_quote_service().shared_capacity()
             except Exception:
                 shared_capacity = 0
@@ -361,7 +335,6 @@ class QuoteService:
         return {str(code).strip().upper(): self.get_stock_quote(str(code)) for code in stock_codes}
 
     def ensure_stock_subscriptions(self, stock_codes: Iterable[str]) -> dict[str, Any]:
-        """確保指定股票持續訂閱 Tick；主連線滿後分配到共享池，不淘汰舊股票。"""
         codes = []
         seen: set[str] = set()
         for raw in stock_codes:
@@ -373,7 +346,6 @@ class QuoteService:
 
         try:
             from stock_futures_service import get_stock_futures_quote_service
-
             shared_svc = get_stock_futures_quote_service()
             shared_capacity = shared_svc.shared_capacity()
         except Exception:
@@ -404,8 +376,6 @@ class QuoteService:
                     self._stock_subscriptions.move_to_end(code)
                     result["already_subscribed"].append(code)
                     continue
-            # 容量判斷與主連線訂閱必須是同一個臨界區。若多個掃描 shard
-            # 同時進來，分開判斷會讓所有執行緒都看到尚有空位而越過上限。
             with self._stock_main_subscription_lock:
                 with self._stock_lock:
                     if code in self._stock_subscriptions:
@@ -462,10 +432,6 @@ class QuoteService:
             result["shared_active_count"] = result["active_count"] - result["main_active_count"]
         return result
 
-    # ------------------------------------------------------------------
-    # 初始化與登入
-    # ------------------------------------------------------------------
-
     def _initialize(self) -> None:
         logger.info("[Shioaji] 初始化中...")
         simulation = os.getenv("SHIOAJI_SIMULATION", "false").lower() == "true"
@@ -488,8 +454,6 @@ class QuoteService:
 
         logger.info("[Shioaji] 登入中...")
         try:
-            # HanStock 僅使用行情／歷史資料，不下單；不要讓五條行情連線
-            # 重複訂閱委託成交回報，避免額外交易 Session 與 P2P 資源競爭。
             self.api.login(api_key=api_key, secret_key=secret_key, subscribe_trade=False)
             self.state.logged_in = True
             self.state.error_message = None
@@ -525,10 +489,6 @@ class QuoteService:
             logger.error("[Shioaji] 電子憑證啟用失敗: %s", exc)
             self.state.error_message = f"憑證啟用失敗: {exc}"
 
-    # ------------------------------------------------------------------
-    # 回呼與資料轉換
-    # ------------------------------------------------------------------
-
     def _setup_callbacks(self) -> None:
         if self.api is None or self._callbacks_api_id == id(self.api):
             return
@@ -538,8 +498,6 @@ class QuoteService:
             event_str = f"code={event_code}, resp={resp_code}, info={info}, event={event}"
             self.state.set_event(event_str)
             logger.info("[Shioaji][Event] %s", event_str)
-            info_upper = str(info).upper()
-
             if event_code == 0:
                 self.state.quote_connected = True
             elif event_code in (1, 2):
@@ -552,44 +510,13 @@ class QuoteService:
                 self.state.reconnect_count += 1
             elif event_code == 13:
                 self.state.quote_connected = True
-                self._do_subscribe_futures()
-                self._resubscribe_extra_futures()
+                # 台指期已停用；只恢復台股 Tick。
                 self._resubscribe_stocks()
-            elif event_code == 16:
-                # 只把期貨訂閱確認寫入 futures subscribed；股票另由 active set 管理。
-                futures_markers = ("FOP", self._target_code.upper())
-                if self._resolved_futures_code:
-                    futures_markers += (self._resolved_futures_code.upper(),)
-                if any(marker and marker in info_upper for marker in futures_markers):
-                    self.state.subscribed = True
 
         @self.api.on_tick_fop_v1()
         def _futures_tick_callback(exchange: sj.Exchange, tick: sj.TickFOPv1):
-            now = datetime.now(TW_TZ).isoformat()
-            tick_time = _format_tick_datetime(getattr(tick, "datetime", None), now)
-            tick_data = {
-                "code": str(getattr(tick, "code", "")),
-                "close": _safe_float(getattr(tick, "close", None)),
-                "volume": _safe_int(getattr(tick, "volume", None)),
-                "total_volume": _safe_int(getattr(tick, "total_volume", None)),
-                "tick_type": _safe_int(getattr(tick, "tick_type", None)),
-                "high": _safe_float(getattr(tick, "high", None)),
-                "low": _safe_float(getattr(tick, "low", None)),
-                "open": _safe_float(getattr(tick, "open", None)),
-                "price_chg": _safe_float(getattr(tick, "price_chg", None)),
-                "pct_chg": _safe_float(getattr(tick, "pct_chg", None)),
-                "bid_side_total_vol": _safe_int(getattr(tick, "bid_side_total_vol", None)),
-                "ask_side_total_vol": _safe_int(getattr(tick, "ask_side_total_vol", None)),
-                "simtrade": bool(getattr(tick, "simtrade", False)),
-                "tick_time": tick_time,
-                "received_at": now,
-            }
-            self.state.update_tick(tick_time, tick_data)
-            # 推送到 Market Data Hub
-            try:
-                get_market_data_hub().on_futures_tick(tick_data)
-            except Exception as exc:
-                logger.debug("[Hub] futures tick 推送失敗: %s", exc)
+            # 相容舊 callback；台指期已不再 subscribe。
+            return
 
         @self.api.on_tick_stk_v1()
         def _stock_tick_callback(exchange: sj.Exchange, tick: sj.TickSTKv1):
@@ -602,7 +529,6 @@ class QuoteService:
         now = datetime.now(TW_TZ).isoformat()
         tick_time = _format_tick_datetime(getattr(tick, "datetime", None), now)
         raw_pct = _safe_float(getattr(tick, "pct_chg", None))
-        # Shioaji TickSTKv1 的 pct_chg 為百分比的 1/100（例如 33 = 0.33%）。
         pct_chg = round(raw_pct / 100.0, 4) if raw_pct is not None else None
         exchange_value = getattr(exchange, "value", None) or str(exchange).split(".")[-1]
 
@@ -641,14 +567,11 @@ class QuoteService:
         *,
         primary_connection: bool = False,
     ) -> None:
-        """統一處理主連線與共享連線收到的現貨 Tick。"""
         tick_data = self._stock_tick_to_dict(exchange, tick)
         code = tick_data["code"]
         if not code:
             return
         if primary_connection:
-            # 台指期可能短暫沒有成交，但主連線收到現貨 Tick 就代表行情 Session
-            # 仍健康；只允許主連線更新這個 heartbeat，共享池不可代替主連線。
             with self.state._lock:
                 self.state.last_quote_timestamp = time.time()
                 self.state.quote_connected = True
@@ -658,83 +581,23 @@ class QuoteService:
             self._stock_errors.pop(code, None)
             if code in self._stock_subscriptions:
                 self._stock_subscriptions[code] = time.time()
-        # quote_connected 專門代表「主 Shioaji 期貨行情連線」是否健康。
-        # 現貨 Tick 也可能由共享行情池送進來；若在這裡設成 True，主連線
-        # 已過期時，共享池的正常 Tick 會把狀態洗回已連線，讓背景重連執行緒
-        # 在真正 logout/login 前提早退出，結果所有 1m/5m K 棒永久停在舊時間。
         try:
             get_market_data_hub().on_stock_tick(tick_data)
         except Exception as exc:
             logger.debug("[Hub] stock tick 推送失敗: %s", exc)
 
-    # ------------------------------------------------------------------
-    # 訂閱管理
-    # ------------------------------------------------------------------
-
     def _do_subscribe_futures(self) -> None:
-        if not self.state.logged_in or self.api is None:
-            return
-
-        logger.info("[Shioaji] 訂閱台指期行情: %s", self._target_code)
-        try:
-            contract = self.api.contracts.get(self._target_code)
-            if contract is None:
-                # 兼容 legacy Contracts 存取方式
-                contract = self.api.Contracts.Futures.TXF[self._target_code]
-            if contract is None:
-                raise ValueError(f"找不到合約: {self._target_code}")
-
-            self._resolved_futures_code = (
-                getattr(contract, "target_code", None) or getattr(contract, "code", None)
-            )
-            self.state.current_contract = self._target_code
-            self.state.data_source = f"shioaji_realtime_{self._target_code}"
-            self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
-            logger.info("[Shioaji] 台指期 subscribe() 已呼叫，等待 Event/Tick 確認。")
-        except Exception as exc:
-            logger.error("[Shioaji] 台指期訂閱失敗: %s", exc)
-            self.state.error_message = f"台指期訂閱失敗: {exc}"
-            self.state.subscribed = False
+        # 台指期已永久停用，不建立 futures contract，也不呼叫 subscribe。
+        self._resolved_futures_code = None
+        self.state.current_contract = None
+        logger.info("[Shioaji] 台指期行情已停用，不建立期貨訂閱。")
 
     def ensure_extra_futures_subscription(self, contract: Any) -> bool:
-        """在主行情連線上按需訂閱小台／微台等額外指數期貨 Tick。"""
-        if not self.state.logged_in or self.api is None or contract is None:
-            return False
-        code = str(
-            getattr(contract, "target_code", None)
-            or getattr(contract, "code", None)
-            or ""
-        ).strip().upper()
-        if not code:
-            return False
-        primary_codes = {
-            str(self._target_code or "").strip().upper(),
-            str(self._resolved_futures_code or "").strip().upper(),
-        }
-        if code in primary_codes:
-            return True
-        with self._extra_futures_lock:
-            if code in self._extra_futures_contracts:
-                return True
-            try:
-                self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
-            except Exception as exc:
-                logger.warning("[Shioaji] 額外期貨 %s 訂閱失敗: %s", code, exc)
-                return False
-            self._extra_futures_contracts[code] = contract
-        logger.info("[Shioaji] 已請求訂閱額外指數期貨 Tick: %s", code)
-        return True
+        logger.info("[Shioaji] 額外期貨訂閱已停用。")
+        return False
 
     def _resubscribe_extra_futures(self) -> None:
-        if self.api is None or not self.state.logged_in:
-            return
-        with self._extra_futures_lock:
-            contracts = list(self._extra_futures_contracts.items())
-        for code, contract in contracts:
-            try:
-                self.api.subscribe(contract, quote_type=sj.QuoteType.Tick)
-            except Exception as exc:
-                logger.warning("[Shioaji] 額外期貨 %s 恢復訂閱失敗: %s", code, exc)
+        return
 
     def _subscribe_bootstrap_stocks(self) -> None:
         raw = os.getenv("SHIOAJI_STOCK_BOOTSTRAP_CODES", "")
@@ -807,12 +670,7 @@ class QuoteService:
         for code in codes:
             self._subscribe_stock(code)
 
-    # ------------------------------------------------------------------
-    # 斷線重連
-    # ------------------------------------------------------------------
-
     def _trigger_reconnect(self) -> None:
-        # SDK callbacks、歷史補齊與健康檢查可能同時進來；檢查和啟動必須原子化。
         with self._reconnect_lock:
             if self._shutdown_event.is_set() or quote_deployment_role() != "primary":
                 return
@@ -893,7 +751,6 @@ _service: Optional[QuoteService] = None
 
 
 def get_quote_service() -> QuoteService:
-    """取得全域 QuoteService 單例。"""
     global _service
     if _service is None:
         _service = QuoteService()
