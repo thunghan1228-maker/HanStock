@@ -10,20 +10,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
-import quote_service as quote_module
-
-# 台指期已永久停用。保留相容方法名稱，但啟動與重連都不建立期貨訂閱。
-def _disabled_futures_subscription(self: Any, *_args: Any, **_kwargs: Any) -> None:
-    self._resolved_futures_code = None
-    self.state.current_contract = None
-    return None
-
-quote_module.QuoteService._do_subscribe_futures = _disabled_futures_subscription
-quote_module.QuoteService.ensure_extra_futures_subscription = _disabled_futures_subscription
-quote_module.QuoteService._resubscribe_extra_futures = _disabled_futures_subscription
-
-from api_server import app  # noqa: E402
-from stock_bar_bootstrap import get_resilient_stock_bars  # noqa: E402
+from api_server import app
+from stock_bar_bootstrap import get_resilient_stock_bars
 
 
 def _normalize_stock_code(raw: str) -> str:
