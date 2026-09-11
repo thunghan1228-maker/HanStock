@@ -1,72 +1,42 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HanStock 控制台</title>
-  <style>
-    :root{color-scheme:dark;--bg:#0b1020;--card:#151c30;--muted:#9aa6bf;--line:#2a3554;--good:#46d59a;--bad:#ff6b7a;--accent:#6ea8fe}
-    *{box-sizing:border-box} body{margin:0;background:linear-gradient(140deg,#0b1020,#11172a);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#eef3ff}
-    main{max-width:1100px;margin:0 auto;padding:28px 18px 60px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}
-    h1{margin:0;font-size:34px}.sub{color:var(--muted);margin-top:8px}.pill{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--muted)}
-    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:24px 0}.card{background:rgba(21,28,48,.9);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 35px rgba(0,0,0,.18)}
-    .metric{font-size:30px;font-weight:800;margin-top:6px}.label{color:var(--muted);font-size:14px}.section{margin-top:18px}.section h2{font-size:20px;margin:0 0 14px}
-    .toolbar{display:flex;gap:10px;flex-wrap:wrap}.toolbar input{flex:1;min-width:220px;background:#0c1325;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:16px}
-    button,a.btn{background:var(--accent);color:#07101f;border:0;border-radius:10px;padding:12px 16px;font-weight:800;cursor:pointer;text-decoration:none}.secondary{background:#25304d!important;color:#fff!important}
-    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:13px}.down{color:#7db7ff}.up{color:#ff7b88}
-    .empty{color:var(--muted);padding:18px 0}.groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.group{padding:12px;border:1px solid var(--line);border-radius:10px;background:#10172a}
-    .status-ok{color:var(--good)}.status-bad{color:var(--bad)}pre{white-space:pre-wrap;color:#dfe7fa}.hidden{display:none}
-    @media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.groups{grid-template-columns:1fr 1fr}}
-    @media(max-width:520px){.grid,.groups{grid-template-columns:1fr}h1{font-size:28px}}
-  </style>
-</head>
-<body>
-<main>
-  <div class="top">
-    <div><h1>HanStock 控制台</h1><div class="sub">台灣股票族群與 Rule1 最新掃描結果</div></div>
-    <div class="pill">本機 API：<span id="healthText">檢查中…</span></div>
-  </div>
-
-  <div class="grid">
-    <div class="card"><div class="label">族群總數</div><div class="metric" id="groupCount">—</div></div>
-    <div class="card"><div class="label">有符合股票的族群</div><div class="metric" id="matchedGroups">—</div></div>
-    <div class="card"><div class="label">符合 Rule1 紀錄</div><div class="metric" id="passedCount">—</div></div>
-    <div class="card"><div class="label">最新產生時間</div><div class="metric" style="font-size:17px" id="generatedAt">—</div></div>
-  </div>
-
-  <section class="card section">
-    <h2>符合 Rule1 的股票</h2>
-    <div id="passedEmpty" class="empty hidden">目前沒有符合 Rule1 的股票。</div>
-    <div style="overflow:auto"><table id="passedTable"><thead><tr><th>族群</th><th>代號</th><th>名稱</th><th>漲跌幅</th><th>價差</th><th>收盤</th></tr></thead><tbody></tbody></table></div>
-  </section>
-
-  <section class="card section">
-    <h2>查詢族群或股票代號</h2>
-    <div class="toolbar"><input id="keyword" placeholder="例如：記憶體、2344"><button id="searchBtn">查詢</button><button class="secondary" id="showAllBtn">查看全部族群</button></div>
-    <div id="searchResult" style="margin-top:16px"></div>
-  </section>
-
-  <section class="card section">
-    <h2>工具</h2>
-    <div class="toolbar"><a class="btn secondary" href="/docs" target="_blank">API 文件</a><a class="btn secondary" href="/api/rule1/latest" target="_blank">原始 Rule1 JSON</a><button id="refreshBtn">重新整理</button></div>
-  </section>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HanStock 盤中戰鬥版 B 測試</title>
+<style>
+:root{color-scheme:dark;--bg:#05070c;--panel:#0d1119;--panel2:#111722;--line:#263040;--text:#f3f6fb;--muted:#8792a5;--red:#ff5b67;--blue:#4da3ff;--green:#35d49a;--yellow:#ffc857}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -20%,#172033 0,#080b11 42%,#05070c 100%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text)}
+main{max-width:1180px;margin:auto;padding:18px 14px 90px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.brand{font-size:25px;font-weight:900}.brand small{display:block;color:var(--muted);font-size:12px;font-weight:600;margin-top:3px}.live{border:1px solid #31513f;background:#0d2119;color:var(--green);border-radius:999px;padding:7px 11px;font-size:12px;font-weight:800}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{background:linear-gradient(145deg,rgba(17,23,34,.98),rgba(9,12,18,.98));border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 12px 30px #0005}.label{color:var(--muted);font-size:12px;font-weight:700}.value{font-size:27px;font-weight:900;margin-top:5px}.up{color:var(--red)}.down{color:var(--blue)}.flat{color:var(--muted)}.section{margin-top:12px}.section h2{font-size:16px;margin:0 0 10px}.ticker{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.tile{background:#0b1018;border:1px solid var(--line);border-radius:11px;padding:11px}.tile b{font-size:15px}.tile span{display:block;color:var(--muted);font-size:12px;margin-top:4px}.tile strong{display:block;font-size:20px;margin-top:5px}.bar{height:6px;background:#1b2330;border-radius:9px;overflow:hidden;margin-top:9px}.bar i{display:block;height:100%;width:65%;background:var(--red);border-radius:9px}.list{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.row{display:flex;align-items:center;justify-content:space-between;background:#0a0f17;border:1px solid var(--line);border-radius:10px;padding:10px 12px}.row .name{font-weight:800}.row .meta{font-size:12px;color:var(--muted)}.big{font-size:19px;font-weight:900}.search{display:flex;gap:8px}.search input{flex:1;background:#080c13;border:1px solid var(--line);border-radius:10px;color:#fff;padding:11px 12px}.search button{border:0;border-radius:10px;padding:0 16px;background:#e7edf7;color:#07101a;font-weight:900}.notice{color:var(--muted);font-size:12px;margin-top:9px}.bottom{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);width:min(700px,calc(100% - 20px));display:grid;grid-template-columns:repeat(4,1fr);gap:5px;background:#0c1119ee;border:1px solid var(--line);backdrop-filter:blur(14px);padding:6px;border-radius:16px}.bottom a{color:var(--muted);text-decoration:none;text-align:center;padding:9px 4px;border-radius:10px;font-size:11px;font-weight:800}.bottom a.active{background:#1a2331;color:#fff}.empty{color:var(--muted);padding:12px}.status{font-size:12px;color:var(--muted);margin-top:8px}@media(max-width:780px){.grid{grid-template-columns:repeat(2,1fr)}.ticker{grid-template-columns:1fr}.list{grid-template-columns:1fr}}@media(max-width:430px){main{padding-left:10px;padding-right:10px}.brand{font-size:21px}.value{font-size:23px}}
+</style></head>
+<body><main>
+<header class="head"><div class="brand">HanStock 盤中戰鬥版<small>Battle · 帳號 B 測試環境</small></div><div class="live" id="live">● SYSTEM CHECK</div></header>
+<section class="grid">
+<div class="card"><div class="label">市場狀態</div><div class="value" id="market">盤中</div><div class="status" id="time">同步檢查中…</div></div>
+<div class="card"><div class="label">Rule1 強勢</div><div class="value up" id="up">—</div><div class="status">目前符合條件</div></div>
+<div class="card"><div class="label">弱勢 / 回落</div><div class="value down" id="down">—</div><div class="status">即時資料</div></div>
+<div class="card"><div class="label">族群</div><div class="value" id="groups">—</div><div class="status">HanStock 分類</div></div>
+</section>
+<section class="card section"><h2>強勢主線</h2><div class="ticker" id="leaders"></div></section>
+<section class="card section"><h2>弱勢 / 反向觀察</h2><div class="ticker" id="weak"></div></section>
+<section class="card section"><h2>上櫃領漲</h2><div class="list" id="stocks"></div></section>
+<section class="card section"><h2>聯電股接棒</h2><div class="row"><div><div class="name">2330 台積電</div><div class="meta">主流權值 · 即時觀察</div></div><div class="big up">等待行情</div></div><div class="row" style="margin-top:8px"><div><div class="name">2303 聯電</div><div class="meta">半導體族群 · 接棒監控</div></div><div class="big flat">監控中</div></div></section>
+<section class="card section"><h2>OTC 櫃買指數</h2><div class="row"><div><div class="name">OTC</div><div class="meta">櫃買市場盤中狀態</div></div><div class="big" id="otc">—</div></div><div class="bar"><i id="bar"></i></div></section>
+<section class="card section"><h2>快速研究</h2><div class="search"><input id="q" placeholder="輸入股票代號或族群，例如 2330 / 記憶體"><button onclick="search()">查詢</button></div><div id="result" class="notice">資料會直接從 B 測試站 API 取得。</div></section>
 </main>
+<nav class="bottom"><a class="active" href="/">戰鬥</a><a href="/api/groups" target="_blank">自選股</a><a href="/api/rule1/passed" target="_blank">三角收斂</a><a href="/docs" target="_blank">個股研究中心</a></nav>
 <script>
-const $=s=>document.querySelector(s);
-function fmtTime(v){if(!v)return '—';try{return new Date(v).toLocaleString('zh-TW')}catch{return v}}
-async function json(url){const r=await fetch(url);if(!r.ok){const t=await r.text();throw new Error(t||`HTTP ${r.status}`)}return r.json()}
+const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+async function get(u){const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error(r.status);return r.json()}
+function tile(name,code,val,cls){return `<div class="tile"><b>${esc(name)}</b><span>${esc(code)}</span><strong class="${cls||'flat'}">${esc(val)}</strong><div class="bar"><i style="width:${Math.max(15,Math.min(95,50+Math.random()*40))}%"></i></div></div>`}
 async function load(){
-  try{const h=await json('/api/health');$('#healthText').textContent='正常';$('#healthText').className='status-ok';$('#groupCount').textContent=h.group_count}
-  catch(e){$('#healthText').textContent='異常';$('#healthText').className='status-bad'}
-  try{const d=await json('/api/rule1/passed');$('#passedCount').textContent=d.count;$('#generatedAt').textContent=fmtTime(d.generated_at);
-    const tbody=$('#passedTable tbody');tbody.innerHTML='';const stocks=d.stocks||[];$('#passedTable').classList.toggle('hidden',!stocks.length);$('#passedEmpty').classList.toggle('hidden',!!stocks.length);
-    stocks.forEach(s=>{const tr=document.createElement('tr');const cls=s.price_change>0?'up':s.price_change<0?'down':'';tr.innerHTML=`<td>${s.group_name}</td><td>${s.stock_code}</td><td>${s.stock_name}</td><td class="${cls}">${Number(s.change_rate).toFixed(2)}%</td><td class="${cls}">${Number(s.price_change).toFixed(2)}</td><td>${Number(s.today_close).toFixed(2)}</td>`;tbody.appendChild(tr)})
-  }catch(e){$('#passedEmpty').textContent='尚無 Rule1 結果，請先在 HanStock 執行 r1all。';$('#passedEmpty').classList.remove('hidden');$('#passedTable').classList.add('hidden')}
-  try{const d=await json('/api/rule1/latest?passed_only=true');$('#matchedGroups').textContent=d.summary?.groups_with_results??'—'}catch{}
+ try{const h=await get('/api/health');$('#groups').textContent=h.group_count??'—';$('#live').textContent='● B 測試站正常';$('#live').style.color='var(--green)';$('#time').textContent='API 已連線 · '+new Date().toLocaleTimeString('zh-TW');
+  const r=await get('/api/realtime/latest');const q=r.quotes||[];const ups=q.filter(x=>(x.change_rate||0)>0).sort((a,b)=>(b.change_rate||0)-(a.change_rate||0));const downs=q.filter(x=>(x.change_rate||0)<0).sort((a,b)=>(a.change_rate||0)-(b.change_rate||0));
+  $('#up').textContent=r.summary?.up??ups.length;$('#down').textContent=r.summary?.down??downs.length;$('#otc').textContent=q.length?'即時':'等待';
+  $('#leaders').innerHTML=(ups.slice(0,6).map(x=>tile(x.name||x.code,x.code,`${Number(x.change_rate||0).toFixed(2)}%`,'up')).join(''))||tile('盤中主線','—','等待資料','flat');
+  $('#weak').innerHTML=(downs.slice(0,6).map(x=>tile(x.name||x.code,x.code,`${Number(x.change_rate||0).toFixed(2)}%`,'down')).join(''))||tile('弱勢監控','—','等待資料','flat');
+  $('#stocks').innerHTML=(ups.slice(0,10).map(x=>`<div class="row"><div><div class="name">${esc(x.code)} ${esc(x.name)}</div><div class="meta">成交 ${esc(x.volume??'—')}</div></div><div class="big up">${Number(x.change_rate||0).toFixed(2)}%</div></div>`).join(''))||'<div class="empty">目前尚無即時股票資料。</div>';
+ }catch(e){$('#live').textContent='● B API 待命';$('#live').style.color='var(--yellow)';$('#time').textContent='首頁已載入，等待行情同步';$('#leaders').innerHTML=tile('主力行情','—','等待同步','flat');$('#weak').innerHTML=tile('風險監控','—','等待同步','flat')}
 }
-async function search(){const k=$('#keyword').value.trim();if(!k)return;const box=$('#searchResult');box.textContent='查詢中…';try{const d=await json('/api/groups/'+encodeURIComponent(k));box.innerHTML=d.matched_groups.map(g=>`<div style="margin:12px 0"><strong>${g.group_name}</strong>（${g.stock_count}檔）<div class="groups" style="margin-top:8px">${g.stocks.map(s=>`<div class="group">${s.stock_code} ${s.stock_name}</div>`).join('')}</div></div>`).join('')}catch(e){box.innerHTML='<span class="status-bad">查無資料</span>'}}
-async function showAll(){const box=$('#searchResult');box.textContent='載入中…';try{const d=await json('/api/groups');box.innerHTML=`<div class="groups">${d.groups.map(g=>`<div class="group"><strong>${g.group_name}</strong><br><span class="label">${g.stock_count} 檔</span></div>`).join('')}</div>`}catch(e){box.textContent='載入失敗'}}
-$('#searchBtn').onclick=search;$('#showAllBtn').onclick=showAll;$('#refreshBtn').onclick=load;$('#keyword').addEventListener('keydown',e=>{if(e.key==='Enter')search()});load();
-</script>
-</body>
-</html>
+async function search(){const q=$('#q').value.trim();if(!q)return;$('#result').textContent='查詢中…';try{const d=await get('/api/groups/'+encodeURIComponent(q));$('#result').innerHTML=d.matched_groups?.map(g=>`<b>${esc(g.group_name)}</b>（${g.stock_count} 檔）<br><span class="notice">${g.stocks?.slice(0,20).map(s=>esc(s.stock_code)+' '+esc(s.stock_name)).join(' · ')||''}</span>`).join('<hr style="border-color:var(--line)">')||'查無資料'}catch(e){$('#result').textContent='查無資料，請改用股票代號或族群名稱。'}}
+load();setInterval(load,30000);
+</script></body></html>
