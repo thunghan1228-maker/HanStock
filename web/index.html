@@ -29,9 +29,22 @@ const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"']
 async function get(u){const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error(r.status);return r.json()}
 function tile(name,code,val,cls){return `<div class="tile"><b>${esc(name)}</b><span>${esc(code)}</span><strong class="${cls||'flat'}">${esc(val)}</strong><div class="bar"><i style="width:${Math.max(15,Math.min(95,50+Math.random()*40))}%"></i></div></div>`}
 async function load(){
- try{const h=await get('/api/health');$('#groups').textContent=h.group_count??'—';$('#live').textContent='● B 測試站正常';$('#live').style.color='var(--green)';$('#time').textContent='API 已連線 · '+new Date().toLocaleTimeString('zh-TW');
-  const r=await get('/api/realtime/latest');const q=r.quotes||[];const ups=q.filter(x=>(x.change_rate||0)>0).sort((a,b)=>(b.change_rate||0)-(a.change_rate||0));const downs=q.filter(x=>(x.change_rate||0)<0).sort((a,b)=>(a.change_rate||0)-(b.change_rate||0));
-  $('#up').textContent=r.summary?.up??ups.length;$('#down').textContent=r.summary?.down??downs.length;$('#otc').textContent=q.length?'即時':'等待';
+ try{
+  const h=await get('/api/health');$('#groups').textContent=h.group_count??'—';
+  let realtime=null;try{realtime=await get('/api/realtime/latest')}catch(_){realtime=null}
+  let q=Array.isArray(realtime?.quotes)?realtime.quotes:[];
+  let source='即時行情';
+  if(!q.length){
+   const r1=await get('/api/rule1/passed');
+   q=(r1.stocks||[]).map(x=>({code:x.stock_code,name:x.stock_name,price:x.today_close,change_rate:x.change_rate,volume:x.volume}));
+   source='Rule1 最新結果';
+  }
+  const ups=q.filter(x=>(Number(x.change_rate)||0)>0).sort((a,b)=>(Number(b.change_rate)||0)-(Number(a.change_rate)||0));
+  const downs=q.filter(x=>(Number(x.change_rate)||0)<0).sort((a,b)=>(Number(a.change_rate)||0)-(Number(b.change_rate)||0));
+  $('#up').textContent=realtime?.summary?.up??ups.length;$('#down').textContent=realtime?.summary?.down??downs.length;
+  $('#otc').textContent=q.length?(source==='即時行情'?'即時':'Rule1'):'等待';
+  $('#live').textContent='● B '+(source==='即時行情'?'即時同步':'測試資料');$('#live').style.color=source==='即時行情'?'var(--green)':'var(--yellow)';
+  $('#time').textContent=source+' · '+new Date().toLocaleTimeString('zh-TW');
   $('#leaders').innerHTML=(ups.slice(0,6).map(x=>tile(x.name||x.code,x.code,`${Number(x.change_rate||0).toFixed(2)}%`,'up')).join(''))||tile('盤中主線','—','等待資料','flat');
   $('#weak').innerHTML=(downs.slice(0,6).map(x=>tile(x.name||x.code,x.code,`${Number(x.change_rate||0).toFixed(2)}%`,'down')).join(''))||tile('弱勢監控','—','等待資料','flat');
   $('#stocks').innerHTML=(ups.slice(0,10).map(x=>`<div class="row"><div><div class="name">${esc(x.code)} ${esc(x.name)}</div><div class="meta">成交 ${esc(x.volume??'—')}</div></div><div class="big up">${Number(x.change_rate||0).toFixed(2)}%</div></div>`).join(''))||'<div class="empty">目前尚無即時股票資料。</div>';
