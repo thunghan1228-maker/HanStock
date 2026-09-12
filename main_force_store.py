@@ -237,6 +237,27 @@ def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]
     return sorted(str(row["stock_code"]) for row in rows)
 
 
+def prune_old_bars(keep_days: int = 4) -> int:
+    """只保留最近 keep_days 個「有資料的交易日」，刪掉更早的1分/5分主力副圖，
+    避免資料庫無限長大。用實際存在的 trade_date 決定，不是單純的日曆天數，
+    所以會自動跳過假日。"""
+    _ensure_table()
+    keep_days = max(1, int(keep_days))
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT trade_date FROM main_force_bars ORDER BY trade_date DESC LIMIT ?",
+            (keep_days,),
+        ).fetchall()
+        if len(rows) < keep_days:
+            return 0  # 資料還不滿 keep_days 天，還不用清
+        cutoff_date = rows[-1]["trade_date"]
+        cursor = connection.execute(
+            "DELETE FROM main_force_bars WHERE trade_date < ?",
+            (cutoff_date,),
+        )
+        return int(cursor.rowcount or 0)
+
+
 def main_force_storage_status() -> dict[str, Any]:
     _ensure_table()
     with database.get_connection() as connection:

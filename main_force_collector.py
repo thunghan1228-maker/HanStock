@@ -7,13 +7,33 @@ import os
 import threading
 import time
 
-from main_force_store import save_main_force_batches
+from main_force_store import prune_old_bars, save_main_force_batches
 
 logger = logging.getLogger("hanstock.main_force_collector")
 POLL_SECONDS = max(30, int(os.getenv("HANSTOCK_MAIN_FORCE_COLLECTOR_SECONDS", "60")))
 LATEST_BARS_PER_CYCLE = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_LATEST_BARS", "2")))
+KEEP_DAYS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_KEEP_DAYS", "4")))
 _started = False
 _lock = threading.Lock()
+_last_pruned_date: str | None = None
+
+
+def _maybe_prune_old_bars() -> None:
+    """一天只清理一次舊資料，避免每個收集週期都下 DELETE。"""
+    global _last_pruned_date
+    from otc_index import TW_TZ
+    from datetime import datetime
+
+    today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    if _last_pruned_date == today:
+        return
+    try:
+        deleted = prune_old_bars(KEEP_DAYS)
+        if deleted:
+            logger.info("主力副圖已清理超過 %s 個交易日的舊資料: %s 筆", KEEP_DAYS, deleted)
+        _last_pruned_date = today
+    except Exception:  # noqa: BLE001
+        logger.exception("主力副圖舊資料清理失敗")
 
 
 def collect_once(*, service=None, hub=None) -> dict[str, int]:
@@ -43,6 +63,7 @@ def _loop() -> None:
                 logger.info("主力副圖已落盤: %s", result)
         except Exception:  # noqa: BLE001
             logger.exception("主力副圖背景保存失敗")
+        _maybe_prune_old_bars()
         time.sleep(POLL_SECONDS)
 
 
