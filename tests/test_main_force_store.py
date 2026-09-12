@@ -10,6 +10,7 @@ from main_force_store import (
     load_main_force_bars,
     load_main_force_ranking,
     main_force_storage_status,
+    prune_old_bars,
     save_main_force_bars,
 )
 from otc_index import taipei_trade_date
@@ -132,6 +133,28 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(list_tracked_stock_codes(trade_date, "1m"), ["1101", "2330"])
         self.assertEqual(list_tracked_stock_codes(trade_date, "5m"), ["2330"])
         self.assertEqual(list_tracked_stock_codes("2000-01-01", "1m"), [])
+
+    def test_prune_old_bars_keeps_only_most_recent_trading_days(self):
+        base_ts = 1_786_400_400_000
+        day_ms = 24 * 60 * 60 * 1000
+        dates = []
+        for offset in range(6):
+            ts = base_ts + offset * day_ms
+            dates.append(taipei_trade_date(ts))
+            save_main_force_bars("2330", "1m", [{
+                "ts": ts, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True,
+            }])
+        deleted = prune_old_bars(keep_days=4)
+        remaining_dates = sorted({row["trade_date"] for row in load_main_force_bars("2330", "1m", days=400)})
+        self.assertEqual(remaining_dates, sorted(dates[-4:]))
+        self.assertEqual(deleted, 2)
+
+    def test_prune_old_bars_no_op_when_fewer_days_than_keep(self):
+        base_ts = 1_786_400_400_000
+        save_main_force_bars("2330", "1m", [{
+            "ts": base_ts, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True,
+        }])
+        self.assertEqual(prune_old_bars(keep_days=4), 0)
 
 
 if __name__ == "__main__":
