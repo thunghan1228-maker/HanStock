@@ -15,6 +15,8 @@ ONCE_PER_DAY_KINDS = {
     "triangleNearBreakout",
     "triangleBreakoutPendingVolume",
     "triangleVolumeBreakout",
+    "fourGateBuy",
+    "fourGateSell",
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
 INSTANT_LARGE_KINDS = {"instantLargeBuy", "instantLargeSell"}
