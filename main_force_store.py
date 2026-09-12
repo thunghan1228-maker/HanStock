@@ -223,6 +223,20 @@ def load_main_force_ranking(
     } for row in rows]
 
 
+def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]:
+    """今日已有主力副圖資料的股票代號；用來找「目前實際在追蹤」的股票，
+    不需要另外掃描或訂閱。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT stock_code FROM main_force_bars WHERE trade_date = ? AND interval = ?",
+            (trade_date, interval),
+        ).fetchall()
+    return sorted(str(row["stock_code"]) for row in rows)
+
+
 def main_force_storage_status() -> dict[str, Any]:
     _ensure_table()
     with database.get_connection() as connection:
