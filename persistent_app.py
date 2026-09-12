@@ -13,6 +13,8 @@ from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import request_main_force_backfill
+from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
+from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
 from otc_index import TW_TZ
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
@@ -30,6 +32,7 @@ async def _persistent_lifespan(fastapi_app):
 
         if quote_deployment_role() == "primary":
             start_main_force_collector()
+            start_intraday_large_order_collector()
         try:
             yield state
         finally:
@@ -48,10 +51,49 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "mainForceHistory": main_force_storage_status(),
+            "instantLargeOrderCollectorEnabled": os.getenv(
+                "HANSTOCK_INSTANT_LARGE_ENABLED", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
+            "instantLargeOrder": large_order_collector_status(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
         },
     }
+
+
+@app.get("/api/hub/intraday-signals")
+def get_intraday_signals(
+    trade_date: str | None = Query(None),
+    kind: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=5000),
+) -> dict[str, Any]:
+    """讀取已永久保存的盤中訊號。目前只有盤中特大買賣單／族群瞬間大單這幾類
+    會實際寫入資料；其餘分類要等對應的偵測邏輯復原後才會有內容。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    signals = (
+        load_latest_signals_by_kind(date, kind, limit=limit)
+        if kind
+        else load_latest_signals(date, limit=limit)
+    )
+    return {
+        "status": "ok",
+        "tradeDate": date,
+        "kind": kind,
+        "count": len(signals),
+        "signals": signals,
+    }
+
+
+@app.get("/api/hub/intraday-signals/dates")
+def get_intraday_signal_dates(limit: int = Query(10, ge=1, le=60)) -> dict[str, Any]:
+    """有保存訊號紀錄的交易日清單，供歷史查詢分頁使用。"""
+    return {"status": "ok", "dates": load_recent_trade_dates(limit=limit)}
 
 
 @app.get("/api/hub/force/bars/{stock_code}")
