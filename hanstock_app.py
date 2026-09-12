@@ -1,19 +1,143 @@
 """HanStock 正式 ASGI app 包裝器。
 
-只保留台股即時行情與股票 1m/5m Hub API。
-台指期、OTC 指數、Rule1、三角/VCP、資金流等舊 API 不再對外暴露。
+只保留台股即時行情、櫃買指數與股票 1m/5m Hub API。
+台指期、Rule1、三角/VCP、資金流等舊 API 不再對外暴露。
 """
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse
 
-from api_server import app
-from stock_bar_bootstrap import get_resilient_stock_bars
+import quote_service as quote_module
+from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, exchange_text
+from otc_index_hub import get_otc_index_hub
+from otc_index_service import get_otc_index_service
+
+logger = logging.getLogger("hanstock.otc_index_runtime")
+TW_TZ = timezone(timedelta(hours=8))
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return 0 if value is None else max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _quote_datetime_iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=TW_TZ)
+        return dt.astimezone(TW_TZ).isoformat()
+    if value:
+        return str(value)
+    return datetime.now(TW_TZ).isoformat()
+
+
+def _install_otc_index_patch() -> None:
+    """掛上櫃買指數即時行情：只接在 _setup_callbacks（登入/重連都會呼叫），
+    不再依賴已停用的期貨訂閱流程觸發（_do_subscribe_futures 現在不會被呼叫）。
+    """
+    cls = quote_module.QuoteService
+    if getattr(cls, "_hanstock_otc_index_patch_v1", False):
+        return
+
+    original_setup_callbacks = cls._setup_callbacks
+
+    def patched_setup_callbacks(self: Any) -> None:
+        # 原本股票 callbacks 永遠先完成；OTC index 掛載/訂閱失敗不得往外拋。
+        original_setup_callbacks(self)
+        api = self.api
+        if api is None:
+            return
+
+        api_id = id(api)
+        if getattr(self, "_otc_index_callback_api_id", None) != api_id:
+            try:
+                index_service = get_otc_index_service()
+
+                def _otc_index_quote_callback(quote: Any) -> None:
+                    try:
+                        if not index_service.accepts_quote(quote):
+                            return
+                        quote_time = _quote_datetime_iso(getattr(quote, "datetime", None))
+                        quote_data = {
+                            "hub_code": OTC_INDEX_HUB_CODE,
+                            "code": str(getattr(quote, "code", "") or "").strip().upper(),
+                            "exchange": exchange_text(getattr(quote, "exchange", "OTC")),
+                            "name": OTC_INDEX_DISPLAY_NAME,
+                            "reference": _safe_float(getattr(quote, "reference", None)),
+                            "open": _safe_float(getattr(quote, "open", None)),
+                            "high": _safe_float(getattr(quote, "high", None)),
+                            "low": _safe_float(getattr(quote, "low", None)),
+                            "close": _safe_float(getattr(quote, "close", None)),
+                            "volume": _safe_int(getattr(quote, "volume", None)),
+                            "vol_sum": _safe_int(getattr(quote, "vol_sum", None)),
+                            "amount_sum": _safe_float(getattr(quote, "amount_sum", None)),
+                            "quote_time": quote_time,
+                            "datetime": quote_time,
+                            "received_at": datetime.now(TW_TZ).isoformat(),
+                            "data_source": "shioaji_realtime_index",
+                        }
+                        get_otc_index_hub().on_quote(quote_data)
+                        self.state.quote_connected = True
+                    except Exception as exc:
+                        logger.debug("[OTC Index] quote callback 處理失敗: %s", exc)
+
+                # Shioaji 1.7 官方同時提供 setter 與 decorator；優先用 setter，
+                # 舊/差異版再退回 decorator。兩者都不可用時只停用 index，不影響股票。
+                setter = getattr(api, "set_on_quote_idx_v1_callback", None)
+                if callable(setter):
+                    setter(_otc_index_quote_callback)
+                else:
+                    decorator_factory = getattr(api, "on_quote_idx_v1", None)
+                    if not callable(decorator_factory):
+                        raise AttributeError("Shioaji API 不支援 QuoteIdxV1 callback")
+                    decorator_factory()(_otc_index_quote_callback)
+
+                self._otc_index_callback_api_id = api_id
+                logger.info("[OTC Index] QuoteIdxV1 callback 已掛載 (api_id=%s)", api_id)
+            except Exception as exc:
+                get_otc_index_hub().set_subscribed(False, f"Index callback 掛載失敗: {exc}")
+                logger.warning("[OTC Index] callback 掛載失敗（原股票繼續）: %s", exc)
+
+        previous_api_id = getattr(self, "_otc_index_subscription_api_id", None)
+        if previous_api_id == api_id:
+            return
+        try:
+            service = get_otc_index_service()
+            ok = service.subscribe(
+                api,
+                bootstrap=True,
+                force_resolve=previous_api_id is not None and previous_api_id != api_id,
+            )
+            if ok:
+                self._otc_index_subscription_api_id = api_id
+        except Exception as exc:
+            logger.warning("[OTC Index] 自動訂閱例外（不影響股票）: %s", exc)
+
+    cls._setup_callbacks = patched_setup_callbacks
+    cls._hanstock_otc_index_patch_v1 = True
+    logger.info("[OTC Index] QuoteService runtime patch 已安裝")
+
+
+_install_otc_index_patch()
+
+# patch 完成後才載入原 FastAPI app；其 lifespan 啟動 QuoteService 時即會自動套用。
+from api_server import app  # noqa: E402
+from stock_bar_bootstrap import get_resilient_stock_bars  # noqa: E402
 
 
 def _normalize_stock_code(raw: str) -> str:

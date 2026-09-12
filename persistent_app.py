@@ -13,7 +13,10 @@ from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import request_main_force_backfill
-from otc_index import TW_TZ
+from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
+from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
+from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
+from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
 
@@ -30,6 +33,7 @@ async def _persistent_lifespan(fastapi_app):
 
         if quote_deployment_role() == "primary":
             start_main_force_collector()
+            start_intraday_large_order_collector()
         try:
             yield state
         finally:
@@ -48,10 +52,49 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "mainForceHistory": main_force_storage_status(),
+            "instantLargeOrderCollectorEnabled": os.getenv(
+                "HANSTOCK_INSTANT_LARGE_ENABLED", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
+            "instantLargeOrder": large_order_collector_status(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
         },
     }
+
+
+@app.get("/api/hub/intraday-signals")
+def get_intraday_signals(
+    trade_date: str | None = Query(None),
+    kind: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=5000),
+) -> dict[str, Any]:
+    """讀取已永久保存的盤中訊號。目前只有盤中特大買賣單／族群瞬間大單這幾類
+    會實際寫入資料；其餘分類要等對應的偵測邏輯復原後才會有內容。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    signals = (
+        load_latest_signals_by_kind(date, kind, limit=limit)
+        if kind
+        else load_latest_signals(date, limit=limit)
+    )
+    return {
+        "status": "ok",
+        "tradeDate": date,
+        "kind": kind,
+        "count": len(signals),
+        "signals": signals,
+    }
+
+
+@app.get("/api/hub/intraday-signals/dates")
+def get_intraday_signal_dates(limit: int = Query(10, ge=1, le=60)) -> dict[str, Any]:
+    """有保存訊號紀錄的交易日清單，供歷史查詢分頁使用。"""
+    return {"status": "ok", "dates": load_recent_trade_dates(limit=limit)}
 
 
 @app.get("/api/hub/force/bars/{stock_code}")
@@ -117,6 +160,106 @@ def get_main_force_ranking(
         "count": len(ranking),
         "ranking": ranking,
         "source": "railway_sqlite_shioaji_ticks",
+    }
+
+
+@app.get("/api/hub/index/otc/status")
+def get_otc_index_status() -> dict[str, Any]:
+    """櫃買指數 Hub 狀態與最新 Quote。"""
+    hub = get_otc_index_hub()
+    return {
+        "status": "ok",
+        "data": hub.get_status(),
+        "quote": hub.get_latest_quote(),
+    }
+
+
+@app.get("/api/hub/index/otc/bars")
+def get_otc_index_bars(
+    include_current: bool = Query(default=False, description="是否包含尚未收棒的目前 5 分 K"),
+) -> dict[str, Any]:
+    """櫃買指數今日正式 5 分 K。"""
+    hub = get_otc_index_hub()
+    bars = hub.get_bars_5m(include_current=include_current)
+    return {
+        "status": "ok",
+        "code": OTC_INDEX_HUB_CODE,
+        "name": OTC_INDEX_DISPLAY_NAME,
+        "interval": "5m",
+        "include_current": include_current,
+        "bar_count": len(bars),
+        "bars": bars,
+        "hub": hub.get_status(),
+    }
+
+
+@app.get("/api/hub/index/otc/bars1m")
+def get_otc_index_bars_1m(include_current: bool = Query(default=True)) -> dict[str, Any]:
+    """櫃買指數今日正式 1 分 K。"""
+    hub = get_otc_index_hub()
+    bars = hub.get_bars_1m(include_current=include_current)
+    return {
+        "status": "ok",
+        "code": OTC_INDEX_HUB_CODE,
+        "name": OTC_INDEX_DISPLAY_NAME,
+        "interval": "1m",
+        "include_current": include_current,
+        "bar_count": len(bars),
+        "bars": bars,
+        "hub": hub.get_status(),
+    }
+
+
+@app.get("/api/hub/index/otc/strength")
+def get_otc_index_strength() -> dict[str, Any]:
+    """櫃買盤勢：依今日 5 分 K 換算「站上/跌破20MA」與「相對第3根5K」兩個訊號。
+
+    這兩個訊號的判斷條件是本次依 docs/INTRADAY_5MIN_SPEC.md 的一般規格
+    （Nth 次站上/跌破 20MA）自行換算到櫃買指數上，不是原本
+    taiwan-stock-groups/server/otcIndex.ts 的還原版——那份原始程式不在這個
+    後端 repo 裡，目前找不到來源，如果實際規則不同請再告訴我調整。
+    """
+    hub = get_otc_index_hub()
+    bars = hub.get_bars_5m(include_current=True)
+    quote = hub.get_latest_quote()
+    if len(bars) < 20 or not quote:
+        return {
+            "status": "ok",
+            "ready": False,
+            "reason": "資料不足（需要至少20根5分K與即時報價）",
+            "barCount": len(bars),
+            "hub": hub.get_status(),
+        }
+    closes = [float(b["close"]) for b in bars[-20:]]
+    ma20 = sum(closes) / len(closes)
+    price = float(quote.get("close") or bars[-1]["close"])
+    below_ma = price < ma20
+
+    ref_bar = bars[2] if len(bars) > 2 else bars[0]
+    ref_high, ref_low = float(ref_bar["high"]), float(ref_bar["low"])
+    if price < ref_low:
+        ref_state, ref_value = "below", ref_low
+    elif price > ref_high:
+        ref_state, ref_value = "above", ref_high
+    else:
+        ref_state, ref_value = "inside", ref_low
+
+    bullish = (not below_ma) and ref_state == "above"
+    bearish = below_ma and ref_state == "below"
+    label = "強多" if bullish else "強空" if bearish else ("偏空" if below_ma else "偏多")
+
+    return {
+        "status": "ok",
+        "ready": True,
+        "label": label,
+        "price": price,
+        "ma20": round(ma20, 2),
+        "belowMa20": below_ma,
+        "refBarIndex": 3,
+        "refState": ref_state,
+        "refValue": ref_value,
+        "updatedAt": datetime.now(TW_TZ).isoformat(),
+        "hub": hub.get_status(),
     }
 
 
