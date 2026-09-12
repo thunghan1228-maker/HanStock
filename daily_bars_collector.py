@@ -13,7 +13,7 @@ from daily_bars_store import daily_bars_storage_status, prune_old_daily_bars
 from official_daily_bars import download_official_daily_bars
 
 logger = logging.getLogger("hanstock.daily_bars_collector")
-POLL_SECONDS = max(1800, int(os.getenv("HANSTOCK_DAILY_BARS_COLLECTOR_SECONDS", str(6 * 60 * 60))))
+POLL_SECONDS = max(1800, int(os.getenv("HANSTOCK_DAILY_BARS_COLLECTOR_SECONDS", str(60 * 60))))
 BACKFILL_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_BACKFILL_DAYS", "370")))
 CATCHUP_DAYS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_CATCHUP_DAYS", "5")))
 KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "365")))
