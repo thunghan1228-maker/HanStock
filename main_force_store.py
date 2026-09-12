@@ -237,7 +237,7 @@ def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]
     return sorted(str(row["stock_code"]) for row in rows)
 
 
-def prune_old_bars(keep_days: int = 4) -> int:
+def prune_old_bars(keep_days: int = 30) -> int:
     """只保留最近 keep_days 個「有資料的交易日」，刪掉更早的1分/5分主力副圖，
     避免資料庫無限長大。用實際存在的 trade_date 決定，不是單純的日曆天數，
     所以會自動跳過假日。"""

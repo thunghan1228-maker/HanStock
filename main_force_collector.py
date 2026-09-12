@@ -12,7 +12,7 @@ from main_force_store import prune_old_bars, save_main_force_batches
 logger = logging.getLogger("hanstock.main_force_collector")
 POLL_SECONDS = max(30, int(os.getenv("HANSTOCK_MAIN_FORCE_COLLECTOR_SECONDS", "60")))
 LATEST_BARS_PER_CYCLE = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_LATEST_BARS", "2")))
-KEEP_DAYS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_KEEP_DAYS", "4")))
+KEEP_DAYS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_KEEP_DAYS", "30")))
 _started = False
 _lock = threading.Lock()
 _last_pruned_date: str | None = None
