@@ -14,6 +14,7 @@ from main_force_collector import start_main_force_collector
 from main_force_store import load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import request_main_force_backfill
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
+from four_gate_signals_collector import start_four_gate_signals_collector
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
@@ -34,6 +35,7 @@ async def _persistent_lifespan(fastapi_app):
         if quote_deployment_role() == "primary":
             start_main_force_collector()
             start_intraday_large_order_collector()
+            start_four_gate_signals_collector()
         try:
             yield state
         finally:
@@ -56,6 +58,9 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_INSTANT_LARGE_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "instantLargeOrder": large_order_collector_status(),
+            "fourGateCollectorEnabled": os.getenv(
+                "HANSTOCK_FOUR_GATE_COLLECTOR_ENABLED", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
         },

@@ -21,7 +21,7 @@ from history_quota import history_quota
 logger = logging.getLogger("hanstock.stock_history_service")
 
 DEFAULT_CALENDAR_DAYS = 14
-MAX_HISTORY_5M = 140
+MAX_HISTORY_5M = 300  # 5分K每個交易日約54根（09:00-13:30），300根約可涵蓋5個交易日
 RETRY_AFTER_SECONDS = 30.0
 
 

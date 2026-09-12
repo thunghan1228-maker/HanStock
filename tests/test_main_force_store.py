@@ -6,6 +6,7 @@ from unittest.mock import patch
 import database
 from main_force_collector import collect_once
 from main_force_store import (
+    list_tracked_stock_codes,
     load_main_force_bars,
     load_main_force_ranking,
     main_force_storage_status,
@@ -115,6 +116,22 @@ class MainForceStoreTests(unittest.TestCase):
 
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
+
+    def test_list_tracked_stock_codes_returns_sorted_distinct_codes_for_date(self):
+        base_ts = 1_786_400_400_000
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "1m", [{
+            "ts": base_ts, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True,
+        }])
+        save_main_force_bars("1101", "1m", [{
+            "ts": base_ts + 60_000, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True,
+        }])
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True,
+        }])
+        self.assertEqual(list_tracked_stock_codes(trade_date, "1m"), ["1101", "2330"])
+        self.assertEqual(list_tracked_stock_codes(trade_date, "5m"), ["2330"])
+        self.assertEqual(list_tracked_stock_codes("2000-01-01", "1m"), [])
 
 
 if __name__ == "__main__":
