@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 import database
 from main_force_collector import collect_once
-from main_force_store import load_main_force_bars, main_force_storage_status, save_main_force_bars
+from main_force_store import (
+    load_main_force_bars,
+    load_main_force_ranking,
+    main_force_storage_status,
+    save_main_force_bars,
+)
+from otc_index import taipei_trade_date
 
 
 class MainForceStoreTests(unittest.TestCase):
@@ -80,6 +86,35 @@ class MainForceStoreTests(unittest.TestCase):
         result = collect_once(service=Service(), hub=Hub())
         self.assertEqual(result, {"stockCount": 1, "saved1m": 2, "saved5m": 2})
         self.assertEqual(len(load_main_force_bars("2330", "1m")), 2)
+
+    def test_ranking_orders_by_absolute_net_volume_desc(self):
+        base_ts = 1_786_400_400_000
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_force_available": True,
+        }])
+        save_main_force_bars("2317", "5m", [{
+            "ts": base_ts, "main_buy_volume": 5, "main_sell_volume": 300,
+            "main_force_available": True,
+        }])
+        save_main_force_bars("1101", "5m", [{
+            "ts": base_ts, "main_buy_volume": 20, "main_sell_volume": 15,
+            "main_force_available": True,
+        }])
+
+        ranking = load_main_force_ranking(trade_date, interval="5m", limit=2)
+
+        self.assertEqual([row["code"] for row in ranking], ["2317", "2330"])
+        self.assertEqual(ranking[0]["side"], "sell")
+        self.assertEqual(ranking[0]["netVolume"], -295)
+        self.assertEqual(ranking[0]["buyVolume"], 5)
+        self.assertEqual(ranking[0]["sellVolume"], 300)
+        self.assertEqual(ranking[1]["side"], "buy")
+        self.assertEqual(ranking[1]["netVolume"], 90)
+
+    def test_ranking_defaults_to_empty_when_no_data_for_date(self):
+        self.assertEqual(load_main_force_ranking("2000-01-01"), [])
 
 
 if __name__ == "__main__":

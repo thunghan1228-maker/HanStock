@@ -187,6 +187,42 @@ def load_main_force_bars(
     } for row in rows]
 
 
+def load_main_force_ranking(
+    trade_date: str,
+    interval: str = "5m",
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    """依交易日彙總主力累計買賣超排行；只讀取既有已收集資料，不新增任何即時訂閱。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    limit = max(1, min(int(limit), 200))
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT stock_code,
+                   SUM(main_net_volume) AS net_volume,
+                   SUM(main_buy_volume) AS buy_volume,
+                   SUM(main_sell_volume) AS sell_volume,
+                   MAX(bar_ts) AS last_ts
+            FROM main_force_bars
+            WHERE trade_date = ? AND interval = ?
+            GROUP BY stock_code
+            ORDER BY ABS(SUM(main_net_volume)) DESC
+            LIMIT ?
+            """,
+            (trade_date, interval, limit),
+        ).fetchall()
+    return [{
+        "code": row["stock_code"],
+        "netVolume": int(row["net_volume"] or 0),
+        "buyVolume": int(row["buy_volume"] or 0),
+        "sellVolume": int(row["sell_volume"] or 0),
+        "lastTs": int(row["last_ts"]),
+        "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
+    } for row in rows]
+
+
 def main_force_storage_status() -> dict[str, Any]:
     _ensure_table()
     with database.get_connection() as connection:

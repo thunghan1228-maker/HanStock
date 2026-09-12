@@ -11,8 +11,9 @@ from fastapi import Query
 
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
-from main_force_store import load_main_force_bars, main_force_storage_status
+from main_force_store import load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import request_main_force_backfill
+from otc_index import TW_TZ
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
 
@@ -89,6 +90,33 @@ def get_persisted_main_force_bars(
         "persistent": True,
         "source": "railway_sqlite_shioaji_ticks",
         "backfill": backfill_result,
+    }
+
+
+@app.get("/api/hub/main-force/ranking")
+def get_main_force_ranking(
+    interval: str = Query("5m", pattern="^(1m|5m)$"),
+    trade_date: str | None = Query(None),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    """今日（或指定交易日）主力累計買賣超排行；只讀取既有主力副圖資料，不新增任何 Shioaji 連線。"""
+    date = trade_date
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    else:
+        date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    ranking = load_main_force_ranking(date, interval=interval, limit=limit)
+    return {
+        "status": "ok",
+        "tradeDate": date,
+        "interval": interval,
+        "count": len(ranking),
+        "ranking": ranking,
+        "source": "railway_sqlite_shioaji_ticks",
     }
 
 
