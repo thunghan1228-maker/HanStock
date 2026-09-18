@@ -20,6 +20,7 @@ from daily_bars_collector import start_daily_bars_collector
 from daily_bars_store import daily_bars_storage_status, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
 from after_hours_fixed_price import load_after_hours_day
+from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
@@ -44,6 +45,7 @@ async def _persistent_lifespan(fastapi_app):
             start_four_gate_signals_collector()
             start_daily_bars_collector()
             start_after_hours_fixed_price_collector()
+            start_otc_gap_backfill()
         try:
             yield state
         finally:
@@ -73,6 +75,10 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_DAILY_BARS_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "dailyBarsHistory": daily_bars_storage_status(),
+            "otcGapBackfillEnabled": os.getenv(
+                "HANSTOCK_OTC_GAP_BACKFILL_ENABLED", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
+            "otcGapBackfill": otc_gap_backfill_state(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
         },
