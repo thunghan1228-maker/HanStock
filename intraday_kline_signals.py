@@ -53,6 +53,7 @@ class _KlineState:
     trade_date: str = ""
     bar_count: int = 0
     closes: list[float] = field(default_factory=list)
+    lows: list[float] = field(default_factory=list)
     prev_close: float | None = None
     prev_high: float | None = None
     limit_up: float | None = None
@@ -83,6 +84,10 @@ class _KlineState:
     ever_watch12: bool = False
     watch_stage: str = "idle"
     watch_wait: int = 0
+    ots_stage: str = "idle"  # 12空(五分K)新版獨立機制：idle/tracking_1high/tracking_2high/done
+    ots_1high: float | None = None
+    ots_2high: float | None = None
+    fired_one_two_short: bool = False
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -150,6 +155,7 @@ class IntradayKlineSignalMonitor:
     ) -> list[dict[str, Any]]:
         close = float(bar["close"])
         high = float(bar["high"])
+        low = float(bar["low"])
 
         if state.limit_hit:
             return []
@@ -165,6 +171,7 @@ class IntradayKlineSignalMonitor:
 
         state.bar_count += 1
         state.closes.append(close)
+        state.lows.append(low)
 
         group_name, name = _group_and_name(code)
         out: list[dict[str, Any]] = []
@@ -179,7 +186,7 @@ class IntradayKlineSignalMonitor:
         if state.bar_count == 1:
             # 這是當天第一根905K（09:00-09:05），只用來建立基準，不偵測訊號。
             state.bar905_high = high
-            state.bar905_low = float(bar["low"])
+            state.bar905_low = low
             state.a8 = (state.bar905_high + state.bar905_low) / 2
             state.session_high = state.bar905_high
             if state.prev_close is not None and state.prev_close > 0:
@@ -203,6 +210,7 @@ class IntradayKlineSignalMonitor:
         self._detect_20ma_turn(state, ma20, emit)
         self._detect_a8_and_905d(state, close, minute_of_day, emit)
         self._detect_12short_family(state, close, broke_through, minute_of_day, emit)
+        self._detect_one_two_short(state, close, high, low, ma20, emit)
 
         # 【5】需要ma5，跟其他偵測分開放在最後（依賴上面算好的ma5）。
         self._detect_5ma_905_cross(state, close, ma5, emit)
@@ -360,6 +368,65 @@ class IntradayKlineSignalMonitor:
                 state.watch_stage = "done"
                 if minute_of_day < CUTOFF_MINUTE:
                     emit("short12", "12空")
+
+    def _detect_one_two_short(
+        self, state: _KlineState, close: float, high: float, low: float, ma20: float | None, emit
+    ) -> None:
+        """12空(五分K)／一二空：跟上面_detect_12short_family（注意12空/12空/
+        加強12空）是完全獨立、不互相影響的另一套機制（使用者2026-09-18
+        訂正提供）。順序：①先破905低；②反彈形成1高，1高不能碰到或超過
+        905高（否則整段作廢重來）；③破位＝前一根收盤≥前一根20MA、本根
+        收盤跌到本根20MA下方、且20MA正在下彎，三者同根同時成立；④破位後
+        再反彈形成2高，2高不能碰到或超過1高（否則整段作廢重來）；⑤2高後
+        重新轉弱，同一根收盤與最低價都比前一根更低、20MA仍在下彎、收盤
+        仍在20MA下方，且2高仍未超過1高，才正式觸發，一天一次。"""
+        if state.fired_one_two_short or state.bar905_low is None or state.bar905_high is None:
+            return
+
+        prev_close = state.closes[-2] if len(state.closes) >= 2 else None
+        prev_low = state.lows[-2] if len(state.lows) >= 2 else None
+        prev_ma20 = _moving_average(state.closes[:-1], 20)
+
+        if state.ots_stage == "idle":
+            if low < state.bar905_low:
+                state.ots_stage = "tracking_1high"
+                state.ots_1high = high
+            return
+
+        if state.ots_stage == "tracking_1high":
+            if state.ots_1high is None or high > state.ots_1high:
+                state.ots_1high = high
+            if state.ots_1high >= state.bar905_high:
+                state.ots_stage = "idle"
+                state.ots_1high = None
+                return
+            broke = (
+                prev_close is not None and prev_ma20 is not None and ma20 is not None
+                and prev_close >= prev_ma20 and close < ma20 and state.ma20_slope == "down"
+            )
+            if broke:
+                state.ots_stage = "tracking_2high"
+                state.ots_2high = None
+            return
+
+        if state.ots_stage == "tracking_2high":
+            if state.ots_1high is not None and high >= state.ots_1high:
+                state.ots_stage = "idle"
+                state.ots_1high = None
+                state.ots_2high = None
+                return
+            if state.ots_2high is None or high > state.ots_2high:
+                state.ots_2high = high
+            weakened = (
+                prev_close is not None and prev_low is not None and ma20 is not None
+                and close < prev_close and low < prev_low
+                and state.ma20_slope == "down" and close < ma20
+                and state.ots_2high < state.ots_1high
+            )
+            if weakened:
+                emit("oneTwoShort", "12空")
+                state.fired_one_two_short = True
+                state.ots_stage = "done"
 
 
 _monitor: IntradayKlineSignalMonitor | None = None
