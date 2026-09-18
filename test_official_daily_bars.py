@@ -9,8 +9,10 @@ import official_daily_bars as official_module
 from official_daily_bars import (
     TPEX_DAILY_URL,
     TPEX_LEGACY_URL,
+    TPEX_OPENAPI_URL,
     TWSE_DAILY_URL,
     fetch_tpex_day,
+    fetch_tpex_openapi_snapshot,
     fetch_twse_day,
     fetch_official_day,
     parse_market_payload,
@@ -72,11 +74,73 @@ def test_twse_uses_one_market_request_per_date():
     assert calls == [(TWSE_DAILY_URL, {"date": "20260814", "type": "ALLBUT0999", "response": "json"})]
 
 
+def test_openapi_snapshot_parses_roc_date_and_english_fields():
+    payload = [
+        {
+            "Date": "1150814", "SecuritiesCompanyCode": "6488", "CompanyName": "環球晶",
+            "OpeningPrice": "490", "HighestPrice": "510", "LowestPrice": "485",
+            "ClosingPrice": "500", "TradingShares": "1,234,000",
+        },
+        {
+            "Date": "1150814", "SecuritiesCompanyCode": "082345", "CompanyName": "權證",
+            "OpeningPrice": "1", "HighestPrice": "1.1", "LowestPrice": "0.9",
+            "ClosingPrice": "1", "TradingShares": "999",
+        },
+    ]
+    trade_date, rows = fetch_tpex_openapi_snapshot(fetcher=lambda url, params: payload)
+    assert trade_date == date(2026, 8, 14)
+    assert [row["stock_code"] for row in rows] == ["6488"]  # 權證代號被排除
+    assert rows[0]["close"] == 500.0
+    assert rows[0]["volume"] == 1_234_000
+    assert rows[0]["market"] == "OTC"
+
+
+def test_openapi_snapshot_returns_none_when_not_a_list():
+    trade_date, rows = fetch_tpex_openapi_snapshot(fetcher=lambda url, params: {"aaData": []})
+    assert trade_date is None
+    assert rows == []
+
+
+def test_openapi_snapshot_returns_none_when_date_unparseable():
+    payload = [{"Date": "not-a-date", "SecuritiesCompanyCode": "6488", "ClosingPrice": "500"}]
+    trade_date, rows = fetch_tpex_openapi_snapshot(fetcher=lambda url, params: payload)
+    assert trade_date is None
+    assert rows == []
+
+
+def test_openapi_snapshot_survives_fetcher_exception():
+    def broken_fetcher(url, params):
+        raise RuntimeError("network down")
+
+    trade_date, rows = fetch_tpex_openapi_snapshot(fetcher=broken_fetcher)
+    assert trade_date is None
+    assert rows == []
+
+
+def test_tpex_day_uses_openapi_snapshot_when_date_matches():
+    calls = []
+
+    def fake_fetcher(url, params):
+        calls.append(url)
+        assert url == TPEX_OPENAPI_URL, "日期匹配時不該再嘗試舊端點"
+        return [{
+            "Date": "1150814", "SecuritiesCompanyCode": "6488", "CompanyName": "環球晶",
+            "OpeningPrice": "490", "HighestPrice": "510", "LowestPrice": "485",
+            "ClosingPrice": "500", "TradingShares": "1234000",
+        }]
+
+    rows = fetch_tpex_day(TRADE_DATE, fetcher=fake_fetcher)
+    assert calls == [TPEX_OPENAPI_URL]
+    assert rows[0]["stock_code"] == "6488"
+
+
 def test_tpex_falls_back_to_legacy_endpoint_when_modern_is_empty():
     calls = []
 
     def fake_fetcher(url, params):
         calls.append((url, params))
+        if url == TPEX_OPENAPI_URL:
+            return []  # 沒有快照資料可用（不是list-of-dict），直接往下走舊端點
         if url == TPEX_DAILY_URL:
             return {"tables": []}
         return {
@@ -85,8 +149,9 @@ def test_tpex_falls_back_to_legacy_endpoint_when_modern_is_empty():
 
     rows = fetch_tpex_day(TRADE_DATE, fetcher=fake_fetcher)
     assert rows[0]["stock_code"] == "6488"
-    assert calls[0][0] == TPEX_DAILY_URL
-    assert calls[1][0] == TPEX_LEGACY_URL
+    assert calls[0][0] == TPEX_OPENAPI_URL
+    assert calls[1][0] == TPEX_DAILY_URL
+    assert calls[2][0] == TPEX_LEGACY_URL
 
 
 def test_closed_market_day_never_accepts_stale_tpex_rows():

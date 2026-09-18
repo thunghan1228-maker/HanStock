@@ -18,6 +18,14 @@ TPEX_LEGACY_URL = (
     "https://www.tpex.org.tw/web/stock/aftertrading/"
     "daily_close_quotes/stk_quote_result.php"
 )
+# 上面兩個TPEx端點經Railway log證實持續回401/403（至少2026-07-21起，見
+# HanStock issue追蹤），是這個repo原本唯一的TPEx資料來源，等於OTC股票
+# 日K完全沒有新資料。這是新找到的正式OpenAPI替代來源：只回傳「最新一個
+# 交易日」的快照，沒有日期參數可以查歷史，所以只能修正「今天/最新」的
+# 收集，不能回補7-9月已經缺的歷史缺口。欄位是英文命名，且是研究得來、
+# 沒有機會對照真實回應核對確切拼法，所以用關鍵字比對（見_tpex_openapi_
+# field）容忍命名差異，解析不到資料時會印出實際欄位名稱方便之後校正。
+TPEX_OPENAPI_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 UTC = timezone.utc
 
 FIELD_ALIASES = {
@@ -207,9 +215,90 @@ def fetch_twse_day(
     return rows
 
 
+def _tpex_openapi_field(entry: dict[str, Any], *substrings: str) -> Any:
+    """櫃買OpenAPI用英文欄位名，且拼法是研究得來、沒對照過真實回應；用
+    關鍵字比對容忍命名差異（例如Close或ClosingPrice都算close）。"""
+    wanted = [s.lower() for s in substrings]
+    for key, value in entry.items():
+        lowered = str(key).lower()
+        if all(s in lowered for s in wanted):
+            return value
+    return None
+
+
+def _tpex_openapi_roc_date(raw: Any) -> date | None:
+    text = str(raw or "").strip()
+    if len(text) < 5:
+        return None
+    try:
+        roc_year = int(text[:-4])
+        month = int(text[-4:-2])
+        day = int(text[-2:])
+        return date(roc_year + 1911, month, day)
+    except (ValueError, IndexError):
+        return None
+
+
+def fetch_tpex_openapi_snapshot(
+    fetcher: Callable[..., Any] = fetch_json,
+) -> tuple[date | None, list[dict[str, Any]]]:
+    """櫃買中心正式OpenAPI快照；只回傳「最新一個交易日」的資料，沒有
+    日期參數可以查歷史，所以只能拿來確認今天/最新交易日，不能回補更早
+    的缺口。回傳（這批資料實際代表的交易日, 個股列表）；呼叫端要自己
+    核對這個日期是不是真的是要的那一天，不能假設一定對得上。"""
+    try:
+        payload = fetcher(TPEX_OPENAPI_URL, {})
+    except Exception:  # noqa: BLE001
+        return None, []
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return None, []
+    trade_date = _tpex_openapi_roc_date(_tpex_openapi_field(payload[0], "date"))
+    if trade_date is None:
+        print(f"  · 櫃買OpenAPI空結果診斷：無法解析交易日期，第一筆鍵={list(payload[0].keys())}", flush=True)
+        return None, []
+    selected: dict[str, dict[str, Any]] = {}
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        code = str(_tpex_openapi_field(entry, "code") or "").strip().upper()
+        if not _eligible_code(code):
+            continue
+        name = str(_tpex_openapi_field(entry, "name") or "").strip()
+        # "close"不是"closing"的子字串（分岔在第5個字母c-l-o-s-[e]對c-l-o-s-[i]ng），
+        # 用共同前綴"clos"才能同時比對到Close跟ClosingPrice兩種可能拼法。
+        prices = {
+            key: _number(_tpex_openapi_field(entry, "clos" if key == "close" else key))
+            for key in ("open", "high", "low", "close")
+        }
+        if any(value is None or value <= 0 for value in prices.values()):
+            continue
+        volume = max(0, int(_number(_tpex_openapi_field(entry, "shares")) or 0))
+        selected[code] = {
+            "stock_code": code,
+            "stock_name": name or code,
+            "market": "OTC",
+            "time": datetime.combine(trade_date, datetime_time.min, tzinfo=UTC),
+            "open": float(prices["open"]),
+            "high": float(prices["high"]),
+            "low": float(prices["low"]),
+            "close": float(prices["close"]),
+            "volume": volume,
+        }
+    if not selected:
+        print(
+            f"  · 櫃買OpenAPI空結果診斷：解析到交易日{trade_date}但沒有任何有效個股列，"
+            f"第一筆鍵={list(payload[0].keys())}",
+            flush=True,
+        )
+    return trade_date, [selected[code] for code in sorted(selected)]
+
+
 def fetch_tpex_day(
     trade_date: date, *, fetcher: Callable[..., dict[str, Any]] = fetch_json
 ) -> list[dict[str, Any]]:
+    snapshot_date, snapshot_rows = fetch_tpex_openapi_snapshot(fetcher)
+    if snapshot_date == trade_date and snapshot_rows:
+        return snapshot_rows
     try:
         payload = fetcher(
             TPEX_DAILY_URL,
