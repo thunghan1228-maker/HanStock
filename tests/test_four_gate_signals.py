@@ -9,6 +9,7 @@ from main_force_store import save_main_force_bars
 from four_gate_signals import (
     _minute_net_ratios,
     _price_position,
+    _time_window_threshold,
     evaluate_ticker,
 )
 from otc_index import TW_TZ
@@ -30,6 +31,18 @@ class FourGatePriceComputationTests(unittest.TestCase):
         current_ratio, previous_ratio = _minute_net_ratios(bars, "2026-09-14", 9 * 60 + 2)
         self.assertEqual(current_ratio, -1.0)  # 第三分鐘全部是賣出
         self.assertEqual(previous_ratio, 1.0)  # 第二分鐘全部是買進
+
+    def test_time_window_threshold_steps_by_clock(self):
+        self.assertEqual(_time_window_threshold(9 * 60), 0.50)
+        self.assertEqual(_time_window_threshold(9 * 60 + 29), 0.50)
+        self.assertEqual(_time_window_threshold(9 * 60 + 30), 0.70)
+        self.assertEqual(_time_window_threshold(9 * 60 + 59), 0.70)
+        self.assertEqual(_time_window_threshold(10 * 60), 0.90)
+        self.assertEqual(_time_window_threshold(10 * 60 + 59), 0.90)
+        self.assertEqual(_time_window_threshold(11 * 60), 1.20)
+        self.assertEqual(_time_window_threshold(13 * 60 + 30), 1.20)
+        self.assertIsNone(_time_window_threshold(8 * 60 + 59))
+        self.assertIsNone(_time_window_threshold(13 * 60 + 31))
 
     def test_price_position_computes_vwap_and_first_bar_range(self):
         base_ts = int(datetime(2026, 9, 14, 9, 0, tzinfo=TW_TZ).timestamp() * 1000)
@@ -69,9 +82,23 @@ class FourGateEvaluateTickerTests(unittest.TestCase):
             minute += 1
         save_main_force_bars(ticker, "1m", bars)
 
+    def _seed_previous_day_pressure(self, ticker, today, *, net_amount=150_000_000):
+        """種前一個交易日（跳過週末）的大單淨買超金額，作為候選門檻用的
+        「前日預估隔日賣壓」基準。"""
+        prev_date = today - timedelta(days=1)
+        while prev_date.weekday() >= 5:
+            prev_date -= timedelta(days=1)
+        ts = int(prev_date.replace(hour=9, minute=0, second=0, microsecond=0).timestamp() * 1000)
+        save_main_force_bars(ticker, "5m", [{
+            "ts": ts, "main_buy_volume": 1000, "main_sell_volume": 0,
+            "main_buy_amount": net_amount, "main_sell_amount": 0,
+            "main_force_available": True,
+        }])
+
     def test_bullish_force_and_price_position_returns_buy_signal(self):
         now = datetime(2026, 9, 14, 9, 35, tzinfo=TW_TZ)  # 週一
-        self._seed_main_force_bars("2330", now)  # 全部是買超 -> 淨額比 100%
+        self._seed_previous_day_pressure("2330", now)  # 前日淨買超1.5億，門檻通過
+        self._seed_main_force_bars("2330", now)  # 全部是買超 -> 淨額比 100%；累計1.44億≥70%門檻
         bars_5m = [
             {"ts": int(now.replace(hour=9, minute=0).timestamp() * 1000), "open": 95, "high": 100, "low": 95, "close": 98, "volume": 1000},
             {"ts": int(now.timestamp() * 1000), "open": 98, "high": 112, "low": 97, "close": 110, "volume": 1000},
@@ -82,10 +109,23 @@ class FourGateEvaluateTickerTests(unittest.TestCase):
         self.assertEqual(signal["kind"], "fourGateBuy")
         self.assertEqual(signal["ticker"], "2330")
 
-    def test_weak_force_ratio_blocks_signal(self):
-        # 買超但沒有到50%淨額比門檻（假設一半買一半賣的比例更弱）
+    def test_missing_previous_day_pressure_blocks_signal(self):
+        # 沒有前一交易日的大單資料，候選門檻（前日預估隔日賣壓>1億）無法通過。
         now = datetime(2026, 9, 14, 9, 35, tzinfo=TW_TZ)
-        self._seed_main_force_bars("2330", now, buy=1_100_000, sell=1_000_000)  # 淨額比僅約4.8%
+        self._seed_main_force_bars("2330", now)  # 今日條件本身都符合
+        bars_5m = [
+            {"ts": int(now.replace(hour=9, minute=0).timestamp() * 1000), "open": 95, "high": 100, "low": 95, "close": 98, "volume": 1000},
+            {"ts": int(now.timestamp() * 1000), "open": 98, "high": 112, "low": 97, "close": 110, "volume": 1000},
+        ]
+        with patch("four_gate_signals.get_resilient_stock_bars", return_value={"bars": bars_5m}):
+            signal = evaluate_ticker(service=object(), hub=FakeHub(), ticker="2330", now=now)
+        self.assertIsNone(signal)
+
+    def test_weak_force_ratio_blocks_signal(self):
+        # 分時資金強度與價格都通過，但當分鐘淨額比僅約1.7%，沒有到50%門檻。
+        now = datetime(2026, 9, 14, 9, 35, tzinfo=TW_TZ)
+        self._seed_previous_day_pressure("2330", now, net_amount=140_000_000)
+        self._seed_main_force_bars("2330", now, buy=3_000_000, sell=2_900_000)
         bars_5m = [
             {"ts": int(now.replace(hour=9, minute=0).timestamp() * 1000), "open": 95, "high": 100, "low": 95, "close": 98, "volume": 1000},
             {"ts": int(now.timestamp() * 1000), "open": 98, "high": 112, "low": 97, "close": 110, "volume": 1000},
@@ -96,7 +136,8 @@ class FourGateEvaluateTickerTests(unittest.TestCase):
 
     def test_price_not_breaking_first_bar_high_blocks_signal(self):
         now = datetime(2026, 9, 14, 9, 35, tzinfo=TW_TZ)
-        self._seed_main_force_bars("2330", now)  # 主力淨額比條件通過
+        self._seed_previous_day_pressure("2330", now)
+        self._seed_main_force_bars("2330", now)  # 分時強度、主力淨額比條件都通過
         bars_5m = [
             {"ts": int(now.replace(hour=9, minute=0).timestamp() * 1000), "open": 95, "high": 120, "low": 95, "close": 98, "volume": 1000},
             {"ts": int(now.timestamp() * 1000), "open": 98, "high": 112, "low": 97, "close": 110, "volume": 1000},
