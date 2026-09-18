@@ -362,18 +362,19 @@ def backfill_today_kline_signals(
     """一次性回補：用Shioaji歷史kbars重播trade_date當天已經走完的5分K，
     補回「偵測引擎當天收盤後才上線」這段時間本來會漏掉的訊號。
 
-    只回補main_force_bars今天已經有資料的股票（代表確實被追蹤/訂閱過，
-    歷史查詢比較可靠），不是全市場654檔都補，避免耗用過多Shioaji歷史
-    資料配額。重播前一律先reset_for_backfill，讓重複執行本身是安全、
+    回補範圍是STOCK_GROUPS全部股票（前端K線圖搜尋得到的完整清單，
+    約660多檔）。原本只挑main_force_bars今天剛好有資料的股票，覆蓋率
+    不夠：主力副圖收集器今天沒追蹤到的股票會整檔被跳過（即使它明顯
+    有觸發訊號的走勢），跟使用者任意打開一檔股票圖表就期待看到訊號的
+    需求不符。重播前一律先reset_for_backfill，讓重複執行本身是安全、
     冪等的（DB層的ONCE_PER_DAY/UNIQUE也會再擋一次重複寫入）。"""
     from datetime import datetime
 
-    from main_force_store import list_tracked_stock_codes
     from otc_index import TW_TZ
     from stock_history_service import get_stock_history_bars_5m
 
     trade_date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    codes = list_tracked_stock_codes(trade_date, interval="1m")
+    codes = sorted({str(code).strip().upper() for stocks in STOCK_GROUPS.values() for code, _ in stocks})
     monitor = get_intraday_kline_signal_monitor()
     processed = 0
     bars_replayed = 0

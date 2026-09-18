@@ -4,7 +4,6 @@ import threading
 import time
 from datetime import datetime, timezone
 
-import main_force_store
 import stock_history_service
 import intraday_kline_signals as module
 from intraday_kline_signals import IntradayKlineSignalMonitor
@@ -290,11 +289,6 @@ def test_backfill_today_kline_signals_replays_bars_and_records_failures(monkeypa
     ])
     monkeypatch.setattr(module, "_monitor", None)
 
-    def fake_list_tracked(trade_date, interval="1m"):
-        assert trade_date == "2026-09-18"
-        assert interval == "1m"
-        return ["2330", "2317"]
-
     def fake_history(code, *, calendar_days=3, service=None, hub=None):
         if code == "2330":
             bars = [
@@ -305,7 +299,7 @@ def test_backfill_today_kline_signals_replays_bars_and_records_failures(monkeypa
             return {"status": "ok", "bars": bars}
         raise RuntimeError("history 服務暫時失敗")
 
-    monkeypatch.setattr(main_force_store, "list_tracked_stock_codes", fake_list_tracked)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電"), ("2317", "鴻海")]})
     monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m", fake_history)
 
     result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
@@ -325,7 +319,7 @@ def test_backfill_today_kline_signals_is_safe_to_rerun(monkeypatch):
     monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
     monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
     monkeypatch.setattr(module, "_monitor", None)
-    monkeypatch.setattr(main_force_store, "list_tracked_stock_codes", lambda trade_date, interval="1m": ["2330"])
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
     monkeypatch.setattr(
         stock_history_service,
         "get_stock_history_bars_5m",
