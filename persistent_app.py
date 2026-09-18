@@ -23,7 +23,7 @@ from after_hours_fixed_price import load_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_collector import start_intraday_signal_collector, collector_status as intraday_signal_collector_status
-from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
+from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_5m
@@ -138,6 +138,32 @@ def get_intraday_signals(
 def get_intraday_signal_dates(limit: int = Query(10, ge=1, le=60)) -> dict[str, Any]:
     """有保存訊號紀錄的交易日清單，供歷史查詢分頁使用。"""
     return {"status": "ok", "dates": load_recent_trade_dates(limit=limit)}
+
+
+@app.get("/api/hub/intraday-signals/stock/{stock_code}")
+def get_intraday_signals_for_stock(
+    stock_code: str,
+    trade_date: str | None = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+) -> dict[str, Any]:
+    """單一股票當日所有已保存K線訊號（905/12空/1+2多/520等），依時間
+    由舊到新排序，供K線圖疊上符號標記使用。"""
+    code = _normalize_stock_code(stock_code)
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    signals = load_signals_for_ticker(code, date, limit=limit)
+    return {
+        "status": "ok",
+        "code": code,
+        "tradeDate": date,
+        "count": len(signals),
+        "signals": signals,
+    }
 
 
 @app.get("/api/hub/force/bars/{stock_code}")

@@ -265,6 +265,9 @@ def load_signals_for_ticker(
     since_ts: int | None = None,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
+    """單一股票的所有K線訊號，依bar_ts由舊到新排序，供K線圖疊圖標記使用。
+    ticker不會在這裡正規化，呼叫端要自己先轉大寫（例如用
+    hanstock_app._normalize_stock_code），跟存進來的資料格式一致才會查到。"""
     _ensure_table()
     limit = max(1, min(int(limit), 2000))
     clauses = ["ticker = ?"]
