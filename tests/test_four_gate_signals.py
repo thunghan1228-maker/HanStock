@@ -49,6 +49,7 @@ class FourGateEvaluateTickerTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
         self.db_patch.start()
+        database.initialize_database()
 
     def tearDown(self):
         self.db_patch.stop()
