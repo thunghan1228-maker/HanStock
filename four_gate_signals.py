@@ -30,8 +30,8 @@ WINDOW_START_MINUTE = 9 * 60
 WINDOW_END_MINUTE = 13 * 60 + 30
 BUY_KIND = "fourGateBuy"
 SELL_KIND = "fourGateSell"
-BUY_LABEL = "精選（強多）"
-SELL_LABEL = "精選（強空）"
+BUY_LABEL = "兩項精選（強多）"
+SELL_LABEL = "兩項精選（強空）"
 
 
 def _bar_datetime(timestamp: Any) -> datetime | None:

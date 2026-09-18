@@ -7,7 +7,7 @@ import os
 import threading
 import time
 
-from main_force_store import prune_old_bars, save_main_force_batches
+from main_force_store import prune_old_bars, purge_out_of_session_bars, save_main_force_batches
 
 logger = logging.getLogger("hanstock.main_force_collector")
 POLL_SECONDS = max(30, int(os.getenv("HANSTOCK_MAIN_FORCE_COLLECTOR_SECONDS", "60")))
@@ -74,6 +74,12 @@ def start_main_force_collector() -> bool:
             return False
         if os.getenv("HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
             return False
+        try:
+            purged = purge_out_of_session_bars()
+            if purged:
+                logger.info("主力副圖已清除盤中連續交易時段外的髒資料: %s 筆", purged)
+        except Exception:  # noqa: BLE001
+            logger.exception("主力副圖啟動清理失敗")
         threading.Thread(target=_loop, name="hanstock-main-force-collector", daemon=True).start()
         _started = True
         return True
