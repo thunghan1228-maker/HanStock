@@ -437,3 +437,80 @@ def test_limit_hit_does_not_carry_over_to_next_trade_date(monkeypatch):
     state = monitor._states["2330"]
     assert state.limit_hit is False
     assert state.limit_up == 110.0  # 重新用(固定mock的)前一天收盤價換算，不是延續昨天鎖死的殘留值
+
+
+def _new_ots_state():
+    """12空(五分K)新版機制的隔離測試專用：直接建立20筆平盤歷史墊出
+    MA20視窗，不透過完整on_bar_completed走一遍（那樣墊20根視窗太冗長）。"""
+    state = module._KlineState(trade_date="2026-09-18")
+    state.bar905_high = 102.0
+    state.bar905_low = 99.0
+    state.closes = [100.0] * 19
+    state.lows = [99.5] * 19
+    return state
+
+
+def _ots_step(monitor, state, signals, close_v, high_v, low_v, slope=None):
+    state.closes.append(close_v)
+    state.lows.append(low_v)
+    if slope is not None:
+        state.ma20_slope = slope
+    ma20 = module._moving_average(state.closes, 20)
+
+    def emit(kind, label, note="", ma20_down=None):
+        signals.append(kind)
+
+    monitor._detect_one_two_short(state, close_v, high_v, low_v, ma20, emit)
+
+
+def test_one_two_short_fires_after_full_five_step_sequence(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    state = _new_ots_state()
+    signals: list[str] = []
+
+    _ots_step(monitor, state, signals, 100.0, 100.5, 98.5)  # ①破905低
+    assert state.ots_stage == "tracking_1high"
+    _ots_step(monitor, state, signals, 100.0, 101.0, 99.5)  # ②墊1高=101(<905高102)
+    assert state.ots_stage == "tracking_1high" and state.ots_1high == 101.0
+    _ots_step(monitor, state, signals, 95.0, 99.0, 94.0, slope="down")  # ③破位
+    assert state.ots_stage == "tracking_2high"
+    _ots_step(monitor, state, signals, 96.0, 96.0, 95.0)  # ④墊2高，收盤未比前一根低，不觸發
+    assert signals == []
+    _ots_step(monitor, state, signals, 97.0, 98.0, 96.5)  # ④墊2高續(=98，仍<1高101)
+    assert state.ots_2high == 98.0 and signals == []
+    _ots_step(monitor, state, signals, 93.0, 94.0, 90.0, slope="down")  # ⑤再轉弱，正式觸發
+    assert signals == ["oneTwoShort"]
+    assert state.ots_stage == "done"
+
+    # 一天一次：之後再怎麼走都不該再觸發。
+    _ots_step(monitor, state, signals, 80.0, 85.0, 79.0, slope="down")
+    assert signals == ["oneTwoShort"]
+
+
+def test_one_two_short_invalidates_when_1high_reaches_905_high(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    state = _new_ots_state()
+    signals: list[str] = []
+
+    _ots_step(monitor, state, signals, 100.0, 100.5, 98.5)  # 破905低
+    _ots_step(monitor, state, signals, 100.0, 102.0, 99.5)  # 1高衝到=905高 -> 作廢
+    assert state.ots_stage == "idle"
+    assert state.ots_1high is None
+    # 作廢後可以重新開始：再跌破905低應該重新進入tracking_1high。
+    _ots_step(monitor, state, signals, 100.0, 98.5, 98.0)
+    assert state.ots_stage == "tracking_1high"
+
+
+def test_one_two_short_invalidates_when_2high_reaches_1high(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    state = _new_ots_state()
+    signals: list[str] = []
+
+    _ots_step(monitor, state, signals, 100.0, 100.5, 98.5)  # 破905低
+    _ots_step(monitor, state, signals, 100.0, 101.0, 99.5)  # 墊1高=101
+    _ots_step(monitor, state, signals, 95.0, 99.0, 94.0, slope="down")  # 破位
+    assert state.ots_stage == "tracking_2high"
+    _ots_step(monitor, state, signals, 101.0, 101.0, 95.0)  # 2高衝到=1高 -> 作廢
+    assert state.ots_stage == "idle"
+    assert state.ots_1high is None and state.ots_2high is None
+    assert signals == []
