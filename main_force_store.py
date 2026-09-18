@@ -200,21 +200,24 @@ def load_main_force_ranking(
     with database.get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT stock_code,
-                   SUM(main_net_volume) AS net_volume,
-                   SUM(main_buy_volume) AS buy_volume,
-                   SUM(main_sell_volume) AS sell_volume,
-                   MAX(bar_ts) AS last_ts
-            FROM main_force_bars
-            WHERE trade_date = ? AND interval = ?
-            GROUP BY stock_code
-            ORDER BY ABS(SUM(main_net_volume)) DESC
+            SELECT b.stock_code,
+                   SUM(b.main_net_volume) AS net_volume,
+                   SUM(b.main_buy_volume) AS buy_volume,
+                   SUM(b.main_sell_volume) AS sell_volume,
+                   MAX(b.bar_ts) AS last_ts,
+                   s.stock_name AS stock_name
+            FROM main_force_bars b
+            LEFT JOIN stocks s ON s.stock_code = b.stock_code
+            WHERE b.trade_date = ? AND b.interval = ?
+            GROUP BY b.stock_code
+            ORDER BY ABS(SUM(b.main_net_volume)) DESC
             LIMIT ?
             """,
             (trade_date, interval, limit),
         ).fetchall()
     return [{
         "code": row["stock_code"],
+        "name": row["stock_name"] or row["stock_code"],
         "netVolume": int(row["net_volume"] or 0),
         "buyVolume": int(row["buy_volume"] or 0),
         "sellVolume": int(row["sell_volume"] or 0),

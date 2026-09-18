@@ -22,6 +22,7 @@ class MainForceStoreTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
         self.db_patch.start()
+        database.initialize_database()
 
     def tearDown(self):
         self.db_patch.stop()
@@ -118,6 +119,28 @@ class MainForceStoreTests(unittest.TestCase):
 
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
+
+    def test_ranking_includes_stock_name_when_available_and_falls_back_to_code(self):
+        base_ts = 1_786_400_400_000
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_force_available": True,
+        }])
+        save_main_force_bars("9999", "5m", [{
+            "ts": base_ts, "main_buy_volume": 50, "main_sell_volume": 0,
+            "main_force_available": True,
+        }])
+        with database.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO stocks (stock_code, stock_name, market, updated_at) VALUES (?, ?, ?, ?)",
+                ("2330", "台積電", "TSE", "2026-09-18T00:00:00+00:00"),
+            )
+
+        ranking = {row["code"]: row for row in load_main_force_ranking(trade_date, interval="5m")}
+
+        self.assertEqual(ranking["2330"]["name"], "台積電")
+        self.assertEqual(ranking["9999"]["name"], "9999")
 
     def test_load_daily_main_force_net_aggregates_per_trade_date(self):
         base_ts = 1_786_400_400_000
