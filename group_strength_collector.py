@@ -16,7 +16,8 @@ from group_strength_store import save_group_strength_snapshot
 
 logger = logging.getLogger("hanstock.group_strength_collector")
 TAIPEI = ZoneInfo("Asia/Taipei")
-SITE_URL = os.getenv("HANSTOCK_SITE_URL", "https://www.hanstock.xyz").rstrip("/")
+DEFAULT_BATTLE_SITE_URL = "https://hanstock-battle-minimal.thunghan8.chatgpt.site"
+SITE_URL = os.getenv("HANSTOCK_BATTLE_SITE_URL", DEFAULT_BATTLE_SITE_URL).rstrip("/")
 POLL_SECONDS = max(30, int(os.getenv("HANSTOCK_GROUP_STRENGTH_COLLECTOR_SECONDS", "60")))
 MIN_RANKED_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_GROUP_STRENGTH_MIN_GROUPS", "40"))))
 BUCKET_MS = 5 * 60 * 1000
