@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from database import get_connection
 from intraday_signal_store import save_intraday_signals
 from main_force_store import list_tracked_stock_codes, load_main_force_bars
 from otc_index import TW_TZ
@@ -102,6 +103,16 @@ def _price_position(bars_5m: list[dict[str, Any]], today: str) -> dict[str, Any]
     }
 
 
+def _resolve_stock_name(ticker: str) -> str:
+    """反查中文股名：用官方日K收集器已建立的全市場 stocks 表，不限於前端族群清單。"""
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT stock_name FROM stocks WHERE stock_code = ?",
+            (ticker,),
+        ).fetchone()
+    return row["stock_name"] if row and row["stock_name"] else ticker
+
+
 def evaluate_ticker(service: Any, hub: Any, ticker: str, now: datetime) -> dict[str, Any] | None:
     """檢查單一股票的2項條件（主力淨額比、價格位置）；全部通過才回傳訊號。"""
     current = now.astimezone(TW_TZ)
@@ -147,7 +158,7 @@ def evaluate_ticker(service: Any, hub: Any, ticker: str, now: datetime) -> dict[
     return {
         "tradeDate": today,
         "ticker": ticker,
-        "name": ticker,
+        "name": _resolve_stock_name(ticker),
         "groupName": "精選",
         "kind": kind,
         "label": label,
