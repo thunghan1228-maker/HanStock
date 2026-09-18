@@ -24,6 +24,7 @@ from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_b
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_collector import start_intraday_signal_collector, collector_status as intraday_signal_collector_status
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker
+from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_5m
@@ -164,6 +165,19 @@ def get_intraday_signals_for_stock(
         "count": len(signals),
         "signals": signals,
     }
+
+
+@app.get("/api/hub/kline-signals/backfill-today")
+def trigger_kline_signal_backfill_today() -> dict[str, Any]:
+    """一次性回補：用Shioaji歷史kbars重播今天已經走完的5分K，補回12空/905/
+    520/1+2多等訊號偵測引擎剛上線那天漏掉的部分。背景執行緒跑，馬上回應；
+    進度看/api/hub/kline-signals/backfill-today/status。"""
+    return start_kline_signal_backfill_today()
+
+
+@app.get("/api/hub/kline-signals/backfill-today/status")
+def get_kline_signal_backfill_today_status() -> dict[str, Any]:
+    return {"status": "ok", **kline_signal_backfill_status()}
 
 
 @app.get("/api/hub/force/bars/{stock_code}")

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -103,6 +104,15 @@ class IntradayKlineSignalMonitor:
             state.prev_high = float(previous[-1]["high"])
         self._states[code] = state
         return state
+
+    def reset_for_backfill(self, code: str, trade_date: str) -> None:
+        """歷史回補用：強制重建這檔股票在trade_date當天的狀態，避免重複
+        呼叫回補（例如重試）時，因為state.trade_date沒變而誤判成「同一天
+        繼續累積」，導致bar_count/closes等狀態疊加成兩天份、算出錯誤結果。
+        每次回補一檔股票的完整當日bars之前，都要先呼叫這個。"""
+        code = str(code).strip().upper()
+        with self._lock:
+            self._reset_for_new_day(code, trade_date)
 
     def on_bar_completed(self, code: str, bar: dict[str, Any]) -> list[dict[str, Any]]:
         code = str(code).strip().upper()
@@ -344,3 +354,84 @@ def get_intraday_kline_signal_monitor() -> IntradayKlineSignalMonitor:
             if _monitor is None:
                 _monitor = IntradayKlineSignalMonitor()
     return _monitor
+
+
+def backfill_today_kline_signals(
+    *, service: Any = None, hub: Any = None, trade_date: str | None = None, delay: float = 0.3,
+) -> dict[str, Any]:
+    """一次性回補：用Shioaji歷史kbars重播trade_date當天已經走完的5分K，
+    補回「偵測引擎當天收盤後才上線」這段時間本來會漏掉的訊號。
+
+    只回補main_force_bars今天已經有資料的股票（代表確實被追蹤/訂閱過，
+    歷史查詢比較可靠），不是全市場654檔都補，避免耗用過多Shioaji歷史
+    資料配額。重播前一律先reset_for_backfill，讓重複執行本身是安全、
+    冪等的（DB層的ONCE_PER_DAY/UNIQUE也會再擋一次重複寫入）。"""
+    from datetime import datetime
+
+    from main_force_store import list_tracked_stock_codes
+    from otc_index import TW_TZ
+    from stock_history_service import get_stock_history_bars_5m
+
+    trade_date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    codes = list_tracked_stock_codes(trade_date, interval="1m")
+    monitor = get_intraday_kline_signal_monitor()
+    processed = 0
+    bars_replayed = 0
+    signals_emitted = 0
+    failures: list[dict[str, str]] = []
+    for code in codes:
+        try:
+            result = get_stock_history_bars_5m(code, calendar_days=3, service=service, hub=hub)
+            todays_bars = sorted(
+                (b for b in result.get("bars", []) if taipei_trade_date(int(b["ts"])) == trade_date),
+                key=lambda b: b["ts"],
+            )
+            monitor.reset_for_backfill(code, trade_date)
+            for bar in todays_bars:
+                emitted = monitor.on_bar_completed(code, bar)
+                bars_replayed += 1
+                signals_emitted += len(emitted)
+            processed += 1
+        except Exception as error:  # noqa: BLE001
+            failures.append({"code": code, "error": str(error)})
+            logger.exception("五分鐘K訊號回補失敗 code=%s", code)
+        time.sleep(max(0.0, delay))
+    return {
+        "tradeDate": trade_date,
+        "codeCount": len(codes),
+        "codesProcessed": processed,
+        "barsReplayed": bars_replayed,
+        "signalsEmitted": signals_emitted,
+        "failures": failures,
+    }
+
+
+_backfill_status: dict[str, Any] = {"running": False, "result": None}
+_backfill_status_lock = threading.Lock()
+
+
+def kline_signal_backfill_status() -> dict[str, Any]:
+    with _backfill_status_lock:
+        return dict(_backfill_status)
+
+
+def start_kline_signal_backfill_today() -> dict[str, Any]:
+    """背景執行緒觸發一次性回補；已經在跑就不會重複啟動。"""
+    with _backfill_status_lock:
+        if _backfill_status["running"]:
+            return {"started": False, "reason": "already_running"}
+        _backfill_status["running"] = True
+        _backfill_status["result"] = None
+
+    def _run() -> None:
+        try:
+            result = backfill_today_kline_signals()
+        except Exception as error:  # noqa: BLE001
+            result = {"error": str(error)}
+            logger.exception("五分鐘K訊號回補整體失敗")
+        with _backfill_status_lock:
+            _backfill_status["running"] = False
+            _backfill_status["result"] = result
+
+    threading.Thread(target=_run, name="hanstock-kline-signal-backfill", daemon=True).start()
+    return {"started": True}
