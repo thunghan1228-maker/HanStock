@@ -7,6 +7,7 @@ import database
 from main_force_collector import collect_once
 from main_force_store import (
     list_tracked_stock_codes,
+    load_daily_main_force_net,
     load_main_force_bars,
     load_main_force_ranking,
     main_force_storage_status,
@@ -117,6 +118,32 @@ class MainForceStoreTests(unittest.TestCase):
 
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
+
+    def test_load_daily_main_force_net_aggregates_per_trade_date(self):
+        base_ts = 1_786_400_400_000
+        day2_ts = base_ts + 86_400_000 * 3
+        trade_date1 = taipei_trade_date(base_ts)
+        trade_date2 = taipei_trade_date(day2_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_force_available": True,
+        }, {
+            "ts": base_ts + 300_000, "main_buy_volume": 20, "main_sell_volume": 5,
+            "main_force_available": True,
+        }])
+        save_main_force_bars("2330", "5m", [{
+            "ts": day2_ts, "main_buy_volume": 3, "main_sell_volume": 50,
+            "main_force_available": True,
+        }])
+
+        result = load_daily_main_force_net("2330")
+
+        self.assertEqual(result[trade_date1], 105)  # (100-10) + (20-5)
+        self.assertEqual(result[trade_date2], -47)  # 3-50
+        self.assertEqual(len(result), 2)
+
+    def test_load_daily_main_force_net_empty_for_untracked_code(self):
+        self.assertEqual(load_daily_main_force_net("9999"), {})
 
     def test_list_tracked_stock_codes_returns_sorted_distinct_codes_for_date(self):
         base_ts = 1_786_400_400_000

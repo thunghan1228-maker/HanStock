@@ -223,6 +223,26 @@ def load_main_force_ranking(
     } for row in rows]
 
 
+def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str, int]:
+    """單一股票依交易日彙總主力淨量，給日線圖副圖用。只涵蓋目前保留天數內
+    （prune_old_bars 預設30個交易日）的資料，比這個範圍舊的交易日不會有值，
+    是資料保留政策造成的預期限制，不是bug。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT trade_date, SUM(main_net_volume) AS net_volume
+            FROM main_force_bars
+            WHERE stock_code = ? AND interval = ?
+            GROUP BY trade_date
+            """,
+            (stock_code, interval),
+        ).fetchall()
+    return {row["trade_date"]: int(row["net_volume"] or 0) for row in rows}
+
+
 def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]:
     """今日已有主力副圖資料的股票代號；用來找「目前實際在追蹤」的股票，
     不需要另外掃描或訂閱。"""
