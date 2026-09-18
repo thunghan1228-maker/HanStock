@@ -22,13 +22,20 @@ def bar(hour: int, minute: int, o: float, h: float, l: float, c: float) -> dict:
     return {"ts": ts(hour, minute), "open": o, "high": h, "low": l, "close": c}
 
 
-def new_monitor(monkeypatch, prev_close: float | None = 100.0, prev_high: float | None = 101.0):
+def new_monitor(
+    monkeypatch, prev_close: float | None = 100.0, prev_high: float | None = 101.0,
+    ma_alignment_score: int | None = None,
+):
     monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
     previous = []
     if prev_close is not None:
         previous = [{"ts": "2026-09-17", "open": prev_close, "high": prev_high,
                      "low": prev_close, "close": prev_close, "volume": 1000}]
     monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: previous)
+    # 創高黑龍用的六均線排列分數：跟load_daily_bars是不同的計算(需要240天
+    # 歷史)，這裡直接mock掉分數本身，不用另外墊240筆假日K，跟其他測試
+    # 意圖無關的訊號家族保持隔離。
+    monkeypatch.setattr(module, "compute_ma_alignment_score", lambda code: ma_alignment_score)
     return IntradayKlineSignalMonitor()
 
 
@@ -255,7 +262,9 @@ def test_new_trade_date_resets_state_and_reloads_previous_day(monkeypatch):
     monkeypatch.setattr(module, "load_daily_bars", fake_load)
     monitor = IntradayKlineSignalMonitor()
     monitor.on_bar_completed("2330", bar(9, 0, 50, 51, 49, 50.5))
-    assert calls == ["2330"]
+    # 重置新的一天現在會呼叫load_daily_bars兩次：一次拿昨收/昨高(limit=1)，
+    # 一次拿創高黑龍用的前5日高點(limit=5)。
+    assert calls == ["2330", "2330"]
     state = monitor._states["2330"]
     assert state.prev_close == 50.0
     assert state.prev_high == 55.0
@@ -514,3 +523,78 @@ def test_one_two_short_invalidates_when_2high_reaches_1high(monkeypatch):
     assert state.ots_stage == "idle"
     assert state.ots_1high is None and state.ots_2high is None
     assert signals == []
+
+
+def _black_dragon_monitor(monkeypatch, ma_alignment_score=10, five_day_high=108.0, in_groups=True):
+    monkeypatch.setattr(module, "_group_lookup_cache", None)
+    monkeypatch.setattr(
+        module, "STOCK_GROUPS",
+        {"測試群組": [("2330", "台積電")]} if in_groups else {},
+    )
+    # prev_close=105讓漲跌停範圍是[94.5,115.5]，測試用的09:00開盤110、
+    # 11:00那根的高低收都留在合法範圍內，不會被漲停/跌停鎖死邏輯誤擋。
+    monitor = new_monitor(
+        monkeypatch, prev_close=105.0, prev_high=1000.0, ma_alignment_score=ma_alignment_score,
+    )
+
+    def fake_load(code, limit=1):
+        if limit >= 5:
+            return [{"high": five_day_high, "close": 100.0}] * 5
+        return [{"close": 105.0, "high": 1000.0}]  # 跟new_monitor的prev_close=105一致
+
+    monkeypatch.setattr(module, "load_daily_bars", fake_load)
+    return monitor
+
+
+def test_black_dragon_fires_when_all_conditions_met(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch, ma_alignment_score=10, five_day_high=108.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))  # today_open=110
+    # 11:00那根：高點109>前5日高點108(創高)，收盤105<今日開盤110。
+    result = monitor.on_bar_completed("2330", bar(11, 0, 107, 109.0, 106, 105.0))
+    assert "blackDragon" in kinds(result)
+
+
+def test_black_dragon_does_not_fire_before_1100(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    result = monitor.on_bar_completed("2330", bar(10, 55, 107, 109.0, 106, 105.0))
+    assert "blackDragon" not in kinds(result)
+
+
+def test_black_dragon_equal_high_does_not_count_as_breakout(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch, five_day_high=108.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    # 高點剛好=前5日高點(平高)，不算創高。
+    result = monitor.on_bar_completed("2330", bar(11, 0, 107, 108.0, 106, 105.0))
+    assert "blackDragon" not in kinds(result)
+
+
+def test_black_dragon_requires_close_below_today_open(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch, five_day_high=108.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    # 收盤110.5沒有低於今日開盤110。
+    result = monitor.on_bar_completed("2330", bar(11, 0, 107, 109.0, 106, 110.5))
+    assert "blackDragon" not in kinds(result)
+
+
+def test_black_dragon_requires_ma_alignment_score_at_least_10(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch, ma_alignment_score=9, five_day_high=108.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    result = monitor.on_bar_completed("2330", bar(11, 0, 107, 109.0, 106, 105.0))
+    assert "blackDragon" not in kinds(result)
+
+
+def test_black_dragon_requires_stock_in_official_groups(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch, five_day_high=108.0, in_groups=False)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    result = monitor.on_bar_completed("2330", bar(11, 0, 107, 109.0, 106, 105.0))
+    assert "blackDragon" not in kinds(result)
+
+
+def test_black_dragon_fires_only_once_per_day(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch, five_day_high=108.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    result1 = monitor.on_bar_completed("2330", bar(11, 0, 107, 109.0, 106, 105.0))
+    assert "blackDragon" in kinds(result1)
+    result2 = monitor.on_bar_completed("2330", bar(11, 5, 105, 110.0, 104, 103.0))
+    assert "blackDragon" not in kinds(result2)

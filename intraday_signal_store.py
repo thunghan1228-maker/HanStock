@@ -15,6 +15,8 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossDown20ma",
     "short12",
     "combo12Bull",
+    "oneTwoShort",
+    "blackDragon",
     "triangleNearBreakout",
     "triangleBreakoutPendingVolume",
     "triangleVolumeBreakout",
