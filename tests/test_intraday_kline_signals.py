@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timezone
 
+import main_force_store
+import stock_history_service
 import intraday_kline_signals as module
 from intraday_kline_signals import IntradayKlineSignalMonitor
 
@@ -251,3 +255,140 @@ def test_new_trade_date_resets_state_and_reloads_previous_day(monkeypatch):
     state = monitor._states["2330"]
     assert state.prev_close == 50.0
     assert state.prev_high == 55.0
+
+
+def test_reset_for_backfill_rebuilds_state_instead_of_accumulating(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=105.0)
+    monitor.reset_for_backfill("2330", "2026-09-18")
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 101.5))
+    monitor.on_bar_completed("2330", bar(9, 5, 101.5, 103, 101, 102.5))
+    assert monitor._states["2330"].bar_count == 2
+
+    # 模擬重試回補同一天：狀態應該被重建成乾淨的一天，不會疊加成兩天份。
+    monitor.reset_for_backfill("2330", "2026-09-18")
+    state = monitor._states["2330"]
+    assert state.bar_count == 0
+    assert state.closes == []
+    assert state.prev_close == 100.0
+    assert state.prev_high == 105.0
+
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 101.5))
+    assert monitor._states["2330"].bar_count == 1
+
+
+def test_reset_for_backfill_normalizes_code_case(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    monitor.reset_for_backfill("abc1", "2026-09-18")
+    assert "ABC1" in monitor._states
+    assert "abc1" not in monitor._states
+
+
+def test_backfill_today_kline_signals_replays_bars_and_records_failures(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [
+        {"ts": "2026-09-17", "open": 100.0, "high": 1000.0, "low": 100.0, "close": 100.0, "volume": 1},
+    ])
+    monkeypatch.setattr(module, "_monitor", None)
+
+    def fake_list_tracked(trade_date, interval="1m"):
+        assert trade_date == "2026-09-18"
+        assert interval == "1m"
+        return ["2330", "2317"]
+
+    def fake_history(code, *, calendar_days=3, service=None, hub=None):
+        if code == "2330":
+            bars = [
+                bar(9, 0, 100, 102, 99, 101.5),
+                bar(9, 5, 101.5, 103, 101, 102.5),  # 收盤102.5>905高(102)且>昨高(105不成立)…僅驗證重播筆數
+                {**bar(9, 10, 1, 1, 1, 1), "ts": ts(9, 10) - 24 * 60 * 60 * 1000},  # 不同交易日，應被濾掉
+            ]
+            return {"status": "ok", "bars": bars}
+        raise RuntimeError("history 服務暫時失敗")
+
+    monkeypatch.setattr(main_force_store, "list_tracked_stock_codes", fake_list_tracked)
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m", fake_history)
+
+    result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert result["tradeDate"] == "2026-09-18"
+    assert result["codeCount"] == 2
+    assert result["codesProcessed"] == 1
+    assert result["barsReplayed"] == 2  # 第三根不同交易日的bar被濾掉
+    assert len(result["failures"]) == 1
+    assert result["failures"][0]["code"] == "2317"
+
+    monitor = module.get_intraday_kline_signal_monitor()
+    assert monitor._states["2330"].bar_count == 2
+
+
+def test_backfill_today_kline_signals_is_safe_to_rerun(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(main_force_store, "list_tracked_stock_codes", lambda trade_date, interval="1m": ["2330"])
+    monkeypatch.setattr(
+        stock_history_service,
+        "get_stock_history_bars_5m",
+        lambda code, *, calendar_days=3, service=None, hub=None: {
+            "status": "ok",
+            "bars": [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)],
+        },
+    )
+
+    first = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+    second = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert first["barsReplayed"] == second["barsReplayed"] == 2
+    # 重播兩次，state不會疊加成4根bar；reset_for_backfill讓重跑保持乾淨。
+    monitor = module.get_intraday_kline_signal_monitor()
+    assert monitor._states["2330"].bar_count == 2
+
+
+def test_start_kline_signal_backfill_today_blocks_duplicate_and_reports_result(monkeypatch):
+    started_event = threading.Event()
+    release_event = threading.Event()
+
+    def fake_backfill(**kwargs):
+        started_event.set()
+        assert release_event.wait(timeout=5), "release_event 逾時未被觸發"
+        return {
+            "tradeDate": "2026-09-18", "codeCount": 1, "codesProcessed": 1,
+            "barsReplayed": 3, "signalsEmitted": 1, "failures": [],
+        }
+
+    monkeypatch.setattr(module, "backfill_today_kline_signals", fake_backfill)
+    monkeypatch.setattr(module, "_backfill_status", {"running": False, "result": None})
+
+    result = module.start_kline_signal_backfill_today()
+    assert result == {"started": True}
+    assert started_event.wait(timeout=5), "背景執行緒逾時未啟動"
+    assert module.kline_signal_backfill_status()["running"] is True
+
+    duplicate = module.start_kline_signal_backfill_today()
+    assert duplicate == {"started": False, "reason": "already_running"}
+
+    release_event.set()
+    for _ in range(50):
+        if not module.kline_signal_backfill_status()["running"]:
+            break
+        time.sleep(0.1)
+    status = module.kline_signal_backfill_status()
+    assert status["running"] is False
+    assert status["result"]["barsReplayed"] == 3
+
+
+def test_start_kline_signal_backfill_today_records_error_result(monkeypatch):
+    def fake_backfill(**kwargs):
+        raise RuntimeError("回補整體失敗")
+
+    monkeypatch.setattr(module, "backfill_today_kline_signals", fake_backfill)
+    monkeypatch.setattr(module, "_backfill_status", {"running": False, "result": None})
+
+    module.start_kline_signal_backfill_today()
+    for _ in range(50):
+        if not module.kline_signal_backfill_status()["running"]:
+            break
+        time.sleep(0.1)
+    status = module.kline_signal_backfill_status()
+    assert status["running"] is False
+    assert "回補整體失敗" in status["result"]["error"]
