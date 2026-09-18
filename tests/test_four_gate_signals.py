@@ -7,11 +7,17 @@ from unittest.mock import patch
 import database
 from main_force_store import save_main_force_bars
 from four_gate_signals import (
+    BUY_KIND,
+    BUY_LABEL,
+    SELL_KIND,
+    SELL_LABEL,
     _minute_net_ratios,
     _price_position,
     _time_window_threshold,
     evaluate_ticker,
+    fix_stale_four_gate_labels,
 )
+from intraday_signal_store import load_latest_signals, save_intraday_signals
 from otc_index import TW_TZ
 
 
@@ -150,6 +156,46 @@ class FourGateEvaluateTickerTests(unittest.TestCase):
         now = datetime(2026, 9, 14, 8, 0, tzinfo=TW_TZ)
         signal = evaluate_ticker(service=object(), hub=FakeHub(), ticker="2330", now=now)
         self.assertIsNone(signal)
+
+
+class FixStaleFourGateLabelsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_rewrites_stale_labels_and_is_idempotent(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-18", "ticker": "1582", "kind": BUY_KIND,
+             "label": "精選（強多）", "barTs": 1_000, "price": 70.9},
+            {"tradeDate": "2026-09-18", "ticker": "6873", "kind": SELL_KIND,
+             "label": "精選（強空）", "barTs": 1_001, "price": 48.85},
+            {"tradeDate": "2026-09-18", "ticker": "9999", "kind": BUY_KIND,
+             "label": BUY_LABEL, "barTs": 1_002, "price": 10.0},
+        ])
+        updated = fix_stale_four_gate_labels()
+        self.assertEqual(updated, 2)  # 第三筆已經是正確文字，不算在內
+        signals = load_latest_signals("2026-09-18", limit=10)
+        labels = {s["ticker"]: s["label"] for s in signals}
+        self.assertEqual(labels["1582"], BUY_LABEL)
+        self.assertEqual(labels["6873"], SELL_LABEL)
+        self.assertEqual(labels["9999"], BUY_LABEL)
+        # 重複呼叫：全部都已經是最新文字，不該再有任何更新。
+        self.assertEqual(fix_stale_four_gate_labels(), 0)
+
+    def test_does_not_touch_unrelated_signal_kinds(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-18", "ticker": "2344", "kind": "instantLargeBuy",
+             "label": "瞬間大單連續敲進", "barTs": 2_000, "price": 100.0},
+        ])
+        self.assertEqual(fix_stale_four_gate_labels(), 0)
+        signals = load_latest_signals("2026-09-18", limit=10)
+        self.assertEqual(signals[0]["label"], "瞬間大單連續敲進")
 
 
 if __name__ == "__main__":

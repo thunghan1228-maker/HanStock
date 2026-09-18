@@ -21,6 +21,7 @@ from daily_bars_store import daily_bars_storage_status, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
 from after_hours_fixed_price import load_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
+from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_collector import start_intraday_signal_collector, collector_status as intraday_signal_collector_status
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
@@ -42,6 +43,13 @@ async def _persistent_lifespan(fastapi_app):
         # 戰鬥版盤中 5 分鐘訊號只從戰鬥版公開端點讀取，不需要 Shioaji。
         # 即使這個 Railway 被標成 standby，也必須啟動，否則盤中訊號中心會完全沒資料。
         start_intraday_signal_collector()
+
+        # 純本機SQLite文字修正，跟Shioaji/角色無關，兩個Railway都可以跑；
+        # 已經是最新文字的列不會被UPDATE命中，重複執行成本趨近於0。
+        try:
+            fix_stale_four_gate_labels()
+        except Exception:  # noqa: BLE001
+            pass
 
         if quote_deployment_role() == "primary":
             start_main_force_collector()

@@ -375,6 +375,11 @@ class MarketDataHub:
         )
         if completed_bar:
             self._total_bars_completed += 1
+            try:
+                from intraday_kline_signals import get_intraday_kline_signal_monitor
+                get_intraday_kline_signal_monitor().on_bar_completed(code, completed_bar.to_dict())
+            except Exception:  # noqa: BLE001
+                logger.exception("五分鐘K訊號偵測失敗 code=%s", code)
             self._broadcast({
                 "type": "bar_completed",
                 "interval": "5m",
