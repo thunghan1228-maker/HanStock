@@ -324,8 +324,8 @@ def get_after_hours_fixed_price(
     limit: int = Query(200, ge=1, le=1000),
 ) -> dict[str, Any]:
     """盤後定價交易（14:00-14:30撮合，14:30公布）成交價/成交量排行；來源是官方
-    TWSE盤後公開資料（MI_INDEX_PLUS），跟Shioaji訂閱無關。14:35前或尚未收集到
-    當天資料時，entries會是空list（不是錯誤，是還沒公布）。"""
+    TWSE盤後公開資料（exchangeReport/BFT41U），跟Shioaji訂閱無關。14:35前或
+    尚未收集到當天資料時，entries會是空list（不是錯誤，是還沒公布）。"""
     if trade_date:
         try:
             datetime.strptime(trade_date, "%Y-%m-%d")
