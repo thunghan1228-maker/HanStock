@@ -200,27 +200,50 @@ def load_main_force_ranking(
     with database.get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT stock_code,
-                   SUM(main_net_volume) AS net_volume,
-                   SUM(main_buy_volume) AS buy_volume,
-                   SUM(main_sell_volume) AS sell_volume,
-                   MAX(bar_ts) AS last_ts
-            FROM main_force_bars
-            WHERE trade_date = ? AND interval = ?
-            GROUP BY stock_code
-            ORDER BY ABS(SUM(main_net_volume)) DESC
+            SELECT b.stock_code,
+                   SUM(b.main_net_volume) AS net_volume,
+                   SUM(b.main_buy_volume) AS buy_volume,
+                   SUM(b.main_sell_volume) AS sell_volume,
+                   MAX(b.bar_ts) AS last_ts,
+                   s.stock_name AS stock_name
+            FROM main_force_bars b
+            LEFT JOIN stocks s ON s.stock_code = b.stock_code
+            WHERE b.trade_date = ? AND b.interval = ?
+            GROUP BY b.stock_code
+            ORDER BY ABS(SUM(b.main_net_volume)) DESC
             LIMIT ?
             """,
             (trade_date, interval, limit),
         ).fetchall()
     return [{
         "code": row["stock_code"],
+        "name": row["stock_name"] or row["stock_code"],
         "netVolume": int(row["net_volume"] or 0),
         "buyVolume": int(row["buy_volume"] or 0),
         "sellVolume": int(row["sell_volume"] or 0),
         "lastTs": int(row["last_ts"]),
         "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
     } for row in rows]
+
+
+def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str, int]:
+    """單一股票依交易日彙總主力淨量，給日線圖副圖用。只涵蓋目前保留天數內
+    （prune_old_bars 預設30個交易日）的資料，比這個範圍舊的交易日不會有值，
+    是資料保留政策造成的預期限制，不是bug。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT trade_date, SUM(main_net_volume) AS net_volume
+            FROM main_force_bars
+            WHERE stock_code = ? AND interval = ?
+            GROUP BY trade_date
+            """,
+            (stock_code, interval),
+        ).fetchall()
+    return {row["trade_date"]: int(row["net_volume"] or 0) for row in rows}
 
 
 def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]:

@@ -11,9 +11,10 @@ from fastapi import Query
 
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
-from main_force_store import load_main_force_bars, load_main_force_ranking, main_force_storage_status
+from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import request_main_force_backfill
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
+from group_strength_collector import start_group_strength_collector
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
 from daily_bars_store import daily_bars_storage_status, load_daily_bars
@@ -36,6 +37,7 @@ async def _persistent_lifespan(fastapi_app):
 
         if quote_deployment_role() == "primary":
             start_main_force_collector()
+            start_group_strength_collector()
             start_intraday_large_order_collector()
             start_four_gate_signals_collector()
             start_daily_bars_collector()
@@ -278,9 +280,16 @@ def get_daily_bars(
     limit: int = Query(260, ge=1, le=2000),
 ) -> dict[str, Any]:
     """個股日K；來源是官方 TWSE/TPEx 盤後資料（跟 Shioaji 訂閱無關），
-    背景收集器每天定期回補最新交易日，並只保留最近365個交易日。"""
+    背景收集器每天定期回補最新交易日，並只保留最近365個交易日。
+
+    每根日K會補上 mainNet（當天主力淨量），來源是主力副圖 5 分K依交易日
+    彙總；主力副圖只保留最近約30個交易日，比這個範圍舊的日K會沒有 mainNet
+    （null），是保留政策造成的預期限制。"""
     code = _normalize_stock_code(stock_code)
     bars = load_daily_bars(code, limit=limit)
+    daily_net = load_daily_main_force_net(code)
+    for bar in bars:
+        bar["mainNet"] = daily_net.get(str(bar["ts"])[:10])
     return {
         "status": "ok",
         "code": code,

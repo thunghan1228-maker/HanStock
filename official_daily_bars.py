@@ -194,7 +194,17 @@ def fetch_twse_day(
             "response": "json",
         },
     )
-    return parse_market_payload(payload, trade_date, "TSE")
+    rows = parse_market_payload(payload, trade_date, "TSE")
+    if not rows:
+        # 空結果可能是真的休市，也可能是證交所回應格式悄悄變了、解析不到欄位。
+        # 印出 stat／欄位摘要，讓休市跟「解析失敗」在 log 上分得出來，不用每次都猜。
+        stat = payload.get("stat") if isinstance(payload, dict) else None
+        has_tables = bool(payload.get("tables")) if isinstance(payload, dict) else False
+        print(
+            f"  · TWSE {trade_date} 空結果診斷：stat={stat!r} tables存在={has_tables}",
+            flush=True,
+        )
+    return rows
 
 
 def fetch_tpex_day(
