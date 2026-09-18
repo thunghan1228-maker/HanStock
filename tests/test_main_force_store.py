@@ -8,9 +8,11 @@ from main_force_collector import collect_once
 from main_force_store import (
     list_tracked_stock_codes,
     load_daily_main_force_net,
+    load_daily_main_force_net_amount,
     load_main_force_bars,
     load_main_force_ranking,
     main_force_storage_status,
+    previous_trade_date_with_data,
     prune_old_bars,
     purge_out_of_session_bars,
     save_main_force_bars,
@@ -209,6 +211,48 @@ class MainForceStoreTests(unittest.TestCase):
 
     def test_load_daily_main_force_net_empty_for_untracked_code(self):
         self.assertEqual(load_daily_main_force_net("9999"), {})
+
+    def test_load_daily_main_force_net_amount_aggregates_per_trade_date(self):
+        base_ts = BASE_TS
+        day2_ts = base_ts + 86_400_000 * 3
+        trade_date1 = taipei_trade_date(base_ts)
+        trade_date2 = taipei_trade_date(day2_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_amount": 1_000_000, "main_sell_amount": 100_000,
+            "main_force_available": True,
+        }, {
+            "ts": base_ts + 300_000, "main_buy_amount": 200_000, "main_sell_amount": 50_000,
+            "main_force_available": True,
+        }])
+        save_main_force_bars("2330", "5m", [{
+            "ts": day2_ts, "main_buy_amount": 30_000, "main_sell_amount": 500_000,
+            "main_force_available": True,
+        }])
+
+        result = load_daily_main_force_net_amount("2330")
+
+        self.assertEqual(result[trade_date1], 1_050_000)  # (1,000,000-100,000)+(200,000-50,000)
+        self.assertEqual(result[trade_date2], -470_000)  # 30,000-500,000
+        self.assertEqual(len(result), 2)
+
+    def test_load_daily_main_force_net_amount_empty_for_untracked_code(self):
+        self.assertEqual(load_daily_main_force_net_amount("9999"), {})
+
+    def test_previous_trade_date_with_data_finds_most_recent_prior_day(self):
+        base_ts = BASE_TS
+        day_ms = 24 * 60 * 60 * 1000
+        dates = []
+        for offset in range(3):
+            ts = base_ts + offset * day_ms
+            dates.append(taipei_trade_date(ts))
+            save_main_force_bars("2330", "5m", [{
+                "ts": ts, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True,
+            }])
+        today = taipei_trade_date(base_ts + 3 * day_ms)
+
+        self.assertEqual(previous_trade_date_with_data("2330", today), dates[-1])
+        self.assertEqual(previous_trade_date_with_data("2330", dates[0]), None)
+        self.assertIsNone(previous_trade_date_with_data("9999", today))
 
     def test_list_tracked_stock_codes_returns_sorted_distinct_codes_for_date(self):
         base_ts = BASE_TS

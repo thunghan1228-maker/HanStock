@@ -251,6 +251,44 @@ def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str
     return {row["trade_date"]: int(row["net_volume"] or 0) for row in rows}
 
 
+def load_daily_main_force_net_amount(stock_code: str, interval: str = "5m") -> dict[str, float]:
+    """跟 load_daily_main_force_net 一樣依交易日彙總，但回傳金額（元）
+    而不是張數；供需要金額門檻（例如「前日大單淨額 > 1 億元」）的訊號
+    使用。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT trade_date, SUM(main_net_amount) AS net_amount
+            FROM main_force_bars
+            WHERE stock_code = ? AND interval = ?
+            GROUP BY trade_date
+            """,
+            (stock_code, interval),
+        ).fetchall()
+    return {row["trade_date"]: float(row["net_amount"] or 0) for row in rows}
+
+
+def previous_trade_date_with_data(stock_code: str, before_date: str, interval: str = "5m") -> str | None:
+    """回傳這檔股票在 before_date 之前，最近一個有主力副圖資料的交易日；
+    沒有更早資料時回 None。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT trade_date FROM main_force_bars
+            WHERE stock_code = ? AND interval = ? AND trade_date < ?
+            ORDER BY trade_date DESC LIMIT 1
+            """,
+            (stock_code, interval, before_date),
+        ).fetchone()
+    return row["trade_date"] if row else None
+
+
 def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]:
     """今日已有主力副圖資料的股票代號；用來找「目前實際在追蹤」的股票，
     不需要另外掃描或訂閱。"""
