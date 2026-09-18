@@ -7,6 +7,7 @@ from daytrade_flow import (
     classify_daytrade_row,
     is_equity_code,
     latest_completed_trade_date,
+    limit_down_price,
     limit_up_price,
     missing_main_force_row,
     summarize_persisted_main_force_bars,
@@ -111,6 +112,11 @@ class DaytradeFlowTests(unittest.TestCase):
         self.assertEqual(limit_up_price(189), 207.5)
         self.assertEqual(limit_up_price(30.5), 33.55)
         self.assertEqual(limit_up_price(472), 519)
+
+    def test_limit_down_price_uses_taiwan_tick_size_and_rounds_up(self):
+        self.assertEqual(limit_down_price(189), 170.5)
+        self.assertEqual(limit_down_price(30.5), 27.45)
+        self.assertEqual(limit_down_price(472), 425)
 
     def test_three_layers_prioritize_locked_then_touched(self):
         base = {
