@@ -21,6 +21,7 @@ from daily_bars_store import daily_bars_storage_status, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
 from after_hours_fixed_price import load_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
+from intraday_signal_collector import start_intraday_signal_collector, collector_status as intraday_signal_collector_status
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
@@ -41,6 +42,7 @@ async def _persistent_lifespan(fastapi_app):
         if quote_deployment_role() == "primary":
             start_main_force_collector()
             start_group_strength_collector()
+            start_intraday_signal_collector()
             start_intraday_large_order_collector()
             start_four_gate_signals_collector()
             start_daily_bars_collector()
@@ -64,6 +66,10 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_MAIN_FORCE_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "mainForceHistory": main_force_storage_status(),
+            "intradaySignalCollectorEnabled": os.getenv(
+                "HANSTOCK_INTRADAY_SIGNAL_COLLECTOR_ENABLED", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
+            "intradaySignalCollector": intraday_signal_collector_status(),
             "instantLargeOrderCollectorEnabled": os.getenv(
                 "HANSTOCK_INSTANT_LARGE_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
@@ -91,8 +97,11 @@ def get_intraday_signals(
     kind: str | None = Query(None),
     limit: int = Query(200, ge=1, le=5000),
 ) -> dict[str, Any]:
-    """讀取已永久保存的盤中訊號。目前只有盤中特大買賣單／族群瞬間大單這幾類
-    會實際寫入資料；其餘分類要等對應的偵測邏輯復原後才會有內容。"""
+    """讀取已永久保存的盤中訊號。
+
+    戰鬥版 5 分鐘偵測訊號由背景分片收集器寫入；本機即時大單與四項精選
+    也共用同一個永久訊號表。此端點只讀取已保存資料，不連線已停用原始版。
+    """
     if trade_date:
         try:
             datetime.strptime(trade_date, "%Y-%m-%d")
