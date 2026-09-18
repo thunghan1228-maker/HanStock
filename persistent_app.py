@@ -224,12 +224,11 @@ def get_otc_index_bars_1m(include_current: bool = Query(default=True)) -> dict[s
 
 @app.get("/api/hub/index/otc/strength")
 def get_otc_index_strength() -> dict[str, Any]:
-    """櫃買盤勢：依今日 5 分 K 換算「站上/跌破20MA」與「相對第3根5K」兩個訊號。
+    """櫃買盤勢：依今日 5 分 K 換算「站上/跌破20MA」與「站上/跌破第3根5K低點」兩個條件。
 
-    這兩個訊號的判斷條件是本次依 docs/INTRADAY_5MIN_SPEC.md 的一般規格
-    （Nth 次站上/跌破 20MA）自行換算到櫃買指數上，不是原本
-    taiwan-stock-groups/server/otcIndex.ts 的還原版——那份原始程式不在這個
-    後端 repo 裡，目前找不到來源，如果實際規則不同請再告訴我調整。
+    兩個條件都成立（都站上）＝強多；都不成立（都跌破）＝強空；一個成立一個
+    不成立＝個股震盪。第3根5K只比低點，不看高點（跟20MA一樣是單一門檻的
+    上/下二分判斷，不是三段式的上/下/區間內）。
     """
     hub = get_otc_index_hub()
     bars = hub.get_bars_5m(include_current=True)
@@ -245,20 +244,18 @@ def get_otc_index_strength() -> dict[str, Any]:
     closes = [float(b["close"]) for b in bars[-20:]]
     ma20 = sum(closes) / len(closes)
     price = float(quote.get("close") or bars[-1]["close"])
-    below_ma = price < ma20
+    above_ma20 = price > ma20
 
     ref_bar = bars[2] if len(bars) > 2 else bars[0]
-    ref_high, ref_low = float(ref_bar["high"]), float(ref_bar["low"])
-    if price < ref_low:
-        ref_state, ref_value = "below", ref_low
-    elif price > ref_high:
-        ref_state, ref_value = "above", ref_high
-    else:
-        ref_state, ref_value = "inside", ref_low
+    ref_low = float(ref_bar["low"])
+    above_ref_low = price > ref_low
 
-    bullish = (not below_ma) and ref_state == "above"
-    bearish = below_ma and ref_state == "below"
-    label = "強多" if bullish else "強空" if bearish else ("偏空" if below_ma else "偏多")
+    if above_ma20 and above_ref_low:
+        label = "強多"
+    elif not above_ma20 and not above_ref_low:
+        label = "強空"
+    else:
+        label = "個股震盪"
 
     return {
         "status": "ok",
@@ -266,10 +263,10 @@ def get_otc_index_strength() -> dict[str, Any]:
         "label": label,
         "price": price,
         "ma20": round(ma20, 2),
-        "belowMa20": below_ma,
+        "aboveMa20": above_ma20,
         "refBarIndex": 3,
-        "refState": ref_state,
-        "refValue": ref_value,
+        "refLow": ref_low,
+        "aboveRefLow": above_ref_low,
         "updatedAt": datetime.now(TW_TZ).isoformat(),
         "hub": hub.get_status(),
     }
