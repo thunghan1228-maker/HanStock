@@ -7,7 +7,7 @@ import threading
 from typing import Any, Iterable
 
 import database
-from otc_index import taipei_trade_date
+from otc_index import is_regular_otc_session, taipei_trade_date
 
 _table_lock = threading.Lock()
 _table_ready_path: str | None = None
@@ -69,6 +69,11 @@ def _rows_for_bars(
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if ts <= 0:
+            continue
+        if not is_regular_otc_session(ts):
+            # main_force_bars 只代表盤中連續交易（09:00-13:30）逐筆主力統計；
+            # 盤後定價撮合（14:00-14:30）若被上游誤判成一根新K棒，不能混進來，
+            # 否則MAX(bar_ts)會被撮合時間蓋掉，看起來像「只有盤後那筆資料」。
             continue
         rows.append((
             code, taipei_trade_date(ts), interval, ts,
@@ -277,6 +282,25 @@ def prune_old_bars(keep_days: int = 30) -> int:
         cursor = connection.execute(
             "DELETE FROM main_force_bars WHERE trade_date < ?",
             (cutoff_date,),
+        )
+        return int(cursor.rowcount or 0)
+
+
+def purge_out_of_session_bars() -> int:
+    """一次性清理：收集器過去沒有限制09:00-13:30盤中連續交易時段，若上游把
+    盤後定價撮合（14:00-14:30）誤判成一根K棒，就會被存進來，讓排行的
+    MAX(bar_ts)顯示成盤後時間，蓋掉真正的盤中最後一筆。_rows_for_bars
+    已經擋掉新資料，這裡是清掉舊資料庫裡已經寫進去的髒資料，不用等
+    30天保留期自然淘汰。之後每次應該都刪0筆（冪等）。"""
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute("SELECT DISTINCT bar_ts FROM main_force_bars").fetchall()
+        bad_ts = [int(row["bar_ts"]) for row in rows if not is_regular_otc_session(row["bar_ts"])]
+        if not bad_ts:
+            return 0
+        placeholders = ",".join("?" for _ in bad_ts)
+        cursor = connection.execute(
+            f"DELETE FROM main_force_bars WHERE bar_ts IN ({placeholders})", bad_ts
         )
         return int(cursor.rowcount or 0)
 
