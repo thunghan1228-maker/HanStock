@@ -1,10 +1,15 @@
 """盤後定價交易（14:00-14:30撮合，14:30公布結果）成交價/成交量。
 
-跟 official_daily_bars.py 走同一個 TWSE afterTrading 官方公開資料board，
-只是換一個報表（MI_INDEX_PLUS），一樣跟 Shioaji 完全無關，不佔用即時
-報價訂閱額度。欄位解析方式沿用 official_daily_bars.py 已經驗證過的
-彈性比對邏輯（欄位標籤可能有多種寫法），但這裡只需要代號/名稱/成交價/
-成交量，不需要開高低（盤後定價本來就沒有這些欄位，是單一撮合價）。
+跟 Shioaji 完全無關，不佔用即時報價訂閱額度。欄位解析方式沿用
+official_daily_bars.py 已經驗證過的彈性比對邏輯（欄位標籤可能有多種
+寫法），但這裡只需要代號/名稱/成交價/成交量，不需要開高低（盤後定價
+本來就沒有這些欄位，是單一撮合價）。
+
+端點：官方報表代號是BFT41U（「盤後定價交易」），路徑是/exchangeReport/
+而不是/rwd/zh/afterTrading/（那是MI_INDEX等一般盤後資料用的board，
+是不同的board，之前第一版寫錯路徑跟參數名稱，Railway log證實抓回來的
+是空結果/JSON解析失敗）。查詢參數是selectType=ALL，不是afterTrading
+board用的type=ALLBUT0999。
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from database import get_connection
 from official_daily_bars import _eligible_code, _normalise_label, _number, fetch_json
 
 UTC = timezone.utc
-TWSE_AFTER_HOURS_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX_PLUS"
+TWSE_AFTER_HOURS_URL = "https://www.twse.com.tw/exchangeReport/BFT41U"
 
 FIELD_ALIASES = {
     "code": {"證券代號", "股票代號", "代號"},
@@ -95,7 +100,7 @@ def parse_after_hours_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def fetch_after_hours_day(trade_date: date) -> list[dict[str, Any]]:
     payload = fetch_json(
         TWSE_AFTER_HOURS_URL,
-        {"date": trade_date.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+        {"date": trade_date.strftime("%Y%m%d"), "selectType": "ALL", "response": "json"},
     )
     return parse_after_hours_payload(payload)
 
