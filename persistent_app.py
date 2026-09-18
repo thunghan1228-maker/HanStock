@@ -39,10 +39,13 @@ async def _persistent_lifespan(fastapi_app):
         # 備援 Railway 專案不登入 Shioaji，因此不啟動沒有工作的保存執行緒。
         from quote_service import quote_deployment_role
 
+        # 戰鬥版盤中 5 分鐘訊號只從戰鬥版公開端點讀取，不需要 Shioaji。
+        # 即使這個 Railway 被標成 standby，也必須啟動，否則盤中訊號中心會完全沒資料。
+        start_intraday_signal_collector()
+
         if quote_deployment_role() == "primary":
             start_main_force_collector()
             start_group_strength_collector()
-            start_intraday_signal_collector()
             start_intraday_large_order_collector()
             start_four_gate_signals_collector()
             start_daily_bars_collector()
