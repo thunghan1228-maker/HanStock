@@ -1,9 +1,10 @@
-"""五分鐘K盤中訊號狀態機：905/A8/520/12空系列。
+"""五分鐘K盤中訊號狀態機：905/A8/520/12空/1+2多系列。
 
 規格來源：使用者提供文件《HANSTOCK｜策略定義備份》（整理日期2026-08-13，
 以《HanStock 5分鐘K線盤中選股規則》2026/08/04版為底）。範圍限五分鐘盤中
-策略；日線Rule1/Rule2不在這裡（使用者已明確指示跳過）。文件裡找不到
-「1+2多」的定義，這裡沒有實作，等使用者補充規格再處理。
+策略；日線Rule1/Rule2不在這裡（使用者已明確指示跳過）。「1+2多」文件裡
+沒有寫，使用者後續口頭補充：條件1是905高、條件2是昨日高，5分K收盤同時
+站上兩者時成立，一天一次，沒有時間限制（不受長多前置條件約束）。
 
 只認完整收盤的5分鐘K棒，跟主力副圖共用market_data_hub的5分K
 aggregator，不新增任何Shioaji訂閱。
@@ -71,6 +72,7 @@ class _KlineState:
     fired_first_905: bool = False
     fired_first_20up: bool = False
     fired_first_20down: bool = False
+    fired_combo12_bull: bool = False
     fired_a8short: bool = False
     fired_break905d: bool = False
     ever_watch12: bool = False
@@ -166,6 +168,7 @@ class IntradayKlineSignalMonitor:
 
         self._detect_905_cross(state, close, emit)
         self._detect_prev_high_cross(state, close, emit)
+        self._detect_combo12_bull(state, close, emit)
         self._detect_20ma_cross(state, close, ma20, emit)
         self._detect_520(state, close, ma5, ma20, emit)
         self._detect_20ma_turn(state, ma20, emit)
@@ -206,6 +209,16 @@ class IntradayKlineSignalMonitor:
             state.count_prev_high += 1
             state.above_prev_high = True
             emit("crossUpPrevHigh", "第%d次站上昨日高" % state.count_prev_high, f"第{state.count_prev_high}次")
+
+    def _detect_combo12_bull(self, state: _KlineState, close: float, emit) -> None:
+        # 「1+2多」＝5分K收盤同時站上905高(條件1)跟昨日高(條件2)；不受長多
+        # 前置條件限制（跟⑨/㊇一樣），一天只發一次，沒有10:30這種時間限制
+        # （使用者說明：實務上大部分會在10:30前出現，但不是規則本身要求的）。
+        if state.fired_combo12_bull or state.bar905_high is None or state.prev_high is None:
+            return
+        if close > state.bar905_high and close > state.prev_high:
+            state.fired_combo12_bull = True
+            emit("combo12Bull", "1+2多")
 
     def _detect_20ma_cross(self, state: _KlineState, close: float, ma20: float | None, emit) -> None:
         if ma20 is None:

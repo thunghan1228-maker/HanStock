@@ -94,6 +94,30 @@ def test_cross_up_prev_high_retriggers_on_leave_and_return(monkeypatch):
     assert "crossUpPrevHigh" in kinds(result2)
 
 
+def test_combo12_bull_fires_once_when_both_905_high_and_prev_high_broken(monkeypatch):
+    # 條件1=905高(102)，條件2=昨日高(105)；長多前置條件故意設成不成立
+    # (漲幅遠超過6%)，確認1+2多不受這個前置條件限制。
+    monitor = new_monitor(monkeypatch, prev_close=50.0, prev_high=105.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))  # 905高=102
+    # 只過905高(103)，還沒過昨日高(105)：不該觸發。
+    result1 = monitor.on_bar_completed("2330", bar(9, 5, 100.5, 104, 100.5, 103))
+    assert "combo12Bull" not in kinds(result1)
+    # 同時過905高(102)跟昨日高(105)：觸發。
+    result2 = monitor.on_bar_completed("2330", bar(9, 10, 103, 107, 103, 106))
+    assert "combo12Bull" in kinds(result2)
+    # 再次同時滿足條件，不會重複觸發（一天一次）。
+    result3 = monitor.on_bar_completed("2330", bar(9, 15, 106, 108, 106, 107))
+    assert "combo12Bull" not in kinds(result3)
+
+
+def test_combo12_bull_not_fired_when_only_prev_high_broken(monkeypatch):
+    # 過昨日高(101)但還沒過905高(105)：不該觸發。
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 105, 99, 100.5))  # 905高=105
+    result = monitor.on_bar_completed("2330", bar(9, 5, 100.5, 103, 100.5, 102))
+    assert "combo12Bull" not in kinds(result)
+
+
 def test_20ma_cross_needs_20_bars_and_fires_first_flag_once(monkeypatch):
     monitor = new_monitor(monkeypatch, prev_close=95.0, prev_high=200.0)
     monitor.on_bar_completed("2330", bar(9, 0, 100, 101, 99, 100))

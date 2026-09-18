@@ -14,6 +14,7 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossUp20ma",
     "firstCrossDown20ma",
     "short12",
+    "combo12Bull",
     "triangleNearBreakout",
     "triangleBreakoutPendingVolume",
     "triangleVolumeBreakout",
