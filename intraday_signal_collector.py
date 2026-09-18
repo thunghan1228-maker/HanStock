@@ -26,17 +26,36 @@ POLL_SECONDS = max(
     15,
     int(os.getenv("HANSTOCK_INTRADAY_SIGNAL_COLLECTOR_SECONDS", "20")),
 )
+MAX_BACKOFF_SECONDS = max(
+    POLL_SECONDS,
+    min(300, int(os.getenv("HANSTOCK_INTRADAY_SIGNAL_MAX_BACKOFF_SECONDS", "120"))),
+)
+FETCH_TIMEOUT_SECONDS = max(
+    5,
+    min(45, int(os.getenv("HANSTOCK_INTRADAY_SIGNAL_FETCH_TIMEOUT_SECONDS", "15"))),
+)
+CIRCUIT_BREAKER_SHARD_FAILURES = max(
+    2,
+    min(10, int(os.getenv("HANSTOCK_INTRADAY_SIGNAL_BREAKER_FAILURES", "3"))),
+)
 
 _started = False
 _lock = threading.Lock()
 _status_lock = threading.Lock()
 _last_success_bucket: int | None = None
+_consecutive_failures = 0
 _status: dict[str, object] = {
     "started": False,
     "enabled": True,
     "sourceUrl": SITE_URL,
     "shardCount": SHARD_COUNT,
     "pollSeconds": POLL_SECONDS,
+    "maxBackoffSeconds": MAX_BACKOFF_SECONDS,
+    "fetchTimeoutSeconds": FETCH_TIMEOUT_SECONDS,
+    "circuitBreakerShardFailures": CIRCUIT_BREAKER_SHARD_FAILURES,
+    "consecutiveFailures": 0,
+    "backoffActive": False,
+    "nextRetrySeconds": POLL_SECONDS,
     "lastAttemptAt": None,
     "lastSuccessAt": None,
     "lastBucket": None,
@@ -55,6 +74,38 @@ def _update_status(**values: object) -> None:
 def collector_status() -> dict[str, object]:
     with _status_lock:
         return dict(_status)
+
+
+def _retry_delay_seconds(failures: int) -> int:
+    """20s → 40s → 80s → 120s（預設上限），成功後立即恢復正常輪詢。"""
+    if failures <= 0:
+        return POLL_SECONDS
+    multiplier = 2 ** min(failures - 1, 8)
+    return min(MAX_BACKOFF_SECONDS, POLL_SECONDS * multiplier)
+
+
+def _record_failure(error: str) -> int:
+    global _consecutive_failures
+    _consecutive_failures += 1
+    delay = _retry_delay_seconds(_consecutive_failures)
+    _update_status(
+        consecutiveFailures=_consecutive_failures,
+        backoffActive=delay > POLL_SECONDS,
+        nextRetrySeconds=delay,
+        lastError=error,
+    )
+    return delay
+
+
+def _record_success() -> None:
+    global _consecutive_failures
+    _consecutive_failures = 0
+    _update_status(
+        consecutiveFailures=0,
+        backoffActive=False,
+        nextRetrySeconds=POLL_SECONDS,
+        lastError=None,
+    )
 
 
 def _scan_window(now: datetime) -> bool:
@@ -80,7 +131,7 @@ def _fetch_shard(shard: int) -> dict | None:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             return json.load(response)
     except Exception as exc:  # noqa: BLE001
         logger.warning("戰鬥版盤中訊號分片抓取失敗 shard=%s: %s", shard, exc)
@@ -112,11 +163,20 @@ def collect_once() -> bool:
     total_received = 0
     total_inserted = 0
     successful_shards = 0
+    consecutive_shard_failures = 0
 
     for shard in range(SHARD_COUNT):
         payload = _fetch_shard(shard)
         if not isinstance(payload, dict):
+            consecutive_shard_failures += 1
+            if consecutive_shard_failures >= CIRCUIT_BREAKER_SHARD_FAILURES:
+                logger.warning(
+                    "盤中訊號來源連續 %s 個分片抓取失敗，啟動熔斷以避免無效請求",
+                    consecutive_shard_failures,
+                )
+                break
             continue
+        consecutive_shard_failures = 0
         if payload.get("tradeDate") != today:
             logger.warning(
                 "戰鬥版盤中訊號分片日期不符 shard=%s got=%s today=%s",
@@ -165,14 +225,19 @@ def collect_once() -> bool:
             f"盤中訊號分片不完整 {successful_shards}/{SHARD_COUNT}"
             f"，received={total_received} inserted={total_inserted}"
         )
-        _update_status(lastError=error)
-        logger.warning("%s；稍後同一 5 分鐘 bucket 重試", error)
+        delay = _record_failure(error)
+        logger.warning(
+            "%s；失敗退避 %ss 後重試（連續失敗=%s）",
+            error,
+            delay,
+            _consecutive_failures,
+        )
         return False
 
     _last_success_bucket = bucket
+    _record_success()
     _update_status(
         lastSuccessAt=now.isoformat(timespec="seconds"),
-        lastError=None,
     )
     logger.info(
         "戰鬥版盤中訊號已永久保存: date=%s bucket=%s shards=%s received=%s inserted=%s",
@@ -190,9 +255,14 @@ def _loop() -> None:
         try:
             collect_once()
         except Exception as exc:  # noqa: BLE001
-            _update_status(lastError=str(exc))
-            logger.exception("戰鬥版盤中訊號背景收集器例外")
-        time.sleep(POLL_SECONDS)
+            delay = _record_failure(str(exc))
+            logger.exception(
+                "戰鬥版盤中訊號背景收集器例外；退避 %ss 後重試",
+                delay,
+            )
+        status = collector_status()
+        delay = int(status.get("nextRetrySeconds") or POLL_SECONDS)
+        time.sleep(max(POLL_SECONDS, min(MAX_BACKOFF_SECONDS, delay)))
 
 
 def start_intraday_signal_collector() -> bool:
