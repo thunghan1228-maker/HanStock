@@ -19,6 +19,7 @@ def tick(
     *,
     tick_type: int = 0,
     amount: float = 0,
+    total_amount: float = 0,
 ):
     dt = datetime(2026, 8, 7, hour, minute, second, tzinfo=TW_TZ)
     return {
@@ -27,6 +28,7 @@ def tick(
         "volume": volume,
         "tick_type": tick_type,
         "amount": amount,
+        "total_amount": total_amount,
         "tick_time": dt.isoformat(),
     }
 
@@ -116,6 +118,34 @@ class MarketDataHubBarTests(unittest.TestCase):
         five_minute_bar = hub.get_live_bars("2330")[0]
         self.assertEqual(five_minute_bar["main_net_volume"], -3)
         self.assertTrue(five_minute_bar["main_force_available"])
+
+    def test_total_amount_takes_the_latest_cumulative_value_per_bar(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 100.0, 1, 9, 0, 1, total_amount=1_000_000))
+        hub.on_stock_tick(tick("2330", 100.5, 1, 9, 0, 2, total_amount=1_500_000))
+        hub.on_stock_tick(tick("2330", 100.0, 1, 9, 1, 1, total_amount=1_800_000))
+
+        bars_1m = hub.get_live_bars_1m("2330")
+        self.assertEqual(bars_1m[0]["total_amount"], 1_500_000)
+        self.assertEqual(bars_1m[1]["total_amount"], 1_800_000)
+
+        bars_5m = hub.get_live_bars("2330")
+        self.assertEqual(bars_5m[0]["total_amount"], 1_800_000)
+
+    def test_total_amount_ignores_out_of_order_smaller_values(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 100.0, 1, 9, 0, 1, total_amount=2_000_000))
+        hub.on_stock_tick(tick("2330", 100.5, 1, 9, 0, 2, total_amount=500_000))
+
+        bar = hub.get_live_bars_1m("2330")[0]
+        self.assertEqual(bar["total_amount"], 2_000_000)
+
+    def test_total_amount_defaults_to_zero_when_absent(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 100.0, 1, 9, 0, 1))
+
+        bar = hub.get_live_bars_1m("2330")[0]
+        self.assertEqual(bar["total_amount"], 0)
 
 
 if __name__ == "__main__":
