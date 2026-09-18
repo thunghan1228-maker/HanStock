@@ -107,6 +107,7 @@ class Bar:
     main_buy_amount: float = 0.0
     main_sell_amount: float = 0.0
     main_tick_count: int = 0
+    total_amount: float = 0.0
 
     def update(
         self,
@@ -115,6 +116,7 @@ class Bar:
         side: str = "neutral",
         is_main_force: bool = False,
         amount: float = 0.0,
+        total_amount: float = 0.0,
     ) -> None:
         if self.tick_count == 0:
             self.open = price
@@ -140,6 +142,10 @@ class Bar:
         if is_main_force and side in ("buy", "sell"):
             self.main_tick_count += 1
         self.tick_count += 1
+        # Shioaji tick 自帶的 total_amount 是「今日累計成交金額」，同一天內
+        # 只會愈來愈大；取這根 bar 收到的所有tick裡最大的一筆即可，不用累加。
+        if total_amount > self.total_amount:
+            self.total_amount = total_amount
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +169,11 @@ class Bar:
             # 即時 bar 與歷史 tick 回補使用同一份資料契約。前端會以此旗標
             # 判斷是否建立盤中主力副圖；缺少旗標時即使淨量已有數字也不會畫。
             "main_force_available": True,
+            # 當日累計成交金額（來自tick本身，不是這根bar自己的成交額），
+            # 給大戶力等需要「淨額佔當日總成交額比例」的指標當分母用。
+            # 沒有這個欄位（例如歷史tick回補資料沒有total_amount）時是0，
+            # 呼叫端要自行判斷0是否代表資料缺失。
+            "total_amount": round(self.total_amount),
         }
 
 
@@ -195,6 +206,7 @@ class BarAggregator:
         side: str = "neutral",
         is_main_force: bool = False,
         amount: float = 0.0,
+        total_amount: float = 0.0,
     ) -> Optional[Bar]:
         """收到 tick 時更新 bar。若跨 bar 則回傳剛完成的 bar，否則回傳 None。"""
         self._check_day_rollover()
@@ -220,9 +232,9 @@ class BarAggregator:
                     self._completed[code].append(current)
                     completed_bar = current
                 self._current[code] = Bar(ts=bar_start, open=price, high=price, low=price, close=price)
-                self._current[code].update(price, volume, side, is_main_force, amount)
+                self._current[code].update(price, volume, side, is_main_force, amount, total_amount)
             else:
-                current.update(price, volume, side, is_main_force, amount)
+                current.update(price, volume, side, is_main_force, amount, total_amount)
 
         return completed_bar
 
@@ -323,6 +335,10 @@ class MarketDataHub:
             trade_amount = 0.0
         if trade_amount <= 0:
             trade_amount = max(0.0, float(price) * max(0, int(volume)) * 1000)
+        try:
+            total_amount = max(0.0, float(tick_data.get("total_amount", 0) or 0))
+        except (TypeError, ValueError):
+            total_amount = 0.0
 
         # 更新 Tick Cache
         with self._lock:
@@ -342,7 +358,7 @@ class MarketDataHub:
 
         # 更新 1 分 K Aggregator
         completed_bar_1m = self.bars_1m.on_tick(
-            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount
+            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount, total_amount
         )
         if completed_bar_1m:
             self._total_bars_1m_completed += 1
@@ -355,7 +371,7 @@ class MarketDataHub:
 
         # 更新既有 5 分 K Aggregator
         completed_bar = self.bars.on_tick(
-            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount
+            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount, total_amount
         )
         if completed_bar:
             self._total_bars_completed += 1

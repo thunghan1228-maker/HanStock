@@ -43,6 +43,18 @@ def _ensure_table() -> None:
                 ON main_force_bars (stock_code, interval, trade_date, bar_ts);
                 """
             )
+            row_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(main_force_bars)").fetchall()
+            }
+            if "total_amount" not in row_columns:
+                # 當日累計成交金額（來自Shioaji tick本身，不是這根bar自己的
+                # 成交額），給大戶力等需要「淨額佔當日總成交額比例」的指標
+                # 當分母用。舊資料沒有這個欄位，補上後預設0（代表資料缺失，
+                # 不是真的成交額0）。
+                connection.execute(
+                    "ALTER TABLE main_force_bars ADD COLUMN total_amount REAL NOT NULL DEFAULT 0"
+                )
         _table_ready_path = database_path
 
 
@@ -66,6 +78,7 @@ def _rows_for_bars(
             buy_amount = max(0.0, float(bar.get("main_buy_amount", 0) or 0))
             sell_amount = max(0.0, float(bar.get("main_sell_amount", 0) or 0))
             tick_count = max(0, int(bar.get("main_tick_count", 0) or 0))
+            total_amount = max(0.0, float(bar.get("total_amount", 0) or 0))
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if ts <= 0:
@@ -79,7 +92,7 @@ def _rows_for_bars(
             code, taipei_trade_date(ts), interval, ts,
             buy_volume, sell_volume, buy_volume - sell_volume,
             buy_amount, sell_amount, buy_amount - sell_amount,
-            tick_count, now,
+            tick_count, total_amount, now,
         ))
     return rows
 
@@ -95,8 +108,8 @@ def _write_rows(rows: list[tuple[Any, ...]]) -> int:
                 stock_code, trade_date, interval, bar_ts,
                 main_buy_volume, main_sell_volume, main_net_volume,
                 main_buy_amount, main_sell_amount, main_net_amount,
-                main_tick_count, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                main_tick_count, total_amount, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stock_code, interval, bar_ts) DO UPDATE SET
                 trade_date=excluded.trade_date,
                 main_buy_volume=excluded.main_buy_volume,
@@ -106,6 +119,7 @@ def _write_rows(rows: list[tuple[Any, ...]]) -> int:
                 main_sell_amount=excluded.main_sell_amount,
                 main_net_amount=excluded.main_net_amount,
                 main_tick_count=excluded.main_tick_count,
+                total_amount=excluded.total_amount,
                 updated_at=excluded.updated_at
             """,
             rows,
@@ -171,7 +185,7 @@ def load_main_force_bars(
             f"""
             SELECT trade_date, bar_ts, main_buy_volume, main_sell_volume,
                    main_net_volume, main_buy_amount, main_sell_amount,
-                   main_net_amount, main_tick_count
+                   main_net_amount, main_tick_count, total_amount
             FROM main_force_bars
             WHERE stock_code = ? AND interval = ? {date_filter}
             ORDER BY bar_ts DESC LIMIT ?
@@ -188,6 +202,8 @@ def load_main_force_bars(
         "main_sell_amount": round(float(row["main_sell_amount"])),
         "main_net_amount": round(float(row["main_net_amount"])),
         "main_tick_count": int(row["main_tick_count"]),
+        # 當日累計成交金額；0可能是真的0，也可能是這個欄位上線前的舊資料。
+        "total_amount": round(float(row["total_amount"] or 0)),
         "main_force_available": True,
     } for row in rows]
 
