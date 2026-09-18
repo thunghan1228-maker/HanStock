@@ -122,6 +122,9 @@ class QuoteService:
         self._stock_main_subscription_lock = threading.Lock()
         self._stock_ticks: dict[str, dict[str, Any]] = {}
         self._stock_tick_timestamps: dict[str, float] = {}
+        # 一次性診斷：確認Shioaji tick本身有沒有真的帶total_amount（大戶力%
+        # 分母）。只記錄前幾檔避免洗log，用完即可拿掉。
+        self._total_amount_diag_logged: set[str] = set()
         self._stock_contracts: dict[str, Any] = {}
         self._stock_subscriptions: OrderedDict[str, float] = OrderedDict()
         self._stock_assignments: dict[str, str] = {}
@@ -243,6 +246,13 @@ class QuoteService:
     def _handle_stock_tick(self, exchange: Any, tick: Any, *, primary_connection: bool=False) -> None:
         data=self._stock_tick_to_dict(exchange,tick); code=data["code"]
         if not code: return
+        if code not in self._total_amount_diag_logged and len(self._total_amount_diag_logged) < 5:
+            self._total_amount_diag_logged.add(code)
+            logger.info(
+                "[total_amount診斷] code=%s total_amount=%r amount=%r close=%r volume=%r total_volume=%r",
+                code, data.get("total_amount"), data.get("amount"), data.get("close"),
+                data.get("volume"), data.get("total_volume"),
+            )
         if primary_connection:
             with self.state._lock: self.state.last_quote_timestamp=time.time(); self.state.quote_connected=True
         with self._stock_lock:
