@@ -6,6 +6,8 @@ from unittest.mock import patch
 import database
 from main_force_collector import collect_once
 from main_force_store import (
+    classify_holder_strength,
+    compute_holder_strength_pct,
     list_tracked_stock_codes,
     load_daily_main_force_net,
     load_daily_main_force_net_amount,
@@ -20,6 +22,51 @@ from main_force_store import (
 from otc_index import taipei_trade_date
 
 BASE_TS = 1_786_413_600_000  # 2026-08-11 10:00:00+08:00（盤中連續交易時段內）
+
+
+class HolderStrengthComputationTests(unittest.TestCase):
+    def test_compute_pct_is_none_without_turnover(self):
+        self.assertIsNone(compute_holder_strength_pct(1000, 0, 0))
+        self.assertIsNone(compute_holder_strength_pct(1000, 0, -5))
+
+    def test_compute_pct_formula(self):
+        pct = compute_holder_strength_pct(40_000_000, 5_000_000, 200_000_000)
+        self.assertEqual(pct, 17.5)
+
+    def test_classify_returns_bull_label_at_signal_threshold(self):
+        pct, label = classify_holder_strength(40_000_000, 5_000_000, 200_000_000)
+        self.assertEqual(pct, 17.5)
+        self.assertEqual(label, "強多")
+
+    def test_classify_returns_strong_buy_label_above_28_percent(self):
+        pct, label = classify_holder_strength(70_000_000, 5_000_000, 200_000_000)
+        self.assertEqual(pct, 32.5)
+        self.assertEqual(label, "強力買進")
+
+    def test_classify_returns_bear_labels_symmetrically(self):
+        pct, label = classify_holder_strength(5_000_000, 40_000_000, 200_000_000)
+        self.assertEqual(pct, -17.5)
+        self.assertEqual(label, "強空")
+        pct, label = classify_holder_strength(5_000_000, 70_000_000, 200_000_000)
+        self.assertEqual(pct, -32.5)
+        self.assertEqual(label, "強力賣出")
+
+    def test_classify_label_none_when_below_12_percent(self):
+        pct, label = classify_holder_strength(50_000_000, 45_000_000, 200_000_000)
+        self.assertEqual(pct, 2.5)
+        self.assertIsNone(label)
+
+    def test_classify_label_none_when_turnover_below_1e_yuan_floor(self):
+        # 百分比達門檻，但累計成交額不到1億元。
+        pct, label = classify_holder_strength(4_000_000, 500_000, 10_000_000)
+        self.assertEqual(pct, 35.0)
+        self.assertIsNone(label)
+
+    def test_classify_label_none_when_net_amount_below_30m_floor(self):
+        # 百分比達20%（超過12%門檻），但淨額本身沒到3,000萬元（只有2,000萬）。
+        pct, label = classify_holder_strength(20_500_000, 500_000, 100_000_000)
+        self.assertEqual(pct, 20.0)
+        self.assertIsNone(label)
 
 
 class MainForceStoreTests(unittest.TestCase):
@@ -163,6 +210,50 @@ class MainForceStoreTests(unittest.TestCase):
 
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
+
+    def test_ranking_includes_official_strength_pct_and_label(self):
+        base_ts = BASE_TS
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_buy_amount": 40_000_000, "main_sell_amount": 5_000_000,
+            "total_amount": 200_000_000, "main_force_available": True,
+        }])
+
+        ranking = {row["code"]: row for row in load_main_force_ranking(trade_date, interval="5m")}
+
+        # (40,000,000-5,000,000)/200,000,000*100 = 17.5%；達+12%正式門檻，未達28%強力
+        self.assertEqual(ranking["2330"]["strengthPct"], 17.5)
+        self.assertEqual(ranking["2330"]["holderLabel"], "強多")
+
+    def test_ranking_strength_pct_is_none_without_turnover_data(self):
+        # 舊資料沒有total_amount欄位（或這個bar沒有主力金額），無法算百分比。
+        base_ts = BASE_TS
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_force_available": True,
+        }])
+
+        ranking = {row["code"]: row for row in load_main_force_ranking(trade_date, interval="5m")}
+
+        self.assertIsNone(ranking["2330"]["strengthPct"])
+        self.assertIsNone(ranking["2330"]["holderLabel"])
+
+    def test_ranking_label_is_none_below_eligibility_even_if_pct_crosses_threshold(self):
+        # 百分比達12%以上，但累計成交額沒有達1億元的門檻，不算正式訊號。
+        base_ts = BASE_TS
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_buy_amount": 4_000_000, "main_sell_amount": 500_000,
+            "total_amount": 10_000_000, "main_force_available": True,
+        }])
+
+        ranking = {row["code"]: row for row in load_main_force_ranking(trade_date, interval="5m")}
+
+        self.assertEqual(ranking["2330"]["strengthPct"], 35.0)
+        self.assertIsNone(ranking["2330"]["holderLabel"])
 
     def test_ranking_includes_stock_name_when_available_and_falls_back_to_code(self):
         base_ts = BASE_TS

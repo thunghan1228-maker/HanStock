@@ -12,6 +12,7 @@ from typing import Any
 
 from group_strength_store import load_group_strength_history, save_group_strength_snapshot
 from intraday_signal_store import save_intraday_signals
+from main_force_store import compute_holder_strength_pct
 from stock_groups import STOCK_GROUPS
 
 TW_TZ = timezone(timedelta(hours=8))
@@ -121,6 +122,22 @@ def build_live_group_ranks(service: Any) -> dict[str, int]:
     return {group: index + 1 for index, (group, _change) in enumerate(averages)}
 
 
+def _holder_strength_pct(code: str) -> float | None:
+    """讀取這檔股票目前的大戶力%（今日累計大單淨額÷累計成交額×100%），
+    供「觸發當時大戶力必須同向」條件使用。只讀已經在記憶體裡的今日1分K
+    資料（market_data_hub 的 BarAggregator），不查資料庫、不新增訂閱。
+    沒有資料（例如今天才剛開盤、還沒有累計成交額）時回None。"""
+    from market_data_hub import get_market_data_hub
+
+    bars = get_market_data_hub().get_live_bars_1m(code) or []
+    if not bars:
+        return None
+    buy_amount = sum(max(0.0, float(b.get("main_buy_amount") or 0)) for b in bars)
+    sell_amount = sum(max(0.0, float(b.get("main_sell_amount") or 0)) for b in bars)
+    total_amount = max((float(b.get("total_amount") or 0) for b in bars), default=0.0)
+    return compute_holder_strength_pct(buy_amount, sell_amount, total_amount)
+
+
 def _ensure_group_universe_subscriptions(service: Any) -> None:
     codes = list(dict.fromkeys(
         ticker
@@ -209,6 +226,16 @@ class IntradayLargeOrderMonitor:
             if total_lots < MIN_BURST_LOTS and total_amount < MIN_BURST_AMOUNT:
                 return []
             if tick_ts_ms - self._last_emitted.get(key, 0) < COOLDOWN_MS:
+                return []
+            # 觸發當時大戶力必須同向（多方>0／空方<0）；沒有大戶力資料時
+            # 保守地不發訊號，不consume冷卻時間，讓真正符合條件的下一筆
+            # 還有機會觸發。
+            strength_pct = _holder_strength_pct(code)
+            if strength_pct is None:
+                return []
+            if side == "buy" and strength_pct <= 0:
+                return []
+            if side == "sell" and strength_pct >= 0:
                 return []
             self._runtime["burstThresholdCount"] = int(self._runtime.get("burstThresholdCount") or 0) + 1
             self._runtime["lastBurstAt"] = datetime.fromtimestamp(tick_ts_ms / 1000, TW_TZ).isoformat()

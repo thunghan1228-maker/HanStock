@@ -208,12 +208,57 @@ def load_main_force_bars(
     } for row in rows]
 
 
+HOLDER_STRENGTH_MIN_TURNOVER = 100_000_000  # 累計成交額至少1億元才有正式門檻資格
+HOLDER_STRENGTH_MIN_NET_AMOUNT = 30_000_000  # 大戶淨額絕對值至少3,000萬元
+HOLDER_STRENGTH_SIGNAL_PCT = 12.0  # 正式訊號門檻：多方≥+12%；空方≤-12%
+HOLDER_STRENGTH_STRONG_PCT = 28.0  # 強力標籤門檻：絕對值28%
+
+
+def compute_holder_strength_pct(buy_amount: float, sell_amount: float, total_amount: float) -> float | None:
+    """大戶力% =（累計大單買進金額－累計大單賣出金額）÷累計成交額×100%。
+    total_amount<=0（還沒有今日累計成交額資料，例如total_amount欄位上線前
+    的舊資料）時回None，代表無法計算，不能當成0%。"""
+    if total_amount <= 0:
+        return None
+    return (buy_amount - sell_amount) / total_amount * 100
+
+
+def classify_holder_strength(
+    buy_amount: float, sell_amount: float, total_amount: float
+) -> tuple[float | None, str | None]:
+    """回傳（大戶力%, 標籤）。標籤只在通過正式門檻（累計成交額≥1億、大戶
+    淨額絕對值≥3,000萬、且百分比達±12%）時才有值；沒通過門檻時百分比仍會
+    算出來，但標籤是None（代表還沒到正式訊號，不是沒有數字）。"""
+    pct = compute_holder_strength_pct(buy_amount, sell_amount, total_amount)
+    if pct is None:
+        return None, None
+    net_amount = buy_amount - sell_amount
+    eligible = total_amount >= HOLDER_STRENGTH_MIN_TURNOVER and abs(net_amount) >= HOLDER_STRENGTH_MIN_NET_AMOUNT
+    if not eligible:
+        return round(pct, 2), None
+    if pct >= HOLDER_STRENGTH_STRONG_PCT:
+        label = "強力買進"
+    elif pct >= HOLDER_STRENGTH_SIGNAL_PCT:
+        label = "強多"
+    elif pct <= -HOLDER_STRENGTH_STRONG_PCT:
+        label = "強力賣出"
+    elif pct <= -HOLDER_STRENGTH_SIGNAL_PCT:
+        label = "強空"
+    else:
+        label = None
+    return round(pct, 2), label
+
+
 def load_main_force_ranking(
     trade_date: str,
     interval: str = "5m",
     limit: int = 30,
 ) -> list[dict[str, Any]]:
-    """依交易日彙總主力累計買賣超排行；只讀取既有已收集資料，不新增任何即時訂閱。"""
+    """依交易日彙總主力累計買賣超排行；只讀取既有已收集資料，不新增任何即時訂閱。
+
+    strengthPct/holderLabel 是官方大戶力公式（大單淨額÷累計成交額×100%，
+    見classify_holder_strength）；total_amount欄位上線前的舊資料兩者都會
+    是None，代表當時沒有累計成交額資料可以算，不是0%。"""
     if interval not in {"1m", "5m"}:
         raise ValueError(f"不支援 interval: {interval}")
     _ensure_table()
@@ -225,6 +270,9 @@ def load_main_force_ranking(
                    SUM(b.main_net_volume) AS net_volume,
                    SUM(b.main_buy_volume) AS buy_volume,
                    SUM(b.main_sell_volume) AS sell_volume,
+                   SUM(b.main_buy_amount) AS buy_amount,
+                   SUM(b.main_sell_amount) AS sell_amount,
+                   MAX(b.total_amount) AS total_amount,
                    MAX(b.bar_ts) AS last_ts,
                    s.stock_name AS stock_name
             FROM main_force_bars b
@@ -236,15 +284,24 @@ def load_main_force_ranking(
             """,
             (trade_date, interval, limit),
         ).fetchall()
-    return [{
-        "code": row["stock_code"],
-        "name": row["stock_name"] or row["stock_code"],
-        "netVolume": int(row["net_volume"] or 0),
-        "buyVolume": int(row["buy_volume"] or 0),
-        "sellVolume": int(row["sell_volume"] or 0),
-        "lastTs": int(row["last_ts"]),
-        "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
-    } for row in rows]
+    results = []
+    for row in rows:
+        buy_amount = float(row["buy_amount"] or 0)
+        sell_amount = float(row["sell_amount"] or 0)
+        total_amount = float(row["total_amount"] or 0)
+        strength_pct, holder_label = classify_holder_strength(buy_amount, sell_amount, total_amount)
+        results.append({
+            "code": row["stock_code"],
+            "name": row["stock_name"] or row["stock_code"],
+            "netVolume": int(row["net_volume"] or 0),
+            "buyVolume": int(row["buy_volume"] or 0),
+            "sellVolume": int(row["sell_volume"] or 0),
+            "lastTs": int(row["last_ts"]),
+            "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
+            "strengthPct": strength_pct,
+            "holderLabel": holder_label,
+        })
+    return results
 
 
 def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str, int]:

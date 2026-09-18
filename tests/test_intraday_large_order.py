@@ -39,6 +39,7 @@ def test_same_second_large_buy_emits_once(monkeypatch):
         return rows
 
     monkeypatch.setattr(module, "save_intraday_signals", fake_save)
+    monkeypatch.setattr(module, "_holder_strength_pct", lambda code: 15.0)
     monitor = IntradayLargeOrderMonitor()
     monitor.set_candidates({"2344": {"name": "華邦電", "group": "記憶體", "rank": 4, "direction": "漲幅"}}, {}, {})
     base = 1_787_542_347_000
@@ -69,6 +70,7 @@ def test_buy_and_sell_amount_thresholds_are_thirty_and_fifty_million(monkeypatch
         (2, "sell", 50_000_000, "瞬間特大賣單倒出"),
     ]
     for tick_type, side, amount, expected_label in cases:
+        monkeypatch.setattr(module, "_holder_strength_pct", lambda code, side=side: (1.0 if side == "buy" else -1.0))
         monitor = IntradayLargeOrderMonitor()
         candidate = {"2344": {"name": "華邦電", "group": "記憶體", "rank": 4, "direction": "漲幅" if side == "buy" else "跌幅"}}
         monitor.set_candidates(candidate if side == "buy" else {}, candidate if side == "sell" else {}, {})
@@ -113,6 +115,53 @@ def test_saved_extra_signal_is_downgraded_when_only_general_threshold_passes():
     assert normalized["label"] == "瞬間大單連續倒出"
 
 
+def test_holder_strength_wrong_direction_blocks_signal(monkeypatch):
+    # 買方大單累計已達門檻，但觸發當時大戶力是負的（偏賣），不成立。
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "_holder_strength_pct", lambda code: -5.0)
+    monitor = IntradayLargeOrderMonitor()
+    monitor.set_candidates({"2344": {"name": "華邦電", "group": "記憶體", "rank": 4, "direction": "漲幅"}}, {}, {})
+    result = monitor.on_tick({
+        "code": "2344", "close": 100, "volume": 1,
+        "amount": 50_000_000, "tick_type": 1,
+    }, 1_787_542_347_000)
+    assert result == []
+
+
+def test_holder_strength_missing_data_blocks_signal(monkeypatch):
+    # 大戶力算不出來（例如今天還沒有累計成交額資料）時保守地不發訊號。
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "_holder_strength_pct", lambda code: None)
+    monitor = IntradayLargeOrderMonitor()
+    monitor.set_candidates({"2344": {"name": "華邦電", "group": "記憶體", "rank": 4, "direction": "漲幅"}}, {}, {})
+    result = monitor.on_tick({
+        "code": "2344", "close": 100, "volume": 1,
+        "amount": 50_000_000, "tick_type": 1,
+    }, 1_787_542_347_000)
+    assert result == []
+
+
+def test_holder_strength_rejection_does_not_consume_cooldown(monkeypatch):
+    # 被大戶力方向擋掉的那一筆，不能佔用冷卻時間；换成正確方向後應該還能觸發。
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monitor = IntradayLargeOrderMonitor()
+    monitor.set_candidates({"2344": {"name": "華邦電", "group": "記憶體", "rank": 4, "direction": "漲幅"}}, {}, {})
+
+    monkeypatch.setattr(module, "_holder_strength_pct", lambda code: -5.0)
+    rejected = monitor.on_tick({
+        "code": "2344", "close": 100, "volume": 1,
+        "amount": 50_000_000, "tick_type": 1,
+    }, 1_787_542_347_000)
+    assert rejected == []
+
+    monkeypatch.setattr(module, "_holder_strength_pct", lambda code: 5.0)
+    accepted = monitor.on_tick({
+        "code": "2344", "close": 100, "volume": 1,
+        "amount": 50_000_000, "tick_type": 1,
+    }, 1_787_542_347_100)
+    assert len(accepted) == 1
+
+
 def test_wrong_direction_and_neutral_ticks_are_ignored(monkeypatch):
     monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
     monitor = IntradayLargeOrderMonitor()
@@ -128,6 +177,7 @@ def test_persistence_lock_keeps_signal_in_memory_and_retries(monkeypatch):
         raise OSError("database locked")
 
     monkeypatch.setattr(module, "save_intraday_signals", locked)
+    monkeypatch.setattr(module, "_holder_strength_pct", lambda code: 20.0)
     monitor = IntradayLargeOrderMonitor()
     monitor.set_candidates(
         {"2344": {"name": "華邦電", "group": "記憶體", "rank": 1, "direction": "漲幅"}},
