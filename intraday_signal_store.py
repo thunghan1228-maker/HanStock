@@ -10,8 +10,10 @@ from database import get_connection
 ONCE_PER_DAY_KINDS = {
     "break905d",
     "a8short",
+    "firstCross905High",
     "firstCrossUp20ma",
     "firstCrossDown20ma",
+    "short12",
     "triangleNearBreakout",
     "triangleBreakoutPendingVolume",
     "triangleVolumeBreakout",
