@@ -21,6 +21,7 @@ from typing import Any
 from daily_bars_store import load_daily_bars
 from daytrade_flow import _tick_size, limit_down_price, limit_up_price
 from intraday_signal_store import save_intraday_signals
+from ma_alignment_score import compute_ma_alignment_score
 from market_data_hub import BAR_INTERVAL_5M_MS
 from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_groups import STOCK_GROUPS
@@ -32,6 +33,9 @@ ZONE_TICKS = 5  # 「前高下方5檔內」
 WAIT_BARS = 2  # 注意12空／12空都要等2根5分K（=10分鐘）未突破
 WATCH_START_MINUTE = 9 * 60 + 10  # 09:10起才開始偵測注意12空
 CUTOFF_MINUTE = 10 * 60 + 30  # A8空／破905D／12空的期限
+BLACK_DRAGON_START_MINUTE = 11 * 60  # 創高黑龍11:00後才成立
+BLACK_DRAGON_END_MINUTE = 13 * 60 + 30  # 到13:30收盤
+BLACK_DRAGON_MIN_MA_SCORE = 10  # 六均線兩兩比較共15組，至少10組排列正確
 _LIMIT_EPS = 1e-6
 
 _group_lookup_cache: dict[str, tuple[str, str]] | None = None
@@ -88,6 +92,10 @@ class _KlineState:
     ots_1high: float | None = None
     ots_2high: float | None = None
     fired_one_two_short: bool = False
+    today_open: float | None = None
+    five_day_high: float | None = None
+    ma_alignment_score: int | None = None
+    fired_black_dragon: bool = False
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -113,6 +121,16 @@ class IntradayKlineSignalMonitor:
             state.prev_high = float(previous[-1]["high"])
             state.limit_up = limit_up_price(state.prev_close)
             state.limit_down = limit_down_price(state.prev_close)
+        try:
+            recent5 = load_daily_bars(code, limit=5)
+        except Exception:  # noqa: BLE001
+            recent5 = []
+        if len(recent5) >= 5:
+            state.five_day_high = max(float(b["high"]) for b in recent5[-5:])
+        try:
+            state.ma_alignment_score = compute_ma_alignment_score(code)
+        except Exception:  # noqa: BLE001
+            state.ma_alignment_score = None
         self._states[code] = state
         return state
 
@@ -189,6 +207,7 @@ class IntradayKlineSignalMonitor:
             state.bar905_low = low
             state.a8 = (state.bar905_high + state.bar905_low) / 2
             state.session_high = state.bar905_high
+            state.today_open = float(bar["open"])
             if state.prev_close is not None and state.prev_close > 0:
                 pct = (close / state.prev_close - 1) * 100
                 state.long_ok = close > state.prev_close and pct < LONG_PRECONDITION_MAX_PCT
@@ -211,6 +230,8 @@ class IntradayKlineSignalMonitor:
         self._detect_a8_and_905d(state, close, minute_of_day, emit)
         self._detect_12short_family(state, close, broke_through, minute_of_day, emit)
         self._detect_one_two_short(state, close, high, low, ma20, emit)
+        bar_start_minute = taipei_minute_of_day(int(bar["ts"]))
+        self._detect_black_dragon(state, close, high, bar_start_minute, group_name, emit)
 
         # 【5】需要ma5，跟其他偵測分開放在最後（依賴上面算好的ma5）。
         self._detect_5ma_905_cross(state, close, ma5, emit)
@@ -427,6 +448,30 @@ class IntradayKlineSignalMonitor:
                 emit("oneTwoShort", "12空")
                 state.fired_one_two_short = True
                 state.ots_stage = "done"
+
+    def _detect_black_dragon(
+        self, state: _KlineState, close: float, high: float, bar_start_minute: int, group_name: str, emit
+    ) -> None:
+        """創高黑龍(盤中版)：11:00~13:30限定(用「這根5分K自己的起始時間」
+        判斷，10:55-11:00這根收盤時間剛好=11:00但起始在11:00前，不算)，
+        同一根5分K自己的最高價突破前5個完整交易日最高價(平高不算)、該根
+        收盤<今日09:00開盤價、六均線(5/10/20/60/120/240)排列分數≥10
+        (滿分15)，一天一次。股票要屬於HanStock正式主族群範圍(group_name
+        非空)。"""
+        if state.fired_black_dragon:
+            return
+        if not (BLACK_DRAGON_START_MINUTE <= bar_start_minute <= BLACK_DRAGON_END_MINUTE):
+            return
+        if not group_name:
+            return
+        if (
+            state.today_open is None or state.five_day_high is None
+            or state.ma_alignment_score is None or state.ma_alignment_score < BLACK_DRAGON_MIN_MA_SCORE
+        ):
+            return
+        if high > state.five_day_high and close < state.today_open:
+            emit("blackDragon", "創高黑龍")
+            state.fired_black_dragon = True
 
 
 _monitor: IntradayKlineSignalMonitor | None = None
