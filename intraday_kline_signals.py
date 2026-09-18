@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from daily_bars_store import load_daily_bars
-from daytrade_flow import _tick_size
+from daytrade_flow import _tick_size, limit_down_price, limit_up_price
 from intraday_signal_store import save_intraday_signals
 from market_data_hub import BAR_INTERVAL_5M_MS
 from otc_index import taipei_minute_of_day, taipei_trade_date
@@ -32,6 +32,7 @@ ZONE_TICKS = 5  # 「前高下方5檔內」
 WAIT_BARS = 2  # 注意12空／12空都要等2根5分K（=10分鐘）未突破
 WATCH_START_MINUTE = 9 * 60 + 10  # 09:10起才開始偵測注意12空
 CUTOFF_MINUTE = 10 * 60 + 30  # A8空／破905D／12空的期限
+_LIMIT_EPS = 1e-6
 
 _group_lookup_cache: dict[str, tuple[str, str]] | None = None
 
@@ -54,6 +55,9 @@ class _KlineState:
     closes: list[float] = field(default_factory=list)
     prev_close: float | None = None
     prev_high: float | None = None
+    limit_up: float | None = None
+    limit_down: float | None = None
+    limit_hit: bool = False
     bar905_high: float | None = None
     bar905_low: float | None = None
     a8: float | None = None
@@ -102,6 +106,8 @@ class IntradayKlineSignalMonitor:
         if previous:
             state.prev_close = float(previous[-1]["close"])
             state.prev_high = float(previous[-1]["high"])
+            state.limit_up = limit_up_price(state.prev_close)
+            state.limit_down = limit_down_price(state.prev_close)
         self._states[code] = state
         return state
 
@@ -144,6 +150,19 @@ class IntradayKlineSignalMonitor:
     ) -> list[dict[str, Any]]:
         close = float(bar["close"])
         high = float(bar["high"])
+
+        if state.limit_hit:
+            return []
+        if (
+            (state.limit_up is not None and close >= state.limit_up - _LIMIT_EPS)
+            or (state.limit_down is not None and close <= state.limit_down + _LIMIT_EPS)
+        ):
+            # 漲停/跌停鎖死後，連續好幾根K棒收盤價完全相同，MA5/MA20會被這些
+            # 沒有實際價格發現意義的平盤K棒拖著「追上」，跨越MA只是算術上的
+            # 假象，不是真正的多空轉折。當天鎖住後就不再偵測任何5分鐘K訊號。
+            state.limit_hit = True
+            return []
+
         state.bar_count += 1
         state.closes.append(close)
 

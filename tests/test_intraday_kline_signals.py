@@ -99,11 +99,13 @@ def test_cross_up_prev_high_retriggers_on_leave_and_return(monkeypatch):
 
 def test_combo12_bull_fires_once_when_both_905_high_and_prev_high_broken(monkeypatch):
     # 條件1=905高(102)，條件2=昨日高(105)；長多前置條件故意設成不成立
-    # (漲幅遠超過6%)，確認1+2多不受這個前置條件限制。
-    monitor = new_monitor(monkeypatch, prev_close=50.0, prev_high=105.0)
-    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))  # 905高=102
+    # (905K收盤反而低於昨收，long_ok第一個條件就不成立)，確認1+2多不受這個
+    # 前置條件限制。prev_close=100讓漲停價=110，後面所有收盤價都留在合法
+    # 漲跌停範圍內，不會被漲停鎖死邏輯誤擋。
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=105.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 99.5))  # 905高=102
     # 只過905高(103)，還沒過昨日高(105)：不該觸發。
-    result1 = monitor.on_bar_completed("2330", bar(9, 5, 100.5, 104, 100.5, 103))
+    result1 = monitor.on_bar_completed("2330", bar(9, 5, 99.5, 104, 99.5, 103))
     assert "combo12Bull" not in kinds(result1)
     # 同時過905高(102)跟昨日高(105)：觸發。
     result2 = monitor.on_bar_completed("2330", bar(9, 10, 103, 107, 103, 106))
@@ -122,7 +124,10 @@ def test_combo12_bull_not_fired_when_only_prev_high_broken(monkeypatch):
 
 
 def test_20ma_cross_needs_20_bars_and_fires_first_flag_once(monkeypatch):
-    monitor = new_monitor(monkeypatch, prev_close=95.0, prev_high=200.0)
+    # prev_close=96：漲停價105.5，最後一根收盤105留在合法範圍內，同時
+    # pct=(100/96-1)*100≈4.17%<6%且close>prev_close，維持long_ok=True
+    # （crossUp20ma依規格需要long_ok成立才會觸發）。
+    monitor = new_monitor(monkeypatch, prev_close=96.0, prev_high=200.0)
     monitor.on_bar_completed("2330", bar(9, 0, 100, 101, 99, 100))
     minute = 5
     # 用19根平盤的K墊出滿20根視窗（含bar1共20根）；20MA在第20根才第一次算出來，
@@ -386,3 +391,49 @@ def test_start_kline_signal_backfill_today_records_error_result(monkeypatch):
     status = module.kline_signal_backfill_status()
     assert status["running"] is False
     assert "回補整體失敗" in status["result"]["error"]
+
+
+def test_limit_up_hit_suppresses_all_further_signal_detection(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=1000.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 101.5))  # 905K基準
+    state = monitor._states["2330"]
+    assert state.limit_up == 110.0
+    assert state.limit_down == 90.0
+    assert state.limit_hit is False
+
+    # 收盤剛好等於漲停價：鎖死，這根本身也不該有任何訊號。
+    result = monitor.on_bar_completed("2330", bar(9, 5, 108, 110, 108, 110.0))
+    assert result == []
+    assert state.limit_hit is True
+    bar_count_after_hit = state.bar_count
+
+    # 之後即使走勢看起來會觸發訊號（例如帶量急跌），鎖死後也不該再偵測。
+    result2 = monitor.on_bar_completed("2330", bar(9, 10, 110.0, 110.0, 95.0, 96.0))
+    assert result2 == []
+    assert state.bar_count == bar_count_after_hit  # 鎖死後不再累積bar_count/closes
+
+
+def test_limit_down_hit_suppresses_all_further_signal_detection(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=1000.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 101, 96, 96.5))  # 905K基準
+    state = monitor._states["2330"]
+    assert state.limit_down == 90.0
+
+    result = monitor.on_bar_completed("2330", bar(9, 5, 92, 92, 90, 90.0))
+    assert result == []
+    assert state.limit_hit is True
+
+    result2 = monitor.on_bar_completed("2330", bar(9, 10, 90.0, 105.0, 90.0, 104.0))
+    assert result2 == []
+
+
+def test_limit_hit_does_not_carry_over_to_next_trade_date(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=1000.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 101.5))
+    monitor.on_bar_completed("2330", bar(9, 5, 108, 110, 108, 110.0))
+    assert monitor._states["2330"].limit_hit is True
+
+    monitor.reset_for_backfill("2330", "2026-09-19")
+    state = monitor._states["2330"]
+    assert state.limit_hit is False
+    assert state.limit_up == 110.0  # 重新用(固定mock的)前一天收盤價換算，不是延續昨天鎖死的殘留值

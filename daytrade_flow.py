@@ -117,6 +117,15 @@ def limit_up_price(reference_price: float) -> float:
     return round(math.floor((raw + 1e-9) / tick) * tick, 2)
 
 
+def limit_down_price(reference_price: float) -> float:
+    """台股一般股票 10% 跌停價，依價格級距向上取合法跳動單位。"""
+    if reference_price <= 0:
+        return 0.0
+    raw = reference_price * 0.90
+    tick = _tick_size(raw)
+    return round(math.ceil((raw - 1e-9) / tick) * tick, 2)
+
+
 def _daily_row(
     *,
     ticker: str,
