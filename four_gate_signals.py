@@ -50,6 +50,24 @@ TIME_WINDOW_THRESHOLDS = (
 )
 
 
+def fix_stale_four_gate_labels() -> int:
+    """一次性資料修正：label文字曾經改過幾次（無標籤→兩項精選→四項精選），
+    但已經寫進intraday_signals的舊資料不會跟著自動更新，畫面上還是會顯示
+    當時寫入的舊文字。這裡把還停在舊文字的既有列補成目前正確的BUY_LABEL／
+    SELL_LABEL；已經是最新文字的列不會被UPDATE命中，所以重複呼叫是安全的、
+    成本也趨近於0。"""
+    with get_connection() as connection:
+        buy_cursor = connection.execute(
+            "UPDATE intraday_signals SET label = ? WHERE kind = ? AND label != ?",
+            (BUY_LABEL, BUY_KIND, BUY_LABEL),
+        )
+        sell_cursor = connection.execute(
+            "UPDATE intraday_signals SET label = ? WHERE kind = ? AND label != ?",
+            (SELL_LABEL, SELL_KIND, SELL_LABEL),
+        )
+        return int(buy_cursor.rowcount or 0) + int(sell_cursor.rowcount or 0)
+
+
 def _bar_datetime(timestamp: Any) -> datetime | None:
     try:
         value = float(timestamp)
