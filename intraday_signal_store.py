@@ -97,11 +97,27 @@ def _clean_signal(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _resolve_stock_name(ticker: str) -> str:
+    """全市場 stocks 表反查中文股名；查不到才退回代號。"""
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT stock_name FROM stocks WHERE stock_code = ?",
+            (ticker,),
+        ).fetchone()
+    return row["stock_name"] if row and row["stock_name"] else ticker
+
+
 def _to_api(row: Any) -> dict[str, Any]:
+    ticker = str(row["ticker"])
+    stored_name = str(row["name"])
+    # 讀取時重新反查股名，不只信任寫入當下存的值：這樣即使某筆訊號是
+    # 在股名反查邏輯修好之前就已經寫入（代號當名稱存進去），現在讀出來
+    # 也會自動修正，不用手動回補舊資料。
+    name = stored_name if stored_name and stored_name != ticker else _resolve_stock_name(ticker)
     return {
         "tradeDate": str(row["trade_date"]),
-        "ticker": str(row["ticker"]),
-        "name": str(row["name"]),
+        "ticker": ticker,
+        "name": name,
         "groupName": str(row["group_name"]),
         "kind": str(row["kind"]),
         "label": str(row["label"]),
