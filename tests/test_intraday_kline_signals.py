@@ -352,6 +352,26 @@ def test_backfill_today_kline_signals_is_safe_to_rerun(monkeypatch):
     assert monitor._states["2330"].bar_count == 2
 
 
+def test_start_kline_signal_backfill_today_threads_trade_date_through(monkeypatch):
+    received = {}
+
+    def fake_backfill(*, trade_date=None, **kwargs):
+        received["trade_date"] = trade_date
+        return {"tradeDate": trade_date, "codeCount": 0, "codesProcessed": 0,
+                "barsReplayed": 0, "signalsEmitted": 0, "failures": []}
+
+    monkeypatch.setattr(module, "backfill_today_kline_signals", fake_backfill)
+    monkeypatch.setattr(module, "_backfill_status", {"running": False, "result": None})
+
+    module.start_kline_signal_backfill_today(trade_date="2026-09-18")
+    for _ in range(50):
+        if not module.kline_signal_backfill_status()["running"]:
+            break
+        time.sleep(0.05)
+    assert received["trade_date"] == "2026-09-18"
+    assert module.kline_signal_backfill_status()["result"]["tradeDate"] == "2026-09-18"
+
+
 def test_start_kline_signal_backfill_today_blocks_duplicate_and_reports_result(monkeypatch):
     started_event = threading.Event()
     release_event = threading.Event()
