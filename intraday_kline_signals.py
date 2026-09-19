@@ -547,8 +547,10 @@ def kline_signal_backfill_status() -> dict[str, Any]:
         return dict(_backfill_status)
 
 
-def start_kline_signal_backfill_today() -> dict[str, Any]:
-    """背景執行緒觸發一次性回補；已經在跑就不會重複啟動。"""
+def start_kline_signal_backfill_today(trade_date: str | None = None) -> dict[str, Any]:
+    """背景執行緒觸發一次性回補；已經在跑就不會重複啟動。trade_date預設
+    今天，也可以指定過去幾天內的日期(例如週末想驗證週五的資料)——只要
+    在Shioaji歷史kbars查詢範圍內(目前呼叫端calendar_days=3天)就抓得到。"""
     with _backfill_status_lock:
         if _backfill_status["running"]:
             return {"started": False, "reason": "already_running"}
@@ -557,7 +559,7 @@ def start_kline_signal_backfill_today() -> dict[str, Any]:
 
     def _run() -> None:
         try:
-            result = backfill_today_kline_signals()
+            result = backfill_today_kline_signals(trade_date=trade_date)
         except Exception as error:  # noqa: BLE001
             result = {"error": str(error)}
             logger.exception("五分鐘K訊號回補整體失敗")
