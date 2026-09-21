@@ -29,6 +29,7 @@ from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
+from quote_service import get_quote_service
 
 
 _market_data_lifespan = app.router.lifespan_context
@@ -101,6 +102,19 @@ def get_persistence_status() -> dict[str, Any]:
             "stockBarAutoRepair": stock_bar_repair_status(),
         },
     }
+
+
+@app.get("/api/hub/quote-health")
+def get_quote_health() -> dict[str, Any]:
+    """即時行情健康檢查：stock_quote_age_seconds/last_stock_quote_time可以
+    直接看出Shioaji股票tick是不是還在正常流入(main_force_collector等背景
+    工作都只是被動讀取Hub已經聚合好的bar，tick本身停了的話這些背景工作
+    不會報錯，只會一直沒有新資料)，不用再去翻Railway log找關鍵字才能
+    確認。這個檢查本來就存在(QuoteService.get_stock_health，
+    intraday_large_order_collector背景工作本身就有在用)，只是先前只有
+    沒有部署的api_server.py才對外暴露，這裡補上讓正式部署的app也能查。"""
+    service = get_quote_service()
+    return {"status": "ok", "data": service.get_stock_health()}
 
 
 @app.get("/api/hub/intraday-signals")
