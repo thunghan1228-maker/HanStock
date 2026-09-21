@@ -352,6 +352,52 @@ def test_backfill_today_kline_signals_is_safe_to_rerun(monkeypatch):
     assert monitor._states["2330"].bar_count == 2
 
 
+def test_backfill_deletes_existing_kline_signals_before_replaying_when_bars_are_found(monkeypatch):
+    # 即時路徑可能因為股票訂閱較晚才啟動，把「當天第一根真正被偵測到的
+    # bar」誤判成905基準bar，算出偏晚的錯誤訊號時間並先存進DB。
+    # ONCE_PER_DAY_KINDS去重會讓backfill算出的正確時間被這筆舊資料擋掉，
+    # 所以回補重播前要先清掉這檔股票當天的K線訊號家族舊紀錄，讓歷史
+    # kbars重算出來的版本(不受即時訂閱時機影響)才是準的。
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    monkeypatch.setattr(
+        stock_history_service,
+        "get_stock_history_bars_5m",
+        lambda code, *, calendar_days=3, service=None, hub=None: {
+            "status": "ok",
+            "bars": [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)],
+        },
+    )
+    deleted_for = []
+    monkeypatch.setattr(module, "delete_kline_signals_for_ticker", lambda trade_date, ticker: deleted_for.append((trade_date, ticker)))
+
+    module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert deleted_for == [("2026-09-18", "2330")]
+
+
+def test_backfill_does_not_delete_when_no_bars_found_for_the_date(monkeypatch):
+    # 抓資料失敗/當天沒有bars時不該先刪除既有資料——不然會把正確的舊
+    # 資料清空、卻補不回新資料，比什麼都不做更糟。
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    monkeypatch.setattr(
+        stock_history_service,
+        "get_stock_history_bars_5m",
+        lambda code, *, calendar_days=3, service=None, hub=None: {"status": "ok", "bars": []},
+    )
+    deleted_for = []
+    monkeypatch.setattr(module, "delete_kline_signals_for_ticker", lambda trade_date, ticker: deleted_for.append((trade_date, ticker)))
+
+    module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert deleted_for == []
+
+
 def test_start_kline_signal_backfill_today_threads_trade_date_through(monkeypatch):
     received = {}
 
