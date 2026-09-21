@@ -31,6 +31,32 @@ def test_builds_live_group_ranks_from_local_stock_ticks():
     assert max(ranks.values()) == len(ranks)
 
 
+def test_ensure_group_universe_subscriptions_stays_well_under_the_subscription_cap():
+    # 舊bug：把每個族群(扣掉股期標的等)的全部成員一次送進
+    # ensure_stock_subscriptions，加總遠超過190的訂閱上限，只有
+    # STOCK_GROUPS迭代順序排在前面的族群吃得到額度、把整個族群灌滿，
+    # 排在後面的族群永遠一檔都訂不到——族群涵蓋數量因此卡在
+    # MIN_LIVE_GROUPS門檻之下。改成只送代表股後，總數要遠低於190，
+    # 而且每個未排除的族群都至少要有一檔代表股在請求名單裡。
+    requested: list[str] = []
+
+    class Service:
+        @staticmethod
+        def ensure_stock_subscriptions(codes):
+            requested.extend(codes)
+            return {"failed": {}}
+
+    module._ensure_group_universe_subscriptions(Service())
+
+    assert 0 < len(requested) < 190
+    requested_set = set(requested)
+    non_excluded_groups = [g for g in module.STOCK_GROUPS if g not in module.EXCLUDED_GROUPS]
+    assert len(non_excluded_groups) > 40  # 確認這個測試環境本身就是會踩到舊bug的規模
+    for group in non_excluded_groups:
+        members = module.STOCK_GROUPS[group]
+        assert any(ticker in requested_set for ticker, _name in members), f"{group} 沒有任何代表股被訂閱"
+
+
 def test_same_second_large_buy_emits_once(monkeypatch):
     inserted = []
 
