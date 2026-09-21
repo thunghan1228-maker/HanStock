@@ -38,7 +38,7 @@ def test_parses_twse_modern_table_and_filters_warrants():
     }
     rows = parse_market_payload(payload, TRADE_DATE, "TSE")
     assert [row["stock_code"] for row in rows] == ["00403A", "2330"]
-    assert rows[1]["volume"] == 12345
+    assert rows[1]["volume"] == 12  # 12,345股換算成張(1張=1000股)
     assert rows[1]["time"].isoformat() == "2026-08-14T00:00:00+00:00"
 
 
@@ -52,7 +52,7 @@ def test_parses_tpex_legacy_aadata():
     assert len(rows) == 1
     assert rows[0]["stock_code"] == "6488"
     assert rows[0]["close"] == 500.0
-    assert rows[0]["volume"] == 1234
+    assert rows[0]["volume"] == 1  # 1,234股換算成張
 
 
 def test_skips_rows_without_published_prices():
@@ -91,7 +91,7 @@ def test_openapi_snapshot_parses_roc_date_and_english_fields():
     assert trade_date == date(2026, 8, 14)
     assert [row["stock_code"] for row in rows] == ["6488"]  # 權證代號被排除
     assert rows[0]["close"] == 500.0
-    assert rows[0]["volume"] == 1_234_000
+    assert rows[0]["volume"] == 1234  # 1,234,000股換算成張
     assert rows[0]["market"] == "OTC"
 
 
