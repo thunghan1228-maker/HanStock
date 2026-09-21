@@ -1,10 +1,18 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import database
-from intraday_signal_store import load_signals_for_ticker, save_intraday_signals
+from intraday_signal_store import (
+    find_out_of_session_kline_signals,
+    load_signals_for_ticker,
+    purge_out_of_session_kline_signals,
+    save_intraday_signals,
+)
+
+TW_TZ = timezone(timedelta(hours=8))
 
 
 class LoadSignalsForTickerTests(unittest.TestCase):
@@ -72,6 +80,90 @@ class LoadSignalsForTickerTests(unittest.TestCase):
         ])
         self.assertEqual(len(load_signals_for_ticker("00631L", "2026-09-18")), 1)
         self.assertEqual(len(load_signals_for_ticker("00631l", "2026-09-18")), 0)
+
+
+class OutOfSessionKlineSignalTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _ts(hour, minute, day=18):
+        return int(datetime(2026, 9, day, hour, minute, tzinfo=TW_TZ).timestamp() * 1000)
+
+    def test_finds_pre_market_and_after_hours_kline_rows_but_not_in_session_ones(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-18", "ticker": "1101", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1102", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": self._ts(14, 0), "price": 20.0},
+            {"tradeDate": "2026-09-18", "ticker": "1103", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(10, 30), "price": 30.0},
+        ])
+        rows = find_out_of_session_kline_signals("2026-09-18")
+        self.assertEqual([r["ticker"] for r in rows], ["1101", "1102"])
+
+    def test_boundary_0900_is_in_session_and_1330_is_out_of_session(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-18", "ticker": "1104", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(9, 0), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1105", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(13, 30), "price": 10.0},
+        ])
+        rows = find_out_of_session_kline_signals("2026-09-18")
+        self.assertEqual([r["ticker"] for r in rows], ["1105"])
+
+    def test_ignores_non_kline_signal_families_even_if_out_of_session(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-18", "ticker": "1106", "kind": "instantLargeBuy",
+             "label": "盤中特大買單", "barTs": self._ts(8, 50), "price": 10.0},
+        ])
+        self.assertEqual(find_out_of_session_kline_signals("2026-09-18"), [])
+
+    def test_only_returns_requested_trade_date(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-17", "ticker": "1107", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(8, 50, day=17), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1108", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+        ])
+        rows = find_out_of_session_kline_signals("2026-09-18")
+        self.assertEqual([r["ticker"] for r in rows], ["1108"])
+
+    def test_purge_deletes_only_out_of_session_kline_rows_and_returns_count(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-18", "ticker": "1109", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1110", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": self._ts(14, 0), "price": 20.0},
+            {"tradeDate": "2026-09-18", "ticker": "1111", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(10, 30), "price": 30.0},
+            {"tradeDate": "2026-09-18", "ticker": "1112", "kind": "instantLargeBuy",
+             "label": "盤中特大買單", "barTs": self._ts(8, 50), "price": 40.0},
+        ])
+        deleted = purge_out_of_session_kline_signals("2026-09-18")
+        self.assertEqual(deleted, 2)
+        self.assertEqual(len(load_signals_for_ticker("1109", "2026-09-18")), 0)
+        self.assertEqual(len(load_signals_for_ticker("1110", "2026-09-18")), 0)
+        self.assertEqual(len(load_signals_for_ticker("1111", "2026-09-18")), 1)
+        self.assertEqual(len(load_signals_for_ticker("1112", "2026-09-18")), 1)
+
+    def test_purge_only_affects_requested_trade_date(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-17", "ticker": "1113", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(8, 50, day=17), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1114", "kind": "watch12short",
+             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+        ])
+        deleted = purge_out_of_session_kline_signals("2026-09-18")
+        self.assertEqual(deleted, 1)
+        self.assertEqual(len(load_signals_for_ticker("1113", "2026-09-17")), 1)
 
 
 if __name__ == "__main__":

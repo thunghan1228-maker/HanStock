@@ -323,6 +323,78 @@ def purge_early_signals(trade_date: str, kind: str, cutoff_ts: int) -> int:
         return max(0, int(cursor.rowcount or 0))
 
 
+# 5分鐘K線訊號家族的kind清單（intraday_kline_signals.py emit()的完整19種），
+# 獨立在這裡列一份而不是從那邊import，避免跟這個模組的循環依賴
+# （intraday_kline_signals.py本身就是import這個模組）。
+KLINE_SIGNAL_KINDS = {
+    "a8short",
+    "blackDragon",
+    "break905d",
+    "combo12Bull",
+    "crossDown20ma",
+    "crossUp20ma",
+    "crossUp905",
+    "crossUpPrevHigh",
+    "enhanced12short",
+    "firstCross905High",
+    "firstCrossDown20ma",
+    "firstCrossUp20ma",
+    "ma20turnDown",
+    "ma20turnUp",
+    "ma520Down",
+    "ma520Up",
+    "oneTwoShort",
+    "short12",
+    "watch12short",
+}
+
+
+def _out_of_session_kline_where(kinds: tuple[str, ...]) -> str:
+    # bar_ts是UTC毫秒，+8小時轉台北時間後取分鐘數：09:00=540, 13:30=810。
+    placeholders = ", ".join("?" for _ in kinds)
+    return f"""
+        kind IN ({placeholders})
+        AND (
+            CAST((bar_ts + 28800000) / 60000 AS INTEGER) % 1440 < 540
+            OR CAST((bar_ts + 28800000) / 60000 AS INTEGER) % 1440 >= 810
+        )
+    """
+
+
+def find_out_of_session_kline_signals(trade_date: str) -> list[dict[str, Any]]:
+    """稽核用：找出K線訊號家族中bar_ts落在09:00~13:30正常盤中時段之外的
+    異常資料列（盤前試撮tick混入bar聚合器的舊bug留下的髒資料，bug已在
+    market_data_hub修掉，這裡只是用來清點bug修復之前寫入的舊資料）。
+    只讀不刪，給人工確認用。"""
+    _ensure_table()
+    kinds = tuple(sorted(KLINE_SIGNAL_KINDS))
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT * FROM intraday_signals
+            WHERE trade_date = ? AND {_out_of_session_kline_where(kinds)}
+            ORDER BY bar_ts ASC, id ASC
+            """,
+            (trade_date, *kinds),
+        ).fetchall()
+    return [_to_api(row) for row in rows]
+
+
+def purge_out_of_session_kline_signals(trade_date: str) -> int:
+    """實際刪除find_out_of_session_kline_signals()會找到的那些髒資料列。"""
+    _ensure_table()
+    kinds = tuple(sorted(KLINE_SIGNAL_KINDS))
+    with get_connection() as connection:
+        cursor = connection.execute(
+            f"""
+            DELETE FROM intraday_signals
+            WHERE trade_date = ? AND {_out_of_session_kline_where(kinds)}
+            """,
+            (trade_date, *kinds),
+        )
+        return max(0, int(cursor.rowcount or 0))
+
+
 def intraday_signal_count() -> int:
     _ensure_table()
     with get_connection() as connection:

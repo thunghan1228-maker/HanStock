@@ -23,7 +23,7 @@ from after_hours_fixed_price import load_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_collector import start_intraday_signal_collector, collector_status as intraday_signal_collector_status
-from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker
+from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_hub import get_otc_index_hub
@@ -186,6 +186,51 @@ def trigger_kline_signal_backfill_today(trade_date: str | None = Query(None)) ->
 @app.get("/api/hub/kline-signals/backfill-today/status")
 def get_kline_signal_backfill_today_status() -> dict[str, Any]:
     return {"status": "ok", **kline_signal_backfill_status()}
+
+
+@app.get("/api/hub/kline-signals/audit-out-of-session")
+def audit_kline_signals_out_of_session(trade_date: str | None = Query(None)) -> dict[str, Any]:
+    """稽核用：列出trade_date(預設今天)裡，K線訊號家族(12空/905/520/
+    1+2多/創高黑龍等)中bar_ts落在09:00~13:30正常盤中時段之外的異常
+    資料列——這是盤前試撮tick混入bar聚合器的舊bug留下的髒資料(bug已
+    在market_data_hub修掉，這裡只是清點bug修復之前寫入的舊資料)。
+    只讀不刪，要實際清除請呼叫
+    /api/hub/kline-signals/purge-out-of-session並帶confirm=true。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    rows = find_out_of_session_kline_signals(date)
+    return {
+        "status": "ok",
+        "tradeDate": date,
+        "count": len(rows),
+        "signals": rows,
+    }
+
+
+@app.get("/api/hub/kline-signals/purge-out-of-session")
+def purge_kline_signals_out_of_session(
+    trade_date: str | None = Query(None),
+    confirm: bool = Query(False),
+) -> dict[str, Any]:
+    """實際刪除audit-out-of-session會列出的那些時段外髒資料列。要求
+    confirm=true才會真的刪，避免誤觸。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    if not confirm:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="要實際刪除請帶 confirm=true")
+    deleted = purge_out_of_session_kline_signals(date)
+    return {"status": "ok", "tradeDate": date, "deleted": deleted}
 
 
 @app.get("/api/hub/force/bars/{stock_code}")
