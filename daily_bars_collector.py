@@ -8,6 +8,7 @@ import logging
 import os
 import threading
 import time
+from datetime import date, timedelta
 
 from daily_bars_store import daily_bars_storage_status, prune_old_daily_bars
 from official_daily_bars import download_official_daily_bars
@@ -21,11 +22,32 @@ _started = False
 _lock = threading.Lock()
 
 
+def _needs_full_backfill(status: dict, *, today: date | None = None) -> bool:
+    """barCount==0時當然要做全量回補；但就算barCount>0，只要最早的交易日
+    比「全量回補天數」往前推算出來的門檻還新，就代表上次的全量回補中途被
+    中斷過（例如Railway重新部署，背景執行緒直接被砍掉），資料只補了一部分
+    就永遠卡住，之後每輪只做5天catchup，缺口永遠補不回來。official_daily_
+    bars.py的_save_day是ON CONFLICT DO NOTHING、只補缺口，重跑全量範圍
+    不會造成重複資料，成本可控，所以偵測到覆蓋範圍不夠就直接重跑全量。"""
+    if status.get("barCount", 0) == 0:
+        return True
+    first_date_text = status.get("firstTradeDate")
+    if not first_date_text:
+        return True
+    try:
+        earliest = date.fromisoformat(str(first_date_text)[:10])
+    except ValueError:
+        return True
+    # 留7天餘裕，避免剛好卡在門檻邊緣時被假日/停市影響誤判成沒補完。
+    expected_earliest = (today or date.today()) - timedelta(days=BACKFILL_DAYS - 7)
+    return earliest > expected_earliest
+
+
 def collect_once() -> dict:
-    is_first_run = daily_bars_storage_status()["barCount"] == 0
-    days = BACKFILL_DAYS if is_first_run else CATCHUP_DAYS
+    needs_backfill = _needs_full_backfill(daily_bars_storage_status())
+    days = BACKFILL_DAYS if needs_backfill else CATCHUP_DAYS
     result = download_official_daily_bars(days=days, run_triangle_scan=False)
-    result["mode"] = "backfill" if is_first_run else "catchup"
+    result["mode"] = "backfill" if needs_backfill else "catchup"
     result["pruned"] = prune_old_daily_bars(KEEP_DAYS)
     return result
 
