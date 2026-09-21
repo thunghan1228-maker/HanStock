@@ -20,7 +20,7 @@ from typing import Any
 
 from daily_bars_store import load_daily_bars
 from daytrade_flow import _tick_size, limit_down_price, limit_up_price
-from intraday_signal_store import save_intraday_signals
+from intraday_signal_store import delete_kline_signals_for_ticker, save_intraday_signals
 from ma_alignment_score import compute_ma_alignment_score
 from market_data_hub import BAR_INTERVAL_5M_MS
 from otc_index import taipei_minute_of_day, taipei_trade_date
@@ -497,8 +497,19 @@ def backfill_today_kline_signals(
     約660多檔）。原本只挑main_force_bars今天剛好有資料的股票，覆蓋率
     不夠：主力副圖收集器今天沒追蹤到的股票會整檔被跳過（即使它明顯
     有觸發訊號的走勢），跟使用者任意打開一檔股票圖表就期待看到訊號的
-    需求不符。重播前一律先reset_for_backfill，讓重複執行本身是安全、
-    冪等的（DB層的ONCE_PER_DAY/UNIQUE也會再擋一次重複寫入）。"""
+    需求不符。
+
+    重播前會先刪掉這檔股票trade_date當天既有的K線訊號紀錄（只刪這個
+    家族，不影響大單/四項精選等其他家族），再用歷史kbars重新算過、
+    整批寫入。這是刻意設計成「覆蓋」而不是單純「跳過重複」：即時路徑
+    的股票訂閱是動態、有上限的（一次最多190檔），某檔股票如果比較晚
+    才被訂閱到，它在即時路徑上第一次真正開始被偵測的那根bar會被誤判
+    成「當天第一根905K」，導致當天最早的訊號時間算錯、被存成一個偏晚
+    的錯誤時間。歷史kbars不受即時訂閱時機影響，永遠看得到當天完整的
+    09:00起走勢，用它重算才是準的；只有ONCE_PER_DAY_KINDS去重、不覆蓋
+    的話，這筆錯的舊紀錄會一直卡住，回補等於白做。只有當這次確實抓到
+    今天的bars時才會刪除重寫，避免用一次抓資料失敗/沒資料的結果把既有
+    正確資料整個清空又補不回來。"""
     from datetime import datetime
 
     from otc_index import TW_TZ
@@ -518,6 +529,8 @@ def backfill_today_kline_signals(
                 (b for b in result.get("bars", []) if taipei_trade_date(int(b["ts"])) == trade_date),
                 key=lambda b: b["ts"],
             )
+            if todays_bars:
+                delete_kline_signals_for_ticker(trade_date, code)
             monitor.reset_for_backfill(code, trade_date)
             for bar in todays_bars:
                 emitted = monitor.on_bar_completed(code, bar)

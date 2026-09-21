@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import database
 from intraday_signal_store import (
+    delete_kline_signals_for_ticker,
     find_out_of_session_kline_signals,
     load_latest_signals,
     load_signals_for_ticker,
@@ -192,6 +193,44 @@ class LoadLatestSignalsTests(unittest.TestCase):
         signals = load_latest_signals("2026-09-21", limit=500)
         self.assertEqual(len(signals), 250)
         self.assertEqual(min(s["barTs"] for s in signals), 1_000)
+
+
+class DeleteKlineSignalsForTickerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_deletes_only_kline_family_rows_for_that_ticker_and_date(self):
+        save_intraday_signals([
+            {"tradeDate": "2026-09-21", "ticker": "4979", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": 1_000, "price": 100.0},
+            {"tradeDate": "2026-09-21", "ticker": "4979", "kind": "crossUpPrevHigh",
+             "label": "第1次站上昨日高", "barTs": 900, "price": 99.0, "note": "第1次"},
+            # 不同家族，不該被動到
+            {"tradeDate": "2026-09-21", "ticker": "4979", "kind": "instantLargeBuy",
+             "label": "瞬間大單", "barTs": 1_000, "price": 100.0},
+            # 不同股票，不該被動到
+            {"tradeDate": "2026-09-21", "ticker": "3050", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": 1_000, "price": 50.0},
+            # 不同日期，不該被動到
+            {"tradeDate": "2026-09-20", "ticker": "4979", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": 1_000, "price": 100.0},
+        ])
+        deleted = delete_kline_signals_for_ticker("2026-09-21", "4979")
+        self.assertEqual(deleted, 2)
+        self.assertEqual(len(load_signals_for_ticker("4979", "2026-09-21")), 1)  # 只剩instantLargeBuy
+        self.assertEqual(load_signals_for_ticker("4979", "2026-09-21")[0]["kind"], "instantLargeBuy")
+        self.assertEqual(len(load_signals_for_ticker("3050", "2026-09-21")), 1)
+        self.assertEqual(len(load_signals_for_ticker("4979", "2026-09-20")), 1)
+
+    def test_returns_zero_when_nothing_to_delete(self):
+        self.assertEqual(delete_kline_signals_for_ticker("2026-09-21", "9999"), 0)
 
 
 if __name__ == "__main__":

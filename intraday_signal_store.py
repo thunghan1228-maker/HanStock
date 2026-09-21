@@ -399,6 +399,31 @@ def purge_out_of_session_kline_signals(trade_date: str) -> int:
         return max(0, int(cursor.rowcount or 0))
 
 
+def delete_kline_signals_for_ticker(trade_date: str, ticker: str) -> int:
+    """刪除單一股票在trade_date當天、K線訊號家族(19種kind)的所有已保存
+    紀錄，只影響這個家族，不會動到同一張表裡其他訊號家族(大單/四項精選/
+    三角收斂等)的資料。
+
+    用途：backfill_today_kline_signals()重播某檔股票當天的Shioaji歷史
+    kbars之前，先清空這檔股票舊有的K線訊號紀錄，讓回補後的結果完全
+    以歷史kbars重新算出來的版本為準——不這樣做的話，ONCE_PER_DAY_KINDS
+    的去重機制（同一天同一檔同一kind只認第一筆）會讓「即時路徑因為
+    這檔股票訂閱較晚才啟動、算出時間錯誤的舊紀錄」卡住新算出來的正確
+    時間，回補等於白做。"""
+    _ensure_table()
+    kinds = tuple(sorted(KLINE_SIGNAL_KINDS))
+    placeholders = ", ".join("?" for _ in kinds)
+    with get_connection() as connection:
+        cursor = connection.execute(
+            f"""
+            DELETE FROM intraday_signals
+            WHERE trade_date = ? AND ticker = ? AND kind IN ({placeholders})
+            """,
+            (trade_date, ticker, *kinds),
+        )
+        return max(0, int(cursor.rowcount or 0))
+
+
 def intraday_signal_count() -> int:
     _ensure_table()
     with get_connection() as connection:
