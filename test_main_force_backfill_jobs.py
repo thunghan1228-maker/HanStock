@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import database
 from history_quota import HistoryQuotaGate, QUOTA_EXHAUSTED
-from main_force_backfill_jobs import request_main_force_backfill, process_main_force_backfill_job
+from main_force_backfill_jobs import list_main_force_backfill_jobs, request_main_force_backfill, process_main_force_backfill_job
 from main_force_store import save_main_force_bars, load_main_force_bars
 from stock_bar_bootstrap import _HistoryEntry, _store_entry, _cached_entry, clear_stock_bar_bootstrap_cache
 from otc_index import TW_TZ
@@ -128,6 +128,17 @@ class MainForceBackfillJobTests(unittest.TestCase):
         self.assertIs(_store_entry("2455", older), older)
         self.assertIs(_cached_entry("2455", "2026-09-09", 0), today)
         clear_stock_bar_bootstrap_cache()
+
+    def test_list_jobs_reports_status_and_last_error(self):
+        self.assertEqual(list_main_force_backfill_jobs("2455"), [])
+        request_main_force_backfill("2455", "2026-09-08", now=self.now)
+        process_main_force_backfill_job(now=self.now, backfill=lambda *a, **kw: {"error": QUOTA_EXHAUSTED, "main_force_ok": False})
+        jobs = list_main_force_backfill_jobs("2455")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["tradeDate"], "2026-09-08")
+        self.assertEqual(jobs[0]["status"], "pending")
+        self.assertEqual(jobs[0]["attempts"], 1)
+        self.assertEqual(jobs[0]["result"]["error"], QUOTA_EXHAUSTED)
 
     def test_rejects_future_and_out_of_range_jobs(self):
         for date in ("2026-09-09", "2020-01-01"):

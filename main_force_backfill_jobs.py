@@ -39,6 +39,30 @@ def request_main_force_backfill(code, trade_date, *, now=None):
             "result": json.loads(row["result_json"]) if row["result_json"] else None}
 
 
+def list_main_force_backfill_jobs(code):
+    """查詢指定股票所有已排入的主力副圖回補工作狀態；用來診斷「為什麼歷史
+    主力買賣力還沒補回來」——是根本沒排到、卡在pending重試、還是已經跑過
+    但失敗了(result裡會有錯誤訊息)。"""
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute(
+            """SELECT trade_date, status, attempts, next_attempt, result_json
+               FROM main_force_backfill_jobs WHERE stock_code=?
+               ORDER BY trade_date DESC""",
+            (code,),
+        ).fetchall()
+    return [
+        {
+            "tradeDate": row["trade_date"],
+            "status": row["status"],
+            "attempts": row["attempts"],
+            "nextAttemptAt": row["next_attempt"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+        }
+        for row in rows
+    ]
+
+
 def process_main_force_backfill_job(*, service=None, now=None, backfill=None):
     now = time.time() if now is None else now
     # Lease one job without holding a SQLite write transaction during broker I/O.
