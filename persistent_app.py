@@ -63,10 +63,13 @@ async def _persistent_lifespan(fastapi_app):
             start_stock_bar_repair_collector()
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但664檔股票還是有感時間，丟背景
-            # 執行緒避免拖慢啟動就緒。
+            # 執行緒避免拖慢啟動就緒。天數呼應main_force_collector.py的
+            # KEEP_DAYS(main_force_bars只保留最近30個交易日)──排更多天沒
+            # 意義，因為backfill剛寫進去就會被下一輪prune_old_bars清掉；
+            # 排更少天則是白白放棄日線圖主力副圖原本可以顯示的完整範圍。
             import threading as _threading
             _threading.Thread(
-                target=lambda: queue_backfill_for_all_group_stocks(days=5),
+                target=lambda: queue_backfill_for_all_group_stocks(days=30),
                 name="hanstock-main-force-group-backfill-queue",
                 daemon=True,
             ).start()

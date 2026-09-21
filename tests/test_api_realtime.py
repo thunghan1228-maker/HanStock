@@ -103,6 +103,7 @@ sys.modules["config"] = config_module
 quote_module = types.ModuleType("quote_service")
 quote_module.get_quote_service = lambda: fake_service
 quote_module.quote_deployment_role = lambda: "primary"
+quote_module.quote_startup_delay_seconds = lambda: 0.0
 sys.modules["quote_service"] = quote_module
 
 with tempfile.TemporaryDirectory() as temp_dir:
