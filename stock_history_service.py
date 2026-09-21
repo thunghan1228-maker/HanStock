@@ -22,6 +22,7 @@ logger = logging.getLogger("hanstock.stock_history_service")
 
 DEFAULT_CALENDAR_DAYS = 14
 MAX_HISTORY_5M = 300  # 5分K每個交易日約54根（09:00-13:30），300根約可涵蓋5個交易日
+MAX_HISTORY_1M = 1500  # 1分K每個交易日約270根，1500根約可涵蓋5個交易日
 RETRY_AFTER_SECONDS = 30.0
 
 
@@ -30,6 +31,7 @@ class _History5mEntry:
     trade_date: str
     start_date: str
     bars_5m: list[dict[str, Any]]
+    bars_1m: list[dict[str, Any]]
     fetched_at_monotonic: float
     ok: bool
     error: Optional[str] = None
@@ -72,7 +74,7 @@ def _store(code: str, entry: _History5mEntry) -> _History5mEntry:
     with _lock:
         previous = _cache.get(code)
         if not entry.ok and previous is not None and previous.trade_date == entry.trade_date:
-            entry = replace(entry, bars_5m=previous.bars_5m)
+            entry = replace(entry, bars_5m=previous.bars_5m, bars_1m=previous.bars_1m)
         _cache[code] = entry
     return entry
 
@@ -83,7 +85,7 @@ def _deferred_history(code: str, trade_date: str, start_date: str, now: float) -
         previous = _cache.get(code)
         if previous is not None and previous.trade_date == trade_date:
             return replace(previous, ok=False, error=error)
-    return _History5mEntry(trade_date, start_date, [], now, False, error)
+    return _History5mEntry(trade_date, start_date, [], [], now, False, error)
 
 
 def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
@@ -156,6 +158,7 @@ def _fetch_history_once(
             trade_date=trade_date,
             start_date=start_date,
             bars_5m=[],
+            bars_1m=[],
             fetched_at_monotonic=monotonic_fn(),
             ok=False,
             error="Shioaji 尚未登入",
@@ -167,6 +170,7 @@ def _fetch_history_once(
             trade_date=trade_date,
             start_date=start_date,
             bars_5m=[],
+            bars_1m=[],
             fetched_at_monotonic=monotonic_fn(),
             ok=False,
             error=f"找不到股票合約：{code}",
@@ -190,10 +194,15 @@ def _fetch_history_once(
             bar for bar in bars_5m
             if start_date <= taipei_trade_date(int(bar["ts"])) <= trade_date
         ][-MAX_HISTORY_5M:]
+        bars_1m = [
+            bar for bar in bars_1m
+            if start_date <= taipei_trade_date(int(bar["ts"])) <= trade_date
+        ][-MAX_HISTORY_1M:]
         entry = _History5mEntry(
             trade_date=trade_date,
             start_date=start_date,
             bars_5m=bars_5m,
+            bars_1m=bars_1m,
             fetched_at_monotonic=monotonic_fn(),
             ok=bool(bars_5m),
             error=None if bars_5m else "Shioaji 多日 Kbars 暫無資料",
@@ -213,6 +222,7 @@ def _fetch_history_once(
             trade_date=trade_date,
             start_date=start_date,
             bars_5m=[],
+            bars_1m=[],
             fetched_at_monotonic=monotonic_fn(),
             ok=False,
             error=str(exc),
@@ -293,5 +303,83 @@ def get_stock_history_bars_5m(
             "subscription": subscription,
             "source": "shioaji_kbars_range+realtime_hub",
             "max_history_5m": MAX_HISTORY_5M,
+        },
+    }
+
+
+def get_stock_history_bars_1m(
+    stock_code: str,
+    *,
+    calendar_days: int = 5,
+    service: Any = None,
+    hub: Any = None,
+    now_ms: Optional[int] = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """取得個股多日1分K；歷史由Shioaji kbars，今天即時由Hub覆蓋。跟5分K共用
+    同一份多日kbars抓取快取（_fetch_history*一次抓kbars同時產出1分/5分兩種，
+    不會為了1分K多打一次Shioaji API）。"""
+    code = str(stock_code).strip().upper()
+    days = max(3, min(int(calendar_days), 10))
+    service = service if service is not None else _default_service()
+    hub = hub if hub is not None else _default_hub()
+    now_value = now_ms if now_ms is not None else int(datetime.now(TW_TZ).timestamp() * 1000)
+    now_dt = datetime.fromtimestamp(now_value / 1000, TW_TZ)
+    trade_date = now_dt.strftime("%Y-%m-%d")
+    start_date = (now_dt.date() - timedelta(days=days - 1)).isoformat()
+
+    subscription: Any = None
+    try:
+        subscription = service.ensure_stock_subscriptions([code])
+    except Exception as exc:  # noqa: BLE001
+        subscription = {"requested": [code], "failed": {code: str(exc)}}
+
+    entry = _cached(code, trade_date, start_date, monotonic_fn())
+    if entry is None:
+        code_lock = _code_lock(code)
+        if not code_lock.acquire(blocking=False):
+            entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
+        else:
+            try:
+                entry = _cached(code, trade_date, start_date, monotonic_fn())
+                if entry is None:
+                    entry = _fetch_history(
+                        code,
+                        trade_date,
+                        start_date,
+                        service=service,
+                        now_ms=now_value,
+                        monotonic_fn=monotonic_fn,
+                    )
+            finally:
+                code_lock.release()
+
+    merged: dict[int, dict[str, Any]] = {}
+    for source in (entry.bars_1m, list(hub.get_live_bars_1m(code) or [])):
+        for raw in source:
+            bar = _safe_bar(raw)
+            if bar is None:
+                continue
+            date_text = taipei_trade_date(bar["ts"])
+            if not (start_date <= date_text <= trade_date):
+                continue
+            merged[bar["ts"]] = bar
+
+    bars = [merged[ts] for ts in sorted(merged)][-MAX_HISTORY_1M:]
+    return {
+        "status": "ok",
+        "code": code,
+        "interval": "1m",
+        "bar_count": len(bars),
+        "bars": bars,
+        "bootstrap": {
+            "trade_date": trade_date,
+            "start_date": start_date,
+            "history_1m": len(entry.bars_1m),
+            "history_ok": entry.ok,
+            "error": entry.error,
+            "subscription": subscription,
+            "source": "shioaji_kbars_range+realtime_hub",
+            "max_history_1m": MAX_HISTORY_1M,
         },
     }
