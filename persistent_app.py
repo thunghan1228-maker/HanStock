@@ -12,7 +12,7 @@ from fastapi import Query
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
-from main_force_backfill_jobs import list_main_force_backfill_jobs, request_main_force_backfill
+from main_force_backfill_jobs import list_main_force_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
@@ -54,6 +54,15 @@ async def _persistent_lifespan(fastapi_app):
             start_daily_bars_collector()
             start_after_hours_fixed_price_collector()
             start_otc_gap_backfill()
+            # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
+            # 純SQLite寫入(無Shioaji連線)但664檔股票還是有感時間，丟背景
+            # 執行緒避免拖慢啟動就緒。
+            import threading as _threading
+            _threading.Thread(
+                target=lambda: queue_backfill_for_all_group_stocks(days=5),
+                name="hanstock-main-force-group-backfill-queue",
+                daemon=True,
+            ).start()
         try:
             yield state
         finally:
