@@ -136,7 +136,7 @@ class OtcGapBackfillUnitTests(unittest.TestCase):
         self.assertEqual(bar["stock_code"], "6488")
         self.assertEqual(bar["market"], "OTC")
         self.assertEqual(bar["close"], 500.0)
-        self.assertEqual(bar["volume"], 1234000)
+        self.assertEqual(bar["volume"], 1234)  # 1,234,000股換算成張
 
     def test_row_to_otc_bar_rejects_code_not_in_known_otc_set(self):
         # 2330是上市股票；即使FinMind回傳了資料，不在known_codes(OTC)裡就不採用。

@@ -100,6 +100,13 @@ def initialize_database() -> None:
             );
             """
         )
+        # bars_1d的volume過去誤存官方/FinMind原始股數，跟bars_1m/bars_5m的
+        # 「張」單位差1000倍(見official_daily_bars.py、otc_gap_backfill.py的
+        # 修正)。用user_version當一次性遷移旗標，只在還沒換算過的資料庫上
+        # 執行，避免重複執行把已經正確的資料再除一次。
+        if connection.execute("PRAGMA user_version").fetchone()[0] < 1:
+            connection.execute("UPDATE bars_1d SET volume = volume / 1000")
+            connection.execute("PRAGMA user_version = 1")
 
 
 def save_stock(

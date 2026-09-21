@@ -113,7 +113,9 @@ def _row_to_bar(
     if any(value is None or value <= 0 for value in prices.values()):
         return None
     volume_value = _number(row[indexes["volume"]])
-    volume = max(0, int(volume_value or 0))
+    # 官方欄位「成交股數」單位是股，換算成跟Hub其他資料表(bars_1m/bars_5m)
+    # 一致的「張」(1張=1000股)，否則日K成交量會比即時資料大1000倍。
+    volume = max(0, int((volume_value or 0) / 1000))
     bar_time = datetime.combine(trade_date, datetime_time.min, tzinfo=UTC)
     return {
         "stock_code": code,
@@ -272,7 +274,8 @@ def fetch_tpex_openapi_snapshot(
         }
         if any(value is None or value <= 0 for value in prices.values()):
             continue
-        volume = max(0, int(_number(_tpex_openapi_field(entry, "shares")) or 0))
+        # 同樣是股數，換算成「張」跟其他來源單位一致。
+        volume = max(0, int((_number(_tpex_openapi_field(entry, "shares")) or 0) / 1000))
         selected[code] = {
             "stock_code": code,
             "stock_name": name or code,

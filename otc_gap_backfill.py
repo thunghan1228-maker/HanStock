@@ -155,7 +155,8 @@ def _row_to_otc_bar(
     if min(open_, high, low, close) <= 0:
         return None
     try:
-        volume = max(0, int(float(entry.get("Trading_Volume") or 0)))
+        # FinMind的Trading_Volume單位是股，換算成跟官方日K/Hub一致的「張」。
+        volume = max(0, int(float(entry.get("Trading_Volume") or 0) / 1000))
     except (TypeError, ValueError):
         volume = 0
     return {
