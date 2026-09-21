@@ -27,6 +27,7 @@ from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_
 from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_1m, get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
+from stock_bar_repair_collector import start_stock_bar_repair_collector
 from quote_service import get_quote_service
 
 
@@ -54,6 +55,12 @@ async def _persistent_lifespan(fastapi_app):
             start_daily_bars_collector()
             start_after_hours_fixed_price_collector()
             start_otc_gap_backfill()
+            # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
+            # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
+            # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
+            # 處理，不管優先序設多高，attempts永遠停在0。這裡補上真正啟動
+            # 這個背景執行緒。
+            start_stock_bar_repair_collector()
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但664檔股票還是有感時間，丟背景
             # 執行緒避免拖慢啟動就緒。
