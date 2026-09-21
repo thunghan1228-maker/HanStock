@@ -25,7 +25,7 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_collector import start_intraday_signal_collector, collector_status as intraday_signal_collector_status
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
-from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ
+from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_trade_date
 from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
@@ -362,21 +362,29 @@ def get_otc_index_bars_1m(include_current: bool = Query(default=True)) -> dict[s
 
 @app.get("/api/hub/index/otc/strength")
 def get_otc_index_strength() -> dict[str, Any]:
-    """櫃買盤勢：依今日 5 分 K 換算「站上/跌破20MA」與「站上/跌破第3根5K低點」兩個條件。
+    """櫃買盤勢：依5分K換算「站上/跌破20MA」與「站上/跌破今日第3根5K低點」兩個條件。
 
     兩個條件都成立（都站上）＝強多；都不成立（都跌破）＝強空；一個成立一個
     不成立＝個股震盪。第3根5K只比低點，不看高點（跟20MA一樣是單一門檻的
     上/下二分判斷，不是三段式的上/下/區間內）。
+
+    20MA允許跨日計算（bootstrap_today已經改成回補近幾個交易日的歷史K棒，
+    不用每天早上重新等今天自己累積20根、開盤後1小時40分才有第一個訊號）；
+    但「今日第3根5K」語意上必須是今天自己的bar，不能被歷史K棒頂替，所以
+    另外篩today_bars只給這個門檻用。
     """
     hub = get_otc_index_hub()
     bars = hub.get_bars_5m(include_current=True)
     quote = hub.get_latest_quote()
-    if len(bars) < 20 or not quote:
+    today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
+    if len(bars) < 20 or not quote or not today_bars:
         return {
             "status": "ok",
             "ready": False,
-            "reason": "資料不足（需要至少20根5分K與即時報價）",
+            "reason": "資料不足（需要至少20根5分K歷史與今日即時報價）",
             "barCount": len(bars),
+            "todayBarCount": len(today_bars),
             "hub": hub.get_status(),
         }
     closes = [float(b["close"]) for b in bars[-20:]]
@@ -384,7 +392,7 @@ def get_otc_index_strength() -> dict[str, Any]:
     price = float(quote.get("close") or bars[-1]["close"])
     above_ma20 = price > ma20
 
-    ref_bar = bars[2] if len(bars) > 2 else bars[0]
+    ref_bar = today_bars[2] if len(today_bars) > 2 else today_bars[0]
     ref_low = float(ref_bar["low"])
     above_ref_low = price > ref_low
 

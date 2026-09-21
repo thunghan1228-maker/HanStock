@@ -2,15 +2,21 @@
 
 職責：
 1. 從 IND / OTC 合約動態辨識櫃買發行量加權指數（不硬編碼新版代碼）。
-2. 先用 api.kbars() 補齊今日正式 1 分 K，再聚合 5 分 K。
+2. 先用 api.kbars() 補齊近幾個交易日正式 1 分 K（跨日，不是只有今天），
+   再聚合 5 分 K，讓 MA20 等需要多根K棒的指標不用等到今天自己累積夠。
 3. 訂閱 QuoteIdxV1，由 quote_service callback 將即時 Quote 傳入 OtcIndexHub。
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
+
+# 回補範圍：足夠涵蓋MA20所需的20根5分K，同時預留假日緩衝(一個長週末最多
+# 3個日曆天沒有交易)。跟stock_history_service.py同樣手法(Shioaji歷史
+# kbars()本來就支援跨日查詢，只是這裡舊code只查了trade_date~trade_date)。
+BOOTSTRAP_CALENDAR_DAYS = 6
 
 import shioaji as sj
 
@@ -102,13 +108,15 @@ class OtcIndexService:
 
     def bootstrap_today(self, api: Any, contract: Any) -> dict[str, Any]:
         hub = get_otc_index_hub()
-        trade_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+        now_dt = datetime.now(TW_TZ)
+        trade_date = now_dt.strftime("%Y-%m-%d")
+        start_date = (now_dt.date() - timedelta(days=BOOTSTRAP_CALENDAR_DAYS - 1)).isoformat()
         try:
-            kbars = api.kbars(contract=contract, start=trade_date, end=trade_date)
-            now_ms = int(datetime.now(TW_TZ).timestamp() * 1000)
+            kbars = api.kbars(contract=contract, start=start_date, end=trade_date)
+            now_ms = int(now_dt.timestamp() * 1000)
             bars_1m = normalize_kbars_1m(
                 kbars,
-                trade_date=trade_date,
+                trade_date=None,
                 include_current=False,
                 now_ms=now_ms,
             )
@@ -119,9 +127,10 @@ class OtcIndexService:
             )
             hub.seed_today(bars_1m, bars_5m, trade_date)
             logger.info(
-                "[OTC Index] 歷史 Kbars 補齊完成: 1m=%d, 5m=%d, date=%s",
+                "[OTC Index] 歷史 Kbars 補齊完成: 1m=%d, 5m=%d, range=%s~%s",
                 len(bars_1m),
                 len(bars_5m),
+                start_date,
                 trade_date,
             )
             return {
