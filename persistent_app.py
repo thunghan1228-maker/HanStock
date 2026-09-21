@@ -12,7 +12,7 @@ from fastapi import Query
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
-from main_force_backfill_jobs import request_main_force_backfill
+from main_force_backfill_jobs import list_main_force_backfill_jobs, request_main_force_backfill
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
@@ -274,6 +274,15 @@ def get_persisted_main_force_bars(
         "source": "railway_sqlite_shioaji_ticks",
         "backfill": backfill_result,
     }
+
+
+@app.get("/api/hub/force/backfill-status/{stock_code}")
+def get_main_force_backfill_status(stock_code: str) -> dict[str, Any]:
+    """查詢指定股票的主力副圖背景回補佇列狀態；診斷「為什麼歷史主力買賣力
+    還沒補回來」用——status是complete/pending，pending時看attempts跟
+    result裡的錯誤訊息判斷是還沒輪到還是每次都失敗。"""
+    code = _normalize_stock_code(stock_code)
+    return {"status": "ok", "code": code, "jobs": list_main_force_backfill_jobs(code)}
 
 
 @app.get("/api/hub/main-force/ranking")

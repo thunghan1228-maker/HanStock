@@ -190,13 +190,19 @@ def _fetch_history_once(
             include_current=False,
             now_ms=now_ms,
         )
+        # 今天(trade_date)的部分不留在這裡：這個結果會被快取一整天，但
+        # kbars在盤中查詢「今天」常常還沒到齊(有落後)，早上剛開盤第一次
+        # 查詢時抓到的今天前幾根就會被鎖死一整天，靠後面merge時的即時Hub
+        # 資料永遠補不回來，變成固定在某個交易日開盤附近少了好幾根K棒。
+        # 今天完全交給即時Hub負責(get_stock_history_bars_5m/1m每次都會重新
+        # 讀Hub、不會有這個快取過期問題)，這裡只保留真正收盤結算過的舊資料。
         bars_5m = [
             bar for bar in bars_5m
-            if start_date <= taipei_trade_date(int(bar["ts"])) <= trade_date
+            if start_date <= taipei_trade_date(int(bar["ts"])) < trade_date
         ][-MAX_HISTORY_5M:]
         bars_1m = [
             bar for bar in bars_1m
-            if start_date <= taipei_trade_date(int(bar["ts"])) <= trade_date
+            if start_date <= taipei_trade_date(int(bar["ts"])) < trade_date
         ][-MAX_HISTORY_1M:]
         entry = _History5mEntry(
             trade_date=trade_date,

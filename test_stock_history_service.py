@@ -114,6 +114,22 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.hub = FakeHub()
         self.now_ms = ts(2026, 8, 7, 9, 7)
 
+    def test_today_bars_come_only_from_live_hub_not_stale_kbars_snapshot(self):
+        result = get_stock_history_bars_5m(
+            "2344", calendar_days=14, service=self.service, hub=self.hub, now_ms=self.now_ms,
+        )
+        today_bars = [
+            bar for bar in result["bars"]
+            if datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") == "2026-08-07"
+        ]
+        # FakeApi的kbars另外還回傳09:01/09:02/09:03/09:04/09:06這幾根「今天」
+        # 的資料，但這些不該進最終結果：kbars查到的「今天」常常是查詢當下還
+        # 沒到齊的殘缺快照，一旦被快取住就會卡一整天，之後Hub即使收到更多
+        # 即時資料也補不回這些「今天」bar，因為它們根本沒有機會被merge蓋掉
+        # (merge只在同一個ts才會覆蓋，kbars多出來的那幾根ts在Hub裡沒有對應)。
+        # 今天完全交給即時Hub負責，Hub沒有的分鐘就是真的還沒有資料。
+        self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, 5)])
+
     def test_multiday_history_keeps_previous_day_and_live_overrides_today(self):
         result = get_stock_history_bars_5m(
             "2344",
@@ -197,6 +213,16 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertFalse(failed["bootstrap"]["history_ok"])
         self.assertEqual(failed["bars"], first["bars"])
         self.assertEqual(failed["bootstrap"]["error"], "broker unavailable")
+
+    def test_today_1m_bars_come_only_from_live_hub_not_stale_kbars_snapshot(self):
+        result = get_stock_history_bars_1m(
+            "2344", calendar_days=5, service=self.service, hub=self.hub, now_ms=self.now_ms,
+        )
+        today_bars = [
+            bar for bar in result["bars"]
+            if datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") == "2026-08-07"
+        ]
+        self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, 5)])
 
     def test_multiday_1m_history_keeps_previous_day_and_live_overrides_today(self):
         result = get_stock_history_bars_1m(
