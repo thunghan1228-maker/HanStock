@@ -325,18 +325,9 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     candidate_source = "stored_group_snapshot"
     fallback_status: dict[str, Any] = {"localFallbackAttempted": False}
     if not history:
-        # 背景族群收集器可能因部署重啟或暫時網路錯誤錯過第一輪；大單偵測
-        # 不應因此整個交易日維持 0。候選刷新時主動補抓一次，再重新讀取。
-        try:
-            from group_strength_collector import collect_once as collect_group_strength_once
-
-            if collect_group_strength_once():
-                history = load_group_strength_history(trade_date)
-        except Exception:  # noqa: BLE001
-            history = []
-    if not history:
-        # 正式主機已持有全市場即時 Tick；若主機呼叫自己的網站 API 逾時，
-        # 直接在程序內依族群平均漲跌幅排名，避免候選名單整天維持 0。
+        # 外部戰鬥版網站已經停用(資料改放Railway)，本地快照沒資料時不再
+        # 嘗試呼叫該網站，直接在程序內依族群平均漲跌幅排名，避免候選
+        # 名單整天維持 0。
         try:
             fallback_status["localFallbackAttempted"] = True
             _ensure_group_universe_subscriptions(service)

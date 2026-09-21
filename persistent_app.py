@@ -14,7 +14,6 @@ from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import request_main_force_backfill
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
-from group_strength_collector import start_group_strength_collector
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
 from daily_bars_store import daily_bars_storage_status, load_daily_bars
@@ -55,7 +54,6 @@ async def _persistent_lifespan(fastapi_app):
 
         if quote_deployment_role() == "primary":
             start_main_force_collector()
-            start_group_strength_collector()
             start_intraday_large_order_collector()
             start_four_gate_signals_collector()
             start_daily_bars_collector()

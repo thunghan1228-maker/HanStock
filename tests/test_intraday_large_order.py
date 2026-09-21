@@ -231,46 +231,9 @@ def test_persistence_lock_keeps_signal_in_memory_and_retries(monkeypatch):
     assert monitor.status()["pendingSignalCount"] == 0
 
 
-def test_candidate_refresh_recovers_missing_group_snapshot(monkeypatch):
-    import group_strength_collector
-
-    groups = list(module.STOCK_GROUPS)[:45]
-    history_reads = iter([
-        [],
-        [{"bucketTs": 1_788_226_200_000, "ranks": {group: index + 1 for index, group in enumerate(groups)}}],
-    ])
-    monkeypatch.setattr(module, "load_group_strength_history", lambda _trade_date: next(history_reads))
-    monkeypatch.setattr(group_strength_collector, "collect_once", lambda: True)
-
-    class Service:
-        @staticmethod
-        def ensure_stock_subscriptions(codes):
-            return {
-                "capacity": 1000,
-                "active_count": len(codes),
-                "already_subscribed": codes,
-                "newly_subscribed": [],
-                "failed": {},
-            }
-
-    status = module.refresh_intraday_large_order_candidates(Service())
-
-    assert status["candidateCount"] > 0
-    assert status["prepared"] is True
-    assert status["buyCandidateCount"] > 0
-    assert status["sellCandidateCount"] > 0
-    assert status["minBurstLots"] == 100
-    assert status["minBurstAmount"] == 30_000_000
-    assert status["extraBurstLots"] == 300
-    assert status["extraBurstAmount"] == 50_000_000
-
-
 def test_local_candidates_survive_snapshot_persistence_failure(monkeypatch):
-    import group_strength_collector
-
     groups = list(module.STOCK_GROUPS)[:45]
     monkeypatch.setattr(module, "load_group_strength_history", lambda _trade_date: [])
-    monkeypatch.setattr(group_strength_collector, "collect_once", lambda: False)
     monkeypatch.setattr(module, "_ensure_group_universe_subscriptions", lambda _service: None)
     monkeypatch.setattr(
         module,
