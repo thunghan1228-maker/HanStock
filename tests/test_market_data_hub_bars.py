@@ -20,6 +20,8 @@ def tick(
     tick_type: int = 0,
     amount: float = 0,
     total_amount: float = 0,
+    simtrade: bool = False,
+    intraday_odd: bool = False,
 ):
     dt = datetime(2026, 8, 7, hour, minute, second, tzinfo=TW_TZ)
     return {
@@ -30,6 +32,8 @@ def tick(
         "amount": amount,
         "total_amount": total_amount,
         "tick_time": dt.isoformat(),
+        "simtrade": simtrade,
+        "intraday_odd": intraday_odd,
     }
 
 
@@ -146,6 +150,46 @@ class MarketDataHubBarTests(unittest.TestCase):
 
         bar = hub.get_live_bars_1m("2330")[0]
         self.assertEqual(bar["total_amount"], 0)
+
+    def test_pre_market_simtrade_ticks_do_not_create_bars(self):
+        # 08:30-09:00盤前試撮：即使沒收盤時間限制，simtrade旗標本身就該擋掉。
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 105.0, 1, 8, 45, simtrade=True))
+        hub.on_stock_tick(tick("2330", 106.0, 1, 8, 59, simtrade=True))
+        self.assertEqual(hub.get_live_bars_1m("2330"), [])
+        self.assertEqual(hub.get_live_bars("2330"), [])
+
+    def test_pre_market_ticks_without_simtrade_flag_are_still_filtered_by_time(self):
+        # 保守起見同時用時間邊界擋，即使simtrade旗標沒設對也不該漏網。
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 105.0, 1, 8, 50))
+        self.assertEqual(hub.get_live_bars_1m("2330"), [])
+
+    def test_after_hours_ticks_are_filtered_from_bars(self):
+        # 13:30後(例如14:00-14:30盤後定價)不該被聚合成假的盤中5分K。
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 100.0, 1, 14, 0))
+        self.assertEqual(hub.get_live_bars_1m("2330"), [])
+
+    def test_intraday_odd_lot_ticks_are_filtered_from_bars(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 100.0, 1, 10, 0, intraday_odd=True))
+        self.assertEqual(hub.get_live_bars_1m("2330"), [])
+
+    def test_pre_market_tick_does_not_contaminate_the_first_real_bar(self):
+        # 這是實際回報的bug場景：盤前試撮tick若沒被擋掉，會被誤當成
+        # 09:00-09:05這根「905基準」bar，讓intraday_kline_signals後續
+        # 所有訊號都建立在錯誤的基準上。確認盤前試撮不會混進第一根
+        # 真正的09:00分K。
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2330", 999.0, 100, 8, 50, simtrade=True))
+        hub.on_stock_tick(tick("2330", 100.0, 1, 9, 0, 1))
+        hub.on_stock_tick(tick("2330", 101.0, 1, 9, 0, 30))
+
+        bars_1m = hub.get_live_bars_1m("2330")
+        self.assertEqual(len(bars_1m), 1)
+        self.assertEqual(bars_1m[0]["open"], 100.0)  # 不是盤前試撮的999.0
+        self.assertEqual(bars_1m[0]["high"], 101.0)
 
 
 if __name__ == "__main__":

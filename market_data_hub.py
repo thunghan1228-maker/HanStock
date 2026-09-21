@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from otc_index import is_regular_otc_session
+
 logger = logging.getLogger("hanstock.market_data_hub")
 
 TW_TZ = timezone(timedelta(hours=8))
@@ -356,9 +358,27 @@ class MarketDataHub:
         except Exception:  # noqa: BLE001
             logger.exception("盤中瞬間大單偵測失敗 code=%s", code)
 
+        # 08:30-09:00盤前試撮(simtrade)跟零股(intraday_odd)不是正式撮合，
+        # 歷史路徑(otc_index.is_regular_otc_session／
+        # stock_bar_bootstrap._is_formal_stock_bar)已經會濾掉，即時分K
+        # aggregator這裡之前完全沒過濾：盤前試撮tick會被聚合成假的
+        # 08:xx分K，intraday_kline_signals把收到的第一根bar當成09:00-09:05
+        # 基準(905)，誤判成真的905就會讓後面所有訊號的基準都是錯的，且
+        # 訊號時間戳會出現不可能的盤前時間。這裡只過濾「餵進分K
+        # aggregator」這一步，不影響即時報價快取/廣播(盤前試撮價還是要
+        # 正常顯示成目前價格)。
+        is_regular_tick = (
+            is_regular_otc_session(tick_ts_ms)
+            and not bool(tick_data.get("simtrade"))
+            and not bool(tick_data.get("intraday_odd"))
+        )
+
         # 更新 1 分 K Aggregator
-        completed_bar_1m = self.bars_1m.on_tick(
-            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount, total_amount
+        completed_bar_1m = (
+            self.bars_1m.on_tick(
+                code, price, volume, tick_ts_ms, side, is_main_force, trade_amount, total_amount
+            )
+            if is_regular_tick else None
         )
         if completed_bar_1m:
             self._total_bars_1m_completed += 1
@@ -370,8 +390,11 @@ class MarketDataHub:
             })
 
         # 更新既有 5 分 K Aggregator
-        completed_bar = self.bars.on_tick(
-            code, price, volume, tick_ts_ms, side, is_main_force, trade_amount, total_amount
+        completed_bar = (
+            self.bars.on_tick(
+                code, price, volume, tick_ts_ms, side, is_main_force, trade_amount, total_amount
+            )
+            if is_regular_tick else None
         )
         if completed_bar:
             self._total_bars_completed += 1
