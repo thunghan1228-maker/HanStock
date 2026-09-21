@@ -7,6 +7,7 @@ from unittest.mock import patch
 import database
 from intraday_signal_store import (
     find_out_of_session_kline_signals,
+    load_latest_signals,
     load_signals_for_ticker,
     purge_out_of_session_kline_signals,
     save_intraday_signals,
@@ -164,6 +165,33 @@ class OutOfSessionKlineSignalTests(unittest.TestCase):
         deleted = purge_out_of_session_kline_signals("2026-09-18")
         self.assertEqual(deleted, 1)
         self.assertEqual(len(load_signals_for_ticker("1113", "2026-09-17")), 1)
+
+
+class LoadLatestSignalsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_returns_full_day_not_just_the_most_recent_200_rows(self):
+        # 活躍盤勢一天全部kind混在一起可能遠超過200筆(跟只看單一kind的
+        # load_latest_signals_by_kind不同)。改之前limit會被再夾到200，
+        # 只回傳ORDER BY bar_ts DESC的最新200筆，早盤那些訊號不是沒發生，
+        # 是直接被這個上限砍掉、看起來像消失了。
+        rows = [
+            {"tradeDate": "2026-09-21", "ticker": "TEST", "kind": "watch12short",
+             "label": "注意12空", "barTs": 1_000 + i, "price": 100.0}
+            for i in range(250)
+        ]
+        save_intraday_signals(rows)
+        signals = load_latest_signals("2026-09-21", limit=500)
+        self.assertEqual(len(signals), 250)
+        self.assertEqual(min(s["barTs"] for s in signals), 1_000)
 
 
 if __name__ == "__main__":

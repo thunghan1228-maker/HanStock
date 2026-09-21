@@ -218,7 +218,11 @@ def save_intraday_signals(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]
 
 def load_latest_signals(trade_date: str, limit: int = 20, market_only: bool = False) -> list[dict[str, Any]]:
     _ensure_table()
-    limit = max(1, min(int(limit), 200))
+    # 活躍盤勢中一日全部訊號種類加起來可能遠超過200筆。跟
+    # load_latest_signals_by_kind同樣的教訓：這裡若先截成200，網站即使
+    # 要求完整交易日也只會拿到「最新的一小段」（ORDER BY bar_ts DESC），
+    # 早盤紀錄不是沒發生，是被這個上限直接砍掉、看起來像消失了。
+    limit = max(1, min(int(limit), 5000))
     where = "trade_date = ?"
     params: list[Any] = [trade_date]
     if market_only:
