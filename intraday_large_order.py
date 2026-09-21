@@ -24,6 +24,9 @@ MIN_BURST_LOTS = max(1, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_BURST_LOTS", "
 MIN_BURST_AMOUNT = max(1.0, float(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_BURST_AMOUNT", "30000000")))
 EXTRA_BURST_LOTS = max(MIN_BURST_LOTS, int(os.getenv("HANSTOCK_INSTANT_EXTRA_LARGE_LOTS", "300")))
 EXTRA_BURST_AMOUNT = max(MIN_BURST_AMOUNT, float(os.getenv("HANSTOCK_INSTANT_EXTRA_LARGE_AMOUNT", "50000000")))
+# 本地族群排名備援(_ensure_group_universe_subscriptions)只需要每個族群
+# 有「至少一檔」即時報價就能算平均漲跌幅，不用整個族群的成員都訂閱。
+GROUP_REPRESENTATIVE_COUNT = max(1, min(5, int(os.getenv("HANSTOCK_INSTANT_LARGE_GROUP_REPS", "2"))))
 COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
 MIN_LIVE_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", "40"))))
@@ -139,11 +142,19 @@ def _holder_strength_pct(code: str) -> float | None:
 
 
 def _ensure_group_universe_subscriptions(service: Any) -> None:
+    """只訂閱每個族群裡的少數代表股(預設2檔)，不要把每個族群的全部成員
+    都塞進去搶190檔訂閱上限。族群平均漲跌幅只需要「每個族群至少一檔
+    有即時報價」就能算；改之前是整批~550檔(68個族群扣掉股期標的等)
+    全部一次送進ensure_stock_subscriptions，遠超過190上限，只有
+    STOCK_GROUPS迭代順序排在前面的族群能吃到訂閱額度、把整個族群灌滿，
+    排在後面的族群永遠一檔都訂不到——族群涵蓋數量因此長期卡在
+    MIN_LIVE_GROUPS門檻之下(例如69個族群裡只有29個有資料)，族群瞬間
+    大單/特大買賣單也就跟著整天卡在candidateCount=0。"""
     codes = list(dict.fromkeys(
         ticker
         for group, members in STOCK_GROUPS.items()
         if group not in EXCLUDED_GROUPS
-        for ticker, _name in members
+        for ticker, _name in members[:GROUP_REPRESENTATIVE_COUNT]
     ))
     service.ensure_stock_subscriptions(codes)
 
