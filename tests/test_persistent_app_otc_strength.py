@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+import persistent_app
+
+TW = timezone(timedelta(hours=8))
+
+
+def tpe_ms(hour: int, minute: int, *, day) -> int:
+    return int(datetime(day.year, day.month, day.day, hour, minute, tzinfo=TW).timestamp() * 1000)
+
+
+def bar_at(minutes_after_open: int, *, day, low: float, close: float) -> dict:
+    """從09:00算起，過minutes_after_open分鐘的那根5分K bar。"""
+    hour, minute = divmod(9 * 60 + minutes_after_open, 60)
+    ts = tpe_ms(hour, minute, day=day)
+    return {"ts": ts, "open": close, "high": close, "low": low, "close": close, "volume": 0, "tick_count": 1}
+
+
+def bar(hour: int, minute: int, *, day, low: float, close: float) -> dict:
+    return {"ts": tpe_ms(hour, minute, day=day), "open": close, "high": close, "low": low, "close": close, "volume": 0, "tick_count": 1}
+
+
+class FakeHub:
+    def __init__(self, bars: list[dict], quote_close: float | None):
+        self._bars = bars
+        self._quote_close = quote_close
+
+    def get_bars_5m(self, include_current: bool = True) -> list[dict]:
+        return list(self._bars)
+
+    def get_latest_quote(self):
+        return {"close": self._quote_close} if self._quote_close is not None else None
+
+    def get_status(self) -> dict:
+        return {"trade_date": datetime.now(TW).strftime("%Y-%m-%d")}
+
+
+class OtcIndexStrengthEndpointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(persistent_app.app)
+        self.today = datetime.now(TW).date()
+        self.yesterday = self.today - timedelta(days=1)
+
+    def test_ma20_uses_multi_day_bars_when_today_alone_has_fewer_than_20(self) -> None:
+        # 使用者回報的核心情境：今天只走了2根5分K，靠歷史(昨天)補齊到20根，
+        # 應該要能直接ready，不用等今天自己累積滿20根。
+        yesterday_bars = [bar_at(i * 5, day=self.yesterday, low=90.0, close=100.0) for i in range(18)]
+        today_bars = [
+            bar(9, 0, day=self.today, low=95.0, close=101.0),
+            bar(9, 5, day=self.today, low=96.0, close=102.0),
+        ]
+        hub = FakeHub(yesterday_bars + today_bars, quote_close=110.0)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub):
+            resp = self.client.get("/api/hub/index/otc/strength")
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(data["ready"], data)
+        # 18根昨天(close=100.0)+2根今天(close=101.0/102.0)=20根，MA20要跨日算。
+        self.assertAlmostEqual(data["ma20"], (18 * 100.0 + 101.0 + 102.0) / 20, places=2)
+
+    def test_ref_bar_is_todays_bar_not_index_2_of_the_full_multi_day_list(self) -> None:
+        # 「第3根5K低點」語意上是今天自己的第3根bar，不能因為歷史K棒被
+        # 接在前面，就被昨天index=2那根頂替掉。
+        yesterday_bars = [bar_at(i * 5, day=self.yesterday, low=1.0, close=50.0) for i in range(18)]  # 18根，low全部是1.0
+        today_bars = [
+            bar(9, 0, day=self.today, low=200.0, close=250.0),
+            bar(9, 5, day=self.today, low=201.0, close=251.0),
+            bar(9, 10, day=self.today, low=202.5, close=252.0),  # 今天第3根：這根的low才是ref_low
+            bar(9, 15, day=self.today, low=203.0, close=253.0),
+        ]
+        hub = FakeHub(yesterday_bars + today_bars, quote_close=300.0)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub):
+            resp = self.client.get("/api/hub/index/otc/strength")
+        data = resp.json()
+        self.assertTrue(data["ready"], data)
+        self.assertEqual(data["refLow"], 202.5)
+        self.assertNotEqual(data["refLow"], 1.0)
+
+    def test_not_ready_when_fewer_than_20_bars_total(self) -> None:
+        hub = FakeHub([bar(9, 0, day=self.today, low=95.0, close=100.0)], quote_close=100.0)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub):
+            resp = self.client.get("/api/hub/index/otc/strength")
+        data = resp.json()
+        self.assertFalse(data["ready"])
+
+    def test_not_ready_when_no_live_quote(self) -> None:
+        bars = [bar_at(i * 5, day=self.today, low=90.0, close=100.0) for i in range(20)]
+        hub = FakeHub(bars, quote_close=None)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub):
+            resp = self.client.get("/api/hub/index/otc/strength")
+        data = resp.json()
+        self.assertFalse(data["ready"])
+
+    def test_not_ready_when_bars_are_all_historical_with_none_from_today(self) -> None:
+        # 有20根以上的歷史bar、也有quote，但今天自己一根bar都還沒有——
+        # 這種狀態下沒有today_bars可以當ref_bar，不該假裝ready。
+        bars = [bar_at(i * 5, day=self.yesterday, low=90.0, close=100.0) for i in range(20)]
+        hub = FakeHub(bars, quote_close=100.0)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub):
+            resp = self.client.get("/api/hub/index/otc/strength")
+        data = resp.json()
+        self.assertFalse(data["ready"])
+
+
+if __name__ == "__main__":
+    unittest.main()
