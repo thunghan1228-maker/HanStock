@@ -30,8 +30,16 @@ def request_main_force_backfill(code, trade_date, *, now=None):
     # The API validates the ticker before entering this function.
     with get_connection() as connection:
         _schema(connection)
-        connection.execute("""INSERT OR IGNORE INTO main_force_backfill_jobs
-            (stock_code, trade_date, next_attempt) VALUES (?, ?, ?)""", (code, trade_date, now))
+        # next_attempt=0讓這裡明確要求的(code,date)搶在背景批次排程前面
+        # (queue_backfill_for_codes用真實時間戳記，見該函式)。如果這組合
+        # 已經被批次排過、但還沒真的嘗試過(attempts=0)，一樣promote到
+        # 最前面；已經真的跑過、正在退避重試中的(attempts>0，例如額度
+        # 用完或「盤後才能真正確認完成」)不去動它，尊重既有的重試/延後
+        # 邏輯，不然使用者重複查看同一支股票會一直打斷正常的backoff。
+        connection.execute("""INSERT INTO main_force_backfill_jobs
+            (stock_code, trade_date, next_attempt) VALUES (?, ?, 0)
+            ON CONFLICT(stock_code, trade_date) DO UPDATE SET next_attempt = 0
+            WHERE status = 'pending' AND attempts = 0""", (code, trade_date))
         row = connection.execute("""SELECT status, attempts, next_attempt, result_json
             FROM main_force_backfill_jobs WHERE stock_code=? AND trade_date=?""", (code, trade_date)).fetchone()
     return {"queued": row["status"] == "pending", "status": row["status"],

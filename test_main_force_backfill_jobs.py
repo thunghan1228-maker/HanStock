@@ -146,6 +146,29 @@ class MainForceBackfillJobTests(unittest.TestCase):
         self.assertEqual(jobs[0]["attempts"], 1)
         self.assertEqual(jobs[0]["result"]["error"], QUOTA_EXHAUSTED)
 
+    def test_user_request_jumps_ahead_of_batch_queued_same_stock(self):
+        # 批次排程(queue_backfill_for_all_group_stocks/queue_backfill_for_codes)
+        # 用真實時間戳記排隊；使用者當下明確要求的(code,date)如果已經被批次
+        # 排過、但還沒真的被嘗試過，要能搶到最前面，不然使用者會卡在等
+        # 上千筆背景批次工作跑完才輪到自己在看的股票。
+        queue_backfill_for_codes(["2455"], ["2026-09-08"], now=self.now)
+        batch_next_attempt = list_main_force_backfill_jobs("2455")[0]["nextAttemptAt"]
+        self.assertEqual(batch_next_attempt, self.now)
+        result = request_main_force_backfill("2455", "2026-09-08", now=self.now + 1000)
+        self.assertEqual(result["nextAttemptAt"], 0)
+        self.assertEqual(result["attempts"], 0)
+
+    def test_user_request_does_not_disturb_an_in_progress_retry_backoff(self):
+        request_main_force_backfill("2455", "2026-09-08", now=self.now)
+        process_main_force_backfill_job(now=self.now, backfill=lambda *a, **kw: {"error": QUOTA_EXHAUSTED, "main_force_ok": False})
+        backed_off_at = list_main_force_backfill_jobs("2455")[0]["nextAttemptAt"]
+        self.assertEqual(backed_off_at, self.now + 300)
+        # 已經真的嘗試過、正在退避中的工作，使用者再次要求不應該打斷它的
+        # 退避排程(不然一直有人點開會讓失敗的股票被無限快速重試)。
+        result = request_main_force_backfill("2455", "2026-09-08", now=self.now + 1)
+        self.assertEqual(result["nextAttemptAt"], backed_off_at)
+        self.assertEqual(result["attempts"], 1)
+
     def test_queue_backfill_for_codes_writes_every_combination_and_is_idempotent(self):
         queued = queue_backfill_for_codes(["2455", "2330"], ["2026-09-08", "2026-09-09"], now=self.now)
         self.assertEqual(queued, 4)
