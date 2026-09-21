@@ -130,6 +130,23 @@ class StockHistoryServiceTests(unittest.TestCase):
         # 今天完全交給即時Hub負責，Hub沒有的分鐘就是真的還沒有資料。
         self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, 5)])
 
+    def test_today_kbars_included_once_market_has_closed(self):
+        after_close_ms = ts(2026, 8, 7, 13, 40)
+        result = get_stock_history_bars_5m(
+            "2344", calendar_days=14, service=self.service, hub=self.hub, now_ms=after_close_ms,
+        )
+        today_bars = [
+            bar for bar in result["bars"]
+            if datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") == "2026-08-07"
+        ]
+        # 收盤後(13:35+)，kbars對「今天」已經穩定不會再變，即使當天完全
+        # 沒被即時Hub追蹤過(例如收盤後才第一次打開這支股票)，也該從kbars
+        # 把今天補回來(6根1分K聚合成2根5分K)，不是只剩Hub剛好有的那一根
+        # (09:05)——這是這個測試真正要鎖住的行為：today_bars不能只有1根。
+        self.assertEqual(len(today_bars), 2)
+        live = next(bar for bar in today_bars if bar["ts"] == ts(2026, 8, 7, 9, 5))
+        self.assertEqual(live["close"], 111)  # Hub仍然覆蓋掉同一根的值
+
     def test_multiday_history_keeps_previous_day_and_live_overrides_today(self):
         result = get_stock_history_bars_5m(
             "2344",
