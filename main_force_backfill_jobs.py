@@ -91,7 +91,7 @@ def queue_backfill_for_codes(codes, dates, *, now=None):
     return len(rows)
 
 
-def queue_backfill_for_all_group_stocks(days=5, *, now=None):
+def queue_backfill_for_all_group_stocks(days=30, *, now=None):
     """把stock_groups.py所有族群的股票(去重)過去days個平日(不含今天)排進
     主力副圖回補佇列；讓即使沒被使用者手動點開過的股票，之後打開圖表時
     主力買賣力也補得回來，不用每支股票各自等第一次被瀏覽才開始回補。
