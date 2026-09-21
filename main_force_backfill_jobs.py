@@ -63,6 +63,46 @@ def list_main_force_backfill_jobs(code):
     ]
 
 
+def queue_backfill_for_codes(codes, dates, *, now=None):
+    """一次性把多檔股票 x 多個交易日排進回補佇列，用單一連線+executemany，
+    比逐一呼叫request_main_force_backfill快很多(避免成百上千次個別連線)。
+    不驗證日期範圍——呼叫端(queue_backfill_for_all_group_stocks)自己產生的
+    日期一定合法，這裡只負責快速批次寫入。重複排(已經pending/complete的
+    組合)用INSERT OR IGNORE，安全、不會重置重試進度。"""
+    now = time.time() if now is None else now
+    rows = [(code, date, now) for code in codes for date in dates]
+    if not rows:
+        return 0
+    with get_connection() as connection:
+        _schema(connection)
+        connection.executemany(
+            """INSERT OR IGNORE INTO main_force_backfill_jobs
+               (stock_code, trade_date, next_attempt) VALUES (?, ?, ?)""",
+            rows,
+        )
+    return len(rows)
+
+
+def queue_backfill_for_all_group_stocks(days=5, *, now=None):
+    """把stock_groups.py所有族群的股票(去重)過去days個平日(不含今天)排進
+    主力副圖回補佇列；讓即使沒被使用者手動點開過的股票，之後打開圖表時
+    主力買賣力也補得回來，不用每支股票各自等第一次被瀏覽才開始回補。
+    呼叫成本低(純SQLite寫入，不含任何Shioaji連線)，重複呼叫(例如每次
+    重新部署)對已經排過的組合是安全的no-op，可以放心在啟動時執行。"""
+    import stock_groups
+    now = time.time() if now is None else now
+    today = datetime.fromtimestamp(now, TW_TZ).date()
+    codes = sorted({code for members in stock_groups.STOCK_GROUPS.values() for code, _name in members})
+    dates: list[str] = []
+    cursor = today - timedelta(days=1)
+    while len(dates) < days:
+        if cursor.weekday() < 5:
+            dates.append(cursor.isoformat())
+        cursor -= timedelta(days=1)
+    attempted = queue_backfill_for_codes(codes, dates, now=now)
+    return {"stockCount": len(codes), "dates": dates, "attempted": attempted}
+
+
 def process_main_force_backfill_job(*, service=None, now=None, backfill=None):
     now = time.time() if now is None else now
     # Lease one job without holding a SQLite write transaction during broker I/O.

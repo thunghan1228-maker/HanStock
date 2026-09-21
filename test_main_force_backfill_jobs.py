@@ -8,7 +8,13 @@ from unittest.mock import Mock, patch
 
 import database
 from history_quota import HistoryQuotaGate, QUOTA_EXHAUSTED
-from main_force_backfill_jobs import list_main_force_backfill_jobs, request_main_force_backfill, process_main_force_backfill_job
+from main_force_backfill_jobs import (
+    list_main_force_backfill_jobs,
+    queue_backfill_for_all_group_stocks,
+    queue_backfill_for_codes,
+    request_main_force_backfill,
+    process_main_force_backfill_job,
+)
 from main_force_store import save_main_force_bars, load_main_force_bars
 from stock_bar_bootstrap import _HistoryEntry, _store_entry, _cached_entry, clear_stock_bar_bootstrap_cache
 from otc_index import TW_TZ
@@ -139,6 +145,31 @@ class MainForceBackfillJobTests(unittest.TestCase):
         self.assertEqual(jobs[0]["status"], "pending")
         self.assertEqual(jobs[0]["attempts"], 1)
         self.assertEqual(jobs[0]["result"]["error"], QUOTA_EXHAUSTED)
+
+    def test_queue_backfill_for_codes_writes_every_combination_and_is_idempotent(self):
+        queued = queue_backfill_for_codes(["2455", "2330"], ["2026-09-08", "2026-09-09"], now=self.now)
+        self.assertEqual(queued, 4)
+        self.assertEqual(len(list_main_force_backfill_jobs("2455")), 2)
+        self.assertEqual(len(list_main_force_backfill_jobs("2330")), 2)
+        # 重複排(例如每次重新部署)是安全的no-op，不會重置已經在跑的重試進度。
+        process_main_force_backfill_job(
+            now=self.now, backfill=lambda *a, **kw: {"error": QUOTA_EXHAUSTED, "main_force_ok": False}
+        )
+        queue_backfill_for_codes(["2455", "2330"], ["2026-09-08", "2026-09-09"], now=self.now + 1)
+        attempts_total = sum(job["attempts"] for job in list_main_force_backfill_jobs("2455"))
+        self.assertEqual(attempts_total, 1)
+
+    def test_queue_backfill_for_all_group_stocks_covers_recent_weekdays(self):
+        result = queue_backfill_for_all_group_stocks(days=3, now=self.now)
+        self.assertGreater(result["stockCount"], 100)
+        self.assertEqual(len(result["dates"]), 3)
+        self.assertEqual(len(set(result["dates"])), 3)
+        today = datetime.fromtimestamp(self.now, TW_TZ).date()
+        for date_text in result["dates"]:
+            parsed = datetime.strptime(date_text, "%Y-%m-%d").date()
+            self.assertLess(parsed, today)
+            self.assertLess(parsed.weekday(), 5)
+        self.assertEqual(result["attempted"], result["stockCount"] * 3)
 
     def test_rejects_future_and_out_of_range_jobs(self):
         for date in ("2026-09-09", "2020-01-01"):
