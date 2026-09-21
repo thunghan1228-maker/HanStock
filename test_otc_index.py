@@ -135,6 +135,60 @@ class OtcIndexHelperTests(unittest.TestCase):
         self.assertEqual(bar["close"], 102.5)
         self.assertEqual(bar["volume"], 15)
 
+    def test_aggregate_1m_to_5m_carries_total_amount_as_latest_snapshot_not_sum(self) -> None:
+        # total_amount是「累計到當下」的金額快照(來自個股歷史逐筆回補)，
+        # 5分K要取這5根1分K裡最新一根的值；如果誤加總會把大戶力%的分母
+        # 灌水成5倍，百分比就會被錯誤地稀釋。
+        bars = []
+        for index in range(5):
+            bars.append({
+                "ts": tpe_ms(9, index),
+                "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+                "volume": 10, "tick_count": 1,
+                "main_net_volume": 0, "main_buy_volume": 0, "main_sell_volume": 0,
+                "main_buy_amount": 0, "main_sell_amount": 0, "main_tick_count": 0,
+                "main_force_available": True,
+                "total_amount": (index + 1) * 10_000_000,
+            })
+        rows = aggregate_1m_to_5m(bars, include_current=False, now_ms=tpe_ms(9, 10))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["total_amount"], 50_000_000)
+
+    def test_aggregate_1m_to_5m_omits_total_amount_without_main_force_fields(self) -> None:
+        # 一般Kbars/櫃買指數沒有主力欄位時，不能無中生有出一個total_amount。
+        bars = [{
+            "ts": tpe_ms(9, 0), "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5, "volume": 10, "tick_count": 1,
+        }]
+        rows = aggregate_1m_to_5m(bars, include_current=False, now_ms=tpe_ms(9, 10))
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("total_amount", rows[0])
+
+    def test_aggregate_1m_to_5m_falls_back_to_last_bar_that_actually_has_total_amount(self) -> None:
+        # bucket最後一根1分K的ticks涵蓋範圍不一定剛好到；如果只看rows[-1]，
+        # 沒對到ticks的那一分鐘會把前面明明有的累計金額蓋回0，重現「熱門股
+        # 卡在資料累積中」的原始bug。這裡bucket裡有5根，只有前3根有
+        # total_amount(來自逐筆回補)，後2根只是單純的Kbars OHLC(沒有ticks
+        # 覆蓋到)，預期要取第3根(最新有值的)的3000萬，不是0。
+        bars = []
+        for index in range(5):
+            bar = {
+                "ts": tpe_ms(9, index),
+                "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+                "volume": 10, "tick_count": 1,
+            }
+            if index < 3:
+                bar.update({
+                    "main_net_volume": 0, "main_buy_volume": 0, "main_sell_volume": 0,
+                    "main_buy_amount": 0, "main_sell_amount": 0, "main_tick_count": 0,
+                    "main_force_available": True,
+                    "total_amount": (index + 1) * 10_000_000,
+                })
+            bars.append(bar)
+        rows = aggregate_1m_to_5m(bars, include_current=False, now_ms=tpe_ms(9, 10))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["total_amount"], 30_000_000)
+
 
 class OtcIndexHubTests(unittest.TestCase):
     def test_seed_and_live_quote_continue_same_day(self) -> None:

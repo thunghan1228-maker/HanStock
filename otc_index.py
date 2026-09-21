@@ -318,6 +318,18 @@ def aggregate_1m_to_5m(
                 "main_tick_count": sum(_safe_int(row.get("main_tick_count")) for row in rows),
                 "main_force_available": any(bool(row.get("main_force_available")) for row in rows),
             })
+            # total_amount 是「累計到當下」的金額快照，不是流量，5分K要取
+            # 這5根1分K裡最新一根「有值」的快照，不能像volume一樣加總(否則
+            # 大戶力%的分母會被灌水成好幾倍)；也不能只看rows[-1]，因為ticks
+            # 涵蓋範圍不一定剛好對齊到bucket最後一分鐘(例如剛開盤、bucket
+            # 還沒收滿)，那樣會把前面明明有的累計金額誤蓋回0，重現「熱門股
+            # 卡在資料累積中」的原始bug。
+            latest_total_amount = next(
+                (row["total_amount"] for row in reversed(rows) if "total_amount" in row),
+                None,
+            )
+            if latest_total_amount is not None:
+                aggregated["total_amount"] = round(_safe_float(latest_total_amount) or 0)
             aggregated["main_net_volume"] = (
                 aggregated["main_buy_volume"] - aggregated["main_sell_volume"]
             )

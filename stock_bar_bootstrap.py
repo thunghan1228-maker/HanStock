@@ -216,6 +216,15 @@ def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
             result["main_net_amount"] = 0
     if "main_force_available" in raw:
         result["main_force_available"] = bool(raw.get("main_force_available"))
+    if "total_amount" in raw:
+        # 大戶力%的分母；漏掉這個欄位的話，即使live bar本身有正確的累計
+        # 成交額，經過這裡過濾後還是會在main_force_bars裡消失變回0，讓
+        # 熱門股也一直卡在「資料累積中」出不去(即使total_amount<=0，也要
+        # 保留鍵本身，讓呼叫端能跟「這個欄位根本沒有」區分開來)。
+        try:
+            result["total_amount"] = max(0.0, round(float(raw.get("total_amount", 0) or 0)))
+        except (TypeError, ValueError, OverflowError):
+            result["total_amount"] = 0
     return result
 
 
@@ -309,23 +318,29 @@ def _historical_tick_metrics(
             "main_tick_count": 0,
             "tick_count": 0,
             "main_force_available": True,
+            "total_amount": 0.0,
         })
         side = _trade_side({"tick_type": tick_type})
         row[f"{side}_volume"] += volume
+        try:
+            tick_amount = max(0.0, float(amount or 0))
+        except (TypeError, ValueError, OverflowError):
+            tick_amount = 0.0
+        if tick_amount <= 0:
+            tick_amount = close * volume * 1000
+        # 大戶力%的分母是「當日累計成交額」，不是只算大單；每一筆(不論是
+        # 不是主力大單)都要計入，才會跟即時tick路徑(market_data_hub.py的
+        # BarAggregator)算出來的total_amount口徑一致。這裡先存單一分鐘的
+        # 增量，收尾時再依時間順序累加成「累計到當下」。
+        row["total_amount"] += tick_amount
         is_main_force = _is_main_force_trade({
             "close": close,
             "volume": volume,
             "amount": amount,
         })
         if is_main_force and side in {"buy", "sell"}:
-            try:
-                trade_amount = max(0.0, float(amount or 0))
-            except (TypeError, ValueError, OverflowError):
-                trade_amount = 0.0
-            if trade_amount <= 0:
-                trade_amount = close * volume * 1000
             row[f"main_{side}_volume"] += volume
-            row[f"main_{side}_amount"] += trade_amount
+            row[f"main_{side}_amount"] += tick_amount
             row["main_tick_count"] += 1
         row["tick_count"] += 1
 
@@ -334,6 +349,13 @@ def _historical_tick_metrics(
         row["main_buy_amount"] = round(row["main_buy_amount"])
         row["main_sell_amount"] = round(row["main_sell_amount"])
         row["main_net_amount"] = row["main_buy_amount"] - row["main_sell_amount"]
+
+    # total_amount要是「累計到當下」而不是單一分鐘的量；先依分鐘桶的時間
+    # 順序排好再累加，不能依賴Shioaji歷史ticks() API本身回傳的順序。
+    running_total = 0.0
+    for minute_ts in sorted(metrics):
+        running_total += metrics[minute_ts]["total_amount"]
+        metrics[minute_ts]["total_amount"] = round(running_total)
     return metrics
 
 
