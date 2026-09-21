@@ -25,7 +25,7 @@ from intraday_signal_store import load_latest_signals, load_latest_signals_by_ki
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_trade_date
 from otc_index_hub import get_otc_index_hub
-from stock_history_service import get_stock_history_bars_5m
+from stock_history_service import get_stock_history_bars_1m, get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
 from quote_service import get_quote_service
 
@@ -467,3 +467,14 @@ def get_strategy_history_5m(
     """股票 K 線歷史資料；保留供即時行情頁面的個股圖表使用。"""
     code = _normalize_stock_code(stock_code)
     return get_stock_history_bars_5m(code, calendar_days=calendar_days)
+
+
+@app.get("/api/hub/history1m/{stock_code}")
+def get_strategy_history_1m(
+    stock_code: str,
+    calendar_days: int = Query(5, ge=3, le=10),
+) -> dict[str, Any]:
+    """股票1分K多日歷史（含今天）；跟history5m共用同一份Shioaji多日kbars快取，
+    不會為了1分K多打一次Shioaji歷史查詢。"""
+    code = _normalize_stock_code(stock_code)
+    return get_stock_history_bars_1m(code, calendar_days=calendar_days)

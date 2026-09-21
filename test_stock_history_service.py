@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from otc_index import TW_TZ
-from stock_history_service import clear_stock_history_cache, get_stock_history_bars_5m
+from stock_history_service import clear_stock_history_cache, get_stock_history_bars_1m, get_stock_history_bars_5m
 from stock_history_service import _code_lock
 from stock_bar_bootstrap import _history_slots
 
@@ -87,6 +87,22 @@ class FakeHub:
                 "close": 111,
                 "volume": 99,
                 "tick_count": 9,
+            }
+        ]
+
+    def get_live_bars_1m(self, code: str):
+        if code != "2344":
+            return []
+        return [
+            # 與歷史 09:05 這根 1m 重複，必須由 live 覆蓋。
+            {
+                "ts": ts(2026, 8, 7, 9, 5),
+                "open": 104,
+                "high": 106,
+                "low": 103,
+                "close": 105.5,
+                "volume": 77,
+                "tick_count": 7,
             }
         ]
 
@@ -181,6 +197,38 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertFalse(failed["bootstrap"]["history_ok"])
         self.assertEqual(failed["bars"], first["bars"])
         self.assertEqual(failed["bootstrap"]["error"], "broker unavailable")
+
+    def test_multiday_1m_history_keeps_previous_day_and_live_overrides_today(self):
+        result = get_stock_history_bars_1m(
+            "2344",
+            calendar_days=5,
+            service=self.service,
+            hub=self.hub,
+            now_ms=self.now_ms,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["bootstrap"]["history_ok"])
+
+        bars = result["bars"]
+        dates = {datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") for bar in bars}
+        self.assertIn("2026-08-06", dates)
+        self.assertIn("2026-08-07", dates)
+        live = next(bar for bar in bars if bar["ts"] == ts(2026, 8, 7, 9, 5))
+        self.assertEqual(live["close"], 105.5)
+        self.assertEqual(live["tick_count"], 7)
+
+    def test_1m_and_5m_share_the_same_kbars_fetch(self):
+        five_min = get_stock_history_bars_5m(
+            "2344", calendar_days=14, service=self.service, hub=self.hub, now_ms=self.now_ms,
+        )
+        one_min = get_stock_history_bars_1m(
+            "2344", calendar_days=5, service=self.service, hub=self.hub, now_ms=self.now_ms,
+        )
+        self.assertTrue(five_min["bootstrap"]["history_ok"])
+        self.assertTrue(one_min["bootstrap"]["history_ok"])
+        # 5分K先抓了較寬的範圍，1分K的請求範圍較窄，應該直接沿用快取，
+        # 不會為了1分K再打一次Shioaji kbars。
+        self.assertEqual(len(self.service.api.calls), 1)
 
 
 if __name__ == "__main__":
