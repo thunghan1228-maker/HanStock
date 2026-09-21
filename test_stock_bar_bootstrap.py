@@ -3,12 +3,14 @@ from __future__ import annotations
 import unittest
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from otc_index import TW_TZ
 from stock_bar_bootstrap import (
+    _historical_tick_metrics,
+    _safe_bar,
     clear_stock_bar_bootstrap_cache,
     get_resilient_stock_bars,
     repair_recent_stock_bars_once,
@@ -376,6 +378,105 @@ class StockBarBootstrapTests(unittest.TestCase):
         )
         self.assertTrue(after["bootstrap"]["history_ok"])
         self.assertEqual(after["bar_count"], 7)
+
+
+TW = timezone(timedelta(hours=8))
+
+
+def tw_dt(hour: int, minute: int, second: int = 0) -> datetime:
+    return datetime(2026, 9, 21, hour, minute, second, tzinfo=TW)
+
+
+class HistoricalTickMetricsTotalAmountTests(unittest.TestCase):
+    """大戶力%的分母(累計成交額)之前只在即時tick路徑(market_data_hub.py)
+    才會算，歷史回補路徑(這個函式)完全沒有算，導致熱門股只要是透過「打開
+    K線圖回補歷史資料」拿到主力資料，total_amount永遠是0，卡在門檻進不去
+    強多/強空分類。"""
+
+    def test_total_amount_accumulates_every_tick_not_just_main_force_ones(self) -> None:
+        # tick1量小(5張)、金額落回退(500,000)，不到主力大單門檻，但還是要
+        # 算進累計成交額；tick2量夠(30張)才算主力大單。
+        ticks = {
+            "ts": [tw_dt(9, 0, 10), tw_dt(9, 0, 40)],
+            "close": [100.0, 100.0],
+            "volume": [5, 30],
+            "tick_type": [0, 1],
+            "amount": [0, 3_000_000],
+        }
+        metrics = _historical_tick_metrics(ticks, trade_date="2026-09-21")
+        minute_ts = int(tw_dt(9, 0, 0).timestamp() * 1000)
+        row = metrics[minute_ts]
+        # 500,000(tick1的close*volume*1000回退值) + 3,000,000(tick2) = 3,500,000。
+        self.assertEqual(row["total_amount"], 3_500_000)
+        # 主力大單統計不能被我改動的地方影響：只有tick2(30張)算主力大單。
+        self.assertEqual(row["main_buy_volume"], 30)
+        self.assertEqual(row["main_buy_amount"], 3_000_000)
+
+    def test_total_amount_is_cumulative_across_minute_buckets_not_per_minute(self) -> None:
+        ticks = {
+            "ts": [tw_dt(9, 0, 10), tw_dt(9, 1, 5)],
+            "close": [100.0, 101.0],
+            "volume": [30, 10],
+            "tick_type": [1, 2],
+            "amount": [3_000_000, 1_010_000],
+        }
+        metrics = _historical_tick_metrics(ticks, trade_date="2026-09-21")
+        minute_0 = int(tw_dt(9, 0, 0).timestamp() * 1000)
+        minute_1 = int(tw_dt(9, 1, 0).timestamp() * 1000)
+        self.assertEqual(metrics[minute_0]["total_amount"], 3_000_000)
+        # 09:01這根要是「累計到09:01為止」= 3,000,000 + 1,010,000，
+        # 不是只有這一分鐘自己的1,010,000。
+        self.assertEqual(metrics[minute_1]["total_amount"], 4_010_000)
+
+    def test_total_amount_survives_out_of_order_ticks(self) -> None:
+        # Shioaji歷史ticks() API不保證回傳順序；就算輸入順序是反的，
+        # 累計結果也要跟照時間正序輸入時一樣，不能依賴輸入本身有序。
+        ticks = {
+            "ts": [tw_dt(9, 1, 5), tw_dt(9, 0, 10)],
+            "close": [101.0, 100.0],
+            "volume": [10, 30],
+            "tick_type": [2, 1],
+            "amount": [1_010_000, 3_000_000],
+        }
+        metrics = _historical_tick_metrics(ticks, trade_date="2026-09-21")
+        minute_0 = int(tw_dt(9, 0, 0).timestamp() * 1000)
+        minute_1 = int(tw_dt(9, 1, 0).timestamp() * 1000)
+        self.assertEqual(metrics[minute_0]["total_amount"], 3_000_000)
+        self.assertEqual(metrics[minute_1]["total_amount"], 4_010_000)
+
+
+class SafeBarTotalAmountTests(unittest.TestCase):
+    """_safe_bar是_merge_bars(合併live/history bar後存檔前)的過濾器；
+    之前它的欄位allowlist漏了total_amount，即使live bar本身有正確的
+    累計成交額，經過這裡也會被拿掉，導致存進main_force_bars的還是0。"""
+
+    def test_total_amount_is_kept_when_present(self) -> None:
+        raw = {
+            "ts": 1_700_000_000_000, "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5, "volume": 10, "tick_count": 1,
+            "main_force_available": True, "total_amount": 123_456_789.0,
+        }
+        bar = _safe_bar(raw)
+        self.assertIsNotNone(bar)
+        self.assertEqual(bar["total_amount"], 123_456_789)
+
+    def test_total_amount_absent_when_not_in_raw(self) -> None:
+        raw = {
+            "ts": 1_700_000_000_000, "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5, "volume": 10, "tick_count": 1,
+        }
+        bar = _safe_bar(raw)
+        self.assertIsNotNone(bar)
+        self.assertNotIn("total_amount", bar)
+
+    def test_negative_total_amount_clamped_to_zero(self) -> None:
+        raw = {
+            "ts": 1_700_000_000_000, "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5, "volume": 10, "tick_count": 1,
+            "total_amount": -5.0,
+        }
+        bar = _safe_bar(raw)
+        self.assertEqual(bar["total_amount"], 0)
 
 
 if __name__ == "__main__":
