@@ -15,6 +15,7 @@ TWSE/TPEx 官方公告的股票期貨標的清單，這個專案已經維護在�
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from stock_bar_bootstrap import _resolve_stock_contract
@@ -26,6 +27,12 @@ _FUTURES_UNDERLYING_CODES = frozenset(
 
 _cache_lock = threading.Lock()
 _cache: dict[str, dict[str, Any]] = {}
+_cache_day = ""
+TW_TZ = timezone(timedelta(hours=8))
+# 合約清單是登入後在背景下載的，還沒下載完時 Contract 物件拿得到但欄位全是空白（day_trade 是空字串、
+# 餘額是 0）。正式環境 2026-09-22 就是這樣：啟動時先被查了一輪，全部被當成「不可融資／不可當沖」
+# 永久快取，整天每一檔都顯示不可。day_trade 有真的值（Yes／OnlyBuy／No）才算查到。
+_POPULATED_DAY_TRADE = {"yes", "onlybuy", "no"}
 
 
 def _enum_text(value: Any) -> str:
@@ -35,6 +42,33 @@ def _enum_text(value: Any) -> str:
 
 def has_stock_futures(code: str) -> bool:
     return str(code).strip().upper() in _FUTURES_UNDERLYING_CODES
+
+
+def _today() -> str:
+    return datetime.now(TW_TZ).strftime("%Y-%m-%d")
+
+
+def contract_debug(code: str, *, service: Any = None) -> dict[str, Any]:
+    """給 /api/hub/stock-flags 的診斷用：這檔合約原始欄位長什麼樣、合約清單下載狀態。"""
+    info: dict[str, Any] = {"code": str(code).strip().upper(), "contract": None, "contractsStatus": None}
+    try:
+        resolved_service = service if service is not None else _default_service()
+        api = getattr(resolved_service, "api", None)
+        contracts = getattr(api, "contracts", None) if api is not None else None
+        status = getattr(contracts, "status", None) if contracts is not None else None
+        info["contractsStatus"] = str(getattr(status, "value", status)) if status is not None else None
+        contract = _resolve_stock_contract(resolved_service, info["code"])
+        if contract is not None:
+            info["contract"] = {
+                "type": type(contract).__name__,
+                "day_trade": _enum_text(getattr(contract, "day_trade", None)),
+                "margin_trading_balance": getattr(contract, "margin_trading_balance", None),
+                "short_selling_balance": getattr(contract, "short_selling_balance", None),
+                "update_date": getattr(contract, "update_date", None),
+            }
+    except Exception as exc:  # noqa: BLE001
+        info["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return info
 
 
 def _default_service() -> Any:
@@ -50,8 +84,13 @@ def get_trading_eligibility(code: str, *, service: Any = None) -> dict[str, Any]
     Eligible對Yes(可雙向)跟OnlyBuy(限先買後賣)都視為可當沖，只是可操作
     方向不同；需要嚴格區分雙向可當沖的呼叫端(例如疑似隔日沖)應該直接讀
     day_trade本身，不要用這裡的布林值。"""
+    global _cache_day
     code = str(code).strip().upper()
+    today = _today()
     with _cache_lock:
+        if _cache_day != today:  # 每個交易日重新查一次，融資券狀態每天都可能變
+            _cache.clear()
+            _cache_day = today
         cached = _cache.get(code)
     if cached is not None:
         return cached
@@ -62,18 +101,24 @@ def get_trading_eligibility(code: str, *, service: Any = None) -> dict[str, Any]
         "dayTradeEligible": None,
         "hasStockFutures": has_stock_futures(code),
     }
+    populated = False
     try:
         resolved_service = service if service is not None else _default_service()
         contract = _resolve_stock_contract(resolved_service, code)
         if contract is not None:
-            result["marginable"] = bool(int(getattr(contract, "margin_trading_balance", 0) or 0))
-            result["shortable"] = bool(int(getattr(contract, "short_selling_balance", 0) or 0))
-            result["dayTradeEligible"] = _enum_text(getattr(contract, "day_trade", None)) in {"yes", "onlybuy"}
+            day_trade = _enum_text(getattr(contract, "day_trade", None))
+            populated = day_trade in _POPULATED_DAY_TRADE
+            if populated:
+                result["marginable"] = bool(int(getattr(contract, "margin_trading_balance", 0) or 0))
+                result["shortable"] = bool(int(getattr(contract, "short_selling_balance", 0) or 0))
+                result["dayTradeEligible"] = day_trade in {"yes", "onlybuy"}
     except Exception:  # noqa: BLE001
         pass
 
-    with _cache_lock:
-        _cache[code] = result
+    # 沒查到（未登入、合約清單還沒下載完、欄位空白）就不快取：回 None 代表「還不知道」，下次再查。
+    if populated:
+        with _cache_lock:
+            _cache[code] = result
     return result
 
 

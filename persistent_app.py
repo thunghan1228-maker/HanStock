@@ -206,12 +206,19 @@ def get_stock_flags() -> dict[str, Any]:
         info["dispositionUntil"] = item.get("end") if item else None
         info["dispositionReason"] = item.get("reason") if item else None
         stocks[code] = info
+    from stock_trading_eligibility import contract_debug
+
+    unknown = sum(1 for info in stocks.values() if info.get("marginable") is None)
+    sample_code = "2330" if "2330" in stocks else (codes[0] if codes else "")
     return {
         "status": "ok",
         "updatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
         "stocks": stocks,
+        "unknownEligibilityCount": unknown,
         "dispositionCodes": sorted(disposition),
         "disposition": disposition_status(),
+        # 診斷：合約清單下載狀態與一檔合約的原始欄位，融資券旗標全是 null／false 時看這裡。
+        "debug": contract_debug(sample_code) if sample_code else None,
     }
 
 
