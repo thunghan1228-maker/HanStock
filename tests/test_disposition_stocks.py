@@ -192,7 +192,35 @@ class StockFlagsEndpointTests(unittest.TestCase):
         self.assertIsNone(data["stocks"]["1101"]["marginable"])  # 沒暖到的代號是「還不知道」，不是 false
         self.assertEqual(data["eligibilityWarmer"]["resolved"], 2)
         self.assertEqual(data["dispositionCodes"], ["8996"])
+        self.assertEqual(data["dispositionLevelCodes"], [])
         self.assertIn("sources", data["disposition"])
+
+    def test_disposition_level_from_contract_info_counts_as_disposition(self) -> None:
+        import stock_trading_eligibility as eligibility_module
+        from types import SimpleNamespace
+
+        class Contracts:
+            def get(self, code):
+                return SimpleNamespace(code=code)
+
+            def info(self, base):
+                level = 1 if base.code == "3661" else 0
+                return SimpleNamespace(day_trade="Yes", margin_loan_ratio=0.6, short_margin_ratio=0.9, disposition_level=level)
+
+        eligibility_module.clear_trading_eligibility_cache()
+        with patch.object(eligibility_module, "start_trading_eligibility_warmer", lambda provider: False), \
+                patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False):
+            eligibility_module.warm_trading_eligibility(["3661", "2330"], service=SimpleNamespace(api=SimpleNamespace(contracts=Contracts())))
+            resp = self.client.get("/api/hub/stock-flags")
+        eligibility_module.clear_trading_eligibility_cache()
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(data["stocks"]["3661"]["disposition"])  # 公告清單是空的，靠個股資訊列的處置等級
+        self.assertEqual(data["stocks"]["3661"]["dispositionReason"], "永豐合約處置等級 1")
+        self.assertFalse(data["stocks"]["2330"]["disposition"])
+        self.assertEqual(data["dispositionCodes"], ["3661"])
+        self.assertEqual(data["dispositionLevelCodes"], ["3661"])
+        self.assertEqual(data["counts"]["disposition"], 1)
 
 
 if __name__ == "__main__":
