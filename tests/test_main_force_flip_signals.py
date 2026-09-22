@@ -120,20 +120,43 @@ def test_flip_during_first_bars_after_subscription_is_ignored(monkeypatch):
     assert feed(monitor, "3532", bars) == []
 
 
-def test_from_open_data_needs_no_warmup_and_fires_at_0902_like_the_other_tool(monkeypatch):
+def test_from_open_stock_skips_the_first_five_bars_then_fires_like_the_other_tool(monkeypatch):
     # 正式環境 2026-09-22 的 3532（inspect 的實際數字）：09:01 主力累計 +134/156 張從 0 翻正，
-    # 09:02 收 451.5 站上 VWAP 450.38，淨額率 81.6%、量比 6.5×；另一台工具 09:02 就發強勢翻多。
-    # 從開盤第一根就看到、累計完整，暖機 10 根不該把它吃掉。
+    # 09:02 就站上 VWAP、淨額率 82%；但使用者比對過另一台工具 09:01～09:05 從不發訊號，所以
+    # 開盤前 5 根不判定。09:05 那根再次站上 VWAP（淨額率 34%、量比 6.6×），09:06 才發翻多。
     monitor = new_monitor(monkeypatch, avg_daily_volume=7378.8)
-    bars = [bar(9, 0, 449.5, 200, main_buy=145, main_sell=11), bar(9, 1, 451.5, 156, main_buy=42, main_sell=8)]
+    bars = [
+        bar(9, 0, 449.5, 214, main_buy=145, main_sell=11),
+        bar(9, 1, 451.5, 142, main_buy=42, main_sell=8),
+        bar(9, 2, 446.0, 149, main_buy=23, main_sell=63),
+        bar(9, 3, 447.5, 98, main_buy=6, main_sell=36),
+        bar(9, 4, 450.0, 118, main_buy=23, main_sell=31),
+    ]
+    assert feed(monitor, "3532", bars) == []  # 09:01～09:05 一律不發
 
-    signals = feed(monitor, "3532", bars)
+    signals = feed(monitor, "3532", [bar(9, 5, 453.0, 367, main_buy=153, main_sell=44)])
 
-    assert [s["label"] for s in signals] == ["主力累計強勢翻多"]
-    assert signals[0]["barTs"] == ts(9, 2)
+    assert [s["label"] for s in signals] == ["主力累計翻多"]
+    assert signals[0]["barTs"] == ts(9, 6)
     assert "主力零軸 09:01" in signals[0]["note"]
-    assert "VWAP穿越 09:02" in signals[0]["note"]
-    assert "量比 6.51×" in signals[0]["note"]
+    assert "VWAP穿越 09:05" in signals[0]["note"]
+    assert "量比 6.64×" in signals[0]["note"]
+    assert "累計 +199 張" in signals[0]["note"]
+
+
+def test_one_sided_main_force_from_zero_is_not_a_flip(monkeypatch):
+    # 正式環境 2026-09-22 的 1582 信錦：整個上午主力完全沒量，12:18 第一筆 101 張大單就是賣，
+    # 累計從 0 直接變 -101、淨額率 -100%。另一台工具沒有這筆：只有一邊有過量，沒有「翻」可言。
+    monitor = new_monitor(monkeypatch)
+    monitor.enable_trace()
+    quiet = [bar(9, i, 100.0, 100) for i in range(10)] + [bar(9, 10, 100.5, 100)]  # 先站上 VWAP
+    dump = bar(9, 11, 99.0, 100, main_sell=101)  # 跌破 VWAP、累計從 0 翻負
+
+    assert feed(monitor, "1582", quiet + [dump]) == []
+
+    last = monitor.trace()[-1]
+    assert last["zeroCross"] == "bear" and last["vwapCross"] == "down"
+    assert last["bear"]["blockers"] == ["主力只有賣方量、沒有買方，不算翻空"]
 
 
 def test_missing_daily_history_or_thin_main_force_never_fires(monkeypatch):
@@ -245,7 +268,7 @@ def test_inspect_explains_which_filter_blocked_a_synchronized_flip(monkeypatch):
     blockers = report["nearMisses"][0]["bull"]["blockers"]
     assert len(blockers) == 1 and blockers[0].startswith("量比 0.27×"), blockers
     assert len(report["trace"]) == 10
-    assert report["trace"][0]["skip"] == "thin_main_force"  # 從開盤就看到不暖機，只剩主力量太薄的保護
+    assert report["trace"][0]["skip"] == "warming_up"  # 開盤前 5 根不判定
     # 暖機中也要看得到三個比率，另一台工具若在前幾根就發訊號才對得出來。
     assert report["head"][0]["netRatio"] == -1.0
     assert report["head"][0]["volumeRatio"] == round(100 * 270 / 1 / 100000, 2)
