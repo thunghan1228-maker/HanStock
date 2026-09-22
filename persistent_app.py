@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import Query
@@ -12,7 +12,8 @@ from fastapi import Query
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
-from main_force_backfill_jobs import list_main_force_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
+from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
+from history_sources import history_sources_status, probe_history_sources, stock_market
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
@@ -79,14 +80,19 @@ async def _persistent_lifespan(fastapi_app):
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
-            # 純SQLite寫入(無Shioaji連線)但664檔股票還是有感時間，丟背景
-            # 執行緒避免拖慢啟動就緒。天數呼應main_force_collector.py的
-            # KEEP_DAYS(main_force_bars只保留最近30個交易日)──排更多天沒
-            # 意義，因為backfill剛寫進去就會被下一輪prune_old_bars清掉；
-            # 排更少天則是白白放棄日線圖主力副圖原本可以顯示的完整範圍。
+            # 純SQLite寫入(無Shioaji連線)但幾百檔股票還是有感時間，丟背景
+            # 執行緒避免拖慢啟動就緒。只排最近3個平日（使用者明確說主力副圖
+            # 補3天就夠，不用30天）：逐筆回補是Shioaji歷史額度的最大消耗者，
+            # 之前排的30天批次留下的舊pending工作一併清掉，之後的日子由每天
+            # 的即時落盤自然累積。
             import threading as _threading
+
+            def _queue_recent_main_force_backfill() -> None:
+                prune_pending_backfill_jobs(days=3)
+                queue_backfill_for_all_group_stocks(days=3)
+
             _threading.Thread(
-                target=lambda: queue_backfill_for_all_group_stocks(days=30),
+                target=_queue_recent_main_force_backfill,
                 name="hanstock-main-force-group-backfill-queue",
                 daemon=True,
             ).start()
@@ -170,6 +176,37 @@ def _kick_otc_index_bootstrap(hub: Any) -> None:
         get_otc_index_service().ensure_bootstrapped(service.api)
     except Exception:  # noqa: BLE001
         pass
+
+
+@app.get("/api/hub/history-sources")
+def get_history_sources(
+    probe: str | None = Query(None),
+    trade_date: str | None = Query(None),
+) -> dict[str, Any]:
+    """歷史分K來源自檢：永豐額度、FinMind/Yahoo備援統計。帶 probe=代號 會真的各打一次
+    FinMind 與 Yahoo（不碰永豐額度），回傳筆數與首尾K棒，用來驗證備援的欄位、分鐘標籤
+    跟成交量單位；trade_date 預設最近一個已收盤的交易日。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    service = get_quote_service()
+    data: dict[str, Any] = {
+        "shioaji": history_quota.snapshot(getattr(service, "api", None)),
+        "sources": history_sources_status(),
+    }
+    if probe:
+        code = _normalize_stock_code(probe)
+        if not trade_date:
+            now = datetime.now(TW_TZ)
+            day = now.date() if (now.hour, now.minute) >= (13, 35) and now.weekday() < 5 else now.date() - timedelta(days=1)
+            while day.weekday() >= 5:
+                day -= timedelta(days=1)
+            trade_date = day.isoformat()
+        data["probe"] = probe_history_sources(code, trade_date, market=stock_market(code))
+    return {"status": "ok", "data": data}
 
 
 @app.post("/api/hub/main-force-flip/backfill")

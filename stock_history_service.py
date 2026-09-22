@@ -17,6 +17,7 @@ from otc_index import TW_TZ, aggregate_1m_to_5m, normalize_kbars_1m, taipei_minu
 from stock_bar_bootstrap import _default_hub, _default_service, _history_slots, _resolve_stock_contract
 from history_cache import HistoryCache
 from history_quota import history_quota
+from history_sources import fetch_minute_bars_chain, stock_market
 
 logger = logging.getLogger("hanstock.stock_history_service")
 
@@ -35,17 +36,24 @@ class _History5mEntry:
     fetched_at_monotonic: float
     ok: bool
     error: Optional[str] = None
+    source: str = "shioaji"
 
+
+# 永豐拿不到、備援也都失敗時，這檔 5 分鐘內不再重打 FinMind/Yahoo（前端每 15 秒輪詢、
+# 失敗快取只有 30 秒，不擋的話會一直打外部 API）。
+FALLBACK_RETRY_SECONDS = 300.0
 
 _lock = threading.RLock()
 _code_locks: dict[str, threading.Lock] = {}
 _cache: dict[str, _History5mEntry] = HistoryCache(max_entries=512, max_bars=72_000)
+_fallback_failed_at: dict[str, float] = {}
 
 
 def clear_stock_history_cache() -> None:
     with _lock:
         _cache.clear()
         _code_locks.clear()
+        _fallback_failed_at.clear()
 
 
 def _code_lock(code: str) -> threading.Lock:
@@ -133,6 +141,11 @@ def _fetch_history(
     try:
         quota_error = history_quota.check(getattr(service, "api", None))
         if quota_error:
+            fallback = _fallback_history(
+                code, trade_date, start_date, now_ms=now_ms, monotonic_fn=monotonic_fn, reason=quota_error,
+            )
+            if fallback is not None:
+                return fallback
             return replace(_deferred_history(code, trade_date, start_date, monotonic_fn()), error=quota_error)
         return _fetch_history_once(
             code, trade_date, start_date,
@@ -153,94 +166,101 @@ def _fetch_history_once(
 ) -> _History5mEntry:
     api = getattr(service, "api", None)
     logged_in = bool(getattr(getattr(service, "state", None), "logged_in", False))
-    if api is None or not logged_in:
+
+    def failed(error: str) -> _History5mEntry:
+        fallback = _fallback_history(code, trade_date, start_date, now_ms=now_ms, monotonic_fn=monotonic_fn, reason=error)
+        if fallback is not None:
+            return fallback
         return _store(code, _History5mEntry(
-            trade_date=trade_date,
-            start_date=start_date,
-            bars_5m=[],
-            bars_1m=[],
-            fetched_at_monotonic=monotonic_fn(),
-            ok=False,
-            error="Shioaji 尚未登入",
+            trade_date=trade_date, start_date=start_date, bars_5m=[], bars_1m=[],
+            fetched_at_monotonic=monotonic_fn(), ok=False, error=error,
         ))
 
+    if api is None or not logged_in:
+        return failed("Shioaji 尚未登入")
     contract = _resolve_stock_contract(service, code)
     if contract is None:
-        return _store(code, _History5mEntry(
-            trade_date=trade_date,
-            start_date=start_date,
-            bars_5m=[],
-            bars_1m=[],
-            fetched_at_monotonic=monotonic_fn(),
-            ok=False,
-            error=f"找不到股票合約：{code}",
-        ))
+        return failed(f"找不到股票合約：{code}")
 
     try:
         # 一檔股票一天只做一次多日 kbars 查詢；normalize 不指定 trade_date，保留整段正式盤資料。
         kbars = api.kbars(contract=contract, start=start_date, end=trade_date)
-        bars_1m = normalize_kbars_1m(
-            kbars,
-            trade_date=None,
-            include_current=False,
-            now_ms=now_ms,
-        )
-        bars_5m = aggregate_1m_to_5m(
-            bars_1m,
-            include_current=False,
-            now_ms=now_ms,
-        )
-        # 今天(trade_date)盤中查詢kbars常常還沒到齊(有落後)，早上剛開盤
-        # 第一次查詢抓到的今天前幾根若被快取一整天，靠後面merge時的即時
-        # Hub資料永遠補不回來，變成固定在某個交易日開盤附近少了好幾根
-        # K棒。但如果現在已經收盤(13:35後，留5分鐘緩衝)，kbars對「今天」
-        # 應該已經穩定不會再變，這時候放心含進來一起快取，否則收盤後才
-        # 第一次查看、當天完全沒被即時追蹤過的股票(Hub也沒有資料)會整天
-        # 完全看不到今天的K棒。收盤前一律不含「今天」，交給即時Hub負責
-        # (get_stock_history_bars_5m/1m每次都會重新讀Hub，不會有這個快取
-        # 過期問題)。
-        now_local = datetime.fromtimestamp(now_ms / 1000, TW_TZ)
-        today_kbars_settled = (now_local.hour, now_local.minute) >= (13, 35)
-        kbars_upper_date = trade_date if today_kbars_settled else (
-            datetime.strptime(trade_date, "%Y-%m-%d").date() - timedelta(days=1)
-        ).isoformat()
-        bars_5m = [
-            bar for bar in bars_5m
-            if start_date <= taipei_trade_date(int(bar["ts"])) <= kbars_upper_date
-        ][-MAX_HISTORY_5M:]
-        bars_1m = [
-            bar for bar in bars_1m
-            if start_date <= taipei_trade_date(int(bar["ts"])) <= kbars_upper_date
-        ][-MAX_HISTORY_1M:]
-        entry = _History5mEntry(
-            trade_date=trade_date,
-            start_date=start_date,
-            bars_5m=bars_5m,
-            bars_1m=bars_1m,
-            fetched_at_monotonic=monotonic_fn(),
-            ok=bool(bars_5m),
-            error=None if bars_5m else "Shioaji 多日 Kbars 暫無資料",
-        )
-        entry = _store(code, entry)
-        logger.info(
-            "[Stock History5m] %s 多日補齊: start=%s end=%s bars=%d",
-            code,
-            start_date,
-            trade_date,
-            len(bars_5m),
-        )
-        return entry
+        bars_1m = normalize_kbars_1m(kbars, trade_date=None, include_current=False, now_ms=now_ms)
+        bars_5m = aggregate_1m_to_5m(bars_1m, include_current=False, now_ms=now_ms)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Stock History5m] %s 多日 Kbars 失敗: %s", code, exc)
-        return _store(code, _History5mEntry(
-            trade_date=trade_date,
-            start_date=start_date,
-            bars_5m=[],
-            bars_1m=[],
-            fetched_at_monotonic=monotonic_fn(),
-            ok=False,
-            error=str(exc),
-        ))
+        return failed(str(exc))
+    bars_5m, bars_1m = _trim_to_settled_window(bars_5m, bars_1m, trade_date, start_date, now_ms)
+    if not bars_5m:
+        return failed("Shioaji 多日 Kbars 暫無資料")
+    entry = _store(code, _History5mEntry(
+        trade_date=trade_date, start_date=start_date, bars_5m=bars_5m, bars_1m=bars_1m,
+        fetched_at_monotonic=monotonic_fn(), ok=True, error=None,
+    ))
+    logger.info("[Stock History5m] %s 多日補齊: start=%s end=%s bars=%d", code, start_date, trade_date, len(bars_5m))
+    return entry
+
+
+def _trim_to_settled_window(
+    bars_5m: list[dict[str, Any]],
+    bars_1m: list[dict[str, Any]],
+    trade_date: str,
+    start_date: str,
+    now_ms: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """今天(trade_date)盤中查詢kbars常常還沒到齊(有落後)，早上剛開盤第一次查詢抓到
+    的今天前幾根若被快取一整天，靠後面merge時的即時Hub資料永遠補不回來，變成固定
+    在某個交易日開盤附近少了好幾根K棒。但如果現在已經收盤(13:35後，留5分鐘緩衝)，
+    歷史對「今天」應該已經穩定不會再變，這時候放心含進來一起快取，否則收盤後才
+    第一次查看、當天完全沒被即時追蹤過的股票(Hub也沒有資料)會整天完全看不到今天
+    的K棒。收盤前一律不含「今天」，交給即時Hub負責(get_stock_history_bars_5m/1m
+    每次都會重新讀Hub，不會有這個快取過期問題)。"""
+    now_local = datetime.fromtimestamp(now_ms / 1000, TW_TZ)
+    today_settled = (now_local.hour, now_local.minute) >= (13, 35)
+    upper_date = trade_date if today_settled else (
+        datetime.strptime(trade_date, "%Y-%m-%d").date() - timedelta(days=1)
+    ).isoformat()
+    bars_5m = [bar for bar in bars_5m if start_date <= taipei_trade_date(int(bar["ts"])) <= upper_date][-MAX_HISTORY_5M:]
+    bars_1m = [bar for bar in bars_1m if start_date <= taipei_trade_date(int(bar["ts"])) <= upper_date][-MAX_HISTORY_1M:]
+    return bars_5m, bars_1m
+
+
+def _fallback_history(
+    code: str,
+    trade_date: str,
+    start_date: str,
+    *,
+    now_ms: int,
+    monotonic_fn: Callable[[], float],
+    reason: str,
+) -> Optional[_History5mEntry]:
+    """永豐拿不到（額度用完、沒登入、沒合約、查詢失敗、沒資料）時改走 FinMind → Yahoo。
+    備援也都失敗的話這檔 FALLBACK_RETRY_SECONDS 內不再重試。"""
+    now = monotonic_fn()
+    with _lock:
+        failed_at = _fallback_failed_at.get(code)
+    if failed_at is not None and now - failed_at < FALLBACK_RETRY_SECONDS:
+        return None
+    try:
+        bars_1m, source = fetch_minute_bars_chain(code, start_date, trade_date, market=stock_market(code))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Stock History5m] %s 備援來源失敗: %s", code, exc)
+        bars_1m, source = [], None
+    current_minute_start = now_ms - (now_ms % 60_000)
+    bars_1m = [bar for bar in bars_1m if int(bar["ts"]) < current_minute_start]
+    bars_5m = aggregate_1m_to_5m(bars_1m, include_current=False, now_ms=now_ms)
+    bars_5m, bars_1m = _trim_to_settled_window(bars_5m, bars_1m, trade_date, start_date, now_ms)
+    if source is None or not bars_5m:
+        with _lock:
+            _fallback_failed_at[code] = now
+        return None
+    with _lock:
+        _fallback_failed_at.pop(code, None)
+    logger.info("[Stock History5m] %s 永豐不可用（%s），改用 %s 補齊: bars=%d", code, reason, source, len(bars_5m))
+    return _store(code, _History5mEntry(
+        trade_date=trade_date, start_date=start_date, bars_5m=bars_5m, bars_1m=bars_1m,
+        fetched_at_monotonic=monotonic_fn(), ok=True, error=None, source=source,
+    ))
 
 
 def get_stock_history_bars_5m(
@@ -313,6 +333,7 @@ def get_stock_history_bars_5m(
             "start_date": start_date,
             "history_5m": len(entry.bars_5m),
             "history_ok": entry.ok,
+            "history_source": entry.source,
             "error": entry.error,
             "subscription": subscription,
             "source": "shioaji_kbars_range+realtime_hub",
@@ -391,6 +412,7 @@ def get_stock_history_bars_1m(
             "start_date": start_date,
             "history_1m": len(entry.bars_1m),
             "history_ok": entry.ok,
+            "history_source": entry.source,
             "error": entry.error,
             "subscription": subscription,
             "source": "shioaji_kbars_range+realtime_hub",

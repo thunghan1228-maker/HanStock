@@ -34,6 +34,7 @@ from otc_index import (
     index_name_score,
     normalize_kbars_1m,
 )
+from history_sources import OTC_INDEX_YAHOO_SYMBOL, fetch_yahoo_minute_bars
 from otc_index_hub import get_otc_index_hub
 from otc_index_store import load_index_bars_5m, save_index_bars_5m
 
@@ -138,8 +139,22 @@ class OtcIndexService:
                 kbars_error = "Shioaji kbars 回傳 0 根正式盤 K 棒（歷史流量額度用完或尚無資料）"
         except Exception as exc:
             kbars_error = f"櫃買指數歷史 Kbars 補齊失敗: {exc}"
+        history_source = "shioaji"
         if kbars_error:
             logger.warning("[OTC Index] %s", kbars_error)
+            # 永豐拿不到（額度用完最常見）就改向 Yahoo 拿櫃買指數 1 分 K；只有價量，MA20 夠用。
+            try:
+                fallback_1m = fetch_yahoo_minute_bars("OTC_INDEX", start_date, trade_date, symbol=OTC_INDEX_YAHOO_SYMBOL)
+                current_minute_start = now_ms - (now_ms % 60_000)
+                fallback_1m = [bar for bar in fallback_1m if int(bar["ts"]) < current_minute_start]
+                if fallback_1m:
+                    bars_1m = fallback_1m
+                    kbars_5m = aggregate_1m_to_5m(fallback_1m, include_current=False, now_ms=now_ms)
+                    if kbars_5m:
+                        history_source = "yahoo"
+                        kbars_error = None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[OTC Index] Yahoo 備援失敗: %s", exc)
 
         stored_5m: list[dict[str, Any]] = []
         try:
@@ -159,8 +174,8 @@ class OtcIndexService:
         hub.seed_today(bars_1m, bars_5m, trade_date, ok=ok, error=kbars_error)
         self.last_error = kbars_error
         logger.info(
-            "[OTC Index] 歷史 5 分 K 補齊: kbars=%d, 本機=%d, 合併=%d, range=%s~%s%s",
-            len(kbars_5m), len(stored_5m), len(bars_5m), start_date, trade_date,
+            "[OTC Index] 歷史 5 分 K 補齊: %s=%d, 本機=%d, 合併=%d, range=%s~%s%s",
+            history_source, len(kbars_5m), len(stored_5m), len(bars_5m), start_date, trade_date,
             "" if ok else "（未達 MA20 門檻，稍後自動重試）",
         )
         result: dict[str, Any] = {
@@ -169,6 +184,7 @@ class OtcIndexService:
             "bars_1m": len(bars_1m),
             "bars_5m": len(bars_5m),
             "stored_bars_5m": len(stored_5m),
+            "source": history_source,
         }
         if kbars_error:
             result["error"] = kbars_error

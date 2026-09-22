@@ -97,6 +97,38 @@ class BootstrapTodayCalendarRangeTests(_TempDatabaseTestCase):
 class BootstrapResilienceTests(_TempDatabaseTestCase):
     """使用者實際回報：昨天明明顯示過，重新部署之後又變回「資料蒐集中」。"""
 
+    def setUp(self) -> None:
+        super().setUp()
+        # Yahoo 備援在單元測試裡一律當作沒資料，各測試要驗證 Yahoo 時自己再覆寫。
+        self.yahoo_patch = patch("otc_index_service.fetch_yahoo_minute_bars", lambda *a, **k: [])
+        self.yahoo_patch.start()
+
+    def tearDown(self) -> None:
+        self.yahoo_patch.stop()
+        super().tearDown()
+
+    def test_yahoo_rescues_bootstrap_when_kbars_fails(self) -> None:
+        today = datetime.now(TW).date()
+        yesterday = today - timedelta(days=1)
+        yahoo_bars = [stored_bar(yesterday, 9, i) for i in range(0, 105, 1)]  # 105 根 1 分 K → 21 根 5 分 K
+
+        class QuotaExhaustedApi:
+            def kbars(self, contract, start, end):
+                raise RuntimeError("history quota exhausted")
+
+        service = OtcIndexService()
+        fresh_hub = OtcIndexHub()
+        with patch("otc_index_service.get_otc_index_hub", return_value=fresh_hub), \
+                patch("otc_index_service.fetch_yahoo_minute_bars", lambda *a, **k: yahoo_bars):
+            result = service.bootstrap_today(QuotaExhaustedApi(), contract=object())
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["source"], "yahoo")
+        self.assertEqual(result["bars_5m"], 21)
+        status = fresh_hub.get_status()
+        self.assertTrue(status["bootstrap_ok"])
+        self.assertIsNone(status["bootstrap_error"])
+
     def test_falls_back_to_stored_bars_when_kbars_fails_and_keeps_the_error_visible(self) -> None:
         today = datetime.now(TW).date()
         yesterday = today - timedelta(days=1)

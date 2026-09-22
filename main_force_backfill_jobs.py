@@ -91,24 +91,45 @@ def queue_backfill_for_codes(codes, dates, *, now=None):
     return len(rows)
 
 
-def queue_backfill_for_all_group_stocks(days=30, *, now=None):
-    """把stock_groups.py所有族群的股票(去重)過去days個平日(不含今天)排進
-    主力副圖回補佇列；讓即使沒被使用者手動點開過的股票，之後打開圖表時
-    主力買賣力也補得回來，不用每支股票各自等第一次被瀏覽才開始回補。
-    呼叫成本低(純SQLite寫入，不含任何Shioaji連線)，重複呼叫(例如每次
-    重新部署)對已經排過的組合是安全的no-op，可以放心在啟動時執行。"""
-    import stock_groups
-    now = time.time() if now is None else now
+def _recent_weekdays(days, now):
     today = datetime.fromtimestamp(now, TW_TZ).date()
-    codes = sorted({code for members in stock_groups.STOCK_GROUPS.values() for code, _name in members})
     dates: list[str] = []
     cursor = today - timedelta(days=1)
     while len(dates) < days:
         if cursor.weekday() < 5:
             dates.append(cursor.isoformat())
         cursor -= timedelta(days=1)
+    return dates
+
+
+def queue_backfill_for_all_group_stocks(days=3, *, now=None):
+    """把stock_groups.py所有族群的股票(去重)過去days個平日(不含今天)排進
+    主力副圖回補佇列；讓即使沒被使用者手動點開過的股票，之後打開圖表時
+    主力買賣力也補得回來，不用每支股票各自等第一次被瀏覽才開始回補。
+    呼叫成本低(純SQLite寫入，不含任何Shioaji連線)，重複呼叫(例如每次
+    重新部署)對已經排過的組合是安全的no-op，可以放心在啟動時執行。
+    預設只排最近3個平日：使用者明確說主力副圖補3天就夠，不用30天，逐筆
+    回補是Shioaji歷史額度的最大消耗者，之後的日子由每天的即時落盤自然累積。"""
+    import stock_groups
+    now = time.time() if now is None else now
+    codes = sorted({code for members in stock_groups.STOCK_GROUPS.values() for code, _name in members})
+    dates = _recent_weekdays(days, now)
     attempted = queue_backfill_for_codes(codes, dates, now=now)
     return {"stockCount": len(codes), "dates": dates, "attempted": attempted}
+
+
+def prune_pending_backfill_jobs(days=3, *, now=None):
+    """刪掉比最近days個平日還舊、還沒完成的回補工作（之前排的30天批次留下一萬多筆
+    pending，每天都會繼續吃Shioaji逐筆額度）；已完成的紀錄不動。回傳刪除筆數。"""
+    now = time.time() if now is None else now
+    cutoff = min(_recent_weekdays(days, now))
+    with get_connection() as connection:
+        _schema(connection)
+        cursor = connection.execute(
+            "DELETE FROM main_force_backfill_jobs WHERE status = 'pending' AND trade_date < ?",
+            (cutoff,),
+        )
+        return max(0, int(cursor.rowcount or 0))
 
 
 def process_main_force_backfill_job(*, service=None, now=None, backfill=None):
