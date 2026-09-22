@@ -41,6 +41,14 @@ from otc_index_store import load_index_bars_5m, save_index_bars_5m
 logger = logging.getLogger("hanstock.otc_index_service")
 
 
+def _short_error(exc: Exception) -> str:
+    """備援失敗原因給小工具那一行字用：HTTP 錯誤只留狀態碼，別把整段回應 JSON 印到手機畫面上。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return f"HTTP {code}"
+    return str(exc).splitlines()[0][:80] if str(exc) else type(exc).__name__
+
+
 class OtcIndexService:
     def __init__(self) -> None:
         self.contract: Any = None
@@ -155,7 +163,7 @@ class OtcIndexService:
                 try:
                     fallback_1m = runner()
                 except Exception as exc:  # noqa: BLE001
-                    fallback_errors.append(f"{source_name}: {exc}"[:200])
+                    fallback_errors.append(f"{source_name}: {_short_error(exc)}")
                     continue
                 current_minute_start = now_ms - (now_ms % 60_000)
                 fallback_1m = [bar for bar in fallback_1m if int(bar["ts"]) < current_minute_start]
