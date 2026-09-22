@@ -187,6 +187,8 @@ def _kick_otc_index_bootstrap(hub: Any) -> None:
 def get_history_sources(
     probe: str | None = Query(None),
     trade_date: str | None = Query(None),
+    symbols: str | None = Query(None),
+    finmind_id: str | None = Query(None),
 ) -> dict[str, Any]:
     """歷史分K來源自檢：永豐額度、FinMind/Yahoo備援統計。帶 probe=代號 會真的各打一次
     FinMind 與 Yahoo（不碰永豐額度），回傳筆數與首尾K棒，用來驗證備援的欄位、分鐘標籤
@@ -209,7 +211,11 @@ def get_history_sources(
             while day.weekday() >= 5:
                 day -= timedelta(days=1)
             trade_date = day.isoformat()
-        data["probe"] = probe_history_sources(code, trade_date, market=None if code == OTC_INDEX_CODE else stock_market(code))
+        data["probe"] = probe_history_sources(
+            code, trade_date, market=None if code == OTC_INDEX_CODE else stock_market(code),
+            yahoo_symbols=[item for item in (symbols or "").split(",") if item.strip()] or None,
+            finmind_id=finmind_id,
+        )
     # 統計放在 probe 之後才拿，成交量單位校準、資料集自動換名這些 probe 觸發的結果才看得到。
     data["sources"] = history_sources_status()
     return {"status": "ok", "data": data}

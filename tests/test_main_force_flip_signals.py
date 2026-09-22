@@ -228,6 +228,11 @@ def test_inspect_explains_which_filter_blocked_a_synchronized_flip(monkeypatch):
     assert len(blockers) == 1 and blockers[0].startswith("量比 0.27×"), blockers
     assert len(report["trace"]) == 10
     assert report["trace"][0]["skip"] == "warming_up"
+    # 暖機中也要看得到三個比率，另一台工具若在前幾根就發訊號才對得出來。
+    assert report["head"][0]["netRatio"] == -1.0
+    assert report["head"][0]["volumeRatio"] == round(100 * 270 / 1 / 100000, 2)
+    assert [row["time"] for row in report["crossStates"]] == ["09:01", "09:10"]
+    assert report["crossStates"][1]["zeroCross"] == "bull" and report["crossStates"][1]["vwapCross"] == "up"
     assert report["trace"][-1]["netRatio"] == round(310 / 490, 4)
     assert saved == []
     assert module.get_main_force_flip_monitor().status()["barsProcessed"] == live_before  # 不動即時偵測器

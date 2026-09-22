@@ -274,22 +274,24 @@ class MainForceFlipMonitor:
             if record is not None:
                 record["zeroCross"] = "bear"
 
+        # 三個比率先算好記進 trace（暖機中也要看得到），再做門檻判定。
+        volume_ratio = self._volume_ratio(state, close_ts)
+        distance_pct = (close / vwap - 1) * 100
+        if record is not None:
+            record.update({
+                "netRatio": round(state.cum_net / state.cum_gross, 4) if state.cum_gross else None,
+                "volumeRatio": round(volume_ratio, 2) if volume_ratio is not None else None,
+                "distancePct": round(distance_pct, 2), "aboveVwap": above,
+            })
         if state.bar_count < MIN_BARS or state.cum_gross < MIN_MAIN_GROSS_LOTS:
             if record is not None:
                 record["skip"] = "warming_up" if state.bar_count < MIN_BARS else "thin_main_force"
             return []
-        volume_ratio = self._volume_ratio(state, close_ts)
         if volume_ratio is None:
             if record is not None:
                 record["skip"] = "no_daily_volume" if not state.avg_daily_volume else "no_today_volume"
             return []
         net_ratio = state.cum_net / state.cum_gross
-        distance_pct = (close / vwap - 1) * 100
-        if record is not None:
-            record.update({
-                "netRatio": round(net_ratio, 4), "volumeRatio": round(volume_ratio, 2),
-                "distancePct": round(distance_pct, 2), "aboveVwap": above,
-            })
         window_start = close_ts - SYNC_WINDOW_MS
 
         def synced(zero_ts: int | None, vwap_ts: int | None) -> bool:
@@ -406,6 +408,11 @@ def inspect_flip_signals(
     trace = monitor.trace()
     near_misses = [row for row in trace if (row.get("bull") or {}).get("blockers") or (row.get("bear") or {}).get("blockers")]
     vwap = monitor._vwap(state) if state else None
+    compact_keys = ("time", "close", "vwap", "cumNet", "cumGross", "netRatio", "volumeRatio", "distancePct", "aboveVwap",
+                    "skip", "zeroCross", "vwapCross")
+
+    def compact(row: dict[str, Any]) -> dict[str, Any]:
+        return {key: row[key] for key in compact_keys if row.get(key) is not None}
     result: dict[str, Any] = {
         "code": code, "tradeDate": trade_date,
         "history": {"source": history.get("history_source"), "error": history.get("error"), "dayBars": len(day_bars)},
@@ -419,6 +426,9 @@ def inspect_flip_signals(
         "vwapCrosses": [{"time": row["time"], "dir": row["vwapCross"]} for row in trace if row.get("vwapCross")],
         "signals": signals,
         "nearMissCount": len(near_misses), "nearMisses": near_misses[:60],
+        # 開盤前 15 根與每個穿越當下的狀態：另一台工具若在暖機期就發訊號，從這裡對得出來。
+        "head": [compact(row) for row in trace[:15]],
+        "crossStates": [compact(row) for row in trace if row.get("zeroCross") or row.get("vwapCross")][:40],
         "thresholds": monitor.status()["thresholds"],
     }
     if include_trace:

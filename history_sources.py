@@ -394,6 +394,7 @@ def fetch_finmind_minute_bars(
     fetcher: Optional[Fetcher] = None,
     ignore_block: bool = False,
     block_on_error: bool = True,
+    data_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     token = _finmind_token()
     if not token:
@@ -402,7 +403,7 @@ def fetch_finmind_minute_bars(
         return []
     call = fetcher or _default_fetcher
     is_index = str(code).strip().upper() == OTC_INDEX_CODE
-    symbol = FINMIND_OTC_INDEX_ID if is_index else str(code).strip().upper()
+    symbol = data_id.strip() if data_id else (FINMIND_OTC_INDEX_ID if is_index else str(code).strip().upper())
     rows: list[Any] = []
     try:
         # 逐日打；中途失敗（限流、被拒）就整個放棄讓鏈往 Yahoo 走，不然拿到缺天的資料還當成功。
@@ -604,24 +605,46 @@ def _probe_one(runner: Callable[[], list[dict[str, Any]]]) -> dict[str, Any]:
         }
 
 
-def probe_history_sources(code: str, trade_date: str, *, market: Optional[str] = None, fetcher: Optional[Fetcher] = None) -> dict[str, Any]:
+def probe_history_sources(
+    code: str,
+    trade_date: str,
+    *,
+    market: Optional[str] = None,
+    fetcher: Optional[Fetcher] = None,
+    yahoo_symbols: Optional[list[str]] = None,
+    finmind_id: Optional[str] = None,
+) -> dict[str, Any]:
     """真的各打一次 FinMind 與 Yahoo（不碰永豐額度），回傳筆數與首尾 K 棒，用來驗證
     欄位、分鐘標籤與成交量單位是否正確。code 是 OTC_INDEX／TPEX／^TWOII 時改探櫃買指數：
-    Yahoo 1 分 K、5 分 K 與 FinMind 櫃買分 K 各打一次。"""
+    Yahoo 1 分 K、5 分 K 與 FinMind 櫃買分 K 各打一次；yahoo_symbols／finmind_id 可以一次
+    多試幾個代號，不用改設定重新部署就能找出哪個代號拿得到指數。"""
     code_key = str(code).strip().upper()
     if code_key in (OTC_INDEX_CODE, "TPEX", "^TWOII"):
-        out: dict[str, Any] = {"code": OTC_INDEX_CODE, "tradeDate": trade_date, "market": "INDEX", "yahooSymbol": OTC_INDEX_YAHOO_SYMBOL}
+        symbols = [item.strip() for item in (yahoo_symbols or []) if item and item.strip()] or [OTC_INDEX_YAHOO_SYMBOL]
+        index_id = (finmind_id or "").strip() or FINMIND_OTC_INDEX_ID
+        out: dict[str, Any] = {"code": OTC_INDEX_CODE, "tradeDate": trade_date, "market": "INDEX", "yahooSymbol": symbols[0]}
+        candidates: dict[str, dict[str, Any]] = {}
+        for sym in symbols:
+            candidates[sym] = {}
+            for interval in YAHOO_INDEX_INTERVALS:
+                candidates[sym][interval] = _probe_one(
+                    lambda sym=sym, interval=interval: fetch_yahoo_minute_bars(
+                        sym, trade_date, trade_date, fetcher=fetcher, symbol=sym, interval=interval,
+                    )
+                )
         for interval in YAHOO_INDEX_INTERVALS:
-            out[f"yahoo{interval}"] = _probe_one(
-                lambda interval=interval: fetch_yahoo_minute_bars(OTC_INDEX_CODE, trade_date, trade_date, fetcher=fetcher, interval=interval)
-            )
+            out[f"yahoo{interval}"] = candidates[symbols[0]][interval]
+        if len(symbols) > 1:
+            out["yahooCandidates"] = candidates
         if _finmind_token():
             out["finmind"] = _probe_one(
-                lambda: fetch_finmind_minute_bars(OTC_INDEX_CODE, trade_date, trade_date, fetcher=fetcher, ignore_block=True, block_on_error=False)
+                lambda: fetch_finmind_minute_bars(
+                    OTC_INDEX_CODE, trade_date, trade_date, fetcher=fetcher, ignore_block=True, block_on_error=False, data_id=index_id,
+                )
             )
         else:
             out["finmind"] = {"ok": False, "error": "FINMIND_TOKEN 未設定"}
-        out["finmind"].update({"dataset": _finmind_dataset(), "dataId": FINMIND_OTC_INDEX_ID})
+        out["finmind"].update({"dataset": _finmind_dataset(), "dataId": index_id})
         return out
 
     out = {"code": code, "tradeDate": trade_date, "market": market}
