@@ -8,9 +8,11 @@ from intraday_large_order import (
     normalize_intraday_large_order_signal,
 )
 
+_REGULAR_GROUPS = [group for group in module.STOCK_GROUPS if group not in module.EXCLUDED_GROUPS]
+
 
 def test_builds_top_and_bottom_twenty_group_candidates():
-    ranks = {group: index + 1 for index, group in enumerate(list(module.STOCK_GROUPS)[:45])}
+    ranks = {group: index + 1 for index, group in enumerate(_REGULAR_GROUPS)}
     buy, sell = build_group_candidates(ranks)
     assert buy
     assert sell
@@ -26,9 +28,17 @@ def test_builds_live_group_ranks_from_local_stock_ticks():
 
     ranks = build_live_group_ranks(Service())
 
-    assert len(ranks) >= 40
+    assert len(ranks) == len(_REGULAR_GROUPS)
+    assert len(ranks) >= module.MIN_LIVE_GROUPS
     assert min(ranks.values()) == 1
     assert max(ranks.values()) == len(ranks)
+
+
+def test_min_live_groups_leaves_slack_below_the_group_count():
+    # 族群清單縮到43個之後，舊的固定門檻40等於只容許3個族群沒報價；門檻
+    # 改成跟族群總數連動(七成)，才不會本地排名備援一天到晚整輪算失敗。
+    assert module.MIN_LIVE_GROUPS == max(10, round(len(_REGULAR_GROUPS) * 0.7))
+    assert module.MIN_LIVE_GROUPS < len(_REGULAR_GROUPS)
 
 
 def test_ensure_group_universe_subscriptions_stays_well_under_the_subscription_cap():
@@ -232,7 +242,7 @@ def test_persistence_lock_keeps_signal_in_memory_and_retries(monkeypatch):
 
 
 def test_local_candidates_survive_snapshot_persistence_failure(monkeypatch):
-    groups = list(module.STOCK_GROUPS)[:45]
+    groups = _REGULAR_GROUPS
     monkeypatch.setattr(module, "load_group_strength_history", lambda _trade_date: [])
     monkeypatch.setattr(module, "_ensure_group_universe_subscriptions", lambda _service: None)
     monkeypatch.setattr(
@@ -280,7 +290,7 @@ def test_fresh_stored_snapshot_is_reused_without_recomputing(monkeypatch):
     import time
 
     now_ms = int(time.time() * 1000)
-    groups = list(module.STOCK_GROUPS)[:45]
+    groups = _REGULAR_GROUPS
     ranks = {group: index + 1 for index, group in enumerate(groups)}
     monkeypatch.setattr(
         module, "load_group_strength_history",
@@ -305,14 +315,14 @@ def test_stale_stored_snapshot_triggers_recomputation(monkeypatch):
 
     now_ms = int(time.time() * 1000)
     stale_ts = now_ms - module.GROUP_RANKING_STALE_MS - 1000
-    old_groups = list(module.STOCK_GROUPS)[:45]
+    old_groups = _REGULAR_GROUPS
     old_ranks = {group: index + 1 for index, group in enumerate(old_groups)}
     monkeypatch.setattr(
         module, "load_group_strength_history",
         lambda _trade_date: [{"bucketTs": stale_ts, "ranks": old_ranks}],
     )
     monkeypatch.setattr(module, "_ensure_group_universe_subscriptions", lambda _service: None)
-    new_groups = list(module.STOCK_GROUPS)[5:50]
+    new_groups = _REGULAR_GROUPS[5:]
     new_ranks = {group: index + 1 for index, group in enumerate(new_groups)}
     monkeypatch.setattr(module, "build_live_group_ranks", lambda _service: new_ranks)
     monkeypatch.setattr(module, "save_group_strength_snapshot", lambda *_args: len(new_ranks))
@@ -337,7 +347,7 @@ def test_stale_snapshot_recomputation_failure_falls_back_to_old_ranking(monkeypa
 
     now_ms = int(time.time() * 1000)
     stale_ts = now_ms - module.GROUP_RANKING_STALE_MS - 1000
-    old_groups = list(module.STOCK_GROUPS)[:45]
+    old_groups = _REGULAR_GROUPS
     old_ranks = {group: index + 1 for index, group in enumerate(old_groups)}
     monkeypatch.setattr(
         module, "load_group_strength_history",
