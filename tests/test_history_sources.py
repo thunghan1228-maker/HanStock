@@ -146,6 +146,49 @@ class ChainTests(unittest.TestCase):
         self.assertEqual((bars, source), ([], None))
         self.assertTrue(all(url.startswith(module.YAHOO_CHART_URL) for url in calls))
 
+    def test_finmind_4xx_opens_circuit_breaker_but_probe_still_calls(self) -> None:
+        # 正式環境實測：TaiwanStockPriceMinute 全部回 422，幾百檔每檔都白打一次。
+        # 被拒後 10 分鐘內鏈就直接跳過 FinMind；probe 是人在看，照打才看得到錯誤內容。
+        calls: list[str] = []
+
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                calls.append("finmind")
+                raise module.SourceHttpError(422, "Unprocessable Entity", '{"detail":[{"msg":"permitted: TaiwanStockPrice"}]}')
+            calls.append("yahoo")
+            return {"chart": {"result": [], "error": None}}
+
+        module._finmind_blocked_until = 0.0
+        with patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"}):
+            fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+            fetch_minute_bars_chain("2317", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+            status = module.history_sources_status()
+            probe = probe_history_sources("2330", "2026-09-22", market="TSE", fetcher=fetcher)
+        module._finmind_blocked_until = 0.0
+
+        self.assertEqual(calls.count("finmind"), 2)  # 第二檔被斷路器擋掉，probe 照打
+        self.assertGreater(status["finmind"]["blockedForSeconds"], 0)
+        self.assertIn("permitted: TaiwanStockPrice", status["finmind"]["lastError"])
+        self.assertIn("HTTP 422", probe["finmind"]["error"])
+
+    def test_yahoo_remembers_which_suffix_worked(self) -> None:
+        calls: list[str] = []
+
+        def fetcher(url, params):
+            calls.append(url.rsplit("/", 1)[1])
+            if url.endswith(".TW"):
+                raise RuntimeError("404")
+            return {"chart": {"result": [{
+                "timestamp": [ts("2026-09-22", 9, 0) // 1000],
+                "indicators": {"quote": [{"open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1000]}]},
+            }], "error": None}}
+
+        module._yahoo_suffix_cache.clear()
+        fetch_yahoo_minute_bars("6197", "2026-09-22", "2026-09-22", fetcher=fetcher)
+        fetch_yahoo_minute_bars("6197", "2026-09-22", "2026-09-22", fetcher=fetcher)
+
+        self.assertEqual(calls, ["6197.TW", "6197.TWO", "6197.TWO"])
+
     def test_probe_reports_each_source(self) -> None:
         def fetcher(url, params):
             if url.startswith(module.FINMIND_DATA_URL):
