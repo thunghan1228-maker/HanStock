@@ -237,13 +237,13 @@ def classify_holder_strength(
     if not eligible:
         return round(pct, 2), None
     if pct >= HOLDER_STRENGTH_STRONG_PCT:
-        label = "強力買進"
+        label = "盤中大戶強力買進"
     elif pct >= HOLDER_STRENGTH_SIGNAL_PCT:
-        label = "強多"
+        label = "盤中大戶偏買"
     elif pct <= -HOLDER_STRENGTH_STRONG_PCT:
-        label = "強力賣出"
+        label = "盤中大戶強力賣出"
     elif pct <= -HOLDER_STRENGTH_SIGNAL_PCT:
-        label = "強空"
+        label = "盤中大戶偏賣"
     else:
         label = None
     return round(pct, 2), label
@@ -284,15 +284,24 @@ def load_main_force_ranking(
             """,
             (trade_date, interval, limit),
         ).fetchall()
+    from stock_trading_eligibility import get_trading_eligibility
+
     results = []
     for row in rows:
         buy_amount = float(row["buy_amount"] or 0)
         sell_amount = float(row["sell_amount"] or 0)
         total_amount = float(row["total_amount"] or 0)
         strength_pct, holder_label = classify_holder_strength(buy_amount, sell_amount, total_amount)
+        code = row["stock_code"]
+        # 融資/融券/可現股當沖/有股期跟大戶力本身無關，抓不到(Shioaji未登入等)
+        # 就是這幾個欄位維持None，不影響大戶力排行本身。
+        try:
+            eligibility = get_trading_eligibility(code)
+        except Exception:  # noqa: BLE001
+            eligibility = {"marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": None}
         results.append({
-            "code": row["stock_code"],
-            "name": row["stock_name"] or row["stock_code"],
+            "code": code,
+            "name": row["stock_name"] or code,
             "netVolume": int(row["net_volume"] or 0),
             "buyVolume": int(row["buy_volume"] or 0),
             "sellVolume": int(row["sell_volume"] or 0),
@@ -300,6 +309,10 @@ def load_main_force_ranking(
             "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
             "strengthPct": strength_pct,
             "holderLabel": holder_label,
+            "marginable": eligibility["marginable"],
+            "shortable": eligibility["shortable"],
+            "dayTradeEligible": eligibility["dayTradeEligible"],
+            "hasStockFutures": eligibility["hasStockFutures"],
         })
     return results
 
