@@ -177,8 +177,10 @@ class BootstrapResilienceTests(_TempDatabaseTestCase):
 
     def test_every_fallback_failure_stays_visible_in_the_error(self) -> None:
         # 使用者只看得到「資料蒐集中」：每個來源為什麼沒拿到都要留在錯誤裡，才查得出卡在哪。
+        from history_sources import SourceHttpError
+
         def yahoo(*args, **kwargs):
-            raise RuntimeError("HTTP 404 Not Found")
+            raise SourceHttpError(404, "Not Found", '{"chart":{"result":null,"error":{"code":"Not Found"}}}')
 
         def finmind(*args, **kwargs):
             raise RuntimeError("HTTP 400 Bad Request")
@@ -198,6 +200,9 @@ class BootstrapResilienceTests(_TempDatabaseTestCase):
         for fragment in ("quota exhausted", "yahoo: HTTP 404", "yahoo5m: HTTP 404", "finmind: HTTP 400"):
             self.assertIn(fragment, result["error"])
             self.assertIn(fragment, fresh_hub.get_status()["bootstrap_error"])
+        # 手機小工具會直接顯示這行字：HTTP 錯誤只留狀態碼，不印整段回應 JSON。
+        self.assertNotIn("chart", result["error"])
+        self.assertIn("yahoo: HTTP 404、yahoo5m: HTTP 404、finmind: HTTP 400", result["error"])
 
     def test_falls_back_to_stored_bars_when_kbars_fails_and_keeps_the_error_visible(self) -> None:
         today = datetime.now(TW).date()
