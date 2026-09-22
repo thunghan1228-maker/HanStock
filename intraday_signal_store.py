@@ -412,16 +412,24 @@ def delete_kline_signals_for_ticker(trade_date: str, ticker: str) -> int:
     的去重機制（同一天同一檔同一kind只認第一筆）會讓「即時路徑因為
     這檔股票訂閱較晚才啟動、算出時間錯誤的舊紀錄」卡住新算出來的正確
     時間，回補等於白做。"""
+    return delete_signals_for_ticker(trade_date, ticker, KLINE_SIGNAL_KINDS)
+
+
+def delete_signals_for_ticker(trade_date: str, ticker: str, kinds: Iterable[str]) -> int:
+    """刪除單一股票在 trade_date 當天、指定 kind 家族的所有已保存紀錄；只影響指定
+    家族。各家族回補重播前用，讓重播結果完全以重算版本為準。"""
+    kind_tuple = tuple(sorted({str(kind) for kind in kinds if str(kind)}))
+    if not kind_tuple:
+        return 0
     _ensure_table()
-    kinds = tuple(sorted(KLINE_SIGNAL_KINDS))
-    placeholders = ", ".join("?" for _ in kinds)
+    placeholders = ", ".join("?" for _ in kind_tuple)
     with get_connection() as connection:
         cursor = connection.execute(
             f"""
             DELETE FROM intraday_signals
             WHERE trade_date = ? AND ticker = ? AND kind IN ({placeholders})
             """,
-            (trade_date, ticker, *kinds),
+            (trade_date, ticker, *kind_tuple),
         )
         return max(0, int(cursor.rowcount or 0))
 
