@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from otc_index import (
     FIVE_MIN_MS,
@@ -22,6 +23,8 @@ from otc_index import (
     taipei_trade_date,
     timestamp_to_ms,
 )
+
+logger = logging.getLogger("hanstock.otc_index_hub")
 
 
 @dataclass
@@ -84,13 +87,16 @@ class _IndexBarSeries:
             # 歷史 bootstrap 只放已完成 K；同 timestamp 後寫覆蓋前寫。
             self.completed[bar.ts] = bar
 
-    def on_quote(self, price: float, volume: int, ts_ms: int) -> None:
+    def on_quote(self, price: float, volume: int, ts_ms: int) -> Optional[IndexBar]:
+        """回傳這筆報價收掉的前一根 K（換 bucket 時），沒有則 None。"""
         bucket = ts_ms - (ts_ms % self.interval_ms)
         if self.current is not None and bucket < self.current.ts:
-            return
+            return None
+        finished: Optional[IndexBar] = None
         if self.current is None or self.current.ts != bucket:
             if self.current is not None and self.current.tick_count > 0:
                 self.completed[self.current.ts] = self.current
+                finished = self.current
             # 若 bootstrap 已經有同一 bucket，延用該 OHLC 再接續即時 quote。
             seeded = self.completed.pop(bucket, None)
             if seeded is not None:
@@ -100,6 +106,7 @@ class _IndexBarSeries:
             self.current.update(price, volume)
         else:
             self.current.update(price, volume)
+        return finished
 
     def bars(self, include_current: bool = True) -> list[dict[str, Any]]:
         rows = [bar.to_dict() for _, bar in sorted(self.completed.items())]
@@ -126,7 +133,9 @@ class OtcIndexHub:
         self._bootstrap_ok = False
         self._bootstrap_bar_count_1m = 0
         self._bootstrap_bar_count_5m = 0
+        self._bootstrap_error: Optional[str] = None
         self._error: Optional[str] = None
+        self._bar_persister: Optional[Callable[[list[dict[str, Any]]], Any]] = None
 
     def _rollover_if_needed(self, trade_date: Optional[str] = None) -> None:
         current_date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
@@ -139,7 +148,13 @@ class OtcIndexHub:
         self._bootstrap_ok = False
         self._bootstrap_bar_count_1m = 0
         self._bootstrap_bar_count_5m = 0
+        self._bootstrap_error = None
         self._trade_date = current_date
+
+    def set_bar_persister(self, persister: Optional[Callable[[list[dict[str, Any]]], Any]]) -> None:
+        """每收掉一根 5 分 K 就交給 persister 存起來（部署端接 SQLite；單元測試不接）。"""
+        with self._lock:
+            self._bar_persister = persister
 
     def configure_contract(self, code: str, name: str) -> None:
         with self._lock:
@@ -156,6 +171,9 @@ class OtcIndexHub:
         bars_1m: list[dict[str, Any]],
         bars_5m: list[dict[str, Any]],
         trade_date: str,
+        *,
+        ok: Optional[bool] = None,
+        error: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._rollover_if_needed(trade_date)
@@ -163,7 +181,9 @@ class OtcIndexHub:
             self._bars_5m.seed(bars_5m)
             self._bootstrap_bar_count_1m = len(bars_1m)
             self._bootstrap_bar_count_5m = len(bars_5m)
-            self._bootstrap_ok = bool(bars_5m)
+            self._bootstrap_ok = bool(bars_5m) if ok is None else bool(ok)
+            # 跟 _error 分開放：set_subscribed(True) 會清 _error，補齊失敗的原因要留著給人看。
+            self._bootstrap_error = error
             if bars_5m:
                 self._error = None
 
@@ -200,11 +220,17 @@ class OtcIndexHub:
         with self._lock:
             self._rollover_if_needed(trade_date)
             self._bars_1m.on_quote(price, volume_value, ts_ms)
-            self._bars_5m.on_quote(price, volume_value, ts_ms)
+            finished_5m = self._bars_5m.on_quote(price, volume_value, ts_ms)
             self._latest_quote = dict(quote_data)
             self._latest_quote_received_at = time.time()
             self._subscribed = True
             self._error = None
+            persister = self._bar_persister
+        if finished_5m is not None and persister is not None:
+            try:
+                persister([finished_5m.to_dict()])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[OTC Index] 5 分 K 持久化失敗: %s", exc)
 
     def get_bars_1m(self, include_current: bool = True) -> list[dict[str, Any]]:
         with self._lock:
@@ -245,6 +271,7 @@ class OtcIndexHub:
                 "bootstrap_ok": self._bootstrap_ok,
                 "bootstrap_bar_count_1m": self._bootstrap_bar_count_1m,
                 "bootstrap_bar_count_5m": self._bootstrap_bar_count_5m,
+                "bootstrap_error": self._bootstrap_error,
                 "bar_count_1m": len(bars_1m),
                 "bar_count_5m": len(bars_5m),
                 "latest_quote_age_seconds": age,

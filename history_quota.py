@@ -11,6 +11,22 @@ class HistoryQuotaGate:
         self.api = None
         self.checked_at = float("-inf")
         self.error = None
+        self.last_usage = None
+        self.last_probe_at = None
+
+    def snapshot(self, api=None):
+        """給健康檢查看的額度快照：有 api 就順便（依 TTL）探一次 usage()。"""
+        if api is not None:
+            self.check(api)
+        probed_at = None
+        if self.last_probe_at is not None:
+            probed_at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(self.last_probe_at))
+        return {
+            "blocked": bool(self.error),
+            "error": self.error,
+            "usage": dict(self.last_usage) if self.last_usage else None,
+            "probedAt": probed_at,
+        }
 
     def check(self, api, *, now=None):
         usage = getattr(api, "usage", None)
@@ -31,6 +47,10 @@ class HistoryQuotaGate:
                 result = usage()
                 read = result.get if isinstance(result, dict) else lambda key: getattr(result, key, None)
                 remaining, limit = read("remaining_bytes"), read("limit_bytes")
+                self.last_usage = {
+                    key: read(key) for key in ("connections", "bytes", "limit_bytes", "remaining_bytes")
+                }
+                self.last_probe_at = time.time()
                 if remaining is not None and limit is not None:
                     self.error = QUOTA_EXHAUSTED if float(limit) > 0 and float(remaining) <= 0 else None
             except Exception:

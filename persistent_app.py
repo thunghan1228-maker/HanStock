@@ -24,8 +24,11 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
+from history_quota import history_quota
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_trade_date
 from otc_index_hub import get_otc_index_hub
+from otc_index_service import get_otc_index_service
+from otc_index_store import save_index_bars_5m
 from stock_history_service import get_stock_history_bars_1m, get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import start_stock_bar_repair_collector
@@ -50,6 +53,9 @@ async def _persistent_lifespan(fastapi_app):
             pass
 
         if quote_deployment_role() == "primary":
+            # 櫃買指數每收掉一根5分K就存進SQLite：重新部署/跨日後的MA20歷史不再
+            # 只能靠Shioaji kbars（額度用完就整天「資料蒐集中」）。
+            get_otc_index_hub().set_bar_persister(save_index_bars_5m)
             start_main_force_collector()
             start_intraday_large_order_collector()
             start_four_gate_signals_collector()
@@ -132,7 +138,30 @@ def get_quote_health() -> dict[str, Any]:
     intraday_large_order_collector背景工作本身就有在用)，只是先前只有
     沒有部署的api_server.py才對外暴露，這裡補上讓正式部署的app也能查。"""
     service = get_quote_service()
-    return {"status": "ok", "data": service.get_stock_health()}
+    api = getattr(service, "api", None)
+    return {
+        "status": "ok",
+        "data": {
+            **service.get_stock_health(),
+            # Shioaji歷史資料流量額度：kbars回補(個股主力副圖/櫃買指數)失敗時先看這裡。
+            "historyQuota": history_quota.snapshot(api),
+            "otcIndex": {**get_otc_index_hub().get_status(), "lastError": get_otc_index_service().last_error},
+        },
+    }
+
+
+def _kick_otc_index_bootstrap(hub: Any) -> None:
+    """跨日rollover或kbars補齊失敗後hub的bootstrap_ok會是False：趁前端輪詢時在背景重補，
+    不用等下一次重新部署/重連才有MA20歷史。"""
+    try:
+        if hub.get_status().get("bootstrap_ok"):
+            return
+        service = get_quote_service()
+        if not bool(getattr(getattr(service, "state", None), "logged_in", False)):
+            return
+        get_otc_index_service().ensure_bootstrapped(service.api)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.get("/api/hub/intraday-signals")
@@ -407,10 +436,14 @@ def get_otc_index_strength() -> dict[str, Any]:
     today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
     if len(bars) < 20 or not quote or not today_bars:
+        _kick_otc_index_bootstrap(hub)
         return {
             "status": "ok",
             "ready": False,
-            "reason": "資料不足（需要至少20根5分K歷史與今日即時報價）",
+            "reason": (
+                f"資料不足（5分K {len(bars)}/20 根、今日 {len(today_bars)} 根、"
+                f"即時報價{'有' if quote else '無'}），歷史5分K補齊中"
+            ),
             "barCount": len(bars),
             "todayBarCount": len(today_bars),
             "hub": hub.get_status(),
