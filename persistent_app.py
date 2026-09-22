@@ -264,13 +264,16 @@ def get_main_force_flip_inspect(
 def get_intraday_signals(
     trade_date: str | None = Query(None),
     kind: str | None = Query(None),
-    limit: int = Query(200, ge=1, le=5000),
+    limit: int = Query(200, ge=1, le=20000),
+    include_chart_kinds: bool = Query(False),
 ) -> dict[str, Any]:
     """讀取已永久保存的盤中訊號。
 
     5 分鐘K線結構性訊號(12空/1+2多/創高黑龍等)由intraday_kline_signals.py
     在本機即時偵測寫入；即時大單與四項精選也共用同一個永久訊號表。此端點
-    只讀取已保存資料，不對外連線。
+    只讀取已保存資料，不對外連線。不指定 kind 的當日總表預設不含只在 K 線圖
+    上疊符號的 5 分 K 訊號（905／20MA 穿越等），那些一天就幾千筆，會把早盤的
+    其他訊號擠出 limit；要完整資料帶 include_chart_kinds=true。
     """
     if trade_date:
         try:
@@ -282,7 +285,7 @@ def get_intraday_signals(
     signals = (
         load_latest_signals_by_kind(date, kind, limit=limit)
         if kind
-        else load_latest_signals(date, limit=limit)
+        else load_latest_signals(date, limit=limit, include_chart_kinds=include_chart_kinds)
     )
     return {
         "status": "ok",

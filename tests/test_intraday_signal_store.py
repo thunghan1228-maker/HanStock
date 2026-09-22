@@ -190,9 +190,33 @@ class LoadLatestSignalsTests(unittest.TestCase):
             for i in range(250)
         ]
         save_intraday_signals(rows)
-        signals = load_latest_signals("2026-09-21", limit=500)
+        signals = load_latest_signals("2026-09-21", limit=500, include_chart_kinds=True)
         self.assertEqual(len(signals), 250)
         self.assertEqual(min(s["barTs"] for s in signals), 1_000)
+
+    def test_chart_only_kline_kinds_are_left_out_so_early_signals_survive_the_limit(self):
+        # 2026-09-22 正式環境：一天的圖表用 5 分 K 訊號超過 5000 筆，09 點多那批主力翻多空
+        # 全被 ORDER BY bar_ts DESC LIMIT 砍掉，前端只看得到 12:19 的那一筆。訊號中心根本
+        # 不顯示圖表用的 kind，當日總表預設就不要回它們。
+        chart_rows = [
+            {"tradeDate": "2026-09-22", "ticker": "TEST", "kind": "watch12short",
+             "label": "注意12空", "barTs": 2_000 + i, "price": 100.0}
+            for i in range(300)
+        ]
+        early = [
+            {"tradeDate": "2026-09-22", "ticker": "3532", "kind": "mainForceFlipBull",
+             "label": "主力累計強勢翻多", "barTs": 1_000, "price": 451.5, "note": "A～D同步濾網"},
+            {"tradeDate": "2026-09-22", "ticker": "2330", "kind": "oneTwoShort",
+             "label": "12空", "barTs": 1_500, "price": 1000.0},
+        ]
+        save_intraday_signals(chart_rows + early)
+
+        signals = load_latest_signals("2026-09-22", limit=100)
+        self.assertEqual([s["kind"] for s in signals], ["oneTwoShort", "mainForceFlipBull"])
+
+        full = load_latest_signals("2026-09-22", limit=100, include_chart_kinds=True)
+        self.assertEqual(len(full), 100)
+        self.assertTrue(all(s["kind"] == "watch12short" for s in full))  # 帶完整資料時早盤那兩筆就被上限吃掉
 
 
 class DeleteKlineSignalsForTickerTests(unittest.TestCase):
