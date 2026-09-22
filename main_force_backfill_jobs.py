@@ -117,8 +117,14 @@ def process_main_force_backfill_job(*, service=None, now=None, backfill=None):
     with get_connection() as connection:
         _schema(connection)
         connection.execute("BEGIN IMMEDIATE")
+        # 使用者明確要求的(next_attempt=0)先做；其餘批次工作「最近的交易日優先」：
+        # Shioaji一天500MB的歷史額度撐不完全族群x30天，照原本插入順序(逐檔把30天
+        # 跑完)會變成少數幾檔補滿30天、其他幾百檔什麼都沒有；最近日期優先則是
+        # 每一檔都先有最近幾天的主力副圖，日線圖上最常看的區間最先補齊。
         row = connection.execute("""SELECT stock_code, trade_date FROM main_force_backfill_jobs
-            WHERE status='pending' AND next_attempt<=? ORDER BY next_attempt LIMIT 1""", (now,)).fetchone()
+            WHERE status='pending' AND next_attempt<=?
+            ORDER BY CASE WHEN next_attempt = 0 THEN 0 ELSE 1 END, trade_date DESC, next_attempt
+            LIMIT 1""", (now,)).fetchone()
         if row is None:
             return None
         code, date = row["stock_code"], row["trade_date"]

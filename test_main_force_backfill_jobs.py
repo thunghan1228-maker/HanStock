@@ -80,6 +80,23 @@ class MainForceBackfillJobTests(unittest.TestCase):
         self.db_patch.stop()
         self.temp.cleanup()
 
+    def test_batch_jobs_run_most_recent_date_first_but_explicit_requests_win(self):
+        # 一天500MB額度撐不完全族群x30天：批次工作要「最近交易日優先」，每檔都先
+        # 有最近幾天；使用者明確要求的(next_attempt=0)則一律插隊到最前面。
+        queue_backfill_for_codes(["2330", "2455"], ["2026-09-01", "2026-09-05", "2026-09-03"], now=self.now - 10)
+        request_main_force_backfill("2455", "2026-09-01", now=self.now)
+        seen = []
+
+        def fake(code, date, **_kwargs):
+            seen.append((code, date))
+            return dict(self.success)
+
+        for _ in range(4):
+            process_main_force_backfill_job(now=self.now, backfill=fake)
+
+        self.assertEqual(seen[0], ("2455", "2026-09-01"))
+        self.assertEqual([date for _code, date in seen[1:]], ["2026-09-05", "2026-09-05", "2026-09-03"])
+
     def test_partial_day_is_queued_and_duplicate_request_does_not_reset_retry(self):
         save_main_force_bars("2455", "5m", [{"ts": 1788832800000, "main_buy_volume": 67,
             "main_sell_volume": 56, "main_force_available": True}])

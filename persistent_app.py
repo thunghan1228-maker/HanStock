@@ -31,7 +31,7 @@ from otc_index_service import get_otc_index_service
 from otc_index_store import save_index_bars_5m
 from stock_history_service import get_stock_history_bars_1m, get_stock_history_bars_5m
 from stock_bar_bootstrap import stock_bar_repair_status
-from stock_bar_repair_collector import start_stock_bar_repair_collector
+from stock_bar_repair_collector import backfill_pause_reason, start_stock_bar_repair_collector
 from quote_service import get_quote_service
 
 
@@ -120,6 +120,7 @@ def get_persistence_status() -> dict[str, Any]:
             "otcGapBackfill": otc_gap_backfill_state(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
+            "mainForceBackfillPausedReason": backfill_pause_reason(),
             "klineSignalBackfillCollectorEnabled": os.getenv(
                 "HANSTOCK_KLINE_SIGNAL_BACKFILL_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
