@@ -218,19 +218,32 @@ def save_intraday_signals(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]
     return inserted
 
 
-def load_latest_signals(trade_date: str, limit: int = 20, market_only: bool = False) -> list[dict[str, Any]]:
+def load_latest_signals(
+    trade_date: str,
+    limit: int = 20,
+    market_only: bool = False,
+    *,
+    include_chart_kinds: bool = False,
+) -> list[dict[str, Any]]:
     _ensure_table()
     # 活躍盤勢中一日全部訊號種類加起來可能遠超過200筆。跟
     # load_latest_signals_by_kind同樣的教訓：這裡若先截成200，網站即使
     # 要求完整交易日也只會拿到「最新的一小段」（ORDER BY bar_ts DESC），
     # 早盤紀錄不是沒發生，是被這個上限直接砍掉、看起來像消失了。
-    limit = max(1, min(int(limit), 5000))
+    # 2026-09-22 同樣的事在 5000 筆上限再發生一次：一天的圖表用 5 分 K 訊號（905／20MA
+    # 穿越、MA520 等）就超過 5000 筆，早盤的主力翻多空整批被砍掉、只剩 12:19 那筆。訊號
+    # 中心根本不顯示那些 kind（K 線圖走 /stock/{code} 端點自己拿），當日總表預設不回它們。
+    limit = max(1, min(int(limit), 20000))
     where = "trade_date = ?"
     params: list[Any] = [trade_date]
     if market_only:
         where += " AND kind = 'break15kLow'"
     else:
         where += " AND kind <> 'break15kLow'"
+        if not include_chart_kinds:
+            chart_only = tuple(sorted(CHART_ONLY_KLINE_KINDS))
+            where += f" AND kind NOT IN ({', '.join('?' for _ in chart_only)})"
+            params.extend(chart_only)
     with get_connection() as connection:
         rows = connection.execute(
             f"""
@@ -353,6 +366,10 @@ KLINE_SIGNAL_KINDS = {
     "short12",
     "watch12short",
 }
+# 訊號中心有專屬分頁的 5 分 K 訊號；其餘 K 線訊號只在 K 線圖上疊符號（走 /stock/{code} 端點），
+# 當日總表預設不回，免得幾千筆圖表用訊號把早盤的其他訊號擠出 limit。
+SIGNAL_CENTER_KLINE_KINDS = {"oneTwoShort", "combo12Bull", "blackDragon"}
+CHART_ONLY_KLINE_KINDS = KLINE_SIGNAL_KINDS - SIGNAL_CENTER_KLINE_KINDS
 
 
 def _out_of_session_kline_where(kinds: tuple[str, ...]) -> str:
