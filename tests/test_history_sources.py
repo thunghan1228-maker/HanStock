@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,25 @@ def ts(day: str, hour: int, minute: int) -> int:
     return int(datetime.fromisoformat(f"{day}T{hour:02d}:{minute:02d}:00").replace(tzinfo=TW).timestamp() * 1000)
 
 
+def finmind_rows(volume: int, day: str = "2026-09-22") -> list[dict]:
+    return [{"date": day, "minute": "09:01:00", "open": 100, "max": 101, "min": 99, "close": 100.5, "volume": volume}]
+
+
+def yahoo_payload(volume_shares: int, day: str = "2026-09-22") -> dict:
+    return {"chart": {"result": [{
+        "timestamp": [ts(day, 9, 0) // 1000],
+        "indicators": {"quote": [{"open": [100.0], "high": [101.0], "low": [99.0], "close": [100.5], "volume": [volume_shares]}]},
+    }], "error": None}}
+
+
+# 正式環境看到的 FinMind 422：FastAPI enum 錯誤，msg 與 ctx.expected 各列一份允許的資料集。
+PERMITTED = "'CnnFearGreedIndex', 'TaiwanFutOptTickInfo', 'TaiwanStockInfo', 'TaiwanStockKBar', 'TaiwanStockPrice' or 'USStockPriceMinute'"
+FINMIND_422_BODY = json.dumps({"detail": [{
+    "type": "enum", "loc": ["query", "dataset"], "msg": f"Input should be {PERMITTED}",
+    "input": "TaiwanStockPriceMinute", "ctx": {"expected": PERMITTED},
+}]})
+
+
 class FinMindParserTests(unittest.TestCase):
     def test_close_time_labels_shift_back_one_minute_and_shares_become_lots(self) -> None:
         rows = [
@@ -30,7 +50,7 @@ class FinMindParserTests(unittest.TestCase):
             {"date": "2026-09-21", "minute": "09:01:00", "open": 90, "max": 91, "min": 89, "close": 90.5, "volume": 1000},
         ]
 
-        bars = parse_finmind_minute_rows(rows, "2026-09-22", "2026-09-22")
+        bars = parse_finmind_minute_rows(rows, "2026-09-22", "2026-09-22", volume_unit="shares")
 
         self.assertEqual([b["ts"] for b in bars], [ts("2026-09-22", 9, 0), ts("2026-09-22", 9, 1)])
         self.assertEqual(bars[0]["volume"], 12)
@@ -103,6 +123,12 @@ class YahooParserTests(unittest.TestCase):
 
 
 class ChainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        module._reset_runtime_state()
+
+    def tearDown(self) -> None:
+        module._reset_runtime_state()
+
     def test_finmind_failure_falls_through_to_yahoo(self) -> None:
         def fetcher(url, params):
             if url.startswith(module.FINMIND_DATA_URL):
@@ -127,7 +153,8 @@ class ChainTests(unittest.TestCase):
                 ]}
             raise AssertionError("FinMind 有資料時不該再打 Yahoo")
 
-        with patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"}):
+        # 成交量單位指定了就不需要拿 Yahoo 校準，FinMind 有資料時 Yahoo 一次都不該打。
+        with patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"}), patch.object(module, "FINMIND_MINUTE_VOLUME_UNIT", "lots"):
             bars, source = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", fetcher=fetcher)
 
         self.assertEqual(source, "finmind")
@@ -158,13 +185,11 @@ class ChainTests(unittest.TestCase):
             calls.append("yahoo")
             return {"chart": {"result": [], "error": None}}
 
-        module._finmind_blocked_until = 0.0
         with patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"}):
             fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
             fetch_minute_bars_chain("2317", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
             status = module.history_sources_status()
             probe = probe_history_sources("2330", "2026-09-22", market="TSE", fetcher=fetcher)
-        module._finmind_blocked_until = 0.0
 
         self.assertEqual(calls.count("finmind"), 2)  # 第二檔被斷路器擋掉，probe 照打
         self.assertGreater(status["finmind"]["blockedForSeconds"], 0)
@@ -183,7 +208,6 @@ class ChainTests(unittest.TestCase):
                 "indicators": {"quote": [{"open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1000]}]},
             }], "error": None}}
 
-        module._yahoo_suffix_cache.clear()
         fetch_yahoo_minute_bars("6197", "2026-09-22", "2026-09-22", fetcher=fetcher)
         fetch_yahoo_minute_bars("6197", "2026-09-22", "2026-09-22", fetcher=fetcher)
 
@@ -204,6 +228,170 @@ class ChainTests(unittest.TestCase):
         status = module.history_sources_status()
         self.assertEqual(status["order"], ["finmind", "yahoo"])
         self.assertIn("yahoo 429", status["yahoo"]["lastError"])
+        self.assertEqual(probe["finmind"]["dataset"], module.FINMIND_MINUTE_DATASET)
+
+
+class FinMindDatasetAutoSelectTests(unittest.TestCase):
+    """正式環境實測：資料集名稱猜錯被 422 拒絕，但回應把允許的名稱全列出來了，
+    程式自己對出分 K 資料集重打，不用再改設定重新部署一次。"""
+
+    def setUp(self) -> None:
+        module._reset_runtime_state()
+        self.env = patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"})
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        module._reset_runtime_state()
+
+    def test_permitted_list_is_parsed_from_msg_and_ctx(self) -> None:
+        error = module.SourceHttpError(422, "Unprocessable Entity", FINMIND_422_BODY)
+        names = module.permitted_datasets_from_error(error)
+        self.assertEqual(names[:2], ["CnnFearGreedIndex", "TaiwanFutOptTickInfo"])
+        self.assertIn("TaiwanStockKBar", names)
+        self.assertEqual(len(names), len(set(names)))  # msg 與 ctx.expected 重複的只留一份
+        # 非 enum 錯誤、沒提到 dataset 的內容不會被當成清單。
+        self.assertEqual(module.permitted_datasets_from_error(module.SourceHttpError(402, "Payment", '{"msg":"level not allowed"}')), [])
+        self.assertEqual(module.permitted_datasets_from_error(RuntimeError("timeout")), [])
+
+    def test_truncated_body_still_yields_the_names_before_the_cut(self) -> None:
+        cut = FINMIND_422_BODY[: FINMIND_422_BODY.index("'TaiwanStockPrice'") + 8]  # JSON 已經不完整
+        names = module.permitted_datasets_from_error(module.SourceHttpError(422, "Unprocessable Entity", cut))
+        self.assertEqual(names, ["CnnFearGreedIndex", "TaiwanFutOptTickInfo", "TaiwanStockInfo", "TaiwanStockKBar"])
+
+    def test_rejected_dataset_is_replaced_by_a_permitted_minute_dataset_in_the_same_call(self) -> None:
+        datasets: list[str] = []
+
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                datasets.append(params["dataset"])
+                if params["dataset"] != "TaiwanStockKBar":
+                    raise module.SourceHttpError(422, "Unprocessable Entity", FINMIND_422_BODY)
+                return {"status": 200, "data": finmind_rows(25)}
+            return yahoo_payload(25000)
+
+        with patch.object(module, "FINMIND_MINUTE_DATASET", "TaiwanStockPriceMinute"):
+            bars, source = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+            again, _ = fetch_minute_bars_chain("2317", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+            status = module.history_sources_status()
+            probe = probe_history_sources("2330", "2026-09-22", market="TSE", fetcher=fetcher)
+
+        self.assertEqual(source, "finmind")
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(len(again), 1)
+        # 第一檔：猜錯 → 換名重打；之後每檔都直接用對的名稱。
+        self.assertEqual(datasets, ["TaiwanStockPriceMinute", "TaiwanStockKBar", "TaiwanStockKBar", "TaiwanStockKBar"])
+        self.assertEqual(status["finmind"]["dataset"], "TaiwanStockKBar")
+        self.assertEqual(status["finmind"]["configuredDataset"], "TaiwanStockPriceMinute")
+        self.assertTrue(status["finmind"]["datasetAutoSelected"])
+        self.assertEqual(status["finmind"]["blockedForSeconds"], 0)  # 換名成功就不開斷路器
+        self.assertEqual(status["finmind"]["permittedDatasetCount"], 6)
+        self.assertEqual(status["finmind"]["permittedStockDatasets"], ["TaiwanStockInfo", "TaiwanStockKBar", "TaiwanStockPrice"])
+        self.assertEqual(probe["finmind"]["dataset"], "TaiwanStockKBar")
+        self.assertTrue(probe["finmind"]["ok"])
+
+    def test_unknown_minute_dataset_name_is_picked_by_pattern(self) -> None:
+        body = json.dumps({"detail": [{"type": "enum", "loc": ["query", "dataset"],
+                                       "msg": "Input should be 'TaiwanStockPrice', 'TaiwanStockMinuteKBar' or 'USStockPriceMinute'"}]})
+        datasets: list[str] = []
+
+        def fetcher(url, params):
+            datasets.append(params["dataset"])
+            if params["dataset"] == "TaiwanStockKBar":
+                raise module.SourceHttpError(422, "Unprocessable Entity", body)
+            return {"status": 200, "data": finmind_rows(25)}
+
+        with patch.object(module, "FINMIND_MINUTE_VOLUME_UNIT", "lots"):
+            bars = module.fetch_finmind_minute_bars("2330", "2026-09-22", "2026-09-22", fetcher=fetcher)
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(datasets, ["TaiwanStockKBar", "TaiwanStockMinuteKBar"])  # 美股分 K 不會被挑到
+
+    def test_rejection_without_a_minute_dataset_blocks_and_exposes_the_permitted_names(self) -> None:
+        body = json.dumps({"detail": [{"type": "enum", "loc": ["query", "dataset"],
+                                       "msg": "Input should be 'TaiwanStockInfo', 'TaiwanStockPrice' or 'USStockPriceMinute'"}]})
+        datasets: list[str] = []
+
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                datasets.append(params["dataset"])
+                raise module.SourceHttpError(422, "Unprocessable Entity", body)
+            return {"chart": {"result": [], "error": None}}
+
+        bars, source = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+        status = module.history_sources_status()
+
+        self.assertEqual((bars, source), ([], None))
+        self.assertEqual(datasets, [module.FINMIND_MINUTE_DATASET])  # 沒有可換的名稱就不重打
+        self.assertFalse(status["finmind"]["datasetAutoSelected"])
+        self.assertGreater(status["finmind"]["blockedForSeconds"], 0)
+        self.assertEqual(status["finmind"]["permittedStockDatasets"], ["TaiwanStockInfo", "TaiwanStockPrice"])
+        self.assertIn("HTTP 422", status["finmind"]["lastError"])
+
+
+class FinMindVolumeUnitTests(unittest.TestCase):
+    """FinMind 分 K 的成交量是「張」還是「股」文件沒說死：第一次拿到資料時跟 Yahoo 同一天的量對一次。"""
+
+    def setUp(self) -> None:
+        module._reset_runtime_state()
+        self.env = patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"})
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        module._reset_runtime_state()
+
+    def _fetcher(self, finmind_volume: int, yahoo_volume_shares=25000, yahoo_calls: list | None = None):
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                return {"status": 200, "data": finmind_rows(finmind_volume)}
+            if yahoo_calls is not None:
+                yahoo_calls.append(url)
+            if yahoo_volume_shares is None:
+                raise RuntimeError("yahoo down")
+            return yahoo_payload(yahoo_volume_shares)
+        return fetcher
+
+    def test_volumes_a_thousand_times_yahoo_are_shares_and_the_answer_is_cached(self) -> None:
+        yahoo_calls: list[str] = []
+        fetcher = self._fetcher(25000, 25000, yahoo_calls)
+
+        first, _ = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+        second, _ = fetch_minute_bars_chain("2317", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+        status = module.history_sources_status()
+
+        self.assertEqual(first[0]["volume"], 25)
+        self.assertEqual(second[0]["volume"], 25)
+        self.assertEqual(len(yahoo_calls), 1)  # 整個程序只校準一次
+        self.assertEqual(status["finmind"]["volumeUnit"], "auto")
+        self.assertEqual(status["finmind"]["volumeUnitDetected"], "shares")
+        self.assertEqual(status["finmind"]["volumeCalibration"]["ratio"], 1000.0)
+        self.assertEqual(status["finmind"]["volumeCalibration"]["dates"], ["2026-09-22"])
+
+    def test_volumes_matching_yahoo_are_lots_and_left_alone(self) -> None:
+        bars, _ = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=self._fetcher(25, 25000))
+
+        self.assertEqual(bars[0]["volume"], 25)
+        self.assertEqual(module.history_sources_status()["finmind"]["volumeUnitDetected"], "lots")
+
+    def test_calibration_is_retried_while_yahoo_is_unavailable(self) -> None:
+        yahoo_calls: list[str] = []
+        fetcher = self._fetcher(25, None, yahoo_calls)
+
+        bars, _ = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+        fetch_minute_bars_chain("2317", "2026-09-22", "2026-09-22", market="TSE", fetcher=fetcher)
+
+        self.assertEqual(bars[0]["volume"], 25)  # 校準不了先當張數
+        self.assertEqual(len(yahoo_calls), 2)  # 每次都再試著校準
+        self.assertIsNone(module.history_sources_status()["finmind"]["volumeUnitDetected"])
+
+    def test_env_unit_skips_calibration(self) -> None:
+        yahoo_calls: list[str] = []
+        with patch.object(module, "FINMIND_MINUTE_VOLUME_UNIT", "shares"):
+            bars, _ = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-22", market="TSE", fetcher=self._fetcher(25000, 25000, yahoo_calls))
+
+        self.assertEqual(bars[0]["volume"], 25)
+        self.assertEqual(yahoo_calls, [])
 
 
 if __name__ == "__main__":

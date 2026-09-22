@@ -4,7 +4,9 @@
 MA20、收盤後 5 分 K 訊號校正、主力累計翻多空重播用；主力副圖的逐筆回補仍只有永豐能做。
 兩個來源的細節（FinMind 分 K 資料表欄位、Yahoo 非官方 chart API）在開發環境連不到外網
 無法驗證，所以解析寫得寬鬆、任何來源拿不到就往下一個走，並由 /api/hub/history-sources
-提供自檢（probe 會真的各打一次，回傳筆數與首尾 K 棒）。
+提供自檢（probe 會真的各打一次，回傳筆數與首尾 K 棒）。FinMind 的資料集名稱與成交量單位
+也在正式環境自己對：被 422 拒絕就從回應的允許清單挑分 K 資料集重打，成交量第一次拿到時
+跟 Yahoo 同幾天的總量比一次，差上千倍就是股數。
 """
 
 from __future__ import annotations
@@ -25,10 +27,15 @@ from otc_index import ONE_MIN_MS, TW_TZ, is_regular_otc_session, taipei_trade_da
 
 logger = logging.getLogger("hanstock.history_sources")
 FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
-FINMIND_MINUTE_DATASET = os.getenv("HANSTOCK_FINMIND_MINUTE_DATASET", "TaiwanStockPriceMinute")
-# FinMind 日 K 的 Trading_Volume 是「股」；分 K 未驗證，預設也當股數處理，probe 看到數字
-# 不對再用環境變數改成 lots。
-FINMIND_MINUTE_VOLUME_UNIT = os.getenv("HANSTOCK_FINMIND_MINUTE_VOLUME_UNIT", "shares").strip().lower()
+# FinMind 的台股分 K 資料表叫 TaiwanStockKBar（欄位 date/minute/stock_id/open/max/min/close/volume）；
+# 正式環境實測舊預設 TaiwanStockPriceMinute 被 422 拒絕。FinMind 的 422 內容會把全部允許的
+# 資料集名稱列出來，所以被拒時直接從清單挑分 K 資料集重打一次，不用再改設定重新部署。
+FINMIND_MINUTE_DATASET = os.getenv("HANSTOCK_FINMIND_MINUTE_DATASET", "").strip() or "TaiwanStockKBar"
+FINMIND_MINUTE_DATASET_CANDIDATES = ("TaiwanStockKBar", "TaiwanStockPriceMinute", "TaiwanStockMinutePrice")
+# FinMind 日 K 的 Trading_Volume 是「股」，逐筆與分 K 多半是「張」，沒驗證過就別猜：auto 會在
+# 第一次拿到分 K 時拿 Yahoo 同幾天的總量比一次（差上千倍就是股數），環境變數也可硬指定 lots/shares。
+FINMIND_MINUTE_VOLUME_UNIT = os.getenv("HANSTOCK_FINMIND_MINUTE_VOLUME_UNIT", "").strip().lower() or "auto"
+FINMIND_SHARES_RATIO_THRESHOLD = 30.0
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 YAHOO_MAX_DAYS_PER_REQUEST = 7
 OTC_INDEX_YAHOO_SYMBOL = os.getenv("HANSTOCK_OTC_INDEX_YAHOO_SYMBOL", "^TWOII")
@@ -45,7 +52,7 @@ class SourceHttpError(RuntimeError):
     probe 看得到才有辦法對出正確參數。"""
 
     def __init__(self, code: int, reason: str, body: str) -> None:
-        super().__init__(f"HTTP {code} {reason}: {body}".strip())
+        super().__init__(f"HTTP {code} {reason}: {body[:600]}".strip())
         self.code = code
         self.body = body
 
@@ -59,7 +66,24 @@ _status: dict[str, dict[str, Any]] = {
     for name in SOURCE_ORDER
 }
 _finmind_blocked_until = 0.0
+_finmind_dataset_override: Optional[str] = None
+_finmind_permitted_datasets: list[str] = []
+_finmind_volume_unit_detected: Optional[str] = None
+_finmind_volume_calibration: Optional[dict[str, Any]] = None
 _yahoo_suffix_cache: dict[str, str] = {}
+
+
+def _reset_runtime_state() -> None:
+    """測試用：清掉斷路器、自動選到的資料集、成交量單位校準與 Yahoo 後綴快取。"""
+    global _finmind_blocked_until, _finmind_dataset_override, _finmind_permitted_datasets
+    global _finmind_volume_unit_detected, _finmind_volume_calibration
+    with _status_lock:
+        _finmind_blocked_until = 0.0
+        _finmind_dataset_override = None
+        _finmind_permitted_datasets = []
+        _finmind_volume_unit_detected = None
+        _finmind_volume_calibration = None
+        _yahoo_suffix_cache.clear()
 
 
 def _finmind_token() -> str:
@@ -76,7 +100,8 @@ def _default_fetcher(url: str, params: dict[str, str]) -> Any:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         try:
-            body = exc.read().decode("utf-8", errors="replace")[:500]
+            # FinMind 422 會把允許的資料集整份列兩次（msg 與 ctx.expected），要留夠長才對得出名稱。
+            body = exc.read().decode("utf-8", errors="replace")[:20000]
         except Exception:  # noqa: BLE001
             body = ""
         raise SourceHttpError(exc.code, str(exc.reason), body) from exc
@@ -163,11 +188,81 @@ def _date_chunks(start_date: str, end_date: str, max_days: int):
 # ---------------------------------------------------------------- FinMind
 
 _LABEL_RE = re.compile(r"^(\d{1,2}):(\d{2})")
+_QUOTED_NAME_RE = re.compile(r"'([A-Za-z][A-Za-z0-9_]*)'")
+_MINUTE_DATASET_RE = re.compile(r"^TaiwanStock.*(KBar|Minute)", re.IGNORECASE)
 
 
-def parse_finmind_minute_rows(rows: Any, start_date: str, end_date: str) -> list[dict[str, Any]]:
+def _finmind_dataset() -> str:
+    with _status_lock:
+        return _finmind_dataset_override or FINMIND_MINUTE_DATASET
+
+
+def permitted_datasets_from_error(error: Any) -> list[str]:
+    """從 FinMind 的 422 驗證錯誤撈出允許的資料集名稱：FastAPI 的 enum 錯誤會在 msg 與
+    ctx.expected 用單引號把整份清單列出來。內容被截斷、不是完整 JSON 時退回用正則從原文撈。"""
+    body = str(getattr(error, "body", "") or "")
+    if "dataset" not in body:
+        return []
+    texts: list[str] = []
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        details = payload.get("detail")
+        for item in details if isinstance(details, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if "dataset" not in [str(part) for part in (item.get("loc") or [])]:
+                continue
+            texts.append(str(item.get("msg") or ""))
+            context = item.get("ctx")
+            if isinstance(context, dict):
+                texts.append(str(context.get("expected") or ""))
+    else:
+        texts.append(body)
+    names: list[str] = []
+    for chunk in texts:
+        for name in _QUOTED_NAME_RE.findall(chunk):
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _pick_minute_dataset(permitted: list[str], rejected: str) -> Optional[str]:
+    """允許清單裡挑分 K 資料集：先看設定值與已知候選，再找名稱像分 K 的。"""
+    names = [name for name in permitted if name != rejected]
+    for candidate in (FINMIND_MINUTE_DATASET, *FINMIND_MINUTE_DATASET_CANDIDATES):
+        if candidate in names:
+            return candidate
+    for name in names:
+        if _MINUTE_DATASET_RE.match(name):
+            return name
+    return None
+
+
+def _note_rejected_dataset(error: Exception, rejected: str) -> Optional[str]:
+    """被拒的資料集若附了允許清單就記下來，回傳可改用的分 K 資料集（清單裡沒有就 None）。"""
+    global _finmind_dataset_override, _finmind_permitted_datasets
+    permitted = permitted_datasets_from_error(error)
+    if not permitted:
+        return None
+    replacement = _pick_minute_dataset(permitted, rejected)
+    with _status_lock:
+        _finmind_permitted_datasets = list(permitted)
+        if replacement:
+            _finmind_dataset_override = replacement
+    if replacement:
+        logger.warning("[HistorySources] FinMind 拒絕資料集 %s，改用允許清單裡的 %s", rejected, replacement)
+    else:
+        logger.warning("[HistorySources] FinMind 拒絕資料集 %s，允許清單裡找不到分 K 資料集: %s", rejected, ", ".join(permitted))
+    return replacement
+
+
+def parse_finmind_minute_rows(rows: Any, start_date: str, end_date: str, *, volume_unit: str = "lots") -> list[dict[str, Any]]:
     """把 FinMind 分 K 列轉成 bar-start 1 分 K。分鐘標籤是收棒還是起始時間官方沒說死：
-    同一天若出現 09:00 就當起始時間，否則當收棒時間（跟 Shioaji kbars 一樣減一分鐘）。"""
+    同一天若出現 09:00 就當起始時間，否則當收棒時間（跟 Shioaji kbars 一樣減一分鐘）。
+    volume_unit 是列裡成交量的單位（lots 原樣、shares 除以 1000）。"""
     if not isinstance(rows, list):
         return []
     by_date: dict[str, list[tuple[int, dict[str, Any]]]] = {}
@@ -188,7 +283,7 @@ def parse_finmind_minute_rows(rows: Any, start_date: str, end_date: str) -> list
         day_start_ms = _tw_epoch(date_text) * 1000
         for minute_of_day, row in items:
             start_minute = minute_of_day if labels_are_bar_start else minute_of_day - 1
-            volume = _lots(row.get("volume", row.get("Trading_Volume", 0)), FINMIND_MINUTE_VOLUME_UNIT)
+            volume = _lots(row.get("volume", row.get("Trading_Volume", 0)), volume_unit)
             bar = _make_bar(
                 day_start_ms + start_minute * ONE_MIN_MS,
                 row.get("open"), row.get("max", row.get("high")), row.get("min", row.get("low")), row.get("close"), volume,
@@ -198,11 +293,62 @@ def parse_finmind_minute_rows(rows: Any, start_date: str, end_date: str) -> list
     return _dedupe_sorted(bars)
 
 
+def _volume_by_date(bars: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for bar in bars:
+        day = taipei_trade_date(int(bar["ts"]))
+        totals[day] = totals.get(day, 0) + int(bar.get("volume") or 0)
+    return totals
+
+
+def _finmind_volume_unit(
+    code: str,
+    start_date: str,
+    end_date: str,
+    raw_bars: list[dict[str, Any]],
+    *,
+    market: Optional[str],
+    fetcher: Optional[Fetcher],
+) -> str:
+    """分 K 成交量單位：環境變數指定就照用；auto 則第一次拿到資料時跟 Yahoo 同幾天的總量比一次，
+    差上千倍就是股數，之後整個程序沿用。Yahoo 拿不到就先當張數，下一次再校準。"""
+    global _finmind_volume_unit_detected, _finmind_volume_calibration
+    if FINMIND_MINUTE_VOLUME_UNIT in ("lots", "shares"):
+        return FINMIND_MINUTE_VOLUME_UNIT
+    with _status_lock:
+        detected = _finmind_volume_unit_detected
+    if detected:
+        return detected
+    finmind_by_date = _volume_by_date(raw_bars)
+    try:
+        yahoo_bars = fetch_yahoo_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[HistorySources] FinMind 成交量單位暫時校準不了（Yahoo %s 失敗）: %s", code, exc)
+        return "lots"
+    yahoo_by_date = _volume_by_date(yahoo_bars)
+    common = sorted(day for day, total in finmind_by_date.items() if total > 0 and yahoo_by_date.get(day, 0) > 0)
+    if not common:
+        return "lots"
+    finmind_total = sum(finmind_by_date[day] for day in common)
+    yahoo_total = sum(yahoo_by_date[day] for day in common)
+    ratio = finmind_total / yahoo_total
+    unit = "shares" if ratio >= FINMIND_SHARES_RATIO_THRESHOLD else "lots"
+    with _status_lock:
+        _finmind_volume_unit_detected = unit
+        _finmind_volume_calibration = {
+            "code": code, "dates": common, "finmindRaw": finmind_total, "yahooLots": yahoo_total,
+            "ratio": round(ratio, 3), "at": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+        }
+    logger.info("[HistorySources] FinMind 分 K 成交量判定為 %s（%s 與 Yahoo 總量比 %.3f）", unit, code, ratio)
+    return unit
+
+
 def fetch_finmind_minute_bars(
     code: str,
     start_date: str,
     end_date: str,
     *,
+    market: Optional[str] = None,
     fetcher: Optional[Fetcher] = None,
     ignore_block: bool = False,
 ) -> list[dict[str, Any]]:
@@ -212,21 +358,33 @@ def fetch_finmind_minute_bars(
     if not ignore_block and _finmind_blocked_seconds() > 0:
         return []
     call = fetcher or _default_fetcher
-    try:
-        payload = call(FINMIND_DATA_URL, {
-            "dataset": FINMIND_MINUTE_DATASET, "data_id": str(code).strip().upper(),
-            "start_date": start_date, "end_date": end_date, "token": token,
-        })
-    except Exception as exc:
-        _record("finmind", symbol=code, error=exc)
-        _finmind_block(exc)
-        raise
+    dataset = _finmind_dataset()
+    payload: Any = None
+    for attempt in (1, 2):
+        try:
+            payload = call(FINMIND_DATA_URL, {
+                "dataset": dataset, "data_id": str(code).strip().upper(),
+                "start_date": start_date, "end_date": end_date, "token": token,
+            })
+            break
+        except Exception as exc:
+            # 資料集名稱被拒、但回應列了允許清單：換成清單裡的分 K 資料集立刻重打一次。
+            replacement = _note_rejected_dataset(exc, dataset)
+            if replacement and attempt == 1:
+                dataset = replacement
+                continue
+            _record("finmind", symbol=code, error=exc)
+            _finmind_block(exc)
+            raise
     if isinstance(payload, dict) and payload.get("status") not in (None, 200) and not payload.get("data"):
         error = SourceHttpError(int(payload.get("status") or 0), "FinMind", str(payload.get("msg"))[:300])
         _record("finmind", symbol=code, error=error)
         _finmind_block(error)
         raise error
     bars = parse_finmind_minute_rows(payload.get("data") if isinstance(payload, dict) else None, start_date, end_date)
+    if bars and _finmind_volume_unit(code, start_date, end_date, bars, market=market, fetcher=fetcher) == "shares":
+        for bar in bars:
+            bar["volume"] = int(bar["volume"] / 1000)
     _record("finmind", symbol=code, bars=bars)
     return bars
 
@@ -343,7 +501,7 @@ def fetch_minute_bars_chain(
     for name in SOURCE_ORDER:
         try:
             if name == "finmind":
-                bars = fetch_finmind_minute_bars(code, start_date, end_date, fetcher=fetcher)
+                bars = fetch_finmind_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
             else:
                 bars = fetch_yahoo_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
         except Exception as exc:  # noqa: BLE001
@@ -371,11 +529,20 @@ def stock_market(code: str) -> Optional[str]:
 def history_sources_status() -> dict[str, Any]:
     with _status_lock:
         stats = {name: dict(entry) for name, entry in _status.items()}
+        dataset_override = _finmind_dataset_override
+        permitted = list(_finmind_permitted_datasets)
+        volume_unit_detected = _finmind_volume_unit_detected
+        volume_calibration = dict(_finmind_volume_calibration) if _finmind_volume_calibration else None
     return {
         "order": list(SOURCE_ORDER),
         "finmind": {
-            "configured": bool(_finmind_token()), "dataset": FINMIND_MINUTE_DATASET,
-            "volumeUnit": FINMIND_MINUTE_VOLUME_UNIT,
+            "configured": bool(_finmind_token()),
+            "dataset": dataset_override or FINMIND_MINUTE_DATASET, "configuredDataset": FINMIND_MINUTE_DATASET,
+            "datasetAutoSelected": dataset_override is not None,
+            "permittedDatasetCount": len(permitted),
+            "permittedStockDatasets": [name for name in permitted if name.startswith("TaiwanStock")],
+            "volumeUnit": FINMIND_MINUTE_VOLUME_UNIT, "volumeUnitDetected": volume_unit_detected,
+            "volumeCalibration": volume_calibration,
             "blockedForSeconds": round(_finmind_blocked_seconds()), **stats["finmind"],
         },
         "yahoo": {"otcIndexSymbol": OTC_INDEX_YAHOO_SYMBOL, **stats["yahoo"]},
@@ -394,7 +561,7 @@ def probe_history_sources(code: str, trade_date: str, *, market: Optional[str] =
                     out[name] = {"ok": False, "error": "FINMIND_TOKEN 未設定"}
                     continue
                 # probe 是人在看，斷路器擋住也照打，才看得到最新的錯誤內容。
-                bars = fetch_finmind_minute_bars(code, trade_date, trade_date, fetcher=fetcher, ignore_block=True)
+                bars = fetch_finmind_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher, ignore_block=True)
             else:
                 bars = fetch_yahoo_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher)
             out[name] = {
@@ -407,4 +574,7 @@ def probe_history_sources(code: str, trade_date: str, *, market: Optional[str] =
                 "ok": False, "error": f"{type(exc).__name__}: {exc}"[:700],
                 "elapsedMs": round((time.monotonic() - started) * 1000),
             }
+        finally:
+            if name == "finmind" and name in out:
+                out[name]["dataset"] = _finmind_dataset()
     return out
