@@ -14,9 +14,12 @@ TWSE/TPEx 官方公告的股票期貨標的清單，這個專案已經維護在�
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable, Iterable, Optional
 
 from stock_bar_bootstrap import _resolve_stock_contract
 from stock_groups import STOCK_GROUPS
@@ -25,9 +28,13 @@ _FUTURES_UNDERLYING_CODES = frozenset(
     str(code).strip().upper() for code, _name in STOCK_GROUPS.get("股期標的", [])
 )
 
+logger = logging.getLogger("hanstock.trading_eligibility")
 _cache_lock = threading.Lock()
 _cache: dict[str, dict[str, Any]] = {}
 _cache_day = ""
+_warmer_started = False
+_warmer_status: dict[str, Any] = {"lastRunAt": None, "resolved": 0, "unknown": 0, "rounds": 0}
+WARM_INTERVAL_SECONDS = max(30, int(os.getenv("HANSTOCK_ELIGIBILITY_WARM_SECONDS", "60")))
 TW_TZ = timezone(timedelta(hours=8))
 # 合約清單是登入後在背景下載的，還沒下載完時 Contract 物件拿得到但欄位全是空白（day_trade 是空字串、
 # 餘額是 0）。正式環境 2026-09-22 就是這樣：啟動時先被查了一輪，全部被當成「不可融資／不可當沖」
@@ -125,3 +132,60 @@ def get_trading_eligibility(code: str, *, service: Any = None) -> dict[str, Any]
 def clear_trading_eligibility_cache() -> None:
     with _cache_lock:
         _cache.clear()
+
+
+def peek_trading_eligibility(code: str) -> Optional[dict[str, Any]]:
+    """只讀快取、不查合約：給要一次回幾百檔的端點用，請求路徑不能卡在合約清單下載上。"""
+    code = str(code).strip().upper()
+    with _cache_lock:
+        if _cache_day != _today():
+            return None
+        cached = _cache.get(code)
+    return dict(cached) if cached is not None else None
+
+
+def warm_trading_eligibility(codes: Iterable[str], *, service: Any = None) -> dict[str, Any]:
+    """把一批代號逐一查過、填進快取；查不到（合約清單還沒下載完）的下一輪再試。"""
+    resolved = unknown = 0
+    for code in codes:
+        try:
+            info = get_trading_eligibility(code, service=service)
+        except Exception:  # noqa: BLE001
+            info = {"marginable": None}
+        if info.get("marginable") is None and info.get("dayTradeEligible") is None:
+            unknown += 1
+        else:
+            resolved += 1
+    status = {
+        "lastRunAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "resolved": resolved, "unknown": unknown,
+    }
+    with _cache_lock:
+        _warmer_status.update(status)
+        _warmer_status["rounds"] = int(_warmer_status.get("rounds") or 0) + 1
+    return status
+
+
+def trading_eligibility_warmer_status() -> dict[str, Any]:
+    with _cache_lock:
+        return dict(_warmer_status)
+
+
+def start_trading_eligibility_warmer(codes_provider: Callable[[], Iterable[str]]) -> bool:
+    """背景每分鐘把全部族群代號查一輪：登入後合約清單下載完成前查到的是空白（不快取），
+    之後幾輪內就會填滿；端點只讀快取，不會因為合約清單還在下載而卡住回 502。"""
+    global _warmer_started
+    with _cache_lock:
+        if _warmer_started:
+            return False
+        _warmer_started = True
+
+    def _loop() -> None:
+        while True:
+            try:
+                warm_trading_eligibility(list(codes_provider()))
+            except Exception:  # noqa: BLE001
+                logger.exception("[Eligibility] 背景更新失敗")
+            time.sleep(WARM_INTERVAL_SECONDS)
+
+    threading.Thread(target=_loop, name="hanstock-eligibility-warmer", daemon=True).start()
+    return True

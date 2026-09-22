@@ -36,6 +36,7 @@ class PersistenceLifespanTests(unittest.TestCase):
             patch.object(persistent_app, "start_kline_signal_backfill_collector") as kline_backfill_worker,
             patch.object(persistent_app, "start_main_force_flip_backfill_collector") as flip_backfill_worker,
             patch.object(persistent_app, "start_disposition_collector"),
+            patch.object(persistent_app, "start_trading_eligibility_warmer"),
         ):
             asyncio.run(exercise_lifespan())
 
