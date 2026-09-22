@@ -32,6 +32,7 @@ from otc_index import (
 from market_data_hub import _is_main_force_trade, _trade_side
 from history_cache import HistoryCache
 from history_quota import history_quota
+from shioaji_contracts import resolve_stock_contract
 
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
@@ -151,13 +152,7 @@ def _resolve_stock_contract(service: Any, code: str) -> Any:
     api = getattr(service, "api", None)
     if api is None:
         return None
-    contract = api.contracts.get(code)
-    if contract is None:
-        try:
-            contract = api.Contracts.Stocks[code]
-        except Exception:
-            contract = None
-    return contract
+    return resolve_stock_contract(api, code)
 
 
 def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:

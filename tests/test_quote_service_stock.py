@@ -324,6 +324,31 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(health["shared_pool_active_count"], 2)
         self.assertEqual(len(self.service.api.subscribed), 2)
 
+    def test_full_stock_contract_is_preferred_over_base_contract(self):
+        # Shioaji 1.7：api.contracts.get 只回 BaseContract（沒有 day_trade／融資券欄位），
+        # Contracts.Stocks 有完整合約時要用完整的那一個，清單還沒下載完才退回 BaseContract。
+        service = self.service
+
+        @dataclass
+        class FullStock:
+            code: str
+            security_type: str = "STK"
+            day_trade: str = "Yes"
+            margin_trading_balance: int = 1
+            short_selling_balance: int = 1
+
+        class Stocks:
+            def __getitem__(self, code):
+                if code != "2330":
+                    raise KeyError(code)
+                return FullStock(code)
+
+        service.api.Contracts = types.SimpleNamespace(Stocks=Stocks())
+        self.assertIsInstance(service._resolve_stock_contract("2330"), FullStock)
+        self.assertIsInstance(service._resolve_stock_contract("2317"), FakeContract)  # 清單裡還沒有 → BaseContract
+        self.assertTrue(service.ensure_stock_subscriptions(["2330"]))
+        self.assertIn(("2330", FakeQuoteType.Tick), service.api.subscribed)
+
     def test_invalid_contract_returns_failure(self):
         result = self.service.ensure_stock_subscriptions(["BAD1"])
         self.assertIn("BAD1", result["failed"])

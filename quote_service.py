@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+from shioaji_contracts import resolve_stock_contract
 import threading
 import time
 from collections import OrderedDict
@@ -267,10 +268,9 @@ class QuoteService:
 
     def _resolve_stock_contract(self, code: str) -> Any:
         if self.api is None: return None
-        contract=self.api.contracts.get(code)
-        if contract is None:
-            try: contract=self.api.Contracts.Stocks[code]
-            except Exception: contract=None
+        # 完整的 Stock 合約（有 day_trade／融資券餘額欄位）優先；api.contracts.get 只回 BaseContract，
+        # 合約清單還沒下載完時才退回用它（訂閱行情兩種都能用）。
+        contract=resolve_stock_contract(self.api, code)
         if contract is None: return None
         security_type=str(getattr(contract,"security_type","")).upper()
         if security_type and "STK" not in security_type and "STOCK" not in security_type: return None
