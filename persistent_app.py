@@ -239,7 +239,9 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         "sample": {code: stocks[code] for code in ("2330", "1101", "3532") if code in stocks},
         "unknownEligibilityCount": unknown,
         "eligibilityWarmer": trading_eligibility_warmer_status(),
-        "dispositionCodes": sorted(disposition),
+        # 公告清單（TWSE／TPEx／Shioaji punish）＋ 永豐個股資訊列處置等級 > 0 的，合在一起
+        "dispositionCodes": sorted(code for code, info in stocks.items() if info.get("disposition")),
+        "dispositionLevelCodes": sorted(code for code, info in stocks.items() if int(info.get("dispositionLevel") or 0) > 0),
         "disposition": disposition_status(),
         # 診斷：背景暖機上一輪對一檔合約的檢查結果（合約型別、contracts.info 欄位、各條路的耗時），
         # 融資券旗標全是 null／false 時看這裡；請求路徑本身不碰 Shioaji。

@@ -122,7 +122,8 @@ class TradingEligibilityTests(unittest.TestCase):
 
             def credit_enquires(self, contracts, timeout=30000):
                 self.calls.append(len(contracts))
-                return [Row("2330", 60, 90, margin_unit=100, short_unit=5), Row("8996", 0, 0)]
+                # 2330 成數是小數且當天額度單位已用完（0）：成數 > 0 就算可；8996 全 0 → 不可
+                return [Row("2330", 0.6, 0.9, margin_unit=0, short_unit=0), Row("8996", 0, 0)]
 
         class CreditService(FakeService):
             def __init__(self, contract):
@@ -213,7 +214,8 @@ class TradingEligibilityTests(unittest.TestCase):
                 self.code = code
 
         rows = {
-            "2330": SimpleNamespace(day_trade="Yes", margin_loan_ratio=60, short_margin_ratio=90, short_selling_suspended=False, disposition_level=0, attention_flag=False, trading_suspended=False),
+            # 正式環境 2026-09-22 的成數是小數（0.6／0.9），不是 60／90
+            "2330": SimpleNamespace(day_trade="Yes", margin_loan_ratio=0.6, short_margin_ratio=0.9, short_selling_suspended=False, disposition_level=0, attention_flag=False, trading_suspended=False),
             "8996": SimpleNamespace(day_trade="No", margin_loan_ratio=0, short_margin_ratio=0, short_selling_suspended=False, disposition_level=1, attention_flag=True, trading_suspended=False),
             "2454": SimpleNamespace(day_trade="OnlyBuy", margin_loan_ratio=60, short_margin_ratio=90, short_selling_suspended=True, disposition_level=0, attention_flag=False, trading_suspended=False),
         }
@@ -251,7 +253,7 @@ class TradingEligibilityTests(unittest.TestCase):
         self.assertTrue(mediatek["dayTradeEligible"])
         self.assertIsNone(module.peek_trading_eligibility("1101"))
         debug = module.contract_debug()
-        self.assertEqual(debug["info"]["margin_loan_ratio"], 60)
+        self.assertEqual(debug["info"]["margin_loan_ratio"], 0.6)
         self.assertEqual(debug["info"]["day_trade"], "Yes")
 
     def test_slow_background_path_is_disabled_for_the_rest_of_the_round(self):

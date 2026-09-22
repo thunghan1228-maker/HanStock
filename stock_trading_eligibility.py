@@ -95,6 +95,15 @@ def _int_or_none(value: Any) -> Optional[int]:
             return None
 
 
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _bool_or_none(value: Any) -> Optional[bool]:
     if value is None:
         return None
@@ -215,8 +224,9 @@ def _fields_from_contract(contract: Any) -> dict[str, Any]:
 
 
 def _fields_from_info(info: Any) -> dict[str, Any]:
-    """contracts.info 的個股資訊列：成數欄位優先（融資成數／融券保證金成數 > 0 就是可），
-    沒有成數才看餘額；另外帶出處置等級、注意股、暫停交易。"""
+    """contracts.info 的個股資訊列：成數欄位優先（融資成數／融券保證金成數 > 0 就是可；正式環境
+    2026-09-22 看到的是小數 0.6／0.9，不是 60／90，所以用浮點數比較），沒有成數才看餘額；
+    另外帶出處置等級、注意股、暫停交易。"""
     if info is None:
         return {}
     mapping = _as_mapping(info)
@@ -224,8 +234,8 @@ def _fields_from_info(info: Any) -> dict[str, Any]:
     day_trade = _enum_text(_read(info, "day_trade", mapping))
     if day_trade in _POPULATED_DAY_TRADE:
         fields["dayTradeEligible"] = day_trade in _DAY_TRADE_ELIGIBLE
-    loan_ratio = _int_or_none(_read(info, "margin_loan_ratio", mapping))
-    short_ratio = _int_or_none(_read(info, "short_margin_ratio", mapping))
+    loan_ratio = _float_or_none(_read(info, "margin_loan_ratio", mapping))
+    short_ratio = _float_or_none(_read(info, "short_margin_ratio", mapping))
     if loan_ratio is not None:
         fields["marginable"] = loan_ratio > 0
     elif "dayTradeEligible" in fields:
@@ -262,11 +272,13 @@ def _merge_missing(target: dict[str, Any], fields: dict[str, Any]) -> None:
 def _credit_flags(row: Any) -> tuple[bool, bool]:
     mapping = _as_mapping(row)
 
-    def _int(name: str) -> int:
-        return _int_or_none(_read(row, name, mapping)) or 0
+    def _num(name: str) -> float:
+        return _float_or_none(_read(row, name, mapping)) or 0.0
 
-    marginable = _int("margin_loan_ratio") > 0 or _int("margin_unit") > 0
-    shortable = _int("short_margin_ratio") > 0 or _int("short_unit") > 0
+    # 成數可能是 60／90 也可能是 0.6／0.9（個股資訊列就是小數），一律用浮點數比較；
+    # 額度單位（margin_unit／short_unit）當天用完會是 0，所以成數與單位任一個 > 0 就算可。
+    marginable = _num("margin_loan_ratio") > 0 or _num("margin_unit") > 0
+    shortable = _num("short_margin_ratio") > 0 or _num("short_unit") > 0
     return marginable, shortable
 
 
