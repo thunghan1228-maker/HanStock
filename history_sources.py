@@ -32,6 +32,10 @@ FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
 # 資料集名稱列出來，所以被拒時直接從清單挑分 K 資料集重打一次，不用再改設定重新部署。
 FINMIND_MINUTE_DATASET = os.getenv("HANSTOCK_FINMIND_MINUTE_DATASET", "").strip() or "TaiwanStockKBar"
 FINMIND_MINUTE_DATASET_CANDIDATES = ("TaiwanStockKBar", "TaiwanStockPriceMinute", "TaiwanStockMinutePrice")
+# 正式環境實測：分 K 資料表一次只給一天（帶 end_date 跨日就回 400「size is too large, we only send
+# one day data」），所以多日範圍要逐個交易日打；一檔最多打最近幾天，免得 30 天的 K 線歷史一檔
+# 就吃掉幾十次額度（Yahoo 本來也只有最近 7 天的 1 分 K）。
+FINMIND_MAX_DAYS_PER_CALL = max(1, int(os.getenv("HANSTOCK_FINMIND_MAX_DAYS_PER_CALL", "") or 7))
 # FinMind 日 K 的 Trading_Volume 是「股」，逐筆與分 K 多半是「張」，沒驗證過就別猜：auto 會在
 # 第一次拿到分 K 時拿 Yahoo 同幾天的總量比一次（差上千倍就是股數），環境變數也可硬指定 lots/shares。
 FINMIND_MINUTE_VOLUME_UNIT = os.getenv("HANSTOCK_FINMIND_MINUTE_VOLUME_UNIT", "").strip().lower() or "auto"
@@ -259,6 +263,39 @@ def _note_rejected_dataset(error: Exception, rejected: str) -> Optional[str]:
     return replacement
 
 
+def finmind_request_days(start_date: str, end_date: str, max_days: Optional[int] = None) -> list[str]:
+    """範圍內要逐日打的交易日（跳過週末），只留最近 max_days 天，由舊到新。"""
+    limit = max_days if max_days is not None else FINMIND_MAX_DAYS_PER_CALL
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    days: list[str] = []
+    cursor = start
+    while cursor <= end:
+        if cursor.weekday() < 5:
+            days.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return days[-limit:] if limit > 0 else days
+
+
+def _finmind_request(call: Fetcher, code: str, day: str, token: str) -> Any:
+    """打一天的分 K（FinMind 分 K 一次只給一天，end_date 要留空）。資料集被拒且回應附了
+    允許清單就換名立刻重打一次。"""
+    dataset = _finmind_dataset()
+    for attempt in (1, 2):
+        try:
+            payload = call(FINMIND_DATA_URL, {"dataset": dataset, "data_id": code, "start_date": day, "token": token})
+        except Exception as exc:
+            replacement = _note_rejected_dataset(exc, dataset)
+            if replacement and attempt == 1:
+                dataset = replacement
+                continue
+            raise
+        if isinstance(payload, dict) and payload.get("status") not in (None, 200) and not payload.get("data"):
+            raise SourceHttpError(int(payload.get("status") or 0), "FinMind", str(payload.get("msg"))[:300])
+        return payload
+    return None
+
+
 def parse_finmind_minute_rows(rows: Any, start_date: str, end_date: str, *, volume_unit: str = "lots") -> list[dict[str, Any]]:
     """把 FinMind 分 K 列轉成 bar-start 1 分 K。分鐘標籤是收棒還是起始時間官方沒說死：
     同一天若出現 09:00 就當起始時間，否則當收棒時間（跟 Shioaji kbars 一樣減一分鐘）。
@@ -358,30 +395,20 @@ def fetch_finmind_minute_bars(
     if not ignore_block and _finmind_blocked_seconds() > 0:
         return []
     call = fetcher or _default_fetcher
-    dataset = _finmind_dataset()
-    payload: Any = None
-    for attempt in (1, 2):
-        try:
-            payload = call(FINMIND_DATA_URL, {
-                "dataset": dataset, "data_id": str(code).strip().upper(),
-                "start_date": start_date, "end_date": end_date, "token": token,
-            })
-            break
-        except Exception as exc:
-            # 資料集名稱被拒、但回應列了允許清單：換成清單裡的分 K 資料集立刻重打一次。
-            replacement = _note_rejected_dataset(exc, dataset)
-            if replacement and attempt == 1:
-                dataset = replacement
-                continue
-            _record("finmind", symbol=code, error=exc)
-            _finmind_block(exc)
-            raise
-    if isinstance(payload, dict) and payload.get("status") not in (None, 200) and not payload.get("data"):
-        error = SourceHttpError(int(payload.get("status") or 0), "FinMind", str(payload.get("msg"))[:300])
-        _record("finmind", symbol=code, error=error)
-        _finmind_block(error)
-        raise error
-    bars = parse_finmind_minute_rows(payload.get("data") if isinstance(payload, dict) else None, start_date, end_date)
+    symbol = str(code).strip().upper()
+    rows: list[Any] = []
+    try:
+        # 逐日打；中途失敗（限流、被拒）就整個放棄讓鏈往 Yahoo 走，不然拿到缺天的資料還當成功。
+        for day in finmind_request_days(start_date, end_date):
+            payload = _finmind_request(call, symbol, day, token)
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, list):
+                rows.extend(data)
+    except Exception as exc:
+        _record("finmind", symbol=code, error=exc)
+        _finmind_block(exc)
+        raise
+    bars = parse_finmind_minute_rows(rows, start_date, end_date)
     if bars and _finmind_volume_unit(code, start_date, end_date, bars, market=market, fetcher=fetcher) == "shares":
         for bar in bars:
             bar["volume"] = int(bar["volume"] / 1000)
@@ -538,7 +565,7 @@ def history_sources_status() -> dict[str, Any]:
         "finmind": {
             "configured": bool(_finmind_token()),
             "dataset": dataset_override or FINMIND_MINUTE_DATASET, "configuredDataset": FINMIND_MINUTE_DATASET,
-            "datasetAutoSelected": dataset_override is not None,
+            "datasetAutoSelected": dataset_override is not None, "maxDaysPerCall": FINMIND_MAX_DAYS_PER_CALL,
             "permittedDatasetCount": len(permitted),
             "permittedStockDatasets": [name for name in permitted if name.startswith("TaiwanStock")],
             "volumeUnit": FINMIND_MINUTE_VOLUME_UNIT, "volumeUnitDetected": volume_unit_detected,

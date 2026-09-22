@@ -193,10 +193,7 @@ def get_history_sources(
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
     service = get_quote_service()
-    data: dict[str, Any] = {
-        "shioaji": history_quota.snapshot(getattr(service, "api", None)),
-        "sources": history_sources_status(),
-    }
+    data: dict[str, Any] = {"shioaji": history_quota.snapshot(getattr(service, "api", None))}
     if probe:
         code = _normalize_stock_code(probe)
         if not trade_date:
@@ -206,6 +203,8 @@ def get_history_sources(
                 day -= timedelta(days=1)
             trade_date = day.isoformat()
         data["probe"] = probe_history_sources(code, trade_date, market=stock_market(code))
+    # 統計放在 probe 之後才拿，成交量單位校準、資料集自動換名這些 probe 觸發的結果才看得到。
+    data["sources"] = history_sources_status()
     return {"status": "ok", "data": data}
 
 

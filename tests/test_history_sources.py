@@ -329,6 +329,66 @@ class FinMindDatasetAutoSelectTests(unittest.TestCase):
         self.assertIn("HTTP 422", status["finmind"]["lastError"])
 
 
+class FinMindOneDayPerRequestTests(unittest.TestCase):
+    """正式環境實測：分 K 資料表帶 end_date 跨日就回 400「we only send one day data」，多日要逐日打。"""
+
+    def setUp(self) -> None:
+        module._reset_runtime_state()
+        self.env = patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"})
+        self.env.start()
+        self.unit = patch.object(module, "FINMIND_MINUTE_VOLUME_UNIT", "lots")
+        self.unit.start()
+
+    def tearDown(self) -> None:
+        self.unit.stop()
+        self.env.stop()
+        module._reset_runtime_state()
+
+    def test_request_days_skip_weekends_and_keep_the_most_recent_ones(self) -> None:
+        # 2026-09-11（五）到 2026-09-22（二）：8 個交易日，只留最近 7 天。
+        days = module.finmind_request_days("2026-09-11", "2026-09-22")
+        self.assertEqual(days, ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-21", "2026-09-22"])
+        self.assertEqual(module.finmind_request_days("2026-09-19", "2026-09-20"), [])  # 純週末
+        self.assertEqual(module.finmind_request_days("2026-09-11", "2026-09-22", max_days=2), ["2026-09-21", "2026-09-22"])
+
+    def test_multi_day_range_is_fetched_one_day_at_a_time_without_end_date(self) -> None:
+        requests: list[dict] = []
+
+        def fetcher(url, params):
+            requests.append(dict(params))
+            if params["start_date"] == "2026-09-21":
+                return {"status": 200, "data": []}  # 當天沒資料（例如假日）不影響其他天
+            return {"status": 200, "data": finmind_rows(25, day=params["start_date"])}
+
+        bars = module.fetch_finmind_minute_bars("2330", "2026-09-18", "2026-09-22", fetcher=fetcher)
+
+        self.assertEqual([r["start_date"] for r in requests], ["2026-09-18", "2026-09-21", "2026-09-22"])
+        self.assertTrue(all("end_date" not in r for r in requests))
+        self.assertTrue(all(r["dataset"] == "TaiwanStockKBar" and r["data_id"] == "2330" for r in requests))
+        self.assertEqual([b["ts"] for b in bars], [ts("2026-09-18", 9, 0), ts("2026-09-22", 9, 0)])
+        self.assertEqual(module.history_sources_status()["finmind"]["lastBars"], 2)
+
+    def test_failure_on_a_later_day_gives_up_so_the_chain_moves_to_yahoo(self) -> None:
+        requests: list[str] = []
+
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                requests.append(params["start_date"])
+                if params["start_date"] == "2026-09-22":
+                    raise module.SourceHttpError(429, "Too Many Requests", '{"msg":"Requests reach the upper limit"}')
+                return {"status": 200, "data": finmind_rows(25, day=params["start_date"])}
+            return yahoo_payload(25000)
+
+        bars, source = fetch_minute_bars_chain("2330", "2026-09-21", "2026-09-22", market="TSE", fetcher=fetcher)
+        status = module.history_sources_status()
+
+        self.assertEqual(source, "yahoo")
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(requests, ["2026-09-21", "2026-09-22"])
+        self.assertGreater(status["finmind"]["blockedForSeconds"], 0)  # 429 → 限流冷卻
+        self.assertIn("HTTP 429", status["finmind"]["lastError"])
+
+
 class FinMindVolumeUnitTests(unittest.TestCase):
     """FinMind 分 K 的成交量是「張」還是「股」文件沒說死：第一次拿到資料時跟 Yahoo 同一天的量對一次。"""
 
