@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
 from market_data_hub import MarketDataHub
@@ -100,6 +101,8 @@ class MarketDataHubBarTests(unittest.TestCase):
         self.assertEqual(status["bar_aggregator_1m_codes"], 1)
 
     def test_main_force_buy_sell_volume_is_aggregated_per_bar(self):
+        # 主力大單預設只看單筆張數（≥20 張）：跟另一台工具的主力累計逐筆對照後確認它沒有金額
+        # 門檻；2 張、120 萬那筆不算主力。
         hub = MarketDataHub()
         hub.on_stock_tick(tick("2330", 100.0, 25, 9, 0, 1, tick_type=1))
         hub.on_stock_tick(tick("2330", 99.5, 30, 9, 0, 2, tick_type=2))
@@ -110,18 +113,30 @@ class MarketDataHubBarTests(unittest.TestCase):
         self.assertEqual(bar["buy_volume"], 27)
         self.assertEqual(bar["sell_volume"], 30)
         self.assertEqual(bar["neutral_volume"], 3)
-        self.assertEqual(bar["main_buy_volume"], 27)
+        self.assertEqual(bar["main_buy_volume"], 25)
         self.assertEqual(bar["main_sell_volume"], 30)
-        self.assertEqual(bar["main_net_volume"], -3)
-        self.assertEqual(bar["main_buy_amount"], 3_700_000)
+        self.assertEqual(bar["main_net_volume"], -5)
+        self.assertEqual(bar["main_buy_amount"], 2_500_000)
         self.assertEqual(bar["main_sell_amount"], 2_985_000)
-        self.assertEqual(bar["main_net_amount"], 715_000)
-        self.assertEqual(bar["main_tick_count"], 3)
+        self.assertEqual(bar["main_net_amount"], -485_000)
+        self.assertEqual(bar["main_tick_count"], 2)
         self.assertTrue(bar["main_force_available"])
 
         five_minute_bar = hub.get_live_bars("2330")[0]
-        self.assertEqual(five_minute_bar["main_net_volume"], -3)
+        self.assertEqual(five_minute_bar["main_net_volume"], -5)
         self.assertTrue(five_minute_bar["main_force_available"])
+
+    def test_amount_threshold_counts_small_lots_only_when_enabled(self):
+        import market_data_hub as hub_module
+
+        with patch.object(hub_module, "MAIN_FORCE_MIN_AMOUNT", 1_000_000.0):
+            hub = MarketDataHub()
+            hub.on_stock_tick(tick("2330", 100.0, 25, 9, 0, 1, tick_type=1))
+            hub.on_stock_tick(tick("2330", 100.5, 2, 9, 0, 3, tick_type=1, amount=1_200_000))
+            bar = hub.get_live_bars_1m("2330")[0]
+        self.assertEqual(bar["main_buy_volume"], 27)
+        self.assertEqual(bar["main_buy_amount"], 3_700_000)
+        self.assertEqual(bar["main_tick_count"], 2)
 
     def test_total_amount_takes_the_latest_cumulative_value_per_bar(self):
         hub = MarketDataHub()

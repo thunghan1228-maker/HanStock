@@ -157,6 +157,15 @@ class StockBarBootstrapTests(unittest.TestCase):
         self.service = FakeService()
         self.hub = FakeHub()
         self.now_ms = ts(2026, 8, 7, 9, 7)
+        # 這裡的 tick 樣本是照「單筆 ≥ 20 張或金額 ≥ 100 萬」設計的；主力大單預設已改成只看
+        # 張數（跟另一台工具對照後），這組測試只驗證回補的管線，門檻沿用舊值就好。
+        import market_data_hub
+
+        self.amount_patch = patch.object(market_data_hub, "MAIN_FORCE_MIN_AMOUNT", 1_000_000.0)
+        self.amount_patch.start()
+
+    def tearDown(self) -> None:
+        self.amount_patch.stop()
 
     def test_history_concurrency_is_bounded_and_live_data_does_not_wait(self):
         release = threading.Event()

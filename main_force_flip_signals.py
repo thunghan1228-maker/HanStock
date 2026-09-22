@@ -35,20 +35,24 @@ TW_TZ = timezone(timedelta(hours=8))
 ONE_MIN_MS = 60_000
 SESSION_MINUTES = 270  # 09:00~13:30
 
-NET_RATIO_MIN = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_NET_RATIO_MIN", "0.20"))
-NET_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_NET_RATIO_STRONG", "0.40"))
+# 門檻由另一台工具 2026-09-22 的 14 筆實際訊號反推：淨額率最低 +5.87%／-5.94%、量比最低 1.85×、
+# 距 VWAP 都在 ±1% 內，而且 14 筆全部標「強勢」（沒有分強弱）。強勢門檻預設等於基本門檻，
+# 只要觸發就是「主力累計強勢翻多／翻空」；要分強弱再用環境變數把 STRONG 調高。
+NET_RATIO_MIN = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_NET_RATIO_MIN", "0.05"))
+NET_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_NET_RATIO_STRONG", "") or NET_RATIO_MIN)
 VOLUME_RATIO_MIN = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_MIN", "1.5"))
-VOLUME_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_STRONG", "3.0"))
+VOLUME_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_STRONG", "") or VOLUME_RATIO_MIN)
 SYNC_WINDOW_MS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_SYNC_WINDOW_MINUTES", "5"))) * ONE_MIN_MS
 MIN_MAIN_GROSS_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_MAIN_LOTS", "30")))
 MIN_BARS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_BARS", "10")))
-# 從開盤第一根就看到的股票，前幾根只是開盤集合競價的餘波：使用者比對過，另一台工具 09:01～09:05
-# 從不發訊號，這裡照樣前 5 根不判定（較晚才訂閱到的仍用 MIN_BARS）。
-OPEN_SKIP_BARS = max(0, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_OPEN_SKIP_BARS", "5")))
+# 從開盤第一根就看到的股票，前幾根只是開盤集合競價的餘波：另一台工具最早的訊號是 09:05，
+# 這裡前 4 根（收盤 09:01～09:04）不判定、09:05 起才看（較晚才訂閱到的仍用 MIN_BARS）。
+OPEN_SKIP_BARS = max(0, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_OPEN_SKIP_BARS", "4")))
 # 判定規則版本：規則一改，收盤後重播排程就會把已標記完成的日期再重播一次，不然舊規則漏掉的
-# 訊號永遠補不回來。v2：從開盤第一根就看到的股票不暖機 10 根。v3：開盤前 5 根不判定、主力買賣
-# 兩邊都要有過量才算「翻」（一整天只有一邊有量、第一筆大單就是賣的不算翻空）。
-FLIP_RULES_VERSION = 3
+# 訊號永遠補不回來。v2：從開盤第一根就看到的股票不暖機 10 根。v3：開盤前幾根不判定、主力買賣
+# 兩邊都要有過量才算「翻」。v4：照另一台工具的 14 筆實際訊號校準——門檻降到 5%／1.5×／1%、
+# 一律標強勢、09:05 起判定、累計反向再翻回來可以再發（同一檔一天不只一次）。
+FLIP_RULES_VERSION = 4
 MAX_VWAP_DISTANCE_PCT = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MAX_VWAP_DISTANCE_PCT", "3.0"))
 KIND_BULL = "mainForceFlipBull"
 KIND_BEAR = "mainForceFlipBear"
@@ -277,13 +281,17 @@ class MainForceFlipMonitor:
                     record["vwapCross"] = "down"
         state.prev_above_vwap = above
 
+        # 累計反向再翻回來就可以再發（另一台工具 3532 當天 11:38、11:57 各發一次）：
+        # 翻負時解除翻多的已發旗標，翻正時解除翻空的。
         sign_before, sign_after = _sign(before_net), _sign(state.cum_net)
         if sign_after > 0 and sign_before <= 0:
             state.bull_zero_cross_ts = close_ts
+            state.fired_bear = False
             if record is not None:
                 record["zeroCross"] = "bull"
         if sign_after < 0 and sign_before >= 0:
             state.bear_zero_cross_ts = close_ts
+            state.fired_bull = False
             if record is not None:
                 record["zeroCross"] = "bear"
 
@@ -300,7 +308,7 @@ class MainForceFlipMonitor:
             # 從開盤第一根就看到的股票（收盤後重播、或開盤前就訂閱到）：累計值是完整的，只避開
             # 開盤前 5 根；暖機 10 根只保護較晚才訂閱到、累計只從訂閱起算的情況。正式環境
             # 2026-09-22 的 3532 是 09:01 累計從 0 翻正、09:05 再站上 VWAP，暖機 10 根會把它整個吃掉。
-            state.warmup_bars = OPEN_SKIP_BARS + 1  # 前 5 根（收盤 09:01～09:05）不判定，09:06 起才看
+            state.warmup_bars = OPEN_SKIP_BARS + 1  # 前 4 根（收盤 09:01～09:04）不判定，09:05 起才看
         if state.bar_count < state.warmup_bars or state.cum_gross < MIN_MAIN_GROSS_LOTS:
             if record is not None:
                 record["skip"] = "warming_up" if state.bar_count < state.warmup_bars else "thin_main_force"
