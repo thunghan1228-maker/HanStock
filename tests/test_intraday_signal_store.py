@@ -194,6 +194,22 @@ class LoadLatestSignalsTests(unittest.TestCase):
         self.assertEqual(len(signals), 250)
         self.assertEqual(min(s["barTs"] for s in signals), 1_000)
 
+    def test_flip_signals_dedupe_within_five_minutes_but_allow_a_later_repeat(self):
+        # 主力累計翻多空一天可以發多次（另一台工具 3532 當天 11:38、11:57 各一次），
+        # 但同一次翻轉在 5 分鐘內重複算出來的不能再入庫。
+        base = 1_790_000_000_000
+        rows = [
+            {"tradeDate": "2026-09-22", "ticker": "3532", "kind": "mainForceFlipBull",
+             "label": "主力累計強勢翻多", "barTs": base, "price": 451.5, "note": "第一次"},
+            {"tradeDate": "2026-09-22", "ticker": "3532", "kind": "mainForceFlipBull",
+             "label": "主力累計強勢翻多", "barTs": base + 3 * 60_000, "price": 452.0, "note": "3 分鐘後重複"},
+            {"tradeDate": "2026-09-22", "ticker": "3532", "kind": "mainForceFlipBull",
+             "label": "主力累計強勢翻多", "barTs": base + 19 * 60_000, "price": 447.0, "note": "19 分鐘後再翻一次"},
+        ]
+        inserted = save_intraday_signals(rows)
+        self.assertEqual([r["note"] for r in inserted], ["第一次", "19 分鐘後再翻一次"])
+        self.assertEqual(len(load_latest_signals("2026-09-22", limit=50)), 2)
+
     def test_chart_only_kline_kinds_are_left_out_so_early_signals_survive_the_limit(self):
         # 2026-09-22 正式環境：一天的圖表用 5 分 K 訊號超過 5000 筆，09 點多那批主力翻多空
         # 全被 ORDER BY bar_ts DESC LIMIT 砍掉，前端只看得到 12:19 的那一筆。訊號中心根本

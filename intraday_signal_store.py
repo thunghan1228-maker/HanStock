@@ -22,11 +22,12 @@ ONCE_PER_DAY_KINDS = {
     "triangleVolumeBreakout",
     "fourGateBuy",
     "fourGateSell",
-    "mainForceFlipBull",
-    "mainForceFlipBear",
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
+# 同一檔同 kind 5 分鐘內只留第一筆：瞬間大單一秒一筆會連發；主力累計翻多空一天可以發多次
+# （累計反向再翻回來），但同一次翻轉不能重複入庫。
 INSTANT_LARGE_KINDS = {"instantLargeBuy", "instantLargeSell"}
+COOLDOWN_KINDS = INSTANT_LARGE_KINDS | {"mainForceFlipBull", "mainForceFlipBear"}
 EARLY_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000
 
 
@@ -172,7 +173,7 @@ def save_intraday_signals(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]
                 ).fetchone()
                 if exists is not None:
                     continue
-            if signal["kind"] in INSTANT_LARGE_KINDS:
+            if signal["kind"] in COOLDOWN_KINDS:
                 exists = connection.execute(
                     """
                     SELECT id FROM intraday_signals

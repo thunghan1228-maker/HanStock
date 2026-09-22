@@ -72,15 +72,28 @@ def test_strong_bull_flip_fires_once_when_zero_axis_and_vwap_cross_together(monk
     assert status["thresholds"]["minBars"] == module.MIN_BARS
 
 
-def test_weak_volume_ratio_downgrades_label_to_plain_flip(monkeypatch):
+def test_low_volume_ratio_is_still_labelled_strong_like_the_other_tool(monkeypatch):
+    # 另一台工具的 14 筆全部標「強勢」，量比 1.85× 也是；預設不分強弱。
     monitor = new_monitor(monkeypatch)
     quiet = [bar(9, i, 100.0, 10, main_sell=10) for i in range(9)]
     flip = bar(9, 9, 101.0, 10, main_buy=400)
 
     signals = feed(monitor, "3532", quiet + [flip])
 
-    assert [s["label"] for s in signals] == ["主力累計翻多"]
+    assert [s["label"] for s in signals] == ["主力累計強勢翻多"]
     assert "量比 2.70×" in signals[0]["note"]
+
+
+def test_strong_label_can_be_split_out_again_with_higher_thresholds(monkeypatch):
+    monkeypatch.setattr(module, "NET_RATIO_STRONG", 0.40)
+    monkeypatch.setattr(module, "VOLUME_RATIO_STRONG", 3.0)
+    monitor = new_monitor(monkeypatch)
+    quiet = [bar(9, i, 100.0, 10, main_sell=10) for i in range(9)]
+    flip = bar(9, 9, 101.0, 10, main_buy=400)
+
+    signals = feed(monitor, "3532", quiet + [flip])
+
+    assert [s["label"] for s in signals] == ["主力累計翻多"]  # 量比 2.70× 未達 3×
 
 
 def test_bear_flip_mirrors_bull(monkeypatch):
@@ -120,28 +133,41 @@ def test_flip_during_first_bars_after_subscription_is_ignored(monkeypatch):
     assert feed(monitor, "3532", bars) == []
 
 
-def test_from_open_stock_skips_the_first_five_bars_then_fires_like_the_other_tool(monkeypatch):
+def test_from_open_stock_skips_the_first_four_bars_then_fires_like_the_other_tool(monkeypatch):
     # 正式環境 2026-09-22 的 3532（inspect 的實際數字）：09:01 主力累計 +134/156 張從 0 翻正，
-    # 09:02 就站上 VWAP、淨額率 82%；但使用者比對過另一台工具 09:01～09:05 從不發訊號，所以
-    # 開盤前 5 根不判定。09:05 那根再次站上 VWAP（淨額率 34%、量比 6.6×），09:06 才發翻多。
+    # 09:02 就站上 VWAP、淨額率 82%；另一台工具最早的訊號是 09:05（所羅門、騰輝電子），所以
+    # 開盤前 4 根不判定。09:05 那根再次站上 VWAP（淨額率 23%、量比 5.3×），09:05 就發。
     monitor = new_monitor(monkeypatch, avg_daily_volume=7378.8)
     bars = [
         bar(9, 0, 449.5, 214, main_buy=145, main_sell=11),
         bar(9, 1, 451.5, 142, main_buy=42, main_sell=8),
         bar(9, 2, 446.0, 149, main_buy=23, main_sell=63),
         bar(9, 3, 447.5, 98, main_buy=6, main_sell=36),
-        bar(9, 4, 450.0, 118, main_buy=23, main_sell=31),
     ]
-    assert feed(monitor, "3532", bars) == []  # 09:01～09:05 一律不發
+    assert feed(monitor, "3532", bars) == []  # 09:01～09:04 一律不發
 
-    signals = feed(monitor, "3532", [bar(9, 5, 453.0, 367, main_buy=153, main_sell=44)])
+    signals = feed(monitor, "3532", [bar(9, 4, 450.0, 118, main_buy=23, main_sell=31)])
 
-    assert [s["label"] for s in signals] == ["主力累計翻多"]
-    assert signals[0]["barTs"] == ts(9, 6)
+    assert [s["label"] for s in signals] == ["主力累計強勢翻多"]
+    assert signals[0]["barTs"] == ts(9, 5)
     assert "主力零軸 09:01" in signals[0]["note"]
     assert "VWAP穿越 09:05" in signals[0]["note"]
-    assert "量比 6.64×" in signals[0]["note"]
-    assert "累計 +199 張" in signals[0]["note"]
+    assert "量比 5.28×" in signals[0]["note"]
+    assert "累計 +90 張" in signals[0]["note"]
+
+
+def test_flip_can_fire_again_after_the_cumulative_reverses(monkeypatch):
+    # 另一台工具 3532 當天 11:38、11:57 各發一次翻多：累計翻負再翻正，就可以再發一次。
+    monitor = new_monitor(monkeypatch)
+    first = [bar(10, i, 100.0, 100, main_sell=10) for i in range(9)] + [bar(10, 9, 101.0, 100, main_buy=400)]
+    assert [s["label"] for s in feed(monitor, "3532", first)] == ["主力累計強勢翻多"]
+
+    # 主力倒貨把累計翻負、跌破 VWAP（翻空），再大買翻正、站上 VWAP：第二次翻多。
+    reverse = [bar(10, 10, 99.0, 100, main_sell=700)]
+    back = [bar(10, 11, 99.5, 100, main_buy=100), bar(10, 12, 101.5, 100, main_buy=400)]
+    labels = [s["label"] for s in feed(monitor, "3532", reverse + back)]
+
+    assert labels == ["主力累計強勢翻空", "主力累計強勢翻多"]
 
 
 def test_one_sided_main_force_from_zero_is_not_a_flip(monkeypatch):

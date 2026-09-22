@@ -38,10 +38,13 @@ BAR_INTERVAL_5M_MS = 5 * 60 * 1000
 # 向下相容：既有程式若引用 BAR_INTERVAL_MS，仍代表 5 分 K。
 BAR_INTERVAL_MS = BAR_INTERVAL_5M_MS
 
-# 盤中主力進出：單筆成交達任一門檻即列入主力大單。
+# 盤中主力進出：單筆成交達門檻即列入主力大單。
 # 股票 volume 依目前 Hub 規格為「張」，amount 為該筆成交金額（元）。
+# 2026-09-22 跟另一台工具的主力累計逐筆對照：它對應的是「單筆 ≥ 20 張」，沒有金額門檻；舊預設
+# 「或金額 ≥ 100 萬」讓 450 元的股票 3 張就算主力，累計比它大好幾倍、翻正時間完全對不上。
+# 金額門檻預設關閉，HANSTOCK_MAIN_FORCE_MIN_AMOUNT 設大於 0 才啟用。
 MAIN_FORCE_MIN_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_MIN_LOTS", "20")))
-MAIN_FORCE_MIN_AMOUNT = max(1.0, float(os.getenv("HANSTOCK_MAIN_FORCE_MIN_AMOUNT", "1000000")))
+MAIN_FORCE_MIN_AMOUNT = max(0.0, float(os.getenv("HANSTOCK_MAIN_FORCE_MIN_AMOUNT", "0") or 0))
 
 
 def _bar_start_ms(ts_ms: int, interval_ms: int = BAR_INTERVAL_5M_MS) -> int:
@@ -77,7 +80,7 @@ def _is_main_force_trade(tick_data: dict[str, Any], *, futures: bool = False) ->
         volume = 0
     if volume >= MAIN_FORCE_MIN_LOTS:
         return True
-    if futures:
+    if futures or MAIN_FORCE_MIN_AMOUNT <= 0:
         return False
     try:
         amount = float(tick_data.get("amount", 0) or 0)
