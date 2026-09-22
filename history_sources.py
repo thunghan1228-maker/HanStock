@@ -17,6 +17,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -32,7 +33,22 @@ YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 YAHOO_MAX_DAYS_PER_REQUEST = 7
 OTC_INDEX_YAHOO_SYMBOL = os.getenv("HANSTOCK_OTC_INDEX_YAHOO_SYMBOL", "^TWOII")
 SOURCE_ORDER = ("finmind", "yahoo")
+# FinMind 回 4xx（資料集名稱/參數被拒、權限不足）時不是打第二次就會好：連續失敗就
+# 先停一段時間，不然全族群幾百檔每檔都白打一次。429 只是限流，停短一點。
+FINMIND_REJECT_BLOCK_SECONDS = 600.0
+FINMIND_RATE_LIMIT_BLOCK_SECONDS = 60.0
 Fetcher = Callable[[str, dict[str, str]], Any]
+
+
+class SourceHttpError(RuntimeError):
+    """帶 HTTP 狀態碼與回應內容的錯誤：FinMind 的驗證錯誤內容會列出允許的資料集名稱，
+    probe 看得到才有辦法對出正確參數。"""
+
+    def __init__(self, code: int, reason: str, body: str) -> None:
+        super().__init__(f"HTTP {code} {reason}: {body}".strip())
+        self.code = code
+        self.body = body
+
 
 _status_lock = threading.Lock()
 _status: dict[str, dict[str, Any]] = {
@@ -42,6 +58,8 @@ _status: dict[str, dict[str, Any]] = {
     }
     for name in SOURCE_ORDER
 }
+_finmind_blocked_until = 0.0
+_yahoo_suffix_cache: dict[str, str] = {}
 
 
 def _finmind_token() -> str:
@@ -53,8 +71,15 @@ def _default_fetcher(url: str, params: dict[str, str]) -> Any:
         f"{url}?{urlencode(params)}",
         headers={"Accept": "application/json,text/plain,*/*", "User-Agent": "Mozilla/5.0 (compatible; HanStock/1.0)"},
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=30) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:  # noqa: BLE001
+            body = ""
+        raise SourceHttpError(exc.code, str(exc.reason), body) from exc
 
 
 def _record(name: str, *, symbol: str, bars: Optional[list] = None, error: Any = None) -> None:
@@ -69,8 +94,26 @@ def _record(name: str, *, symbol: str, bars: Optional[list] = None, error: Any =
                 entry["successes"] += 1
                 entry["lastSuccessAt"] = now
         else:
-            entry["lastError"] = f"{type(error).__name__}: {error}"[:200]
+            entry["lastError"] = f"{type(error).__name__}: {error}"[:600]
             entry["lastErrorAt"] = now
+
+
+def _finmind_block(error: Exception) -> None:
+    global _finmind_blocked_until
+    code = getattr(error, "code", None)
+    if code == 429:
+        seconds = FINMIND_RATE_LIMIT_BLOCK_SECONDS
+    elif isinstance(code, int) and 400 <= code < 500:
+        seconds = FINMIND_REJECT_BLOCK_SECONDS
+    else:
+        return
+    with _status_lock:
+        _finmind_blocked_until = max(_finmind_blocked_until, time.monotonic() + seconds)
+
+
+def _finmind_blocked_seconds() -> float:
+    with _status_lock:
+        return max(0.0, _finmind_blocked_until - time.monotonic())
 
 
 def _tw_epoch(date_text: str, hour: int = 0, minute: int = 0, second: int = 0) -> int:
@@ -155,9 +198,18 @@ def parse_finmind_minute_rows(rows: Any, start_date: str, end_date: str) -> list
     return _dedupe_sorted(bars)
 
 
-def fetch_finmind_minute_bars(code: str, start_date: str, end_date: str, *, fetcher: Optional[Fetcher] = None) -> list[dict[str, Any]]:
+def fetch_finmind_minute_bars(
+    code: str,
+    start_date: str,
+    end_date: str,
+    *,
+    fetcher: Optional[Fetcher] = None,
+    ignore_block: bool = False,
+) -> list[dict[str, Any]]:
     token = _finmind_token()
     if not token:
+        return []
+    if not ignore_block and _finmind_blocked_seconds() > 0:
         return []
     call = fetcher or _default_fetcher
     try:
@@ -167,10 +219,12 @@ def fetch_finmind_minute_bars(code: str, start_date: str, end_date: str, *, fetc
         })
     except Exception as exc:
         _record("finmind", symbol=code, error=exc)
+        _finmind_block(exc)
         raise
     if isinstance(payload, dict) and payload.get("status") not in (None, 200) and not payload.get("data"):
-        error = RuntimeError(f"FinMind status={payload.get('status')} msg={payload.get('msg')}")
+        error = SourceHttpError(int(payload.get("status") or 0), "FinMind", str(payload.get("msg"))[:300])
         _record("finmind", symbol=code, error=error)
+        _finmind_block(error)
         raise error
     bars = parse_finmind_minute_rows(payload.get("data") if isinstance(payload, dict) else None, start_date, end_date)
     _record("finmind", symbol=code, bars=bars)
@@ -238,7 +292,16 @@ def fetch_yahoo_minute_bars(
     """Yahoo 非官方 chart API：1 分 K 只保留最近約 7 天、單次最多 7 天，超過就分段。
     市場別不確定時先試上市（.TW）再試上櫃（.TWO）。"""
     call = fetcher or _default_fetcher
-    symbols = [symbol] if symbol else _yahoo_symbols(code, market)
+    code_key = str(code).strip().upper()
+    if symbol:
+        symbols = [symbol]
+    else:
+        symbols = _yahoo_symbols(code, market)
+        # 上次哪個後綴成功就先試那個：stocks 表沒有市場別的代號才不用每次先吃一個 404。
+        with _status_lock:
+            known = _yahoo_suffix_cache.get(code_key)
+        if known and known in symbols:
+            symbols = [known] + [item for item in symbols if item != known]
     last_error: Optional[Exception] = None
     for sym in symbols:
         bars: list[dict[str, Any]] = []
@@ -254,6 +317,9 @@ def fetch_yahoo_minute_bars(
             continue
         if bars:
             bars = _dedupe_sorted(bars)
+            if not symbol:
+                with _status_lock:
+                    _yahoo_suffix_cache[code_key] = sym
             _record("yahoo", symbol=sym, bars=bars)
             return bars
     if last_error is not None:
@@ -309,7 +375,8 @@ def history_sources_status() -> dict[str, Any]:
         "order": list(SOURCE_ORDER),
         "finmind": {
             "configured": bool(_finmind_token()), "dataset": FINMIND_MINUTE_DATASET,
-            "volumeUnit": FINMIND_MINUTE_VOLUME_UNIT, **stats["finmind"],
+            "volumeUnit": FINMIND_MINUTE_VOLUME_UNIT,
+            "blockedForSeconds": round(_finmind_blocked_seconds()), **stats["finmind"],
         },
         "yahoo": {"otcIndexSymbol": OTC_INDEX_YAHOO_SYMBOL, **stats["yahoo"]},
     }
@@ -323,10 +390,11 @@ def probe_history_sources(code: str, trade_date: str, *, market: Optional[str] =
         started = time.monotonic()
         try:
             if name == "finmind":
-                bars = fetch_finmind_minute_bars(code, trade_date, trade_date, fetcher=fetcher)
                 if not _finmind_token():
                     out[name] = {"ok": False, "error": "FINMIND_TOKEN 未設定"}
                     continue
+                # probe 是人在看，斷路器擋住也照打，才看得到最新的錯誤內容。
+                bars = fetch_finmind_minute_bars(code, trade_date, trade_date, fetcher=fetcher, ignore_block=True)
             else:
                 bars = fetch_yahoo_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher)
             out[name] = {
@@ -336,7 +404,7 @@ def probe_history_sources(code: str, trade_date: str, *, market: Optional[str] =
             }
         except Exception as exc:  # noqa: BLE001
             out[name] = {
-                "ok": False, "error": f"{type(exc).__name__}: {exc}"[:300],
+                "ok": False, "error": f"{type(exc).__name__}: {exc}"[:700],
                 "elapsedMs": round((time.monotonic() - started) * 1000),
             }
     return out
