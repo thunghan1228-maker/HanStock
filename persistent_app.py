@@ -215,9 +215,11 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
             "marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": has_stock_futures(code),
         }
         item = disposition.get(code)
-        info["disposition"] = bool(item)
+        level = int(info.get("dispositionLevel") or 0)
+        # 公告清單沒抓到（TPEx 被擋 403 之類）時，永豐個股資訊列的處置等級也算處置中。
+        info["disposition"] = bool(item) or level > 0
         info["dispositionUntil"] = item.get("end") if item else None
-        info["dispositionReason"] = item.get("reason") if item else None
+        info["dispositionReason"] = (item.get("reason") if item else None) or (f"永豐合約處置等級 {level}" if level > 0 else None)
         stocks[code] = info
     unknown = sum(1 for info in stocks.values() if info.get("marginable") is None)
     sample_code = "2330" if "2330" in stocks else (codes[0] if codes else "")
@@ -239,7 +241,8 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         "eligibilityWarmer": trading_eligibility_warmer_status(),
         "dispositionCodes": sorted(disposition),
         "disposition": disposition_status(),
-        # 診斷：合約清單下載狀態與一檔合約的原始欄位，融資券旗標全是 null／false 時看這裡。
+        # 診斷：背景暖機上一輪對一檔合約的檢查結果（合約型別、contracts.info 欄位、各條路的耗時），
+        # 融資券旗標全是 null／false 時看這裡；請求路徑本身不碰 Shioaji。
         "debug": contract_debug(sample_code) if sample_code else None,
     }
 
