@@ -208,6 +208,21 @@ def load_main_force_bars(
     } for row in rows]
 
 
+def list_main_force_codes_for_date(trade_date: str, interval: str = "1m") -> list[str]:
+    """trade_date 當天有主力副圖 K 棒落盤的股票代號（＝當天曾被訂閱到、有 tick 的股票）。"""
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT stock_code FROM main_force_bars
+            WHERE interval = ? AND trade_date = ?
+            ORDER BY stock_code
+            """,
+            (interval, trade_date),
+        ).fetchall()
+    return [str(row["stock_code"]) for row in rows]
+
+
 HOLDER_STRENGTH_MIN_TURNOVER = 100_000_000  # 累計成交額至少1億元才有正式門檻資格
 HOLDER_STRENGTH_MIN_NET_AMOUNT = 30_000_000  # 大戶淨額絕對值至少3,000萬元
 HOLDER_STRENGTH_SIGNAL_PCT = 12.0  # 正式訊號門檻：多方≥+12%；空方≤-12%

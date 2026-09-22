@@ -24,9 +24,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from daily_bars_store import load_daily_bars
-from intraday_signal_store import save_intraday_signals
+from intraday_signal_store import delete_signals_for_ticker, save_intraday_signals
+from main_force_store import list_main_force_codes_for_date, load_main_force_bars
 from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
+from stock_history_service import get_stock_history_bars_1m
 
 logger = logging.getLogger("hanstock.main_force_flip_signals")
 TW_TZ = timezone(timedelta(hours=8))
@@ -43,6 +45,7 @@ MIN_BARS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_BARS", "10")))
 MAX_VWAP_DISTANCE_PCT = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MAX_VWAP_DISTANCE_PCT", "3.0"))
 KIND_BULL = "mainForceFlipBull"
 KIND_BEAR = "mainForceFlipBear"
+FLIP_SIGNAL_KINDS = {KIND_BULL, KIND_BEAR}
 
 _group_lookup_cache: dict[str, tuple[str, str]] | None = None
 
@@ -115,6 +118,29 @@ class MainForceFlipMonitor:
     def __init__(self) -> None:
         self._states: dict[str, _FlipState] = {}
         self._lock = threading.Lock()
+        self._bars_processed = 0
+        self._fired = {"bull": 0, "bear": 0}
+        self._last_bar_at: str | None = None
+
+    def status(self) -> dict[str, Any]:
+        """給 /api/hub/persistence/status 看的運作狀態：開盤後 barsProcessed 有在漲
+        就代表偵測器在跑，不用等到真的有訊號才能確認。"""
+        today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+        with self._lock:
+            tracked = sum(1 for state in self._states.values() if state.trade_date == today)
+            return {
+                "trackedCodes": tracked,
+                "barsProcessed": self._bars_processed,
+                "firedBull": self._fired["bull"],
+                "firedBear": self._fired["bear"],
+                "lastBarAt": self._last_bar_at,
+                "thresholds": {
+                    "netRatioMin": NET_RATIO_MIN, "netRatioStrong": NET_RATIO_STRONG,
+                    "volumeRatioMin": VOLUME_RATIO_MIN, "volumeRatioStrong": VOLUME_RATIO_STRONG,
+                    "syncWindowMinutes": SYNC_WINDOW_MS // ONE_MIN_MS, "minMainLots": MIN_MAIN_GROSS_LOTS,
+                    "minBars": MIN_BARS, "maxVwapDistancePct": MAX_VWAP_DISTANCE_PCT,
+                },
+            }
 
     def _reset_for_new_day(self, code: str, trade_date: str) -> _FlipState:
         state = _FlipState(trade_date=trade_date)
@@ -150,6 +176,10 @@ class MainForceFlipMonitor:
             if state is None or state.trade_date != trade_date:
                 state = self._reset_for_new_day(code, trade_date)
             signals = self._process_bar(code, state, bar, close, close_ts, trade_date)
+            self._bars_processed += 1
+            self._last_bar_at = datetime.fromtimestamp(close_ts / 1000, TW_TZ).isoformat()
+            for signal in signals:
+                self._fired["bull" if signal["kind"] == KIND_BULL else "bear"] += 1
         if signals:
             try:
                 save_intraday_signals(signals)
@@ -274,3 +304,98 @@ def get_main_force_flip_monitor() -> MainForceFlipMonitor:
     if _monitor is None:
         _monitor = MainForceFlipMonitor()
     return _monitor
+
+
+def backfill_flip_signals(
+    trade_date: str,
+    *,
+    service: Any = None,
+    hub: Any = None,
+    codes: list[str] | None = None,
+) -> dict[str, Any]:
+    """重播 trade_date 當天、補回偵測器不在線時漏掉的翻多空訊號。
+
+    每分鐘價量用 Shioaji kbars（一檔一天約 30KB）；主力買賣張數與當日累計成交額
+    用當天主力副圖收集器已經落盤的 main_force_bars（不花額度）。只重播當天有主力
+    副圖資料的股票（＝當天被訂閱到、有 tick 的）。重播前先刪掉這檔當天既有的翻多空
+    紀錄，以完整 09:00 起的當日 kbars 重算為準（即時路徑訂閱較晚時累計值只從訂閱
+    起算，不準）；只有真的拿到當天 kbars 才刪除重寫。歷史額度用完時整批停下、回報
+    quotaBlocked，排程之後再試。"""
+    target = codes if codes is not None else list_main_force_codes_for_date(trade_date, "1m")
+    group_codes = {str(code).upper() for members in STOCK_GROUPS.values() for code, _name in members}
+    target_codes = sorted(code for code in {str(code).strip().upper() for code in target} if code in group_codes)
+    monitor = get_main_force_flip_monitor()
+    processed = bars_replayed = signals_emitted = skipped_no_bars = 0
+    failures: list[dict[str, str]] = []
+    quota_blocked = False
+    for code in target_codes:
+        try:
+            history = get_stock_history_bars_1m(code, calendar_days=5, service=service, hub=hub)
+            error = history.get("error")
+            if error and "history_quota_exhausted" in str(error):
+                quota_blocked = True
+                failures.append({"code": code, "error": str(error)})
+                break
+            day_bars = sorted(
+                (bar for bar in history.get("bars", []) if taipei_trade_date(int(bar["ts"])) == trade_date),
+                key=lambda bar: int(bar["ts"]),
+            )
+            if not day_bars:
+                skipped_no_bars += 1
+                if error:
+                    failures.append({"code": code, "error": str(error)})
+                continue
+            main_rows = {int(row["ts"]): row for row in load_main_force_bars(code, "1m", trade_date=trade_date)}
+            merged = []
+            for bar in day_bars:
+                row = main_rows.get(int(bar["ts"]))
+                merged.append({
+                    "ts": int(bar["ts"]), "close": bar["close"], "volume": bar.get("volume", 0),
+                    "main_buy_volume": row["main_buy_volume"] if row else 0,
+                    "main_sell_volume": row["main_sell_volume"] if row else 0,
+                    "total_amount": row.get("total_amount", 0) if row else 0,
+                })
+            delete_signals_for_ticker(trade_date, code, FLIP_SIGNAL_KINDS)
+            monitor.reset_for_backfill(code, trade_date)
+            for bar in merged:
+                signals_emitted += len(monitor.on_bar_completed(code, bar))
+            bars_replayed += len(merged)
+            processed += 1
+        except Exception as error:  # noqa: BLE001
+            failures.append({"code": code, "error": f"{type(error).__name__}: {error}"})
+    return {
+        "tradeDate": trade_date, "codeCount": len(target_codes), "processed": processed,
+        "barsReplayed": bars_replayed, "signalsEmitted": signals_emitted, "skippedNoBars": skipped_no_bars,
+        "quotaBlocked": quota_blocked, "failureCount": len(failures), "failures": failures[:50],
+    }
+
+
+_backfill_status_lock = threading.Lock()
+_backfill_status: dict[str, Any] = {"running": False, "tradeDate": None, "result": None}
+
+
+def flip_signal_backfill_status() -> dict[str, Any]:
+    with _backfill_status_lock:
+        return dict(_backfill_status)
+
+
+def start_flip_signal_backfill(trade_date: str | None = None) -> dict[str, Any]:
+    """背景執行緒觸發一次重播回補；已經在跑就不重複啟動。trade_date 預設今天。"""
+    trade_date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    with _backfill_status_lock:
+        if _backfill_status["running"]:
+            return {"started": False, "reason": "already_running", "tradeDate": _backfill_status["tradeDate"]}
+        _backfill_status.update({"running": True, "tradeDate": trade_date, "result": None})
+
+    def _run() -> None:
+        try:
+            result = backfill_flip_signals(trade_date)
+        except Exception as error:  # noqa: BLE001
+            result = {"tradeDate": trade_date, "error": f"{type(error).__name__}: {error}"}
+            logger.exception("主力累計翻多空回補整體失敗 trade_date=%s", trade_date)
+        with _backfill_status_lock:
+            _backfill_status.update({"running": False, "result": result})
+        logger.info("主力累計翻多空回補完成: %s", result)
+
+    threading.Thread(target=_run, name="hanstock-main-force-flip-backfill", daemon=True).start()
+    return {"started": True, "tradeDate": trade_date}

@@ -24,6 +24,8 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
+from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
+from main_force_flip_signals import flip_signal_backfill_status, get_main_force_flip_monitor, start_flip_signal_backfill
 from history_quota import history_quota
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_trade_date
 from otc_index_hub import get_otc_index_hub
@@ -73,6 +75,9 @@ async def _persistent_lifespan(fastapi_app):
             # 可能已經算錯或漏掉的訊號；之前這個回補只有手動觸發的端點，
             # 沒有排程，沒人記得打就永遠不會自動修正。
             start_kline_signal_backfill_collector()
+            # 主力累計翻多空：收盤後用kbars+已落盤的主力副圖重播今天，補回偵測器
+            # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
+            start_main_force_flip_backfill_collector()
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但664檔股票還是有感時間，丟背景
             # 執行緒避免拖慢啟動就緒。天數呼應main_force_collector.py的
@@ -125,6 +130,8 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_KLINE_SIGNAL_BACKFILL_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "klineSignalBackfill": kline_signal_backfill_status(),
+            "mainForceFlip": get_main_force_flip_monitor().status(),
+            "mainForceFlipBackfill": flip_signal_backfill_status(),
         },
     }
 
@@ -163,6 +170,24 @@ def _kick_otc_index_bootstrap(hub: Any) -> None:
         get_otc_index_service().ensure_bootstrapped(service.api)
     except Exception:  # noqa: BLE001
         pass
+
+
+@app.post("/api/hub/main-force-flip/backfill")
+def post_main_force_flip_backfill(trade_date: str | None = Query(None)) -> dict[str, Any]:
+    """手動觸發主力累計翻多空的當日重播回補（背景執行，結果看 backfill-status）；
+    預設今天。盤中觸發會跟即時偵測互相干擾，請在收盤後或開盤前使用。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    return {"status": "ok", **start_flip_signal_backfill(trade_date)}
+
+
+@app.get("/api/hub/main-force-flip/backfill-status")
+def get_main_force_flip_backfill_status() -> dict[str, Any]:
+    return {"status": "ok", "data": flip_signal_backfill_status()}
 
 
 @app.get("/api/hub/intraday-signals")

@@ -64,6 +64,13 @@ def test_strong_bull_flip_fires_once_when_zero_axis_and_vwap_cross_together(monk
     again = feed(monitor, "3532", [bar(9, 10, 102.0, 100, main_buy=100), bar(9, 11, 103.0, 100, main_buy=100)])
     assert again == []
 
+    status = monitor.status()
+    assert status["barsProcessed"] == 12
+    assert status["firedBull"] == 1
+    assert status["firedBear"] == 0
+    assert status["lastBarAt"].startswith("2026-09-18T09:12")
+    assert status["thresholds"]["minBars"] == module.MIN_BARS
+
 
 def test_weak_volume_ratio_downgrades_label_to_plain_flip(monkeypatch):
     monitor = new_monitor(monkeypatch)
@@ -119,6 +126,57 @@ def test_missing_daily_history_or_thin_main_force_never_fires(monkeypatch):
     thin = new_monitor(monkeypatch)
     quiet = [bar(9, i, 100.0, 100, main_sell=1) for i in range(9)]
     assert feed(thin, "3532", quiet + [bar(9, 9, 101.0, 100, main_buy=15)]) == []
+
+
+def test_backfill_replays_day_from_kbars_and_persisted_main_force_bars(monkeypatch):
+    # 使用者要求把「偵測器不在線那段」漏掉的訊號補回來：價量來自kbars（沒有主力欄位），
+    # 主力張數/累計成交額來自當天主力副圖收集器已經落盤的main_force_bars。
+    monitor = new_monitor(monkeypatch)
+    monkeypatch.setattr(module, "get_main_force_flip_monitor", lambda: monitor)
+    saved: list[dict] = []
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: saved.extend(rows) or rows)
+    deleted: list[tuple] = []
+    monkeypatch.setattr(module, "delete_signals_for_ticker", lambda d, t, kinds: deleted.append((d, t, set(kinds))) or 0)
+    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["3532", "9999"])
+
+    kbars = [{"ts": ts(9, i), "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 100} for i in range(9)]
+    kbars.append({"ts": ts(9, 9), "open": 101.0, "high": 101.0, "low": 101.0, "close": 101.0, "volume": 100})
+    monkeypatch.setattr(module, "get_stock_history_bars_1m",
+                        lambda code, **kwargs: {"bars": kbars} if code == "3532" else {"bars": [], "error": "找不到股票合約"})
+    main_rows = [{"ts": ts(9, i), "main_buy_volume": 0, "main_sell_volume": 10, "total_amount": 0} for i in range(9)]
+    main_rows.append({"ts": ts(9, 9), "main_buy_volume": 400, "main_sell_volume": 0, "total_amount": 0})
+    monkeypatch.setattr(module, "load_main_force_bars", lambda code, interval, trade_date=None: main_rows)
+
+    result = module.backfill_flip_signals("2026-09-18")
+
+    assert result["codeCount"] == 1  # 9999 不在族群清單裡，直接略過
+    assert result["processed"] == 1
+    assert result["barsReplayed"] == 10
+    assert result["signalsEmitted"] == 1
+    assert result["quotaBlocked"] is False
+    assert deleted == [("2026-09-18", "3532", {KIND_BULL, KIND_BEAR})]
+    assert [s["label"] for s in saved] == ["主力累計強勢翻多"]
+    assert saved[0]["barTs"] == ts(9, 10)
+
+
+def test_backfill_stops_and_reports_when_history_quota_is_exhausted(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    monkeypatch.setattr(module, "get_main_force_flip_monitor", lambda: monitor)
+    monkeypatch.setattr(module, "delete_signals_for_ticker", lambda *a: 0)
+    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["3532", "2330"])
+    calls: list[str] = []
+
+    def exhausted(code, **kwargs):
+        calls.append(code)
+        return {"bars": [], "error": "history_quota_exhausted: Shioaji 歷史資料流量額度已用完"}
+
+    monkeypatch.setattr(module, "get_stock_history_bars_1m", exhausted)
+
+    result = module.backfill_flip_signals("2026-09-18")
+
+    assert result["quotaBlocked"] is True
+    assert result["processed"] == 0
+    assert calls == ["2330"]  # 第一檔就撞到額度用完，整批停下、不再逐檔浪費
 
 
 def test_tick_total_amount_and_volume_give_session_vwap_and_volume_ratio(monkeypatch):
