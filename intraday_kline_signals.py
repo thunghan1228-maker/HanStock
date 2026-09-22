@@ -33,6 +33,7 @@ ZONE_TICKS = 5  # 「前高下方5檔內」
 WAIT_BARS = 2  # 注意12空／12空都要等2根5分K（=10分鐘）未突破
 WATCH_START_MINUTE = 9 * 60 + 10  # 09:10起才開始偵測注意12空
 CUTOFF_MINUTE = 10 * 60 + 30  # A8空／破905D／12空的期限
+FIRST_BAR_MAX_CLOSE_MINUTE = 9 * 60 + 10  # 真正的905K收盤時間=09:05，多留5分鐘緩衝
 BLACK_DRAGON_START_MINUTE = 11 * 60  # 創高黑龍11:00後才成立
 BLACK_DRAGON_END_MINUTE = 13 * 60 + 30  # 到13:30收盤
 BLACK_DRAGON_MIN_MA_SCORE = 10  # 六均線兩兩比較共15組，至少10組排列正確
@@ -96,6 +97,7 @@ class _KlineState:
     five_day_high: float | None = None
     ma_alignment_score: int | None = None
     fired_black_dragon: bool = False
+    late_subscription: bool = False
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -202,7 +204,19 @@ class IntradayKlineSignalMonitor:
             })
 
         if state.bar_count == 1:
-            # 這是當天第一根905K（09:00-09:05），只用來建立基準，不偵測訊號。
+            # 這根理論上是當天第一根905K（09:00-09:05），只用來建立基準，
+            # 不偵測訊號。但即時路徑的股票訂閱是動態、有上限的，某檔股票
+            # 如果比較晚才被訂閱到，這裡收到的「第一根」其實是當天較晚
+            # 才完整走完的某根K棒，不是真正的09:00-09:05──用它當905高/
+            # 昨日高combo的基準會產生假訊號(跟backfill_today_kline_signals
+            # 文件字串描述的是同一個根因)。這裡只用bar自己的收盤時間驗證，
+            # 不合理就不建立基準，讓後面所有偵測函式(都已經對905高/a8/
+            # session_high/today_open是None做防呆)自然整天跳過這檔股票，
+            # 寧可當天沒訊號、也不要給錯的訊號；正確結果要靠收盤後的
+            # backfill_today_kline_signals用歷史kbars重建。
+            if minute_of_day > FIRST_BAR_MAX_CLOSE_MINUTE:
+                state.late_subscription = True
+                return out
             state.bar905_high = high
             state.bar905_low = low
             state.a8 = (state.bar905_high + state.bar905_low) / 2
