@@ -23,6 +23,7 @@ from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_b
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
+from kline_signal_backfill_collector import start_kline_signal_backfill_collector
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_trade_date
 from otc_index_hub import get_otc_index_hub
 from stock_history_service import get_stock_history_bars_1m, get_stock_history_bars_5m
@@ -61,6 +62,11 @@ async def _persistent_lifespan(fastapi_app):
             # 處理，不管優先序設多高，attempts永遠停在0。這裡補上真正啟動
             # 這個背景執行緒。
             start_stock_bar_repair_collector()
+            # 5分鐘K盤中訊號(905/1+2多/12空/創高黑龍等)收盤後(13:35+)用歷史
+            # kbars自動重播校正一次，修正即時路徑受動態訂閱時機影響、當天
+            # 可能已經算錯或漏掉的訊號；之前這個回補只有手動觸發的端點，
+            # 沒有排程，沒人記得打就永遠不會自動修正。
+            start_kline_signal_backfill_collector()
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但664檔股票還是有感時間，丟背景
             # 執行緒避免拖慢啟動就緒。天數呼應main_force_collector.py的
@@ -108,6 +114,10 @@ def get_persistence_status() -> dict[str, Any]:
             "otcGapBackfill": otc_gap_backfill_state(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
+            "klineSignalBackfillCollectorEnabled": os.getenv(
+                "HANSTOCK_KLINE_SIGNAL_BACKFILL_COLLECTOR_ENABLED", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
+            "klineSignalBackfill": kline_signal_backfill_status(),
         },
     }
 
