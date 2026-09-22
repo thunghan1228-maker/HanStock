@@ -511,6 +511,30 @@ class IndexSourceTests(unittest.TestCase):
         self.assertFalse(probe["finmind"]["ok"])
         self.assertEqual(module.history_sources_status()["finmind"]["blockedForSeconds"], 0)
 
+    def test_index_probe_can_try_several_symbols_and_another_finmind_id(self) -> None:
+        # 正式環境 ^TWOII 回 404、FinMind TPEx 回 0 根：要能一次多試幾個代號，不用改設定重新部署。
+        seen: list[tuple[str, str]] = []
+
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                seen.append(("finmind", params["data_id"]))
+                return {"status": 200, "data": finmind_rows(0)}
+            sym = url.rsplit("/", 1)[1]
+            seen.append((sym, params["interval"]))
+            if sym == "%5ETWO":
+                return yahoo_payload(0)
+            raise module.SourceHttpError(404, "Not Found", "No data found")
+
+        probe = probe_history_sources("OTC_INDEX", "2026-09-22", fetcher=fetcher, yahoo_symbols=["^TWOII", "^TWO"], finmind_id="TPEX")
+
+        self.assertFalse(probe["yahoo1m"]["ok"])  # 第一個代號仍是主要結果
+        self.assertTrue(probe["yahooCandidates"]["^TWO"]["5m"]["ok"])
+        self.assertFalse(probe["yahooCandidates"]["^TWOII"]["1m"]["ok"])
+        self.assertEqual(probe["finmind"]["dataId"], "TPEX")
+        self.assertTrue(probe["finmind"]["ok"])
+        self.assertIn(("finmind", "TPEX"), seen)
+        self.assertEqual(sorted({s for s, _ in seen if s != "finmind"}), ["%5ETWO", "%5ETWOII"])
+
 
 if __name__ == "__main__":
     unittest.main()
