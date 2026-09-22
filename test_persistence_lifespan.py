@@ -33,6 +33,7 @@ class PersistenceLifespanTests(unittest.TestCase):
             patch.object(persistent_app, "start_after_hours_fixed_price_collector") as after_hours_worker,
             patch.object(persistent_app, "start_otc_gap_backfill") as otc_gap_worker,
             patch.object(persistent_app, "start_stock_bar_repair_collector") as repair_worker,
+            patch.object(persistent_app, "start_kline_signal_backfill_collector") as kline_backfill_worker,
         ):
             asyncio.run(exercise_lifespan())
 
@@ -43,6 +44,7 @@ class PersistenceLifespanTests(unittest.TestCase):
         after_hours_worker.assert_called_once_with()
         otc_gap_worker.assert_called_once_with()
         repair_worker.assert_called_once_with()
+        kline_backfill_worker.assert_called_once_with()
 
 
 if __name__ == "__main__":
