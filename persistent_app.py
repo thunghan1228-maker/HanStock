@@ -199,7 +199,7 @@ def _group_stock_codes() -> list[str]:
 
 
 @app.get("/api/hub/stock-flags")
-def get_stock_flags() -> dict[str, Any]:
+def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
     """全部族群個股的可交易旗標（可融資／可融券／可現股當沖／有股期）與是否為處置股，給訊號中心
     每一列標註用；一次回全部，前端幾分鐘抓一次就好。融資券旗標由背景每分鐘更新的快取供應（合約
     清單還沒下載完時為 null，之後幾輪內會填滿），這裡只讀快取、不查合約，不會卡住回 502；
@@ -221,10 +221,20 @@ def get_stock_flags() -> dict[str, Any]:
         stocks[code] = info
     unknown = sum(1 for info in stocks.values() if info.get("marginable") is None)
     sample_code = "2330" if "2330" in stocks else (codes[0] if codes else "")
+    counts = {
+        "marginable": sum(1 for info in stocks.values() if info.get("marginable")),
+        "shortable": sum(1 for info in stocks.values() if info.get("shortable")),
+        "dayTradeEligible": sum(1 for info in stocks.values() if info.get("dayTradeEligible")),
+        "disposition": sum(1 for info in stocks.values() if info.get("disposition")),
+        "total": len(stocks),
+    }
     return {
         "status": "ok",
         "updatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
-        "stocks": stocks,
+        # summary=true 只看摘要與診斷，不回 455 檔明細
+        "stocks": {} if summary else stocks,
+        "counts": counts,
+        "sample": {code: stocks[code] for code in ("2330", "1101", "3532") if code in stocks},
         "unknownEligibilityCount": unknown,
         "eligibilityWarmer": trading_eligibility_warmer_status(),
         "dispositionCodes": sorted(disposition),

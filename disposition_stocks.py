@@ -1,8 +1,10 @@
 """處置股（TWSE／TPEx 每日公布的處置有價證券）清單。
 
-兩邊都走官方 OpenAPI：
+三個來源合併：
+- Shioaji：api.punish()（永豐整理好的處置股欄狀資料，上市櫃都有；要登入後才查得到）
 - TWSE：https://openapi.twse.com.tw/v1/announcement/punish
-- TPEx：https://www.tpex.org.tw/openapi/v1/tpex_disposal_information
+- TPEx：https://www.tpex.org.tw/openapi/v1/tpex_disposal_information（Railway 出去會被擋 403，
+  所以櫃買那邊主要靠 Shioaji 的 punish）
 
 兩邊欄位名稱不一樣、也可能改版，所以解析採「找欄位」：代號欄（鍵名含 Code／代號）、名稱欄
 （Name／名稱）、處置期間欄（Period／期間／起迄，或分開的 Start／End、起／迄），日期同時
@@ -40,10 +42,113 @@ _DATE_RE = re.compile(r"(\d{2,4})[/\-.年](\d{1,2})[/\-.月](\d{1,2})")
 _PERIOD_SPLIT_RE = re.compile(r"[～~至到]|(?<=\d{7})-(?=\d{7})|(?<=\d{8})-(?=\d{8})|\s+-\s+")
 
 
+_BROWSER_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    # TPEx 的 OpenAPI 對非瀏覽器 User-Agent 回 403，用一般瀏覽器的字串。
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+}
+
+
 def _default_fetcher(url: str) -> Any:
-    request = Request(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0 (compatible; HanStock/1.0)"})
+    headers = dict(_BROWSER_HEADERS)
+    if "tpex.org.tw" in url:
+        headers["Referer"] = "https://www.tpex.org.tw/"
+    request = Request(url, headers=headers)
     with urlopen(request, timeout=20) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8-sig"))
+
+
+def _default_punish_fetcher() -> Any:
+    """已登入的 Shioaji 才查；沒登入（備援專案、測試）回 None。"""
+    try:
+        from quote_service import get_quote_service
+
+        service = get_quote_service()
+    except Exception:  # noqa: BLE001
+        return None
+    api = getattr(service, "api", None)
+    punish = getattr(api, "punish", None)
+    if api is None or not callable(punish):
+        return None
+    try:
+        return punish(timeout=30000)
+    except TypeError:
+        return punish()
+
+
+def _as_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return parse_date(value)
+
+
+def _column(payload: Any, name: str) -> list[Any]:
+    value = None
+    if isinstance(payload, dict):
+        value = payload.get(name)
+    else:
+        try:
+            value = getattr(payload, name)
+        except Exception:  # noqa: BLE001
+            value = None
+        if value is None and hasattr(payload, "get"):
+            try:
+                value = payload.get(name)
+            except Exception:  # noqa: BLE001
+                value = None
+    if value is None:
+        return []
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
+def _is_active(start: Optional[date], end: Optional[date], published: Optional[date], today: date) -> bool:
+    if start and end:
+        return start <= today <= end
+    if end:
+        return today <= end
+    if published:
+        return today <= published + timedelta(days=FALLBACK_ACTIVE_DAYS)
+    return False
+
+
+def _remember(result: dict[str, dict[str, Any]], entry: dict[str, Any]) -> None:
+    existing = result.get(entry["code"])
+    if existing is None or (entry["end"] or "") > (existing.get("end") or ""):
+        result[entry["code"]] = entry
+
+
+def extract_punish(payload: Any, *, today: date) -> dict[str, dict[str, Any]]:
+    """Shioaji api.punish() 的欄狀資料（code／start_date／end_date／description／announced_date）
+    轉成跟 extract_rows 一樣的 {代號: {...}}，只留今天仍在處置期間內的。"""
+    result: dict[str, dict[str, Any]] = {}
+    codes = _column(payload, "code")
+    if not codes:
+        return result
+    starts, ends = _column(payload, "start_date"), _column(payload, "end_date")
+    descriptions, announced = _column(payload, "description"), _column(payload, "announced_date")
+
+    def _at(column: list[Any], index: int) -> Any:
+        return column[index] if index < len(column) else None
+
+    for index, code_raw in enumerate(codes):
+        code = str(code_raw or "").strip().upper()
+        if not _CODE_RE.match(code):
+            continue
+        start, end, published = _as_date(_at(starts, index)), _as_date(_at(ends, index)), _as_date(_at(announced, index))
+        if not _is_active(start, end, published, today):
+            continue
+        _remember(result, {
+            "code": code, "name": "", "start": start.isoformat() if start else None,
+            "end": end.isoformat() if end else None, "reason": str(_at(descriptions, index) or "").strip()[:80],
+            "source": "shioaji",
+        })
+    return result
 
 
 def parse_date(text: Any) -> Optional[date]:
@@ -110,36 +215,49 @@ def extract_rows(rows: Any, *, source: str, today: date) -> dict[str, dict[str, 
         if end is None:
             end = parse_date(_pick(row, "EndDate", "End", "迄", "結束"))
         published = parse_date(_pick(row, "Date", "日期", "公布"))
-        if start and end:
-            active = start <= today <= end
-        elif end:
-            active = today <= end
-        elif published:
-            active = today <= published + timedelta(days=FALLBACK_ACTIVE_DAYS)
-        else:
-            active = False
-        if not active:
+        if not _is_active(start, end, published, today):
             continue
         reason = str(_pick(row, "Reason", "原因", "處置內容", "Content") or "").strip()[:80]
-        existing = result.get(code)
-        entry = {
+        _remember(result, {
             "code": code, "name": name, "start": start.isoformat() if start else None,
             "end": end.isoformat() if end else None, "reason": reason, "source": source,
-        }
-        if existing is None or (entry["end"] or "") > (existing.get("end") or ""):
-            result[code] = entry
+        })
     return result
 
 
-def refresh(*, fetcher: Optional[Fetcher] = None, today: Optional[date] = None) -> dict[str, Any]:
-    """兩邊各抓一次；任何一邊失敗就保留那一邊上次的結果。"""
+def refresh(
+    *, fetcher: Optional[Fetcher] = None, today: Optional[date] = None, punish_fetcher: Optional[Callable[[], Any]] = None,
+) -> dict[str, Any]:
+    """三個來源各抓一次；任何一邊失敗就保留那一邊上次的結果。"""
     global _map
     call = fetcher or _default_fetcher
+    punish_call = punish_fetcher or _default_punish_fetcher
     today = today or datetime.now(TW_TZ).date()
     merged: dict[str, dict[str, Any]] = {}
     sources: dict[str, Any] = {}
     with _lock:
         previous = dict(_map)
+
+    def _keep_previous(source: str, error: str) -> None:
+        kept = {code: item for code, item in previous.items() if item.get("source") == source}
+        for item in kept.values():
+            _remember(merged, item)
+        sources[source] = {"ok": False, "active": len(kept), "rows": None, "fields": [], "error": error[:200]}
+
+    try:
+        payload = punish_call()
+        if payload is None:
+            _keep_previous("shioaji", "未登入（punish 只有登入後查得到）")
+        else:
+            rows = extract_punish(payload, today=today)
+            fields = list(payload.keys())[:12] if hasattr(payload, "keys") else []
+            sources["shioaji"] = {"ok": True, "active": len(rows), "rows": len(_column(payload, "code")), "fields": fields, "error": None}
+            for item in rows.values():
+                _remember(merged, item)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Disposition] shioaji punish 查詢失敗: %s", exc)
+        _keep_previous("shioaji", f"{type(exc).__name__}: {exc}")
+
     for source, url in (("twse", TWSE_URL), ("tpex", TPEX_URL)):
         try:
             payload = call(url)
@@ -149,12 +267,11 @@ def refresh(*, fetcher: Optional[Fetcher] = None, today: Optional[date] = None) 
                 "ok": True, "active": len(rows), "rows": len(payload) if isinstance(payload, list) else None,
                 "fields": list(sample.keys())[:12] if sample else [], "error": None,
             }
-            merged.update(rows)
+            for item in rows.values():
+                _remember(merged, item)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Disposition] %s 抓取失敗: %s", source, exc)
-            kept = {code: item for code, item in previous.items() if item.get("source") == source}
-            merged.update(kept)
-            sources[source] = {"ok": False, "active": len(kept), "rows": None, "fields": [], "error": f"{type(exc).__name__}: {exc}"[:200]}
+            _keep_previous(source, f"{type(exc).__name__}: {exc}")
     with _lock:
         _map = merged
         _status.update({

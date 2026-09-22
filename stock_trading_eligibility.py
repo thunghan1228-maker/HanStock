@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
 
+from shioaji_contracts import contracts_fetch_status, full_stock_contract, is_full_contract, upgrade_contract
 from stock_bar_bootstrap import _resolve_stock_contract
 from stock_groups import STOCK_GROUPS
 
@@ -33,8 +34,17 @@ _cache_lock = threading.Lock()
 _cache: dict[str, dict[str, Any]] = {}
 _cache_day = ""
 _warmer_started = False
-_warmer_status: dict[str, Any] = {"lastRunAt": None, "resolved": 0, "unknown": 0, "rounds": 0}
+_warmer_status: dict[str, Any] = {"lastRunAt": None, "resolved": 0, "unknown": 0, "rounds": 0, "credit": None}
 WARM_INTERVAL_SECONDS = max(30, int(os.getenv("HANSTOCK_ELIGIBILITY_WARM_SECONDS", "60")))
+# 融資／融券改以永豐「信用額度查詢」為準：credit_enquires 直接回每檔的融資成數（margin_loan_ratio）
+# 與融券保證金成數（short_margin_ratio），成數大於 0 就是可融資／可融券，是券商本身的資料，
+# 跟合約清單有沒有下載完、合約物件帶不帶餘額欄位都無關。每 30 分鐘查一輪、每次 50 檔。
+CREDIT_REFRESH_SECONDS = max(300, int(os.getenv("HANSTOCK_CREDIT_ENQUIRE_SECONDS", "1800")))
+CREDIT_BATCH_SIZE = 50
+_credit_cache: dict[str, dict[str, Any]] = {}
+_credit_status: dict[str, Any] = {"lastRunAt": None, "resolved": 0, "batches": 0, "missing": 0, "error": None}
+# None = 還沒查過；不能用 0.0，time.monotonic() 在剛開機的容器裡可能小於 30 分鐘，第一輪會被冷卻時間擋掉。
+_credit_last_run: Optional[float] = None
 TW_TZ = timezone(timedelta(hours=8))
 # 合約清單是登入後在背景下載的，還沒下載完時 Contract 物件拿得到但欄位全是空白（day_trade 是空字串、
 # 餘額是 0）。正式環境 2026-09-22 就是這樣：啟動時先被查了一輪，全部被當成「不可融資／不可當沖」
@@ -57,22 +67,25 @@ def _today() -> str:
 
 def contract_debug(code: str, *, service: Any = None) -> dict[str, Any]:
     """給 /api/hub/stock-flags 的診斷用：這檔合約原始欄位長什麼樣、合約清單下載狀態。"""
-    info: dict[str, Any] = {"code": str(code).strip().upper(), "contract": None, "contractsStatus": None}
+    info: dict[str, Any] = {"code": str(code).strip().upper(), "contract": None, "contractsStatus": None, "fullContract": None}
     try:
         resolved_service = service if service is not None else _default_service()
         api = getattr(resolved_service, "api", None)
-        contracts = getattr(api, "contracts", None) if api is not None else None
-        status = getattr(contracts, "status", None) if contracts is not None else None
-        info["contractsStatus"] = str(getattr(status, "value", status)) if status is not None else None
-        contract = _resolve_stock_contract(resolved_service, info["code"])
+        info["contractsStatus"] = contracts_fetch_status(api)
+        contract = _stock_contract(resolved_service, info["code"])
         if contract is not None:
             info["contract"] = {
                 "type": type(contract).__name__,
+                "full": is_full_contract(contract),
                 "day_trade": _enum_text(getattr(contract, "day_trade", None)),
                 "margin_trading_balance": getattr(contract, "margin_trading_balance", None),
                 "short_selling_balance": getattr(contract, "short_selling_balance", None),
                 "update_date": getattr(contract, "update_date", None),
             }
+        full = full_stock_contract(api, info["code"])
+        info["fullContract"] = type(full).__name__ if full is not None else None
+        with _cache_lock:
+            info["credit"] = dict(_credit_cache.get(info["code"]) or {}) or None
     except Exception as exc:  # noqa: BLE001
         info["error"] = f"{type(exc).__name__}: {exc}"[:200]
     return info
@@ -82,6 +95,82 @@ def _default_service() -> Any:
     from quote_service import get_quote_service
 
     return get_quote_service()
+
+
+def _stock_contract(service: Any, code: str) -> Any:
+    """服務自己的解析器優先；拿到的只是 BaseContract（沒有 day_trade 等欄位）就再從
+    Contracts.Stocks 換成完整合約，清單還沒下載完就維持原樣。"""
+    contract = _resolve_stock_contract(service, code)
+    return upgrade_contract(getattr(service, "api", None), code, contract)
+
+
+def _credit_flags(row: Any) -> tuple[bool, bool]:
+    def _int(name: str) -> int:
+        try:
+            return int(getattr(row, name, None) or (row.get(name) if hasattr(row, "get") else 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    marginable = _int("margin_loan_ratio") > 0 or _int("margin_unit") > 0
+    shortable = _int("short_margin_ratio") > 0 or _int("short_unit") > 0
+    return marginable, shortable
+
+
+def refresh_credit_flags(codes: Iterable[str], *, service: Any = None, force: bool = False) -> dict[str, Any]:
+    """用 credit_enquires 批次查融資券可否，填進 _credit_cache；未登入或 API 沒這個方法就略過。"""
+    global _credit_last_run
+    now = time.monotonic()
+    if not force and _credit_last_run is not None and now - _credit_last_run < CREDIT_REFRESH_SECONDS:
+        with _cache_lock:
+            return dict(_credit_status)
+    _credit_last_run = now
+    status: dict[str, Any] = {
+        "lastRunAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "resolved": 0, "batches": 0, "missing": 0,
+        "missingSample": [], "error": None,
+    }
+    try:
+        resolved_service = service if service is not None else _default_service()
+        api = getattr(resolved_service, "api", None)
+        enquire = getattr(api, "credit_enquires", None)
+        if api is None or not callable(enquire):
+            status["error"] = "api 未登入或沒有 credit_enquires"
+        else:
+            contracts = []
+            requested: list[str] = []
+            for code in codes:
+                code = str(code).strip().upper()
+                contract = _stock_contract(resolved_service, code)
+                if contract is not None:
+                    contracts.append(contract)
+                    requested.append(code)
+            found: dict[str, dict[str, Any]] = {}
+            for start in range(0, len(contracts), CREDIT_BATCH_SIZE):
+                batch = contracts[start:start + CREDIT_BATCH_SIZE]
+                try:
+                    rows = enquire(batch, timeout=30000)
+                except TypeError:
+                    rows = enquire(batch)
+                status["batches"] += 1
+                for row in rows or []:
+                    code = str(getattr(row, "stock_id", None) or (row.get("stock_id") if hasattr(row, "get") else "") or "").strip().upper()
+                    if not code:
+                        continue
+                    marginable, shortable = _credit_flags(row)
+                    found[code] = {"marginable": marginable, "shortable": shortable, "updatedAt": status["lastRunAt"]}
+            status["resolved"] = len(found)
+            # 查成功但沒回這檔：可能是券商信用表沒有這檔（不可融資券），先維持「不知道」，把代號列出來對照。
+            missing = [code for code in requested if code not in found] if found else []
+            status["missing"] = len(missing)
+            status["missingSample"] = missing[:10]
+            if found:
+                with _cache_lock:
+                    _credit_cache.update(found)
+    except Exception as exc:  # noqa: BLE001
+        status["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        logger.warning("[Eligibility] 信用額度查詢失敗: %s", exc)
+    with _cache_lock:
+        _credit_status.update(status)
+        return dict(_credit_status)
 
 
 def get_trading_eligibility(code: str, *, service: Any = None) -> dict[str, Any]:
@@ -111,7 +200,7 @@ def get_trading_eligibility(code: str, *, service: Any = None) -> dict[str, Any]
     populated = False
     try:
         resolved_service = service if service is not None else _default_service()
-        contract = _resolve_stock_contract(resolved_service, code)
+        contract = _stock_contract(resolved_service, code)
         if contract is not None:
             day_trade = _enum_text(getattr(contract, "day_trade", None))
             populated = day_trade in _POPULATED_DAY_TRADE
@@ -122,16 +211,26 @@ def get_trading_eligibility(code: str, *, service: Any = None) -> dict[str, Any]
     except Exception:  # noqa: BLE001
         pass
 
+    # 融資／融券以信用額度查詢為準（券商資料），合約餘額欄位只是備援。
+    with _cache_lock:
+        credit = _credit_cache.get(code)
+    if credit:
+        result["marginable"] = credit["marginable"]
+        result["shortable"] = credit["shortable"]
+
     # 沒查到（未登入、合約清單還沒下載完、欄位空白）就不快取：回 None 代表「還不知道」，下次再查。
-    if populated:
+    if populated or credit:
         with _cache_lock:
             _cache[code] = result
     return result
 
 
 def clear_trading_eligibility_cache() -> None:
+    global _credit_last_run
     with _cache_lock:
         _cache.clear()
+        _credit_cache.clear()
+    _credit_last_run = None
 
 
 def peek_trading_eligibility(code: str) -> Optional[dict[str, Any]]:
@@ -146,6 +245,10 @@ def peek_trading_eligibility(code: str) -> Optional[dict[str, Any]]:
 
 def warm_trading_eligibility(codes: Iterable[str], *, service: Any = None) -> dict[str, Any]:
     """把一批代號逐一查過、填進快取；查不到（合約清單還沒下載完）的下一輪再試。"""
+    codes = list(codes)
+    credit_status = refresh_credit_flags(codes, service=service)
+    with _cache_lock:
+        _cache.clear()  # 信用額度剛更新過，讓每檔重新合併一次
     resolved = unknown = 0
     for code in codes:
         try:
@@ -158,6 +261,7 @@ def warm_trading_eligibility(codes: Iterable[str], *, service: Any = None) -> di
             resolved += 1
     status = {
         "lastRunAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "resolved": resolved, "unknown": unknown,
+        "credit": credit_status,
     }
     with _cache_lock:
         _warmer_status.update(status)

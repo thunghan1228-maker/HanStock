@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import stock_trading_eligibility as module
 
@@ -92,6 +93,146 @@ class TradingEligibilityTests(unittest.TestCase):
         info = module.contract_debug("2330", service=service)
         self.assertEqual(info["contract"]["day_trade"], "onlybuy")
         self.assertEqual(info["contract"]["margin_trading_balance"], 5)
+
+    def test_credit_enquires_decide_margin_and_short_even_when_contract_balances_are_zero(self):
+        # 正式環境：合約物件的融資券餘額欄位整天是 0，改以永豐信用額度查詢的成數為準。
+        class Row:
+            def __init__(self, stock_id, margin_loan_ratio, short_margin_ratio, margin_unit=0, short_unit=0):
+                self.stock_id = stock_id
+                self.margin_loan_ratio = margin_loan_ratio
+                self.short_margin_ratio = short_margin_ratio
+                self.margin_unit = margin_unit
+                self.short_unit = short_unit
+
+        class FakeApi:
+            def __init__(self):
+                self.calls = []
+
+            def credit_enquires(self, contracts, timeout=30000):
+                self.calls.append(len(contracts))
+                return [Row("2330", 60, 90, margin_unit=100, short_unit=5), Row("8996", 0, 0)]
+
+        class CreditService(FakeService):
+            def __init__(self, contract):
+                super().__init__(contract)
+                self.api = FakeApi()
+
+        service = CreditService(FakeContract(margin_trading_balance=0, short_selling_balance=0, day_trade="Yes"))
+        status = module.warm_trading_eligibility(["2330", "8996"], service=service)
+        self.assertEqual(status["credit"]["resolved"], 2)
+        self.assertEqual(status["credit"]["batches"], 1)
+        self.assertIsNone(status["credit"]["error"])
+        self.assertTrue(module.get_trading_eligibility("2330", service=service)["marginable"])
+        self.assertTrue(module.get_trading_eligibility("2330", service=service)["shortable"])
+        self.assertFalse(module.get_trading_eligibility("8996", service=service)["marginable"])
+        self.assertFalse(module.get_trading_eligibility("8996", service=service)["shortable"])
+        self.assertTrue(module.get_trading_eligibility("8996", service=service)["dayTradeEligible"])
+        # 30 分鐘內再暖一次不會重打信用查詢
+        module.warm_trading_eligibility(["2330", "8996"], service=service)
+        self.assertEqual(service.api.calls, [2])
+
+    def test_credit_enquiry_failure_is_reported_and_contract_fields_still_used(self):
+        class FakeApi:
+            def credit_enquires(self, contracts, timeout=30000):
+                raise RuntimeError("not logged in")
+
+        class CreditService(FakeService):
+            def __init__(self, contract):
+                super().__init__(contract)
+                self.api = FakeApi()
+
+        service = CreditService(FakeContract(margin_trading_balance=1, short_selling_balance=1, day_trade="Yes"))
+        status = module.warm_trading_eligibility(["2330"], service=service)
+        self.assertIn("not logged in", status["credit"]["error"])
+        self.assertTrue(module.get_trading_eligibility("2330", service=service)["marginable"])
+
+    def test_base_contract_from_resolver_is_upgraded_via_contracts_stocks(self):
+        # 正式環境 2026-09-22：服務的解析器回 BaseContract（只有代號／交易所，沒有 day_trade 等欄位），
+        # 融資券／當沖整天都是「不知道」；要再從 Contracts.Stocks 換成完整合約。
+        from types import SimpleNamespace
+
+        class BaseContract:
+            def __init__(self, code):
+                self.code = code
+                self.security_type = "STK"
+
+        class Stocks:
+            def __getitem__(self, code):
+                if code != "2330":
+                    raise KeyError(code)
+                return FakeContract(margin_trading_balance=1, short_selling_balance=0, day_trade="OnlyBuy")
+
+        class BaseService(FakeService):
+            def __init__(self):
+                super().__init__(None)
+                self.api = SimpleNamespace(Contracts=SimpleNamespace(Stocks=Stocks()))
+
+            def _resolve_stock_contract(self, code):
+                return BaseContract(code)
+
+        service = BaseService()
+        result = module.get_trading_eligibility("2330", service=service)
+        self.assertTrue(result["marginable"])
+        self.assertFalse(result["shortable"])
+        self.assertTrue(result["dayTradeEligible"])
+        # 清單裡還沒有的代號維持 BaseContract → 還不知道、不快取
+        unknown = module.get_trading_eligibility("1101", service=service)
+        self.assertIsNone(unknown["dayTradeEligible"])
+        self.assertIsNone(module.peek_trading_eligibility("1101"))
+        info = module.contract_debug("2330", service=service)
+        self.assertEqual(info["contract"]["type"], "FakeContract")
+        self.assertTrue(info["contract"]["full"])
+        self.assertEqual(info["fullContract"], "FakeContract")
+        self.assertIsNone(module.contract_debug("1101", service=service)["fullContract"])
+
+    def test_credit_enquiry_reports_codes_the_broker_did_not_return(self):
+        class Row:
+            def __init__(self, stock_id):
+                self.stock_id = stock_id
+                self.margin_loan_ratio = 60
+                self.short_margin_ratio = 90
+                self.margin_unit = 0
+                self.short_unit = 0
+
+        class FakeApi:
+            def credit_enquires(self, contracts, timeout=30000):
+                return [Row("2330")]
+
+        class CreditService(FakeService):
+            def __init__(self, contract):
+                super().__init__(contract)
+                self.api = FakeApi()
+
+        service = CreditService(FakeContract(margin_trading_balance=0, short_selling_balance=0, day_trade="Yes"))
+        status = module.refresh_credit_flags(["2330", "8996"], service=service)
+        self.assertEqual(status["resolved"], 1)
+        self.assertEqual(status["missing"], 1)
+        self.assertEqual(status["missingSample"], ["8996"])
+        self.assertTrue(module.get_trading_eligibility("2330", service=service)["marginable"])
+        # 沒回的那檔維持合約欄位的判讀（餘額 0 → 不可），不會誤判
+        self.assertFalse(module.get_trading_eligibility("8996", service=service)["marginable"])
+        self.assertEqual(module.contract_debug("2330", service=service)["credit"]["marginable"], True)
+
+    def test_first_credit_refresh_runs_even_when_process_uptime_is_short(self):
+        import time as time_module
+
+        class FakeApi:
+            def __init__(self):
+                self.calls = 0
+
+            def credit_enquires(self, contracts, timeout=30000):
+                self.calls += 1
+                return []
+
+        class CreditService(FakeService):
+            def __init__(self, contract):
+                super().__init__(contract)
+                self.api = FakeApi()
+
+        service = CreditService(FakeContract())
+        with patch.object(time_module, "monotonic", lambda: 12.0):  # 剛開機 12 秒，遠小於 30 分鐘冷卻
+            module.refresh_credit_flags(["2330"], service=service)
+        self.assertEqual(service.api.calls, 1)
 
     def test_clear_cache_forces_refetch(self):
         service = FakeService(FakeContract(margin_trading_balance=1))

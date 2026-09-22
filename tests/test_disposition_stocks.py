@@ -62,7 +62,7 @@ class RefreshTests(unittest.TestCase):
             module.TWSE_URL: [{"Code": "8996", "Name": "高力", "DispositionPeriod": "1150922～1151006"}],
             module.TPEX_URL: [{"SecuritiesCompanyCode": "3661", "CompanyName": "世芯-KY", "DispositionPeriod": "1150918～1151001"}],
         }
-        status = module.refresh(fetcher=lambda url: payloads[url], today=TODAY)
+        status = module.refresh(fetcher=lambda url: payloads[url], today=TODAY, punish_fetcher=lambda: None)
         self.assertEqual(status["count"], 2)
         self.assertEqual(status["codes"], ["3661", "8996"])
         self.assertTrue(status["sources"]["twse"]["ok"])
@@ -74,10 +74,81 @@ class RefreshTests(unittest.TestCase):
                 raise RuntimeError("HTTP 503")
             return [{"Code": "2330", "Name": "台積電", "DispositionPeriod": "1150922～1151006"}]
 
-        status = module.refresh(fetcher=flaky, today=TODAY)
+        status = module.refresh(fetcher=flaky, today=TODAY, punish_fetcher=lambda: None)
         self.assertEqual(status["codes"], ["2330", "3661"])  # 櫃買那邊失敗就沿用上次的 3661
         self.assertFalse(status["sources"]["tpex"]["ok"])
         self.assertIn("HTTP 503", status["sources"]["tpex"]["error"])
+
+
+class PunishTests(unittest.TestCase):
+    def setUp(self) -> None:
+        module._map = {}
+        module._status = {"fetchedAt": None, "sources": {}, "count": 0}
+
+    def tearDown(self) -> None:
+        module._map = {}
+
+    @staticmethod
+    def _punish():
+        # Shioaji api.punish() 是欄狀資料：每個欄位一個 list，日期是 date／datetime 物件。
+        from datetime import datetime as dt
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            code=["8996", "3661", "2330", "ABC"],
+            start_date=[date(2026, 9, 22), date(2026, 9, 18), date(2026, 9, 1), date(2026, 9, 22)],
+            end_date=[date(2026, 10, 6), dt(2026, 10, 1, 0, 0), date(2026, 9, 15), date(2026, 10, 6)],
+            updated_at=[None, None, None, None],
+            interval=["5", "5", "5", "5"],
+            unit_limit=[None, None, None, None],
+            total_limit=[None, None, None, None],
+            description=["連續三次", "第二次處置", "x", "壞代號"],
+            announced_date=[date(2026, 9, 19), date(2026, 9, 17), date(2026, 8, 30), date(2026, 9, 19)],
+        )
+        payload.keys = lambda: ["code", "start_date", "end_date", "description", "announced_date"]
+        return payload
+
+    def test_extract_punish_columns_keeps_only_active_valid_codes(self) -> None:
+        result = module.extract_punish(self._punish(), today=TODAY)
+        self.assertEqual(sorted(result), ["3661", "8996"])
+        self.assertEqual(result["8996"]["end"], "2026-10-06")
+        self.assertEqual(result["8996"]["reason"], "連續三次")
+        self.assertEqual(result["3661"]["end"], "2026-10-01")
+        self.assertEqual(result["3661"]["source"], "shioaji")
+        self.assertEqual(module.extract_punish(None, today=TODAY), {})
+        self.assertEqual(module.extract_punish({"code": []}, today=TODAY), {})
+
+    def test_refresh_uses_shioaji_punish_when_tpex_is_blocked(self) -> None:
+        def fetcher(url):
+            if url == module.TPEX_URL:
+                raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+            return [{"Code": "8996", "Name": "高力", "DispositionPeriod": "1150922～1151006"}]
+
+        status = module.refresh(fetcher=fetcher, today=TODAY, punish_fetcher=self._punish)
+        self.assertEqual(status["codes"], ["3661", "8996"])  # 櫃買的 3661 靠 shioaji punish 補上
+        self.assertTrue(status["sources"]["shioaji"]["ok"])
+        self.assertEqual(status["sources"]["shioaji"]["active"], 2)
+        self.assertEqual(status["sources"]["shioaji"]["rows"], 4)
+        self.assertIn("code", status["sources"]["shioaji"]["fields"])
+        self.assertFalse(status["sources"]["tpex"]["ok"])
+        self.assertTrue(module.is_disposition("3661"))
+        # 兩邊都有的代號保留期間較晚的那筆
+        self.assertEqual(module.get_disposition_map()["8996"]["end"], "2026-10-06")
+
+    def test_refresh_reports_not_logged_in_and_keeps_previous_shioaji_rows(self) -> None:
+        module.refresh(fetcher=lambda url: [], today=TODAY, punish_fetcher=self._punish)
+        self.assertTrue(module.is_disposition("3661"))
+        status = module.refresh(fetcher=lambda url: [], today=TODAY, punish_fetcher=lambda: None)
+        self.assertFalse(status["sources"]["shioaji"]["ok"])
+        self.assertIn("未登入", status["sources"]["shioaji"]["error"])
+        self.assertEqual(status["codes"], ["3661", "8996"])  # 沒登入就沿用上一次 shioaji 的清單
+
+        def boom():
+            raise RuntimeError("timeout")
+
+        status = module.refresh(fetcher=lambda url: [], today=TODAY, punish_fetcher=boom)
+        self.assertIn("timeout", status["sources"]["shioaji"]["error"])
+        self.assertEqual(status["codes"], ["3661", "8996"])
 
 
 class StockFlagsEndpointTests(unittest.TestCase):
