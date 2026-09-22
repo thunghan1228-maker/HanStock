@@ -42,6 +42,9 @@ VOLUME_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_STR
 SYNC_WINDOW_MS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_SYNC_WINDOW_MINUTES", "5"))) * ONE_MIN_MS
 MIN_MAIN_GROSS_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_MAIN_LOTS", "30")))
 MIN_BARS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_BARS", "10")))
+# 判定規則版本：規則一改，收盤後重播排程就會把已標記完成的日期再重播一次，不然舊規則漏掉的
+# 訊號永遠補不回來。v2：從開盤第一根就看到的股票不暖機。
+FLIP_RULES_VERSION = 2
 MAX_VWAP_DISTANCE_PCT = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MAX_VWAP_DISTANCE_PCT", "3.0"))
 KIND_BULL = "mainForceFlipBull"
 KIND_BEAR = "mainForceFlipBear"
@@ -90,6 +93,7 @@ def _hhmm(ts_ms: int) -> str:
 class _FlipState:
     trade_date: str
     bar_count: int = 0
+    warmup_bars: int = MIN_BARS
     cum_net: int = 0
     cum_gross: int = 0
     cum_volume: int = 0
@@ -143,6 +147,7 @@ class MainForceFlipMonitor:
                 "firedBear": self._fired["bear"],
                 "lastBarAt": self._last_bar_at,
                 "thresholds": {
+                    "rulesVersion": FLIP_RULES_VERSION,
                     "netRatioMin": NET_RATIO_MIN, "netRatioStrong": NET_RATIO_STRONG,
                     "volumeRatioMin": VOLUME_RATIO_MIN, "volumeRatioStrong": VOLUME_RATIO_STRONG,
                     "syncWindowMinutes": SYNC_WINDOW_MS // ONE_MIN_MS, "minMainLots": MIN_MAIN_GROSS_LOTS,
@@ -283,9 +288,15 @@ class MainForceFlipMonitor:
                 "volumeRatio": round(volume_ratio, 2) if volume_ratio is not None else None,
                 "distancePct": round(distance_pct, 2), "aboveVwap": above,
             })
-        if state.bar_count < MIN_BARS or state.cum_gross < MIN_MAIN_GROSS_LOTS:
+        if state.bar_count == 1 and taipei_minute_of_day(int(bar["ts"])) <= 9 * 60:
+            # 從開盤第一根就看到的股票（收盤後重播、或開盤前就訂閱到）：累計值是完整的，不用暖機。
+            # 暖機只保護較晚才訂閱到、累計只從訂閱起算的情況。正式環境 2026-09-22 的 3532 就是
+            # 09:01 累計從 0 翻正、09:02 站上 VWAP（淨額率 82%、量比 6.5×），另一台工具 09:02 就發
+            # 「主力累計強勢翻多」，暖機 10 根會把它整個吃掉。
+            state.warmup_bars = 0
+        if state.bar_count < state.warmup_bars or state.cum_gross < MIN_MAIN_GROSS_LOTS:
             if record is not None:
-                record["skip"] = "warming_up" if state.bar_count < MIN_BARS else "thin_main_force"
+                record["skip"] = "warming_up" if state.bar_count < state.warmup_bars else "thin_main_force"
             return []
         if volume_ratio is None:
             if record is not None:

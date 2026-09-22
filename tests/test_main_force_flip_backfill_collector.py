@@ -42,6 +42,33 @@ class FlipBackfillCollectorTests(unittest.TestCase):
         self.assertEqual(again, {"skipped": "nothing_to_do"})
         self.assertEqual(self.runs, ["2026-09-22"])
 
+    def test_rule_version_change_replays_a_day_that_was_done_under_the_old_rules(self) -> None:
+        # 規則改版（例如 v2 不再暖機）後，舊版標記完成的日期要再重播一次，把漏掉的訊號補回來。
+        collector.collect_once(now=at("2026-09-22", 13, 45), run_backfill=self._ok)
+        self.assertTrue(collector.backfill_done("2026-09-22"))
+
+        with patch.object(collector, "FLIP_RULES_VERSION", collector.FLIP_RULES_VERSION + 1):
+            self.assertFalse(collector.backfill_done("2026-09-22"))
+            again = collector.collect_once(now=at("2026-09-22", 14, 0), run_backfill=self._ok)
+            self.assertEqual(again["tradeDate"], "2026-09-22")
+            self.assertTrue(collector.backfill_done("2026-09-22"))
+        self.assertEqual(self.runs, ["2026-09-22", "2026-09-22"])
+
+    def test_old_state_table_without_rules_version_is_migrated(self) -> None:
+        with database.get_connection() as connection:
+            connection.execute(
+                """CREATE TABLE main_force_flip_backfill_state (
+                    trade_date TEXT PRIMARY KEY, done INTEGER NOT NULL DEFAULT 0, result_json TEXT, updated_at TEXT NOT NULL)"""
+            )
+            connection.execute(
+                "INSERT INTO main_force_flip_backfill_state (trade_date, done, result_json, updated_at) VALUES (?, 1, '{}', 'x')",
+                ("2026-09-22",),
+            )
+        # 舊表沒有版本欄位＝版本 1 做的，現在是新版規則，要重播。
+        self.assertFalse(collector.backfill_done("2026-09-22"))
+        collector.collect_once(now=at("2026-09-22", 13, 45), run_backfill=self._ok)
+        self.assertTrue(collector.backfill_done("2026-09-22"))
+
     def test_quota_blocked_day_is_retried_next_morning_before_open(self) -> None:
         # 使用者實際情境：偵測器 13:13 才上線、當天額度早被燒光，收盤後補不成；
         # 隔天開盤前額度恢復，要把前一個交易日補回來。
