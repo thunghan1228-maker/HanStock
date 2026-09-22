@@ -28,6 +28,9 @@ EXTRA_BURST_AMOUNT = max(MIN_BURST_AMOUNT, float(os.getenv("HANSTOCK_INSTANT_EXT
 # 有「至少一檔」即時報價就能算平均漲跌幅，不用整個族群的成員都訂閱。
 GROUP_REPRESENTATIVE_COUNT = max(1, min(5, int(os.getenv("HANSTOCK_INSTANT_LARGE_GROUP_REPS", "2"))))
 COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "300000")))
+# 跟bucket_ts本身的顆粒度(5分鐘)一致：族群排名每隔這麼久就該重算一次，
+# 不是「完全沒資料才補算」。
+GROUP_RANKING_STALE_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_GROUP_RANKING_STALE_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
 MIN_LIVE_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", "40"))))
 _SAVED_LOTS_RE = re.compile(r"合計\s*([\d,.]+)\s*張")
@@ -353,10 +356,16 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
     history = load_group_strength_history(trade_date)
     candidate_source = "stored_group_snapshot"
     fallback_status: dict[str, Any] = {"localFallbackAttempted": False}
-    if not history:
-        # 外部戰鬥版網站已經停用(資料改放Railway)，本地快照沒資料時不再
-        # 嘗試呼叫該網站，直接在程序內依族群平均漲跌幅排名，避免候選
-        # 名單整天維持 0。
+    now_ms = int(datetime.now(TW_TZ).timestamp() * 1000)
+    latest = history[-1] if history else None
+    is_stale = latest is None or (now_ms - latest["bucketTs"]) > GROUP_RANKING_STALE_MS
+    if is_stale:
+        # 外部戰鬥版網站已經停用(資料改放Railway)，改成本地在process內依
+        # 族群平均漲跌幅排名。原本只有「完全沒資料才補算」，早上算出第一批
+        # 排名之後就再也不重算，等於整天凍結在開盤沒多久的族群強弱——盤中
+        # 真正轉強的族群永遠沒機會被納入候選，即使它現在明明排進前20名。
+        # 改成每隔GROUP_RANKING_STALE_MS(預設5分鐘，跟bucket本身的顆粒度
+        # 一致)就重算一次，讓候選名單跟得上盤中族群輪動。
         try:
             fallback_status["localFallbackAttempted"] = True
             _ensure_group_universe_subscriptions(service)
@@ -364,9 +373,8 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
             fallback_status["localRankedGroupCount"] = len(live_ranks)
             fallback_status["localRankedGroupMinimum"] = MIN_LIVE_GROUPS
             if len(live_ranks) >= MIN_LIVE_GROUPS:
-                now_ms = int(datetime.now(TW_TZ).timestamp() * 1000)
                 bucket_ts = now_ms // 300_000 * 300_000
-                history = [{"bucketTs": bucket_ts, "ranks": live_ranks}]
+                latest = {"bucketTs": bucket_ts, "ranks": live_ranks}
                 candidate_source = "local_shioaji_group_ranking"
                 try:
                     save_group_strength_snapshot(trade_date, bucket_ts, live_ranks)
@@ -376,10 +384,14 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
                     # 仍須立刻啟用大單偵測，下一輪再補存快照即可。
                     fallback_status["snapshotPersisted"] = False
                     fallback_status["snapshotPersistError"] = type(exc).__name__
+            elif latest is not None:
+                # 重算沒能達到最低族群涵蓋門檻(例如行情暫時斷流)，但手上
+                # 還有前一輪的排名可以沿用——寧可用稍舊的排名繼續偵測，
+                # 也不要因為這一輪重算不順就讓候選整批歸零。
+                candidate_source = "stored_group_snapshot_stale_fallback"
         except Exception as exc:  # noqa: BLE001
             fallback_status["localFallbackError"] = type(exc).__name__
-            history = []
-    if not history:
+    if latest is None:
         status = {
             "prepared": False,
             "reason": "waiting_group_snapshot",
@@ -389,7 +401,6 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
         }
         _monitor.set_candidates({}, {}, status)
         return status
-    latest = history[-1]
     buy, sell = build_group_candidates(latest["ranks"])
     codes = list(dict.fromkeys([*buy, *sell]))
     subscription = service.ensure_stock_subscriptions(codes)

@@ -264,3 +264,91 @@ def test_local_candidates_survive_snapshot_persistence_failure(monkeypatch):
     assert status["candidateSource"] == "local_shioaji_group_ranking"
     assert status["snapshotPersisted"] is False
     assert status["snapshotPersistError"] == "OSError"
+
+
+class _NoOpService:
+    @staticmethod
+    def ensure_stock_subscriptions(codes):
+        return {
+            "capacity": 1000, "active_count": len(codes),
+            "already_subscribed": codes, "newly_subscribed": [], "failed": {},
+        }
+
+
+def test_fresh_stored_snapshot_is_reused_without_recomputing(monkeypatch):
+    # 開盤前幾分鐘才剛存過的快照，還很新鮮，不該觸發本地重算。
+    import time
+
+    now_ms = int(time.time() * 1000)
+    groups = list(module.STOCK_GROUPS)[:45]
+    ranks = {group: index + 1 for index, group in enumerate(groups)}
+    monkeypatch.setattr(
+        module, "load_group_strength_history",
+        lambda _trade_date: [{"bucketTs": now_ms - 1000, "ranks": ranks}],
+    )
+    fallback_called = []
+    monkeypatch.setattr(module, "build_live_group_ranks", lambda _service: fallback_called.append(1))
+
+    status = module.refresh_intraday_large_order_candidates(_NoOpService())
+
+    assert fallback_called == []
+    assert status["localFallbackAttempted"] is False
+    assert status["candidateSource"] == "stored_group_snapshot"
+    assert status["candidateCount"] > 0
+
+
+def test_stale_stored_snapshot_triggers_recomputation(monkeypatch):
+    # 這是使用者實際回報的根因：舊版只有「完全沒資料才補算」，開盤沒多久
+    # 存過一次快照之後就整天不再重算，族群強弱早就跟不上盤中輪動——這裡
+    # 鎖住「快照太舊(超過GROUP_RANKING_STALE_MS)就該重算」這個行為。
+    import time
+
+    now_ms = int(time.time() * 1000)
+    stale_ts = now_ms - module.GROUP_RANKING_STALE_MS - 1000
+    old_groups = list(module.STOCK_GROUPS)[:45]
+    old_ranks = {group: index + 1 for index, group in enumerate(old_groups)}
+    monkeypatch.setattr(
+        module, "load_group_strength_history",
+        lambda _trade_date: [{"bucketTs": stale_ts, "ranks": old_ranks}],
+    )
+    monkeypatch.setattr(module, "_ensure_group_universe_subscriptions", lambda _service: None)
+    new_groups = list(module.STOCK_GROUPS)[5:50]
+    new_ranks = {group: index + 1 for index, group in enumerate(new_groups)}
+    monkeypatch.setattr(module, "build_live_group_ranks", lambda _service: new_ranks)
+    monkeypatch.setattr(module, "save_group_strength_snapshot", lambda *_args: len(new_ranks))
+
+    status = module.refresh_intraday_large_order_candidates(_NoOpService())
+
+    assert status["localFallbackAttempted"] is True
+    assert status["candidateSource"] == "local_shioaji_group_ranking"
+    assert status["snapshotTs"] > stale_ts
+    # 新排名裡在舊排名前20找不到候選的族群成員，這裡新排名的代表股要能
+    # 真的出現在候選名單，證明用的是新排名而不是繼續沿用過期的舊排名。
+    new_only_group = new_groups[-1]
+    assert new_only_group not in old_ranks or old_ranks[new_only_group] > module.GROUP_LIMIT
+    new_only_codes = {code for code, _name in module.STOCK_GROUPS[new_only_group]}
+    assert new_only_codes & set(module._monitor._candidates["buy"]) or new_only_codes & set(module._monitor._candidates["sell"])
+
+
+def test_stale_snapshot_recomputation_failure_falls_back_to_old_ranking(monkeypatch):
+    # 重算沒能達到最低族群涵蓋門檻(例如行情暫時斷流)時，不該把候選整批
+    # 歸零，該繼續沿用手上這份雖然過期、但還堪用的舊排名。
+    import time
+
+    now_ms = int(time.time() * 1000)
+    stale_ts = now_ms - module.GROUP_RANKING_STALE_MS - 1000
+    old_groups = list(module.STOCK_GROUPS)[:45]
+    old_ranks = {group: index + 1 for index, group in enumerate(old_groups)}
+    monkeypatch.setattr(
+        module, "load_group_strength_history",
+        lambda _trade_date: [{"bucketTs": stale_ts, "ranks": old_ranks}],
+    )
+    monkeypatch.setattr(module, "_ensure_group_universe_subscriptions", lambda _service: None)
+    monkeypatch.setattr(module, "build_live_group_ranks", lambda _service: {"僅一個族群": 1})
+
+    status = module.refresh_intraday_large_order_candidates(_NoOpService())
+
+    assert status["localFallbackAttempted"] is True
+    assert status["candidateSource"] == "stored_group_snapshot_stale_fallback"
+    assert status["candidateCount"] > 0
+    assert status["snapshotTs"] == stale_ts
