@@ -54,6 +54,33 @@ def test_first_bar_only_establishes_baseline_no_signals(monkeypatch):
     assert state.session_high == 102
 
 
+def test_late_first_bar_skips_baseline_and_suppresses_905_family_signals(monkeypatch):
+    # 即時路徑的股票訂閱是動態、有上限的：某檔股票如果比較晚才被訂閱到，
+    # monitor收到的「第一根」bar其實是當天較晚才完整走完的某根K棒，不是
+    # 真正的09:00-09:05。這裡模擬09:30才收到第一根bar(收盤09:35，遠超過
+    # FIRST_BAR_MAX_CLOSE_MINUTE=09:10緩衝)，確認不會把它誤當905基準。
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    result = monitor.on_bar_completed("2330", bar(9, 30, 100, 102, 99, 101.5))
+    assert result == []
+    state = monitor._states["2330"]
+    assert state.bar905_high is None
+    assert state.bar905_low is None
+    assert state.a8 is None
+    assert state.session_high is None
+    assert state.today_open is None
+    assert state.late_subscription is True
+
+    # 之後同時「過905高」跟「過昨日高」也不該補發1+2多／905系列訊號——
+    # 沒有可信的基準，寧可當天沒訊號、也不要給錯的訊號。「過昨日高」本身
+    # 不依賴905基準(昨日高來自load_daily_bars，跟今天即時訂閱時機無關)，
+    # 繼續正常觸發沒有問題，只有真正依賴905基準的家族要被壓下來。
+    result2 = monitor.on_bar_completed("2330", bar(9, 35, 101.5, 110, 101.5, 109))
+    assert "combo12Bull" not in kinds(result2)
+    assert "firstCross905High" not in kinds(result2)
+    assert "crossUp905" not in kinds(result2)
+    assert "crossUpPrevHigh" in kinds(result2)
+
+
 def test_first_cross_905_high_fires_once_without_5ma_requirement(monkeypatch):
     monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=200.0)
     monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 101.5))
