@@ -13,6 +13,7 @@ from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
+from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
 from history_sources import OTC_INDEX_CODE, history_sources_status, probe_history_sources, stock_market
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
@@ -84,6 +85,7 @@ async def _persistent_lifespan(fastapi_app):
             # 主力累計翻多空：收盤後用kbars+已落盤的主力副圖重播今天，補回偵測器
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
+            start_disposition_collector()
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但幾百檔股票還是有感時間，丟背景
             # 執行緒避免拖慢啟動就緒。只排最近3個平日（使用者明確說主力副圖
@@ -181,6 +183,36 @@ def _kick_otc_index_bootstrap(hub: Any) -> None:
         get_otc_index_service().ensure_bootstrapped(service.api)
     except Exception:  # noqa: BLE001
         pass
+
+
+@app.get("/api/hub/stock-flags")
+def get_stock_flags() -> dict[str, Any]:
+    """全部族群個股的可交易旗標（可融資／可融券／可現股當沖／有股期）與是否為處置股，給訊號中心
+    每一列標註用；一次回全部，前端幾分鐘抓一次就好。融資券旗標讀 Shioaji 合約，未登入時為 null；
+    處置股來自 TWSE／TPEx 官方公告，抓取狀態放在 disposition 裡。"""
+    from stock_groups import STOCK_GROUPS
+    from stock_trading_eligibility import get_trading_eligibility
+
+    disposition = get_disposition_map()
+    codes = sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
+    stocks: dict[str, Any] = {}
+    for code in codes:
+        try:
+            info = dict(get_trading_eligibility(code))
+        except Exception:  # noqa: BLE001
+            info = {"marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": None}
+        item = disposition.get(code)
+        info["disposition"] = bool(item)
+        info["dispositionUntil"] = item.get("end") if item else None
+        info["dispositionReason"] = item.get("reason") if item else None
+        stocks[code] = info
+    return {
+        "status": "ok",
+        "updatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+        "stocks": stocks,
+        "dispositionCodes": sorted(disposition),
+        "disposition": disposition_status(),
+    }
 
 
 @app.get("/api/hub/history-sources")
