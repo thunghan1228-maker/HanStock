@@ -195,3 +195,39 @@ def test_tick_total_amount_and_volume_give_session_vwap_and_volume_ratio(monkeyp
 
     assert [s["kind"] for s in signals] == [KIND_BULL]
     assert "量比 162.00×" in signals[0]["note"]
+
+
+def test_inspect_explains_which_filter_blocked_a_synchronized_flip(monkeypatch):
+    # 跟另一台工具對條件用：零軸翻正、站上 VWAP 同步發生，但量比不夠時要說清楚是量比擋下；
+    # 檢查用的重播不能寫入訊號、也不能動到即時偵測器。
+    saved: list[dict] = []
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: saved.extend(rows) or rows)
+    daily = [{"ts": f"2026-09-{10 + i:02d}", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 100000}
+             for i in range(5)]
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=6: daily)
+    kbars = [{"ts": ts(9, i), "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 100} for i in range(9)]
+    kbars.append({"ts": ts(9, 9), "open": 101.0, "high": 101.0, "low": 101.0, "close": 101.0, "volume": 100})
+    monkeypatch.setattr(module, "get_stock_history_bars_1m", lambda code, **kwargs: {"bars": kbars, "history_source": "finmind"})
+    main_rows = [{"ts": ts(9, i), "main_buy_volume": 0, "main_sell_volume": 10, "total_amount": 0} for i in range(9)]
+    main_rows.append({"ts": ts(9, 9), "main_buy_volume": 400, "main_sell_volume": 0, "total_amount": 0})
+    monkeypatch.setattr(module, "load_main_force_bars", lambda code, interval, trade_date=None: main_rows)
+
+    live_before = module.get_main_force_flip_monitor().status()["barsProcessed"]
+    report = module.inspect_flip_signals("3532", "2026-09-18", include_trace=True)
+
+    assert report["signals"] == []
+    assert report["history"] == {"source": "finmind", "error": None, "dayBars": 10}
+    assert report["mainForce"] == {"rows": 10, "matchedBars": 10}
+    assert report["avgDailyVolume"] == 100000.0
+    assert report["totals"]["cumNet"] == 310
+    # 第一根主力偏賣就從 0 翻負（跟即時路徑同一套判定），第 10 根才翻正。
+    assert report["zeroCrosses"] == [{"time": "09:01", "dir": "bear"}, {"time": "09:10", "dir": "bull"}]
+    assert report["vwapCrosses"] == [{"time": "09:10", "dir": "up"}]
+    assert report["nearMissCount"] == 1
+    blockers = report["nearMisses"][0]["bull"]["blockers"]
+    assert len(blockers) == 1 and blockers[0].startswith("量比 0.27×"), blockers
+    assert len(report["trace"]) == 10
+    assert report["trace"][0]["skip"] == "warming_up"
+    assert report["trace"][-1]["netRatio"] == round(310 / 490, 4)
+    assert saved == []
+    assert module.get_main_force_flip_monitor().status()["barsProcessed"] == live_before  # 不動即時偵測器

@@ -34,7 +34,7 @@ from otc_index import (
     index_name_score,
     normalize_kbars_1m,
 )
-from history_sources import OTC_INDEX_YAHOO_SYMBOL, fetch_yahoo_minute_bars
+from history_sources import OTC_INDEX_CODE, fetch_finmind_minute_bars, fetch_yahoo_minute_bars
 from otc_index_hub import get_otc_index_hub
 from otc_index_store import load_index_bars_5m, save_index_bars_5m
 
@@ -142,19 +142,31 @@ class OtcIndexService:
         history_source = "shioaji"
         if kbars_error:
             logger.warning("[OTC Index] %s", kbars_error)
-            # 永豐拿不到（額度用完最常見）就改向 Yahoo 拿櫃買指數 1 分 K；只有價量，MA20 夠用。
-            try:
-                fallback_1m = fetch_yahoo_minute_bars("OTC_INDEX", start_date, trade_date, symbol=OTC_INDEX_YAHOO_SYMBOL)
+            # 永豐拿不到（額度用完最常見）就改向備援拿櫃買指數：Yahoo 1 分 K → Yahoo 5 分 K
+            # （指數有時只給 5 分 K）→ FinMind 櫃買分 K；只有價量，MA20 夠用。每個來源失敗的
+            # 原因都留在 error 裡，前端小工具跟健康檢查才看得出卡在哪。
+            fallback_errors: list[str] = []
+            fallbacks = (
+                ("yahoo", lambda: fetch_yahoo_minute_bars(OTC_INDEX_CODE, start_date, trade_date, interval="1m")),
+                ("yahoo5m", lambda: fetch_yahoo_minute_bars(OTC_INDEX_CODE, start_date, trade_date, interval="5m")),
+                ("finmind", lambda: fetch_finmind_minute_bars(OTC_INDEX_CODE, start_date, trade_date, block_on_error=False)),
+            )
+            for source_name, runner in fallbacks:
+                try:
+                    fallback_1m = runner()
+                except Exception as exc:  # noqa: BLE001
+                    fallback_errors.append(f"{source_name}: {exc}"[:200])
+                    continue
                 current_minute_start = now_ms - (now_ms % 60_000)
                 fallback_1m = [bar for bar in fallback_1m if int(bar["ts"]) < current_minute_start]
-                if fallback_1m:
-                    bars_1m = fallback_1m
-                    kbars_5m = aggregate_1m_to_5m(fallback_1m, include_current=False, now_ms=now_ms)
-                    if kbars_5m:
-                        history_source = "yahoo"
-                        kbars_error = None
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[OTC Index] Yahoo 備援失敗: %s", exc)
+                fallback_5m = aggregate_1m_to_5m(fallback_1m, include_current=False, now_ms=now_ms) if fallback_1m else []
+                if fallback_5m:
+                    bars_1m, kbars_5m, history_source, kbars_error = fallback_1m, fallback_5m, source_name, None
+                    break
+                fallback_errors.append(f"{source_name}: 0 根")
+            if kbars_error and fallback_errors:
+                kbars_error = f"{kbars_error}；備援 " + "、".join(fallback_errors)
+                logger.warning("[OTC Index] 備援也沒拿到: %s", "、".join(fallback_errors))
 
         stored_5m: list[dict[str, Any]] = []
         try:

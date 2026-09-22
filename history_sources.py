@@ -43,6 +43,11 @@ FINMIND_SHARES_RATIO_THRESHOLD = 30.0
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 YAHOO_MAX_DAYS_PER_REQUEST = 7
 OTC_INDEX_YAHOO_SYMBOL = os.getenv("HANSTOCK_OTC_INDEX_YAHOO_SYMBOL", "^TWOII")
+OTC_INDEX_CODE = "OTC_INDEX"
+# FinMind 的指數 data_id：日 K 資料表用 TAIEX / TPEx，分 K 是否也給指數未驗證，只在 Yahoo 兩種
+# 週期都拿不到時才試，被拒也不開斷路器（別因為指數拖累個股）。
+FINMIND_OTC_INDEX_ID = os.getenv("HANSTOCK_FINMIND_OTC_INDEX_ID", "").strip() or "TPEx"
+YAHOO_INDEX_INTERVALS = ("1m", "5m")
 SOURCE_ORDER = ("finmind", "yahoo")
 # FinMind 回 4xx（資料集名稱/參數被拒、權限不足）時不是打第二次就會好：連續失敗就
 # 先停一段時間，不然全族群幾百檔每檔都白打一次。429 只是限流，停短一點。
@@ -388,6 +393,7 @@ def fetch_finmind_minute_bars(
     market: Optional[str] = None,
     fetcher: Optional[Fetcher] = None,
     ignore_block: bool = False,
+    block_on_error: bool = True,
 ) -> list[dict[str, Any]]:
     token = _finmind_token()
     if not token:
@@ -395,7 +401,8 @@ def fetch_finmind_minute_bars(
     if not ignore_block and _finmind_blocked_seconds() > 0:
         return []
     call = fetcher or _default_fetcher
-    symbol = str(code).strip().upper()
+    is_index = str(code).strip().upper() == OTC_INDEX_CODE
+    symbol = FINMIND_OTC_INDEX_ID if is_index else str(code).strip().upper()
     rows: list[Any] = []
     try:
         # 逐日打；中途失敗（限流、被拒）就整個放棄讓鏈往 Yahoo 走，不然拿到缺天的資料還當成功。
@@ -405,14 +412,16 @@ def fetch_finmind_minute_bars(
             if isinstance(data, list):
                 rows.extend(data)
     except Exception as exc:
-        _record("finmind", symbol=code, error=exc)
-        _finmind_block(exc)
+        _record("finmind", symbol=symbol, error=exc)
+        if block_on_error:
+            _finmind_block(exc)
         raise
     bars = parse_finmind_minute_rows(rows, start_date, end_date)
-    if bars and _finmind_volume_unit(code, start_date, end_date, bars, market=market, fetcher=fetcher) == "shares":
+    # 指數沒有成交量可比，不做單位校準。
+    if bars and not is_index and _finmind_volume_unit(code, start_date, end_date, bars, market=market, fetcher=fetcher) == "shares":
         for bar in bars:
             bar["volume"] = int(bar["volume"] / 1000)
-    _record("finmind", symbol=code, bars=bars)
+    _record("finmind", symbol=symbol, bars=bars)
     return bars
 
 
@@ -420,6 +429,8 @@ def fetch_finmind_minute_bars(
 
 def _yahoo_symbols(code: str, market: Optional[str]) -> list[str]:
     code = str(code).strip().upper()
+    if code == OTC_INDEX_CODE:
+        return [OTC_INDEX_YAHOO_SYMBOL]
     if code.startswith("^"):
         return [code]
     market = (market or "").upper()
@@ -473,9 +484,10 @@ def fetch_yahoo_minute_bars(
     market: Optional[str] = None,
     fetcher: Optional[Fetcher] = None,
     symbol: Optional[str] = None,
+    interval: str = "1m",
 ) -> list[dict[str, Any]]:
     """Yahoo 非官方 chart API：1 分 K 只保留最近約 7 天、單次最多 7 天，超過就分段。
-    市場別不確定時先試上市（.TW）再試上櫃（.TWO）。"""
+    市場別不確定時先試上市（.TW）再試上櫃（.TWO）。interval 可改 5m（指數有時只給 5 分 K）。"""
     call = fetcher or _default_fetcher
     code_key = str(code).strip().upper()
     if symbol:
@@ -493,7 +505,7 @@ def fetch_yahoo_minute_bars(
         try:
             for chunk_start, chunk_end in _date_chunks(start_date, end_date, YAHOO_MAX_DAYS_PER_REQUEST):
                 payload = call(YAHOO_CHART_URL + quote(sym, safe=""), {
-                    "interval": "1m", "period1": str(_tw_epoch(chunk_start)),
+                    "interval": interval, "period1": str(_tw_epoch(chunk_start)),
                     "period2": str(_tw_epoch(chunk_end, 23, 59, 59)), "includePrePost": "false",
                 })
                 bars.extend(parse_yahoo_chart(payload, start_date, end_date))
@@ -576,32 +588,50 @@ def history_sources_status() -> dict[str, Any]:
     }
 
 
+def _probe_one(runner: Callable[[], list[dict[str, Any]]]) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        bars = runner()
+        return {
+            "ok": bool(bars), "bars": len(bars),
+            "first": bars[0] if bars else None, "last": bars[-1] if bars else None,
+            "elapsedMs": round((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False, "error": f"{type(exc).__name__}: {exc}"[:700],
+            "elapsedMs": round((time.monotonic() - started) * 1000),
+        }
+
+
 def probe_history_sources(code: str, trade_date: str, *, market: Optional[str] = None, fetcher: Optional[Fetcher] = None) -> dict[str, Any]:
     """真的各打一次 FinMind 與 Yahoo（不碰永豐額度），回傳筆數與首尾 K 棒，用來驗證
-    欄位、分鐘標籤與成交量單位是否正確。"""
-    out: dict[str, Any] = {"code": code, "tradeDate": trade_date, "market": market}
-    for name in SOURCE_ORDER:
-        started = time.monotonic()
-        try:
-            if name == "finmind":
-                if not _finmind_token():
-                    out[name] = {"ok": False, "error": "FINMIND_TOKEN 未設定"}
-                    continue
-                # probe 是人在看，斷路器擋住也照打，才看得到最新的錯誤內容。
-                bars = fetch_finmind_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher, ignore_block=True)
-            else:
-                bars = fetch_yahoo_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher)
-            out[name] = {
-                "ok": bool(bars), "bars": len(bars),
-                "first": bars[0] if bars else None, "last": bars[-1] if bars else None,
-                "elapsedMs": round((time.monotonic() - started) * 1000),
-            }
-        except Exception as exc:  # noqa: BLE001
-            out[name] = {
-                "ok": False, "error": f"{type(exc).__name__}: {exc}"[:700],
-                "elapsedMs": round((time.monotonic() - started) * 1000),
-            }
-        finally:
-            if name == "finmind" and name in out:
-                out[name]["dataset"] = _finmind_dataset()
+    欄位、分鐘標籤與成交量單位是否正確。code 是 OTC_INDEX／TPEX／^TWOII 時改探櫃買指數：
+    Yahoo 1 分 K、5 分 K 與 FinMind 櫃買分 K 各打一次。"""
+    code_key = str(code).strip().upper()
+    if code_key in (OTC_INDEX_CODE, "TPEX", "^TWOII"):
+        out: dict[str, Any] = {"code": OTC_INDEX_CODE, "tradeDate": trade_date, "market": "INDEX", "yahooSymbol": OTC_INDEX_YAHOO_SYMBOL}
+        for interval in YAHOO_INDEX_INTERVALS:
+            out[f"yahoo{interval}"] = _probe_one(
+                lambda interval=interval: fetch_yahoo_minute_bars(OTC_INDEX_CODE, trade_date, trade_date, fetcher=fetcher, interval=interval)
+            )
+        if _finmind_token():
+            out["finmind"] = _probe_one(
+                lambda: fetch_finmind_minute_bars(OTC_INDEX_CODE, trade_date, trade_date, fetcher=fetcher, ignore_block=True, block_on_error=False)
+            )
+        else:
+            out["finmind"] = {"ok": False, "error": "FINMIND_TOKEN 未設定"}
+        out["finmind"].update({"dataset": _finmind_dataset(), "dataId": FINMIND_OTC_INDEX_ID})
+        return out
+
+    out = {"code": code, "tradeDate": trade_date, "market": market}
+    if _finmind_token():
+        # probe 是人在看，斷路器擋住也照打，才看得到最新的錯誤內容。
+        out["finmind"] = _probe_one(
+            lambda: fetch_finmind_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher, ignore_block=True)
+        )
+    else:
+        out["finmind"] = {"ok": False, "error": "FINMIND_TOKEN 未設定"}
+    out["finmind"]["dataset"] = _finmind_dataset()
+    out["yahoo"] = _probe_one(lambda: fetch_yahoo_minute_bars(code, trade_date, trade_date, market=market, fetcher=fetcher))
     return out

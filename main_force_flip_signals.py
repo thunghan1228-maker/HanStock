@@ -121,6 +121,14 @@ class MainForceFlipMonitor:
         self._bars_processed = 0
         self._fired = {"bull": 0, "bear": 0}
         self._last_bar_at: str | None = None
+        self._trace: list[dict[str, Any]] | None = None
+
+    def enable_trace(self) -> None:
+        """單檔檢查用：每根 1 分 K 記下累計、VWAP、量比，以及同步視窗內被哪個濾網擋下。"""
+        self._trace = []
+
+    def trace(self) -> list[dict[str, Any]]:
+        return list(self._trace or [])
 
     def status(self) -> dict[str, Any]:
         """給 /api/hub/persistence/status 看的運作狀態：開盤後 barsProcessed 有在漲
@@ -161,7 +169,7 @@ class MainForceFlipMonitor:
         with self._lock:
             self._reset_for_new_day(str(code).strip().upper(), trade_date)
 
-    def on_bar_completed(self, code: str, bar: dict[str, Any]) -> list[dict[str, Any]]:
+    def on_bar_completed(self, code: str, bar: dict[str, Any], *, persist: bool = True) -> list[dict[str, Any]]:
         code = str(code).strip().upper()
         try:
             close_ts = int(bar["ts"]) + ONE_MIN_MS
@@ -180,7 +188,7 @@ class MainForceFlipMonitor:
             self._last_bar_at = datetime.fromtimestamp(close_ts / 1000, TW_TZ).isoformat()
             for signal in signals:
                 self._fired["bull" if signal["kind"] == KIND_BULL else "bear"] += 1
-        if signals:
+        if signals and persist:
             try:
                 save_intraday_signals(signals)
             except Exception:  # noqa: BLE001
@@ -233,30 +241,80 @@ class MainForceFlipMonitor:
         state.bar_count += 1
 
         vwap = self._vwap(state)
+        record: dict[str, Any] | None = None
+        if self._trace is not None:
+            record = {
+                "time": _hhmm(close_ts), "close": close, "vwap": round(vwap, 2) if vwap else None, "volume": volume,
+                "mainBuy": main_buy, "mainSell": main_sell, "cumNet": state.cum_net, "cumGross": state.cum_gross,
+            }
+            self._trace.append(record)
         if vwap is None or vwap <= 0:
+            if record is not None:
+                record["skip"] = "no_vwap"
             return []
         above = close > vwap
         if state.prev_above_vwap is not None:
             if above and not state.prev_above_vwap:
                 state.bull_vwap_cross_ts = close_ts
+                if record is not None:
+                    record["vwapCross"] = "up"
             elif not above and state.prev_above_vwap:
                 state.bear_vwap_cross_ts = close_ts
+                if record is not None:
+                    record["vwapCross"] = "down"
         state.prev_above_vwap = above
 
         sign_before, sign_after = _sign(before_net), _sign(state.cum_net)
         if sign_after > 0 and sign_before <= 0:
             state.bull_zero_cross_ts = close_ts
+            if record is not None:
+                record["zeroCross"] = "bull"
         if sign_after < 0 and sign_before >= 0:
             state.bear_zero_cross_ts = close_ts
+            if record is not None:
+                record["zeroCross"] = "bear"
 
         if state.bar_count < MIN_BARS or state.cum_gross < MIN_MAIN_GROSS_LOTS:
+            if record is not None:
+                record["skip"] = "warming_up" if state.bar_count < MIN_BARS else "thin_main_force"
             return []
         volume_ratio = self._volume_ratio(state, close_ts)
         if volume_ratio is None:
+            if record is not None:
+                record["skip"] = "no_daily_volume" if not state.avg_daily_volume else "no_today_volume"
             return []
         net_ratio = state.cum_net / state.cum_gross
         distance_pct = (close / vwap - 1) * 100
+        if record is not None:
+            record.update({
+                "netRatio": round(net_ratio, 4), "volumeRatio": round(volume_ratio, 2),
+                "distancePct": round(distance_pct, 2), "aboveVwap": above,
+            })
         window_start = close_ts - SYNC_WINDOW_MS
+
+        def synced(zero_ts: int | None, vwap_ts: int | None) -> bool:
+            return zero_ts is not None and zero_ts >= window_start and vwap_ts is not None and vwap_ts >= window_start
+
+        def blockers(side: str) -> list[str]:
+            """同步條件（A＋B 在視窗內）成立後，C～D 濾網哪幾個沒過；空清單就是觸發。"""
+            if side == "bull":
+                checks = [
+                    (state.cum_net > 0, "主力累計不在正值"),
+                    (above, "收盤在VWAP之下"),
+                    (net_ratio >= NET_RATIO_MIN, f"主力淨額率 {net_ratio * 100:+.1f}% 未達 +{NET_RATIO_MIN * 100:.0f}%"),
+                    (volume_ratio >= VOLUME_RATIO_MIN, f"量比 {volume_ratio:.2f}× 未達 {VOLUME_RATIO_MIN:g}×"),
+                    (0 <= distance_pct <= MAX_VWAP_DISTANCE_PCT, f"距VWAP {distance_pct:+.2f}% 不在 0～+{MAX_VWAP_DISTANCE_PCT:g}%"),
+                ]
+            else:
+                checks = [
+                    (state.cum_net < 0, "主力累計不在負值"),
+                    (not above, "收盤在VWAP之上"),
+                    (net_ratio <= -NET_RATIO_MIN, f"主力淨額率 {net_ratio * 100:+.1f}% 未達 -{NET_RATIO_MIN * 100:.0f}%"),
+                    (volume_ratio >= VOLUME_RATIO_MIN, f"量比 {volume_ratio:.2f}× 未達 {VOLUME_RATIO_MIN:g}×"),
+                    (-MAX_VWAP_DISTANCE_PCT <= distance_pct <= 0, f"距VWAP {distance_pct:+.2f}% 不在 -{MAX_VWAP_DISTANCE_PCT:g}～0%"),
+                ]
+            return [why for ok, why in checks if not ok]
+
         group_name, name = _group_and_name(code)
         common = {
             "tradeDate": trade_date, "ticker": code, "name": name, "groupName": group_name,
@@ -264,37 +322,32 @@ class MainForceFlipMonitor:
         }
         signals: list[dict[str, Any]] = []
 
-        if (
-            not state.fired_bull and state.cum_net > 0 and above
-            and state.bull_zero_cross_ts is not None and state.bull_zero_cross_ts >= window_start
-            and state.bull_vwap_cross_ts is not None and state.bull_vwap_cross_ts >= window_start
-            and net_ratio >= NET_RATIO_MIN and volume_ratio >= VOLUME_RATIO_MIN
-            and 0 <= distance_pct <= MAX_VWAP_DISTANCE_PCT
-        ):
-            strong = net_ratio >= NET_RATIO_STRONG and volume_ratio >= VOLUME_RATIO_STRONG
-            state.fired_bull = True
-            signals.append({
-                **common, "kind": KIND_BULL,
-                "label": "主力累計強勢翻多" if strong else "主力累計翻多",
-                "note": _note(state.bull_zero_cross_ts, state.bull_vwap_cross_ts, net_ratio, distance_pct, volume_ratio, state.cum_net),
-            })
+        if not state.fired_bull and synced(state.bull_zero_cross_ts, state.bull_vwap_cross_ts):
+            failed = blockers("bull")
+            if record is not None:
+                record["bull"] = {"synced": True, "blockers": failed}
+            if not failed:
+                strong = net_ratio >= NET_RATIO_STRONG and volume_ratio >= VOLUME_RATIO_STRONG
+                state.fired_bull = True
+                signals.append({
+                    **common, "kind": KIND_BULL,
+                    "label": "主力累計強勢翻多" if strong else "主力累計翻多",
+                    "note": _note(state.bull_zero_cross_ts, state.bull_vwap_cross_ts, net_ratio, distance_pct, volume_ratio, state.cum_net),
+                })
 
-        if (
-            not state.fired_bear and state.cum_net < 0 and not above
-            and state.bear_zero_cross_ts is not None and state.bear_zero_cross_ts >= window_start
-            and state.bear_vwap_cross_ts is not None and state.bear_vwap_cross_ts >= window_start
-            and net_ratio <= -NET_RATIO_MIN and volume_ratio >= VOLUME_RATIO_MIN
-            and -MAX_VWAP_DISTANCE_PCT <= distance_pct <= 0
-        ):
-            strong = net_ratio <= -NET_RATIO_STRONG and volume_ratio >= VOLUME_RATIO_STRONG
-            state.fired_bear = True
-            signals.append({
-                **common, "kind": KIND_BEAR,
-                "label": "主力累計強勢翻空" if strong else "主力累計翻空",
-                "note": _note(state.bear_zero_cross_ts, state.bear_vwap_cross_ts, net_ratio, distance_pct, volume_ratio, state.cum_net),
-            })
+        if not state.fired_bear and synced(state.bear_zero_cross_ts, state.bear_vwap_cross_ts):
+            failed = blockers("bear")
+            if record is not None:
+                record["bear"] = {"synced": True, "blockers": failed}
+            if not failed:
+                strong = net_ratio <= -NET_RATIO_STRONG and volume_ratio >= VOLUME_RATIO_STRONG
+                state.fired_bear = True
+                signals.append({
+                    **common, "kind": KIND_BEAR,
+                    "label": "主力累計強勢翻空" if strong else "主力累計翻空",
+                    "note": _note(state.bear_zero_cross_ts, state.bear_vwap_cross_ts, net_ratio, distance_pct, volume_ratio, state.cum_net),
+                })
         return signals
-
 
 _monitor: MainForceFlipMonitor | None = None
 
@@ -304,6 +357,73 @@ def get_main_force_flip_monitor() -> MainForceFlipMonitor:
     if _monitor is None:
         _monitor = MainForceFlipMonitor()
     return _monitor
+
+
+def _merged_day_bars(
+    code: str,
+    trade_date: str,
+    history: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """把當天的 1 分 K 價量（kbars 或備援來源）跟已落盤的主力副圖列依時間合起來，給重播用。"""
+    day_bars = sorted(
+        (bar for bar in history.get("bars", []) if taipei_trade_date(int(bar["ts"])) == trade_date),
+        key=lambda bar: int(bar["ts"]),
+    )
+    if not day_bars:
+        return [], {}, []
+    main_rows = {int(row["ts"]): row for row in load_main_force_bars(code, "1m", trade_date=trade_date)}
+    merged = []
+    for bar in day_bars:
+        row = main_rows.get(int(bar["ts"]))
+        merged.append({
+            "ts": int(bar["ts"]), "close": bar["close"], "volume": bar.get("volume", 0),
+            "main_buy_volume": row["main_buy_volume"] if row else 0,
+            "main_sell_volume": row["main_sell_volume"] if row else 0,
+            "total_amount": row.get("total_amount", 0) if row else 0,
+        })
+    return day_bars, main_rows, merged
+
+
+def inspect_flip_signals(
+    code: str,
+    trade_date: str,
+    *,
+    service: Any = None,
+    hub: Any = None,
+    include_trace: bool = False,
+) -> dict[str, Any]:
+    """單檔重播當天的翻多空判定過程：每個零軸／VWAP 穿越的時間、同步視窗內被哪個濾網擋下
+    （nearMisses），用來跟另一台工具對條件。不寫入訊號、不動即時偵測器的狀態。"""
+    code = str(code).strip().upper()
+    history = get_stock_history_bars_1m(code, calendar_days=5, service=service, hub=hub)
+    day_bars, main_rows, merged = _merged_day_bars(code, trade_date, history)
+    monitor = MainForceFlipMonitor()
+    monitor.enable_trace()
+    signals: list[dict[str, Any]] = []
+    for bar in merged:
+        signals.extend(monitor.on_bar_completed(code, bar, persist=False))
+    state = monitor._states.get(code)
+    trace = monitor.trace()
+    near_misses = [row for row in trace if (row.get("bull") or {}).get("blockers") or (row.get("bear") or {}).get("blockers")]
+    vwap = monitor._vwap(state) if state else None
+    result: dict[str, Any] = {
+        "code": code, "tradeDate": trade_date,
+        "history": {"source": history.get("history_source"), "error": history.get("error"), "dayBars": len(day_bars)},
+        "mainForce": {"rows": len(main_rows), "matchedBars": sum(1 for bar in day_bars if int(bar["ts"]) in main_rows)},
+        "avgDailyVolume": state.avg_daily_volume if state else None,
+        "totals": {
+            "cumNet": state.cum_net, "cumGross": state.cum_gross, "volume": state.cum_volume,
+            "vwap": round(vwap, 2) if vwap else None,
+        } if state else None,
+        "zeroCrosses": [{"time": row["time"], "dir": row["zeroCross"]} for row in trace if row.get("zeroCross")],
+        "vwapCrosses": [{"time": row["time"], "dir": row["vwapCross"]} for row in trace if row.get("vwapCross")],
+        "signals": signals,
+        "nearMissCount": len(near_misses), "nearMisses": near_misses[:60],
+        "thresholds": monitor.status()["thresholds"],
+    }
+    if include_trace:
+        result["trace"] = trace
+    return result
 
 
 def backfill_flip_signals(
@@ -336,25 +456,12 @@ def backfill_flip_signals(
                 quota_blocked = True
                 failures.append({"code": code, "error": str(error)})
                 break
-            day_bars = sorted(
-                (bar for bar in history.get("bars", []) if taipei_trade_date(int(bar["ts"])) == trade_date),
-                key=lambda bar: int(bar["ts"]),
-            )
+            day_bars, _main_rows, merged = _merged_day_bars(code, trade_date, history)
             if not day_bars:
                 skipped_no_bars += 1
                 if error:
                     failures.append({"code": code, "error": str(error)})
                 continue
-            main_rows = {int(row["ts"]): row for row in load_main_force_bars(code, "1m", trade_date=trade_date)}
-            merged = []
-            for bar in day_bars:
-                row = main_rows.get(int(bar["ts"]))
-                merged.append({
-                    "ts": int(bar["ts"]), "close": bar["close"], "volume": bar.get("volume", 0),
-                    "main_buy_volume": row["main_buy_volume"] if row else 0,
-                    "main_sell_volume": row["main_sell_volume"] if row else 0,
-                    "total_amount": row.get("total_amount", 0) if row else 0,
-                })
             delete_signals_for_ticker(trade_date, code, FLIP_SIGNAL_KINDS)
             monitor.reset_for_backfill(code, trade_date)
             for bar in merged:
