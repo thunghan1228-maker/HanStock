@@ -22,6 +22,8 @@ ONCE_PER_DAY_KINDS = {
     "triangleVolumeBreakout",
     "fourGateBuy",
     "fourGateSell",
+    "mainForceFlipBull",
+    "mainForceFlipBear",
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
 INSTANT_LARGE_KINDS = {"instantLargeBuy", "instantLargeSell"}
