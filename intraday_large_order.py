@@ -32,7 +32,16 @@ COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "3
 # 不是「完全沒資料才補算」。
 GROUP_RANKING_STALE_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_GROUP_RANKING_STALE_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
-MIN_LIVE_GROUPS = max(20, min(100, int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", "40"))))
+_RANKABLE_GROUP_COUNT = sum(1 for group in STOCK_GROUPS if group not in EXCLUDED_GROUPS)
+# 門檻要跟族群總數連動：族群清單只有43個時，固定要求40個等於幾乎不容許
+# 任何族群暫時沒報價，本地排名備援會動不動就整輪算失敗。
+MIN_LIVE_GROUPS = max(
+    10,
+    min(
+        _RANKABLE_GROUP_COUNT,
+        int(os.getenv("HANSTOCK_INSTANT_LARGE_MIN_LIVE_GROUPS", str(round(_RANKABLE_GROUP_COUNT * 0.7)))),
+    ),
+)
 _SAVED_LOTS_RE = re.compile(r"合計\s*([\d,.]+)\s*張")
 _SAVED_AMOUNT_RE = re.compile(r"約\s*([\d,.]+)\s*(億|萬|元)")
 
