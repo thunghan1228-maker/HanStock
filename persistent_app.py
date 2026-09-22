@@ -18,7 +18,7 @@ from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
 from daily_bars_store import daily_bars_storage_status, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
-from after_hours_fixed_price import load_after_hours_day
+from after_hours_fixed_price import load_after_hours_day, load_latest_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
@@ -476,21 +476,30 @@ def get_daily_bars(
 def get_after_hours_fixed_price(
     trade_date: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
+    latest: bool = Query(False),
 ) -> dict[str, Any]:
     """盤後定價交易（14:00-14:30撮合，14:30公布）成交價/成交量排行；來源是官方
     TWSE盤後公開資料（exchangeReport/BFT41U），跟Shioaji訂閱無關。14:35前或
-    尚未收集到當天資料時，entries會是空list（不是錯誤，是還沒公布）。"""
+    尚未收集到當天資料時，entries會是空list（不是錯誤，是還沒公布）。
+    latest=true（且沒指定trade_date）時改回最近一個已收集的交易日——今天還沒
+    公布就是前一個交易日——tradeDate/isToday會標明實際是哪一天的資料。"""
     if trade_date:
         try:
             datetime.strptime(trade_date, "%Y-%m-%d")
         except ValueError as exc:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
-    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    entries = load_after_hours_day(date, limit=limit)
+    today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    if latest and not trade_date:
+        latest_date, entries = load_latest_after_hours_day(limit=limit, on_or_before=today)
+        date = latest_date or today
+    else:
+        date = trade_date or today
+        entries = load_after_hours_day(date, limit=limit)
     return {
         "status": "ok",
         "tradeDate": date,
+        "isToday": date == today,
         "count": len(entries),
         "entries": entries,
         "source": "twse_official_after_hours_fixed_price",

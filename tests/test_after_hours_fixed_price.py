@@ -6,6 +6,7 @@ from unittest.mock import patch
 import database
 from after_hours_fixed_price import (
     load_after_hours_day,
+    load_latest_after_hours_day,
     parse_after_hours_payload,
     save_after_hours_day,
 )
@@ -118,6 +119,29 @@ class AfterHoursFixedPriceStoreTests(unittest.TestCase):
     def test_save_with_empty_entries_is_noop(self):
         self.assertEqual(save_after_hours_day("2026-09-18", []), 0)
         self.assertEqual(load_after_hours_day("2026-09-18"), [])
+
+    def test_load_latest_returns_newest_collected_day(self):
+        # 14:30前盤後定價分頁要顯示「最近一個交易日」的資料，不是空的也不是大戶力排行。
+        save_after_hours_day("2026-09-18", [
+            {"stock_code": "2330", "stock_name": "台積電", "price": 1105.0, "volume": 1000},
+        ])
+        save_after_hours_day("2026-09-21", [
+            {"stock_code": "2317", "stock_name": "鴻海", "price": 205.5, "volume": 5000},
+        ])
+
+        trade_date, rows = load_latest_after_hours_day()
+
+        self.assertEqual(trade_date, "2026-09-21")
+        self.assertEqual([r["code"] for r in rows], ["2317"])
+
+    def test_load_latest_respects_on_or_before_and_empty_store(self):
+        self.assertEqual(load_latest_after_hours_day(), (None, []))
+        save_after_hours_day("2026-09-21", [
+            {"stock_code": "2317", "stock_name": "鴻海", "price": 205.5, "volume": 5000},
+        ])
+
+        self.assertEqual(load_latest_after_hours_day(on_or_before="2026-09-20"), (None, []))
+        self.assertEqual(load_latest_after_hours_day(on_or_before="2026-09-21")[0], "2026-09-21")
 
 
 if __name__ == "__main__":
