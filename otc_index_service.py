@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -17,6 +19,10 @@ from typing import Any, Optional
 # 3個日曆天沒有交易)。跟stock_history_service.py同樣手法(Shioaji歷史
 # kbars()本來就支援跨日查詢，只是這裡舊code只查了trade_date~trade_date)。
 BOOTSTRAP_CALENDAR_DAYS = 6
+MIN_BARS_FOR_MA20 = 20
+# 跨日rollover或kbars失敗後的自動重補間隔；kbars失敗最常見是當日歷史流量
+# 額度被個股回補用完，隔幾分鐘再試一次成本很低。
+BOOTSTRAP_RETRY_SECONDS = 120
 
 import shioaji as sj
 
@@ -29,6 +35,7 @@ from otc_index import (
     normalize_kbars_1m,
 )
 from otc_index_hub import get_otc_index_hub
+from otc_index_store import load_index_bars_5m, save_index_bars_5m
 
 logger = logging.getLogger("hanstock.otc_index_service")
 
@@ -39,6 +46,9 @@ class OtcIndexService:
         self.contract_code: Optional[str] = None
         self.contract_name: Optional[str] = None
         self.last_error: Optional[str] = None
+        self._bootstrap_lock = threading.Lock()
+        self._last_bootstrap_attempt = float("-inf")
+        self._bootstrap_thread: Optional[threading.Thread] = None
 
     def reset_contract(self) -> None:
         self.contract = None
@@ -107,49 +117,89 @@ class OtcIndexService:
         self.last_error = None
 
     def bootstrap_today(self, api: Any, contract: Any) -> dict[str, Any]:
+        """補齊近幾個交易日的 5 分 K：先問 Shioaji kbars，再跟本機已存的 5 分 K
+        合併。kbars 失敗（例如當日歷史流量額度用完）時就靠本機資料撐住 MA20，
+        而不是整天卡在「資料蒐集中」。"""
         hub = get_otc_index_hub()
+        self._last_bootstrap_attempt = time.monotonic()
         now_dt = datetime.now(TW_TZ)
         trade_date = now_dt.strftime("%Y-%m-%d")
         start_date = (now_dt.date() - timedelta(days=BOOTSTRAP_CALENDAR_DAYS - 1)).isoformat()
+        now_ms = int(now_dt.timestamp() * 1000)
+
+        bars_1m: list[dict[str, Any]] = []
+        kbars_5m: list[dict[str, Any]] = []
+        kbars_error: Optional[str] = None
         try:
             kbars = api.kbars(contract=contract, start=start_date, end=trade_date)
-            now_ms = int(now_dt.timestamp() * 1000)
-            bars_1m = normalize_kbars_1m(
-                kbars,
-                trade_date=None,
-                include_current=False,
-                now_ms=now_ms,
-            )
-            bars_5m = aggregate_1m_to_5m(
-                bars_1m,
-                include_current=False,
-                now_ms=now_ms,
-            )
-            hub.seed_today(bars_1m, bars_5m, trade_date)
-            logger.info(
-                "[OTC Index] 歷史 Kbars 補齊完成: 1m=%d, 5m=%d, range=%s~%s",
-                len(bars_1m),
-                len(bars_5m),
-                start_date,
-                trade_date,
-            )
-            return {
-                "ok": bool(bars_5m),
-                "trade_date": trade_date,
-                "bars_1m": len(bars_1m),
-                "bars_5m": len(bars_5m),
-            }
+            bars_1m = normalize_kbars_1m(kbars, trade_date=None, include_current=False, now_ms=now_ms)
+            kbars_5m = aggregate_1m_to_5m(bars_1m, include_current=False, now_ms=now_ms)
+            if not kbars_5m:
+                kbars_error = "Shioaji kbars 回傳 0 根正式盤 K 棒（歷史流量額度用完或尚無資料）"
         except Exception as exc:
-            self.last_error = f"櫃買指數歷史 Kbars 補齊失敗: {exc}"
-            hub.set_subscribed(False, self.last_error)
-            logger.warning("[OTC Index] %s", self.last_error)
-            return {
-                "ok": False,
-                "trade_date": trade_date,
-                "bars_1m": 0,
-                "bars_5m": 0,
-                "error": str(exc),
-            }
+            kbars_error = f"櫃買指數歷史 Kbars 補齊失敗: {exc}"
+        if kbars_error:
+            logger.warning("[OTC Index] %s", kbars_error)
+
+        stored_5m: list[dict[str, Any]] = []
+        try:
+            stored_5m = load_index_bars_5m(start_date, trade_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[OTC Index] 讀取本機 5 分 K 失敗: %s", exc)
+        merged = {int(bar["ts"]): bar for bar in stored_5m}
+        merged.update({int(bar["ts"]): bar for bar in kbars_5m})
+        bars_5m = [merged[ts] for ts in sorted(merged)]
+        if kbars_5m:
+            try:
+                save_index_bars_5m(kbars_5m)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[OTC Index] 寫入本機 5 分 K 失敗: %s", exc)
+
+        ok = kbars_error is None or len(bars_5m) >= MIN_BARS_FOR_MA20
+        hub.seed_today(bars_1m, bars_5m, trade_date, ok=ok, error=kbars_error)
+        self.last_error = kbars_error
+        logger.info(
+            "[OTC Index] 歷史 5 分 K 補齊: kbars=%d, 本機=%d, 合併=%d, range=%s~%s%s",
+            len(kbars_5m), len(stored_5m), len(bars_5m), start_date, trade_date,
+            "" if ok else "（未達 MA20 門檻，稍後自動重試）",
+        )
+        result: dict[str, Any] = {
+            "ok": ok,
+            "trade_date": trade_date,
+            "bars_1m": len(bars_1m),
+            "bars_5m": len(bars_5m),
+            "stored_bars_5m": len(stored_5m),
+        }
+        if kbars_error:
+            result["error"] = kbars_error
+        return result
+
+    def ensure_bootstrapped(self, api: Any, *, run_in_background: bool = True) -> bool:
+        """跨日 rollover 把歷史清掉、或上次 kbars 補齊失敗之後，自動再補一次；
+        每 BOOTSTRAP_RETRY_SECONDS 最多一次。回傳這次有沒有真的觸發補齊。"""
+        if api is None:
+            return False
+        if get_otc_index_hub().get_status().get("bootstrap_ok"):
+            return False
+        with self._bootstrap_lock:
+            if time.monotonic() - self._last_bootstrap_attempt < BOOTSTRAP_RETRY_SECONDS:
+                return False
+            if self._bootstrap_thread is not None and self._bootstrap_thread.is_alive():
+                return False
+            self._last_bootstrap_attempt = time.monotonic()
+            contract = self.contract
+            if contract is None:
+                # 連合約都沒解析成功（例如登入當下列合約失敗）：走完整的解析+補齊+訂閱。
+                target = lambda: self.subscribe(api, bootstrap=True, force_resolve=True)  # noqa: E731
+            else:
+                target = lambda: self.bootstrap_today(api, contract)  # noqa: E731
+            if not run_in_background:
+                target()
+                return True
+            thread = threading.Thread(target=target, name="hanstock-otc-index-bootstrap", daemon=True)
+            self._bootstrap_thread = thread
+            thread.start()
+        return True
 
     def subscribe(self, api: Any, *, bootstrap: bool = True, force_resolve: bool = False) -> bool:
         hub = get_otc_index_hub()
