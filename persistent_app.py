@@ -14,6 +14,12 @@ from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
+from stock_trading_eligibility import (
+    contract_debug,
+    peek_trading_eligibility,
+    start_trading_eligibility_warmer,
+    trading_eligibility_warmer_status,
+)
 from history_sources import OTC_INDEX_CODE, history_sources_status, probe_history_sources, stock_market
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
@@ -86,6 +92,7 @@ async def _persistent_lifespan(fastapi_app):
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
             start_disposition_collector()
+            start_trading_eligibility_warmer(_group_stock_codes)
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但幾百檔股票還是有感時間，丟背景
             # 執行緒避免拖慢啟動就緒。只排最近3個平日（使用者明確說主力副圖
@@ -185,29 +192,33 @@ def _kick_otc_index_bootstrap(hub: Any) -> None:
         pass
 
 
+def _group_stock_codes() -> list[str]:
+    from stock_groups import STOCK_GROUPS
+
+    return sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
+
+
 @app.get("/api/hub/stock-flags")
 def get_stock_flags() -> dict[str, Any]:
     """全部族群個股的可交易旗標（可融資／可融券／可現股當沖／有股期）與是否為處置股，給訊號中心
-    每一列標註用；一次回全部，前端幾分鐘抓一次就好。融資券旗標讀 Shioaji 合約，未登入時為 null；
+    每一列標註用；一次回全部，前端幾分鐘抓一次就好。融資券旗標由背景每分鐘更新的快取供應（合約
+    清單還沒下載完時為 null，之後幾輪內會填滿），這裡只讀快取、不查合約，不會卡住回 502；
     處置股來自 TWSE／TPEx 官方公告，抓取狀態放在 disposition 裡。"""
-    from stock_groups import STOCK_GROUPS
-    from stock_trading_eligibility import get_trading_eligibility
+    from stock_trading_eligibility import has_stock_futures
 
     disposition = get_disposition_map()
-    codes = sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
+    codes = _group_stock_codes()
+    start_trading_eligibility_warmer(_group_stock_codes)  # 沒被 lifespan 啟動（例如測試環境）也能自救
     stocks: dict[str, Any] = {}
     for code in codes:
-        try:
-            info = dict(get_trading_eligibility(code))
-        except Exception:  # noqa: BLE001
-            info = {"marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": None}
+        info = peek_trading_eligibility(code) or {
+            "marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": has_stock_futures(code),
+        }
         item = disposition.get(code)
         info["disposition"] = bool(item)
         info["dispositionUntil"] = item.get("end") if item else None
         info["dispositionReason"] = item.get("reason") if item else None
         stocks[code] = info
-    from stock_trading_eligibility import contract_debug
-
     unknown = sum(1 for info in stocks.values() if info.get("marginable") is None)
     sample_code = "2330" if "2330" in stocks else (codes[0] if codes else "")
     return {
@@ -215,6 +226,7 @@ def get_stock_flags() -> dict[str, Any]:
         "updatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
         "stocks": stocks,
         "unknownEligibilityCount": unknown,
+        "eligibilityWarmer": trading_eligibility_warmer_status(),
         "dispositionCodes": sorted(disposition),
         "disposition": disposition_status(),
         # 診斷：合約清單下載狀態與一檔合約的原始欄位，融資券旗標全是 null／false 時看這裡。
