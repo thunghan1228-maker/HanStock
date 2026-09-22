@@ -192,6 +192,13 @@ def _kick_otc_index_bootstrap(hub: Any) -> None:
         pass
 
 
+def main_force_threshold() -> dict[str, Any]:
+    """主力大單的判定門檻（張數；金額門檻預設關閉），給 API 回給前端顯示用。"""
+    from market_data_hub import MAIN_FORCE_MIN_AMOUNT, MAIN_FORCE_MIN_LOTS
+
+    return {"minLots": int(MAIN_FORCE_MIN_LOTS), "minAmount": float(MAIN_FORCE_MIN_AMOUNT)}
+
+
 def _group_stock_codes() -> list[str]:
     from stock_groups import STOCK_GROUPS
 
@@ -496,6 +503,9 @@ def get_persisted_main_force_bars(
         "persistent": True,
         "source": "railway_sqlite_shioaji_ticks",
         "backfill": backfill_result,
+        # 前端副圖標題下要寫出真正的大戶定義（不是寫死的示範文字）：單筆成交 ≥ 這麼多張就算主力大單
+        "mainForceMinLots": main_force_threshold()["minLots"],
+        "mainForceMinAmount": main_force_threshold()["minAmount"],
     }
 
 
