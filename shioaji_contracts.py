@@ -1,11 +1,15 @@
 """Shioaji 合約查找的共用小工具（不 import 專案其他模組，避免循環）。
 
 Shioaji 1.7 的 ``api.contracts.get(code)`` 只回 ``BaseContract``：只有代號、交易所、類別，沒有
-``day_trade``、``margin_trading_balance``、``short_selling_balance``、``update_date`` 這些欄位。
-正式環境 2026-09-22 就是這樣：``/api/hub/stock-flags`` 的 debug 顯示 2330 解析出來的是
-``BaseContract``，所以融資／融券／可現股當沖整天都是「不知道」。完整的 ``Stock`` 合約要從
-``api.Contracts.Stocks[code]``（等同 ``api.contracts.Stocks``）拿；合約清單還在背景下載時拿不到，
-才退回 ``BaseContract``，訂閱行情、查 K 棒兩種合約都能用。
+``day_trade``、``margin_trading_balance``、``short_selling_balance`` 這些欄位；登入後馬上就有、
+成本趨近於零，訂閱行情、查 K 棒用它就夠。正式環境 2026-09-22 ``/api/hub/stock-flags`` 的
+debug 顯示 2330 解析出來的就是 ``BaseContract``，所以融資／融券／可現股當沖整天都是「不知道」。
+
+要欄位有兩條路，成本在這個 SDK 版本沒辦法離線驗證（要登入），所以只能在背景執行緒計時使用：
+- ``api.contracts.info(base)``：個股資訊列（day_trade、margin_loan_ratio、short_margin_ratio、
+  trading_suspended、short_selling_suspended、disposition_level、attention_flag…）
+- ``api.Contracts.Stocks[code]``：完整 ``Stock`` 合約（day_trade、margin_trading_balance、
+  short_selling_balance、update_date）
 """
 
 from __future__ import annotations
@@ -26,17 +30,19 @@ def is_full_contract(contract: Any) -> bool:
 
 
 def _lookup(category: Any, code: str) -> Any:
+    """ContractCategory 的查找：有 get 就用 get，沒有（編譯版的 __getattr__ 會說 has no group 'get'）
+    就用 [code]；找不到回 None，其他錯誤往外丟給呼叫端記錄。"""
     getter = getattr(category, "get", None)
+    if callable(getter):
+        return getter(code)
     try:
-        if callable(getter):
-            return getter(code)
         return category[code]
-    except Exception:  # noqa: BLE001
+    except (KeyError, IndexError, TypeError):
         return None
 
 
 def full_stock_contract(api: Any, code: str) -> Any:
-    """從 Contracts.Stocks 拿完整的 Stock 合約；清單還沒下載完或沒有這檔就回 None。"""
+    """從 Contracts.Stocks 拿完整的 Stock 合約；清單裡沒有回 None，容器本身出錯往外丟。"""
     if api is None:
         return None
     code = str(code or "").strip().upper()
@@ -47,10 +53,7 @@ def full_stock_contract(api: Any, code: str) -> Any:
         if container is None:
             continue
         for category_name in ("Stocks", "stocks"):
-            try:
-                category = getattr(container, category_name, None)
-            except Exception:  # noqa: BLE001
-                category = None
+            category = getattr(container, category_name, None)
             if category is None:
                 continue
             contract = _lookup(category, code)
@@ -67,26 +70,33 @@ def base_stock_contract(api: Any, code: str) -> Any:
     getter = getattr(contracts, "get", None)
     if not callable(getter):
         return None
-    try:
-        return getter(code)
-    except Exception:  # noqa: BLE001
-        return None
+    return getter(code)
 
 
 def resolve_stock_contract(api: Any, code: str) -> Any:
-    """完整合約優先，退回 BaseContract；兩邊都沒有回 None。"""
-    contract = full_stock_contract(api, code)
-    if contract is None:
+    """訂閱／查 K 棒用：api.contracts.get 優先（跟舊版一樣、成本趨近零），拿不到才試
+    Contracts.Stocks[code]；任何一邊出錯都當成沒有，不讓例外打斷呼叫端。"""
+    try:
         contract = base_stock_contract(api, code)
+    except Exception:  # noqa: BLE001
+        contract = None
+    if contract is None:
+        try:
+            contract = full_stock_contract(api, code)
+        except Exception:  # noqa: BLE001
+            contract = None
     return contract
 
 
-def upgrade_contract(api: Any, code: str, contract: Any) -> Any:
-    """已經有一個合約（可能是 BaseContract）時，能換成完整合約就換。"""
-    if is_full_contract(contract):
-        return contract
-    full = full_stock_contract(api, code)
-    return full if full is not None else contract
+def contracts_info(api: Any, contract: Any) -> Any:
+    """``api.contracts.info(contract)`` 的個股資訊列；SDK 沒有這個方法回 None，查詢出錯往外丟。"""
+    if api is None or contract is None:
+        return None
+    contracts = getattr(api, "contracts", None)
+    getter = getattr(contracts, "info", None)
+    if not callable(getter):
+        return None
+    return getter(contract)
 
 
 def contracts_fetch_status(api: Any) -> Any:

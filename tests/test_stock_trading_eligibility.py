@@ -88,11 +88,23 @@ class TradingEligibilityTests(unittest.TestCase):
         module._cache_day = "2000-01-01"  # 假裝跨日
         self.assertFalse(module.get_trading_eligibility("2330", service=service)["marginable"])
 
-    def test_contract_debug_reports_raw_fields(self):
+    def test_inspect_contract_reports_raw_fields(self):
         service = FakeService(FakeContract(margin_trading_balance=5, short_selling_balance=0, day_trade="OnlyBuy"))
-        info = module.contract_debug("2330", service=service)
+        info = module.inspect_contract("2330", service=service)
         self.assertEqual(info["contract"]["day_trade"], "onlybuy")
         self.assertEqual(info["contract"]["margin_trading_balance"], 5)
+        self.assertTrue(info["contract"]["full"])
+
+    def test_contract_debug_is_a_cached_snapshot_from_the_warmer(self):
+        # 端點的 debug 不能在請求路徑碰 Shioaji：暖機還沒跑就是 pending，跑過就是上一輪的檢查結果。
+        self.assertTrue(module.contract_debug("2330")["pending"])
+        service = FakeService(FakeContract(margin_trading_balance=1, short_selling_balance=1, day_trade="Yes"))
+        module.warm_trading_eligibility(["2330", "1101"], service=service)
+        debug = module.contract_debug("2330")
+        self.assertEqual(debug["code"], "2330")
+        self.assertEqual(debug["contract"]["type"], "FakeContract")
+        self.assertTrue(debug["cached"]["marginable"])
+        self.assertNotIn("pending", debug)
 
     def test_credit_enquires_decide_margin_and_short_even_when_contract_balances_are_zero(self):
         # 正式環境：合約物件的融資券餘額欄位整天是 0，改以永豐信用額度查詢的成數為準。
@@ -171,19 +183,125 @@ class TradingEligibilityTests(unittest.TestCase):
                 return BaseContract(code)
 
         service = BaseService()
-        result = module.get_trading_eligibility("2330", service=service)
+        # 請求路徑（deep=False）只看合約物件本身：BaseContract 沒欄位 → 還不知道、不快取
+        shallow = module.get_trading_eligibility("2330", service=service)
+        self.assertIsNone(shallow["dayTradeEligible"])
+        self.assertIsNone(module.peek_trading_eligibility("2330"))
+        # 背景暖機（deep=True）才走 Contracts.Stocks
+        result = module.get_trading_eligibility("2330", service=service, deep=True)
         self.assertTrue(result["marginable"])
         self.assertFalse(result["shortable"])
         self.assertTrue(result["dayTradeEligible"])
+        self.assertEqual(result["source"], "stocks")
+        self.assertTrue(module.peek_trading_eligibility("2330")["marginable"])
         # 清單裡還沒有的代號維持 BaseContract → 還不知道、不快取
-        unknown = module.get_trading_eligibility("1101", service=service)
+        unknown = module.get_trading_eligibility("1101", service=service, deep=True)
         self.assertIsNone(unknown["dayTradeEligible"])
         self.assertIsNone(module.peek_trading_eligibility("1101"))
-        info = module.contract_debug("2330", service=service)
-        self.assertEqual(info["contract"]["type"], "FakeContract")
-        self.assertTrue(info["contract"]["full"])
+        info = module.inspect_contract("2330", service=service)
+        self.assertEqual(info["contract"]["type"], "BaseContract")
+        self.assertFalse(info["contract"]["full"])
         self.assertEqual(info["fullContract"], "FakeContract")
-        self.assertIsNone(module.contract_debug("1101", service=service)["fullContract"])
+        self.assertIsNone(module.inspect_contract("1101", service=service)["fullContract"])
+
+    def test_contracts_info_row_decides_flags_and_disposition_level(self):
+        # Shioaji 1.7 的 api.contracts.info(base)：成數欄位 > 0 就是可融資／可融券，另外帶處置等級。
+        from types import SimpleNamespace
+
+        class BaseContract:
+            def __init__(self, code):
+                self.code = code
+
+        rows = {
+            "2330": SimpleNamespace(day_trade="Yes", margin_loan_ratio=60, short_margin_ratio=90, short_selling_suspended=False, disposition_level=0, attention_flag=False, trading_suspended=False),
+            "8996": SimpleNamespace(day_trade="No", margin_loan_ratio=0, short_margin_ratio=0, short_selling_suspended=False, disposition_level=1, attention_flag=True, trading_suspended=False),
+            "2454": SimpleNamespace(day_trade="OnlyBuy", margin_loan_ratio=60, short_margin_ratio=90, short_selling_suspended=True, disposition_level=0, attention_flag=False, trading_suspended=False),
+        }
+
+        class Contracts:
+            def __init__(self):
+                self.info_calls = []
+
+            def get(self, code):
+                return BaseContract(code)
+
+            def info(self, base):
+                self.info_calls.append(base.code)
+                return rows.get(base.code)
+
+        class InfoService:
+            def __init__(self):
+                self.api = SimpleNamespace(contracts=Contracts())
+
+        service = InfoService()
+        status = module.warm_trading_eligibility(["2330", "8996", "2454", "1101"], service=service)
+        self.assertEqual(status["resolved"], 3)
+        self.assertEqual(status["unknown"], 1)
+        self.assertTrue(status["paths"]["info"]["enabled"])
+        self.assertGreaterEqual(status["paths"]["info"]["calls"], 4)
+        tsmc = module.peek_trading_eligibility("2330")
+        self.assertEqual((tsmc["marginable"], tsmc["shortable"], tsmc["dayTradeEligible"], tsmc["dispositionLevel"]), (True, True, True, 0))
+        self.assertEqual(tsmc["source"], "info")
+        gaoli = module.peek_trading_eligibility("8996")
+        self.assertEqual((gaoli["marginable"], gaoli["shortable"], gaoli["dayTradeEligible"], gaoli["dispositionLevel"]), (False, False, False, 1))
+        self.assertTrue(gaoli["attention"])
+        mediatek = module.peek_trading_eligibility("2454")
+        self.assertTrue(mediatek["marginable"])
+        self.assertFalse(mediatek["shortable"])  # 暫停融券
+        self.assertTrue(mediatek["dayTradeEligible"])
+        self.assertIsNone(module.peek_trading_eligibility("1101"))
+        debug = module.contract_debug()
+        self.assertEqual(debug["info"]["margin_loan_ratio"], 60)
+        self.assertEqual(debug["info"]["day_trade"], "Yes")
+
+    def test_slow_background_path_is_disabled_for_the_rest_of_the_round(self):
+        from types import SimpleNamespace
+
+        class Contracts:
+            def __init__(self):
+                self.info_calls = 0
+
+            def get(self, code):
+                return SimpleNamespace(code=code)
+
+            def info(self, base):
+                self.info_calls += 1
+                return SimpleNamespace(day_trade="Yes", margin_loan_ratio=60, short_margin_ratio=90)
+
+        service = SimpleNamespace(api=SimpleNamespace(contracts=Contracts()))
+        with patch.object(module, "SLOW_CALL_SECONDS", 0.0):  # 任何一次呼叫都算太慢
+            status = module.warm_trading_eligibility(["2330", "2317", "2454"], service=service)
+        self.assertEqual(service.api.contracts.info_calls, 1)
+        self.assertFalse(status["paths"]["info"]["enabled"])
+        self.assertIn("秒", status["paths"]["info"]["disabledReason"])
+        # 第一檔還是查到了；後面兩檔這一輪先跳過，下一輪重新啟用
+        self.assertTrue(module.peek_trading_eligibility("2330")["marginable"])
+        self.assertIsNone(module.peek_trading_eligibility("2317"))
+        status = module.warm_trading_eligibility(["2317"], service=service)
+        self.assertTrue(status["paths"]["info"]["enabled"])
+        self.assertTrue(module.peek_trading_eligibility("2317")["marginable"])
+
+    def test_failing_background_path_is_disabled_after_repeated_errors(self):
+        from types import SimpleNamespace
+
+        class Contracts:
+            def __init__(self):
+                self.info_calls = 0
+
+            def get(self, code):
+                return SimpleNamespace(code=code)
+
+            def info(self, base):
+                self.info_calls += 1
+                raise RuntimeError("Contracts not fetched")
+
+        service = SimpleNamespace(api=SimpleNamespace(contracts=Contracts()))
+        status = module.warm_trading_eligibility(["2330", "2317", "2454", "1101", "1216"], service=service)
+        self.assertEqual(service.api.contracts.info_calls, module.PATH_MAX_ERRORS)
+        self.assertFalse(status["paths"]["info"]["enabled"])
+        self.assertIn("Contracts not fetched", status["paths"]["info"]["disabledReason"])
+        self.assertEqual(status["unknown"], 5)
+        self.assertEqual(module.contract_debug()["info"]["error"], status["paths"]["info"]["disabledReason"])
 
     def test_credit_enquiry_reports_codes_the_broker_did_not_return(self):
         class Row:
@@ -211,7 +329,7 @@ class TradingEligibilityTests(unittest.TestCase):
         self.assertTrue(module.get_trading_eligibility("2330", service=service)["marginable"])
         # 沒回的那檔維持合約欄位的判讀（餘額 0 → 不可），不會誤判
         self.assertFalse(module.get_trading_eligibility("8996", service=service)["marginable"])
-        self.assertEqual(module.contract_debug("2330", service=service)["credit"]["marginable"], True)
+        self.assertEqual(module.inspect_contract("2330", service=service)["credit"]["marginable"], True)
 
     def test_first_credit_refresh_runs_even_when_process_uptime_is_short(self):
         import time as time_module
