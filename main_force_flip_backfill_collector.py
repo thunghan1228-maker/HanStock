@@ -3,7 +3,8 @@
 13:40 後重播今天（每分鐘價量用 Shioaji kbars、主力張數用已落盤的主力副圖），補回
 偵測器不在線時漏掉的訊號。當天歷史額度已經用完時（2026-09-22 就是：偵測器 13:13 才
 上線、額度又早被個股回補燒光）不算完成，隔天開盤前（08:55 前）額度恢復時再把前一個
-交易日補回來。完成狀態存 SQLite，重新部署不會重跑。
+交易日補回來。完成狀態存 SQLite（連同判定規則版本），重新部署不會重跑；判定規則改版時
+（FLIP_RULES_VERSION 變了）已完成的日期會再重播一次，把舊規則漏掉的訊號補回來。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from database import get_connection
-from main_force_flip_signals import flip_signal_backfill_status, start_flip_signal_backfill
+from main_force_flip_signals import FLIP_RULES_VERSION, flip_signal_backfill_status, start_flip_signal_backfill
 
 logger = logging.getLogger("hanstock.main_force_flip_backfill_collector")
 TW_TZ = timezone(timedelta(hours=8))
@@ -37,15 +38,21 @@ def _schema(connection) -> None:
             updated_at TEXT NOT NULL
         )"""
     )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(main_force_flip_backfill_state)").fetchall()}
+    if "rules_version" not in columns:
+        connection.execute(
+            "ALTER TABLE main_force_flip_backfill_state ADD COLUMN rules_version INTEGER NOT NULL DEFAULT 1"
+        )
 
 
 def backfill_done(trade_date: str) -> bool:
+    """這一天已經用「目前這一版規則」重播完成；舊版規則做的完成紀錄不算。"""
     with get_connection() as connection:
         _schema(connection)
         row = connection.execute(
-            "SELECT done FROM main_force_flip_backfill_state WHERE trade_date = ?", (trade_date,)
+            "SELECT done, rules_version FROM main_force_flip_backfill_state WHERE trade_date = ?", (trade_date,)
         ).fetchone()
-    return bool(row and row["done"])
+    return bool(row and row["done"] and int(row["rules_version"] or 0) == FLIP_RULES_VERSION)
 
 
 def _mark(trade_date: str, done: bool, result: dict[str, Any]) -> None:
@@ -53,11 +60,12 @@ def _mark(trade_date: str, done: bool, result: dict[str, Any]) -> None:
     with get_connection() as connection:
         _schema(connection)
         connection.execute(
-            """INSERT INTO main_force_flip_backfill_state (trade_date, done, result_json, updated_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO main_force_flip_backfill_state (trade_date, done, result_json, updated_at, rules_version)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(trade_date) DO UPDATE SET
-                   done = excluded.done, result_json = excluded.result_json, updated_at = excluded.updated_at""",
-            (trade_date, 1 if done else 0, json.dumps(result, ensure_ascii=False), updated_at),
+                   done = excluded.done, result_json = excluded.result_json, updated_at = excluded.updated_at,
+                   rules_version = excluded.rules_version""",
+            (trade_date, 1 if done else 0, json.dumps(result, ensure_ascii=False), updated_at, FLIP_RULES_VERSION),
         )
 
 

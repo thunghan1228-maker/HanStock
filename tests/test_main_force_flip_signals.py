@@ -84,9 +84,11 @@ def test_weak_volume_ratio_downgrades_label_to_plain_flip(monkeypatch):
 
 
 def test_bear_flip_mirrors_bull(monkeypatch):
+    # 從 10:00 才看到（較晚訂閱）：前面主力偏買、站上 VWAP，第 10 根大單倒出把累計翻負、跌破 VWAP。
+    # （若從 09:00 就看到，開頭那段從 0 翻正加站上 VWAP 本身就是一筆合法的翻多，另有測試涵蓋。）
     monitor = new_monitor(monkeypatch)
-    bars = [bar(9, 0, 99.0, 100, main_buy=10)] + [bar(9, i, 100.0, 100, main_buy=10) for i in range(1, 9)]
-    flip = bar(9, 9, 99.0, 100, main_sell=400)
+    bars = [bar(10, 0, 99.0, 100, main_buy=10)] + [bar(10, i, 100.0, 100, main_buy=10) for i in range(1, 9)]
+    flip = bar(10, 9, 99.0, 100, main_sell=400)
 
     signals = feed(monitor, "3532", bars + [flip])
 
@@ -112,10 +114,26 @@ def test_flip_during_first_bars_after_subscription_is_ignored(monkeypatch):
     # 較晚才被訂閱到的股票：累計值只從訂閱起算，前幾根「翻正」不可信；等到看滿
     # MIN_BARS根時，那次穿越也早就超出同步視窗，不會補發。
     monitor = new_monitor(monkeypatch)
-    bars = [bar(9, 0, 100.0, 100, main_sell=10), bar(9, 1, 100.0, 100, main_sell=10), bar(9, 2, 101.0, 100, main_buy=400)]
-    bars += [bar(9, i, 101.0, 100, main_buy=5) for i in range(3, 12)]
+    bars = [bar(10, 0, 100.0, 100, main_sell=10), bar(10, 1, 100.0, 100, main_sell=10), bar(10, 2, 101.0, 100, main_buy=400)]
+    bars += [bar(10, i, 101.0, 100, main_buy=5) for i in range(3, 12)]
 
     assert feed(monitor, "3532", bars) == []
+
+
+def test_from_open_data_needs_no_warmup_and_fires_at_0902_like_the_other_tool(monkeypatch):
+    # 正式環境 2026-09-22 的 3532（inspect 的實際數字）：09:01 主力累計 +134/156 張從 0 翻正，
+    # 09:02 收 451.5 站上 VWAP 450.38，淨額率 81.6%、量比 6.5×；另一台工具 09:02 就發強勢翻多。
+    # 從開盤第一根就看到、累計完整，暖機 10 根不該把它吃掉。
+    monitor = new_monitor(monkeypatch, avg_daily_volume=7378.8)
+    bars = [bar(9, 0, 449.5, 200, main_buy=145, main_sell=11), bar(9, 1, 451.5, 156, main_buy=42, main_sell=8)]
+
+    signals = feed(monitor, "3532", bars)
+
+    assert [s["label"] for s in signals] == ["主力累計強勢翻多"]
+    assert signals[0]["barTs"] == ts(9, 2)
+    assert "主力零軸 09:01" in signals[0]["note"]
+    assert "VWAP穿越 09:02" in signals[0]["note"]
+    assert "量比 6.51×" in signals[0]["note"]
 
 
 def test_missing_daily_history_or_thin_main_force_never_fires(monkeypatch):
@@ -227,7 +245,7 @@ def test_inspect_explains_which_filter_blocked_a_synchronized_flip(monkeypatch):
     blockers = report["nearMisses"][0]["bull"]["blockers"]
     assert len(blockers) == 1 and blockers[0].startswith("量比 0.27×"), blockers
     assert len(report["trace"]) == 10
-    assert report["trace"][0]["skip"] == "warming_up"
+    assert report["trace"][0]["skip"] == "thin_main_force"  # 從開盤就看到不暖機，只剩主力量太薄的保護
     # 暖機中也要看得到三個比率，另一台工具若在前幾根就發訊號才對得出來。
     assert report["head"][0]["netRatio"] == -1.0
     assert report["head"][0]["volumeRatio"] == round(100 * 270 / 1 / 100000, 2)
