@@ -352,3 +352,36 @@ def test_stale_snapshot_recomputation_failure_falls_back_to_old_ranking(monkeypa
     assert status["candidateSource"] == "stored_group_snapshot_stale_fallback"
     assert status["candidateCount"] > 0
     assert status["snapshotTs"] == stale_ts
+
+
+def test_subscription_requests_strongest_ranked_candidates_first(monkeypatch):
+    # 使用者實際回報的第二個根因：304個候選搶190個訂閱名額，
+    # ensure_stock_subscriptions是先到先贏、按傳入順序分配，舊版把候選
+    # 用dict插入順序(=STOCK_GROUPS檔案順序，跟強弱無關)送出去，名額用完
+    # 時犧牲的候選是隨機的，不是真正比較弱的族群。這裡鎖住「排名數字
+    # 越小(越強)的候選要排在送出順序的越前面」這個行為。
+    now_ms = int(__import__("time").time() * 1000)
+    monkeypatch.setattr(
+        module, "load_group_strength_history",
+        lambda _trade_date: [{"bucketTs": now_ms - 1000, "ranks": {
+            "記憶體": 1, "被動元件": 2, "矽光子": 20,
+        }}],
+    )
+    requested: list[str] = []
+
+    class RecordingService:
+        @staticmethod
+        def ensure_stock_subscriptions(codes):
+            requested.extend(codes)
+            return {
+                "capacity": 1000, "active_count": len(codes),
+                "already_subscribed": codes, "newly_subscribed": [], "failed": {},
+            }
+
+    module.refresh_intraday_large_order_candidates(RecordingService())
+
+    rank1_codes = {code for code, _name in module.STOCK_GROUPS["記憶體"]}
+    rank20_codes = {code for code, _name in module.STOCK_GROUPS["矽光子"]}
+    last_rank1_index = max(requested.index(c) for c in rank1_codes if c in requested)
+    first_rank20_index = min(requested.index(c) for c in rank20_codes if c in requested)
+    assert last_rank1_index < first_rank20_index

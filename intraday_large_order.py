@@ -402,7 +402,12 @@ def refresh_intraday_large_order_candidates(service: Any) -> dict[str, Any]:
         _monitor.set_candidates({}, {}, status)
         return status
     buy, sell = build_group_candidates(latest["ranks"])
-    codes = list(dict.fromkeys([*buy, *sell]))
+    # ensure_stock_subscriptions對190檔上限是先到先贏(quote_service.py逐一
+    # 檢查main_count>=limit，照傳入list的順序分配)；改成依族群排名由強到
+    # 弱排序再送出，名額不夠時犧牲的是排名較後面、較不重要的候選，而不是
+    # 誰的代號剛好落在dict插入順序後面這種跟強弱無關的因素。
+    unique_codes = dict.fromkeys([*buy, *sell])
+    codes = sorted(unique_codes, key=lambda code: (buy.get(code) or sell[code])["rank"])
     subscription = service.ensure_stock_subscriptions(codes)
     failed = subscription.get("failed") or {}
     status = {
