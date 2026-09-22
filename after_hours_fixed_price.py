@@ -143,6 +143,29 @@ def save_after_hours_day(trade_date_str: str, entries: list[dict[str, Any]]) -> 
     return len(rows)
 
 
+def load_latest_after_hours_day(
+    limit: int = 200,
+    on_or_before: str | None = None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """最近一個已收集到的盤後定價交易日（含當天）。今天 14:35 前還沒公布時，
+    這會是前一個交易日；沒有任何資料時回 (None, [])。"""
+    with get_connection() as connection:
+        _schema(connection)
+        if on_or_before:
+            row = connection.execute(
+                "SELECT MAX(trade_date) AS trade_date FROM after_hours_fixed_price WHERE trade_date <= ?",
+                (on_or_before,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT MAX(trade_date) AS trade_date FROM after_hours_fixed_price"
+            ).fetchone()
+    trade_date = row["trade_date"] if row is not None else None
+    if not trade_date:
+        return None, []
+    return trade_date, load_after_hours_day(trade_date, limit=limit)
+
+
 def load_after_hours_day(trade_date_str: str, limit: int = 200) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 1000))
     with get_connection() as connection:
