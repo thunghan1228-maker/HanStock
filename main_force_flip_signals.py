@@ -42,9 +42,13 @@ VOLUME_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_STR
 SYNC_WINDOW_MS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_SYNC_WINDOW_MINUTES", "5"))) * ONE_MIN_MS
 MIN_MAIN_GROSS_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_MAIN_LOTS", "30")))
 MIN_BARS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_BARS", "10")))
+# 從開盤第一根就看到的股票，前幾根只是開盤集合競價的餘波：使用者比對過，另一台工具 09:01～09:05
+# 從不發訊號，這裡照樣前 5 根不判定（較晚才訂閱到的仍用 MIN_BARS）。
+OPEN_SKIP_BARS = max(0, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_OPEN_SKIP_BARS", "5")))
 # 判定規則版本：規則一改，收盤後重播排程就會把已標記完成的日期再重播一次，不然舊規則漏掉的
-# 訊號永遠補不回來。v2：從開盤第一根就看到的股票不暖機。
-FLIP_RULES_VERSION = 2
+# 訊號永遠補不回來。v2：從開盤第一根就看到的股票不暖機 10 根。v3：開盤前 5 根不判定、主力買賣
+# 兩邊都要有過量才算「翻」（一整天只有一邊有量、第一筆大單就是賣的不算翻空）。
+FLIP_RULES_VERSION = 3
 MAX_VWAP_DISTANCE_PCT = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MAX_VWAP_DISTANCE_PCT", "3.0"))
 KIND_BULL = "mainForceFlipBull"
 KIND_BEAR = "mainForceFlipBear"
@@ -96,6 +100,8 @@ class _FlipState:
     warmup_bars: int = MIN_BARS
     cum_net: int = 0
     cum_gross: int = 0
+    cum_buy: int = 0
+    cum_sell: int = 0
     cum_volume: int = 0
     cum_close_volume: float = 0.0
     total_amount: float = 0.0
@@ -151,7 +157,7 @@ class MainForceFlipMonitor:
                     "netRatioMin": NET_RATIO_MIN, "netRatioStrong": NET_RATIO_STRONG,
                     "volumeRatioMin": VOLUME_RATIO_MIN, "volumeRatioStrong": VOLUME_RATIO_STRONG,
                     "syncWindowMinutes": SYNC_WINDOW_MS // ONE_MIN_MS, "minMainLots": MIN_MAIN_GROSS_LOTS,
-                    "minBars": MIN_BARS, "maxVwapDistancePct": MAX_VWAP_DISTANCE_PCT,
+                    "minBars": MIN_BARS, "openSkipBars": OPEN_SKIP_BARS, "maxVwapDistancePct": MAX_VWAP_DISTANCE_PCT,
                 },
             }
 
@@ -235,6 +241,8 @@ class MainForceFlipMonitor:
         before_net = state.cum_net
         state.cum_net += main_buy - main_sell
         state.cum_gross += main_buy + main_sell
+        state.cum_buy += main_buy
+        state.cum_sell += main_sell
         state.cum_volume += volume
         state.cum_close_volume += close * volume
         total_amount = _float(bar.get("total_amount"))
@@ -289,11 +297,10 @@ class MainForceFlipMonitor:
                 "distancePct": round(distance_pct, 2), "aboveVwap": above,
             })
         if state.bar_count == 1 and taipei_minute_of_day(int(bar["ts"])) <= 9 * 60:
-            # 從開盤第一根就看到的股票（收盤後重播、或開盤前就訂閱到）：累計值是完整的，不用暖機。
-            # 暖機只保護較晚才訂閱到、累計只從訂閱起算的情況。正式環境 2026-09-22 的 3532 就是
-            # 09:01 累計從 0 翻正、09:02 站上 VWAP（淨額率 82%、量比 6.5×），另一台工具 09:02 就發
-            # 「主力累計強勢翻多」，暖機 10 根會把它整個吃掉。
-            state.warmup_bars = 0
+            # 從開盤第一根就看到的股票（收盤後重播、或開盤前就訂閱到）：累計值是完整的，只避開
+            # 開盤前 5 根；暖機 10 根只保護較晚才訂閱到、累計只從訂閱起算的情況。正式環境
+            # 2026-09-22 的 3532 是 09:01 累計從 0 翻正、09:05 再站上 VWAP，暖機 10 根會把它整個吃掉。
+            state.warmup_bars = OPEN_SKIP_BARS + 1  # 前 5 根（收盤 09:01～09:05）不判定，09:06 起才看
         if state.bar_count < state.warmup_bars or state.cum_gross < MIN_MAIN_GROSS_LOTS:
             if record is not None:
                 record["skip"] = "warming_up" if state.bar_count < state.warmup_bars else "thin_main_force"
@@ -313,6 +320,7 @@ class MainForceFlipMonitor:
             if side == "bull":
                 checks = [
                     (state.cum_net > 0, "主力累計不在正值"),
+                    (state.cum_sell > 0, "主力只有買方量、沒有賣方，不算翻多"),
                     (above, "收盤在VWAP之下"),
                     (net_ratio >= NET_RATIO_MIN, f"主力淨額率 {net_ratio * 100:+.1f}% 未達 +{NET_RATIO_MIN * 100:.0f}%"),
                     (volume_ratio >= VOLUME_RATIO_MIN, f"量比 {volume_ratio:.2f}× 未達 {VOLUME_RATIO_MIN:g}×"),
@@ -321,6 +329,7 @@ class MainForceFlipMonitor:
             else:
                 checks = [
                     (state.cum_net < 0, "主力累計不在負值"),
+                    (state.cum_buy > 0, "主力只有賣方量、沒有買方，不算翻空"),
                     (not above, "收盤在VWAP之上"),
                     (net_ratio <= -NET_RATIO_MIN, f"主力淨額率 {net_ratio * 100:+.1f}% 未達 -{NET_RATIO_MIN * 100:.0f}%"),
                     (volume_ratio >= VOLUME_RATIO_MIN, f"量比 {volume_ratio:.2f}× 未達 {VOLUME_RATIO_MIN:g}×"),
