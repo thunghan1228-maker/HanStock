@@ -92,7 +92,7 @@ def test_buy_and_sell_amount_thresholds_are_thirty_and_fifty_million(monkeypatch
         (1, "buy", 30_000_000, "瞬間大單連續敲進"),
         (1, "buy", 50_000_000, "瞬間特大買單敲進"),
         (2, "sell", 29_999_999, None),
-        (2, "sell", 30_000_000, "瞬間大單連續倒出"),
+        (2, "sell", 30_000_000, "瞬間大單連續賣出"),
         (2, "sell", 50_000_000, "瞬間特大賣單倒出"),
     ]
     for tick_type, side, amount, expected_label in cases:
@@ -121,8 +121,8 @@ def test_saved_signals_are_rechecked_against_current_thresholds():
         "3443", "instantLargeBuy", "瞬間大單連續敲進", "同秒 1 筆｜合計 2 張｜約 1212.0 萬",
     )) is None
     assert normalize_intraday_large_order_signal(saved(
-        "2615", "instantLargeSell", "瞬間大單連續倒出", "同秒 1 筆｜合計 100 張｜約 1145.0 萬",
-    ))["label"] == "瞬間大單連續倒出"
+        "2615", "instantLargeSell", "瞬間大單連續賣出", "同秒 1 筆｜合計 100 張｜約 1145.0 萬",
+    ))["label"] == "瞬間大單連續賣出"
     assert normalize_intraday_large_order_signal(saved(
         "4991", "instantLargeBuy", "瞬間大單連續敲進", "同秒 3 筆｜合計 66 張｜約 3618.2 萬",
     ))["label"] == "瞬間大單連續敲進"
@@ -138,7 +138,7 @@ def test_saved_extra_signal_is_downgraded_when_only_general_threshold_passes():
     })
 
     assert normalized is not None
-    assert normalized["label"] == "瞬間大單連續倒出"
+    assert normalized["label"] == "瞬間大單連續賣出"
 
 
 def test_holder_strength_wrong_direction_blocks_signal(monkeypatch):

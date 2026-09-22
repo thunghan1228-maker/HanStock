@@ -66,9 +66,33 @@ def normalize_intraday_large_order_signal(signal: dict[str, Any]) -> dict[str, A
     normalized["label"] = (
         ("瞬間特大買單敲進" if is_buy else "瞬間特大賣單倒出")
         if extra
-        else ("瞬間大單連續敲進" if is_buy else "瞬間大單連續倒出")
+        else ("瞬間大單連續敲進" if is_buy else "瞬間大單連續賣出")
     )
     return normalized
+
+
+def _eligibility_note_fragment(code: str) -> str:
+    """融資/融券/可現股當沖/有股期附加在note文字裡，不是獨立欄位：
+    intraday_signals資料表schema固定，多的欄位存進去會被_clean_signal
+    直接丟掉，跟族群排名資訊(「族群同步...第X名」)一樣走note文字這條
+    既有路徑最快最安全，不用另外做欄位遷移。抓不到(Shioaji未登入等)
+    就回空字串，不硬塞「未知」之類的字樣。"""
+    try:
+        from stock_trading_eligibility import get_trading_eligibility
+
+        info = get_trading_eligibility(code)
+    except Exception:  # noqa: BLE001
+        return ""
+    tags = []
+    if info.get("marginable"):
+        tags.append("可融資")
+    if info.get("shortable"):
+        tags.append("可融券")
+    if info.get("dayTradeEligible"):
+        tags.append("可現股當沖")
+    if info.get("hasStockFutures"):
+        tags.append("有股期")
+    return "｜" + " ".join(tags) if tags else ""
 
 
 def _money(value: float) -> str:
@@ -260,10 +284,15 @@ class IntradayLargeOrderMonitor:
             "name": str(meta.get("name") or code),
             "groupName": str(meta["group"]),
             "kind": "instantLargeBuy" if is_buy else "instantLargeSell",
-            "label": ("瞬間特大買單敲進" if is_buy else "瞬間特大賣單倒出") if extra else ("瞬間大單連續敲進" if is_buy else "瞬間大單連續倒出"),
+            "label": ("瞬間特大買單敲進" if is_buy else "瞬間特大賣單倒出") if extra else ("瞬間大單連續敲進" if is_buy else "瞬間大單連續賣出"),
             "barTs": tick_ts_ms,
             "price": price,
-            "note": f"同秒 {len(snapshot)} 筆｜合計 {total_lots:,} 張｜約 {_money(total_amount)}｜成交價 {min(x[3] for x in snapshot):g}～{max(x[3] for x in snapshot):g}｜族群同步 {meta['group']} {meta['direction']}第 {meta['rank']} 名",
+            "note": (
+                f"同秒 {len(snapshot)} 筆｜合計 {total_lots:,} 張｜約 {_money(total_amount)}｜"
+                f"成交價 {min(x[3] for x in snapshot):g}～{max(x[3] for x in snapshot):g}｜"
+                f"族群同步 {meta['group']} {meta['direction']}第 {meta['rank']} 名"
+                f"{_eligibility_note_fragment(code)}"
+            ),
         }
         signal_key = (signal["tradeDate"], signal["ticker"], signal["kind"], signal["barTs"])
         with self._lock:

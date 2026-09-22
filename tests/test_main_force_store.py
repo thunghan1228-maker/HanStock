@@ -36,20 +36,20 @@ class HolderStrengthComputationTests(unittest.TestCase):
     def test_classify_returns_bull_label_at_signal_threshold(self):
         pct, label = classify_holder_strength(40_000_000, 5_000_000, 200_000_000)
         self.assertEqual(pct, 17.5)
-        self.assertEqual(label, "強多")
+        self.assertEqual(label, "盤中大戶偏買")
 
     def test_classify_returns_strong_buy_label_above_28_percent(self):
         pct, label = classify_holder_strength(70_000_000, 5_000_000, 200_000_000)
         self.assertEqual(pct, 32.5)
-        self.assertEqual(label, "強力買進")
+        self.assertEqual(label, "盤中大戶強力買進")
 
     def test_classify_returns_bear_labels_symmetrically(self):
         pct, label = classify_holder_strength(5_000_000, 40_000_000, 200_000_000)
         self.assertEqual(pct, -17.5)
-        self.assertEqual(label, "強空")
+        self.assertEqual(label, "盤中大戶偏賣")
         pct, label = classify_holder_strength(5_000_000, 70_000_000, 200_000_000)
         self.assertEqual(pct, -32.5)
-        self.assertEqual(label, "強力賣出")
+        self.assertEqual(label, "盤中大戶強力賣出")
 
     def test_classify_label_none_when_below_12_percent(self):
         pct, label = classify_holder_strength(50_000_000, 45_000_000, 200_000_000)
@@ -224,7 +224,7 @@ class MainForceStoreTests(unittest.TestCase):
 
         # (40,000,000-5,000,000)/200,000,000*100 = 17.5%；達+12%正式門檻，未達28%強力
         self.assertEqual(ranking["2330"]["strengthPct"], 17.5)
-        self.assertEqual(ranking["2330"]["holderLabel"], "強多")
+        self.assertEqual(ranking["2330"]["holderLabel"], "盤中大戶偏買")
 
     def test_ranking_strength_pct_is_none_without_turnover_data(self):
         # 舊資料沒有total_amount欄位（或這個bar沒有主力金額），無法算百分比。
