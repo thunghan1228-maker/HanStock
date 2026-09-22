@@ -211,6 +211,22 @@ class MainForceBackfillJobTests(unittest.TestCase):
             self.assertLess(parsed.weekday(), 5)
         self.assertEqual(result["attempted"], result["stockCount"] * 3)
 
+    def test_prune_pending_jobs_drops_dates_older_than_recent_weekdays(self):
+        # 使用者：主力副圖補最近3天就夠，不用30天；之前排的30天批次留下的舊pending
+        # 工作要清掉，省Shioaji逐筆額度。已完成的紀錄不動。
+        from main_force_backfill_jobs import prune_pending_backfill_jobs
+        queue_backfill_for_codes(["2455"], ["2026-09-01", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-07"], now=self.now)
+        process_main_force_backfill_job(now=self.now, backfill=Mock(return_value=dict(self.success)))  # 最新一天先做完
+
+        deleted = prune_pending_backfill_jobs(days=3, now=self.now)
+
+        # now=09/08(二)：最近3個平日是09/07、09/04、09/03，比09/03舊的pending(09/01)才刪。
+        remaining = {(j["tradeDate"], j["status"]) for j in list_main_force_backfill_jobs("2455")}
+        self.assertEqual(deleted, 1)
+        self.assertEqual(remaining, {
+            ("2026-09-07", "complete"), ("2026-09-05", "pending"), ("2026-09-04", "pending"), ("2026-09-03", "pending"),
+        })
+
     def test_rejects_future_and_out_of_range_jobs(self):
         for date in ("2026-09-09", "2020-01-01"):
             with self.assertRaises(ValueError):
