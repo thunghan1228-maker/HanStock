@@ -36,8 +36,17 @@ class _TempDatabaseTestCase(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
         self.db_patch.start()
+        # 備援來源在單元測試裡一律當作沒資料（不能碰外網），要驗證備援的測試自己再覆寫。
+        self.source_patches = [
+            patch("otc_index_service.fetch_yahoo_minute_bars", lambda *a, **k: []),
+            patch("otc_index_service.fetch_finmind_minute_bars", lambda *a, **k: []),
+        ]
+        for item in self.source_patches:
+            item.start()
 
     def tearDown(self) -> None:
+        for item in self.source_patches:
+            item.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
 
@@ -97,16 +106,6 @@ class BootstrapTodayCalendarRangeTests(_TempDatabaseTestCase):
 class BootstrapResilienceTests(_TempDatabaseTestCase):
     """使用者實際回報：昨天明明顯示過，重新部署之後又變回「資料蒐集中」。"""
 
-    def setUp(self) -> None:
-        super().setUp()
-        # Yahoo 備援在單元測試裡一律當作沒資料，各測試要驗證 Yahoo 時自己再覆寫。
-        self.yahoo_patch = patch("otc_index_service.fetch_yahoo_minute_bars", lambda *a, **k: [])
-        self.yahoo_patch.start()
-
-    def tearDown(self) -> None:
-        self.yahoo_patch.stop()
-        super().tearDown()
-
     def test_yahoo_rescues_bootstrap_when_kbars_fails(self) -> None:
         today = datetime.now(TW).date()
         yesterday = today - timedelta(days=1)
@@ -128,6 +127,77 @@ class BootstrapResilienceTests(_TempDatabaseTestCase):
         status = fresh_hub.get_status()
         self.assertTrue(status["bootstrap_ok"])
         self.assertIsNone(status["bootstrap_error"])
+
+    def test_yahoo_5m_rescues_when_1m_has_nothing(self) -> None:
+        # 指數在 Yahoo 有時只給 5 分 K：1 分 K 空的就改拿 5 分 K，直接當 5 分 K 用。
+        today = datetime.now(TW).date()
+        yesterday = today - timedelta(days=1)
+        bars_5m = [stored_bar(yesterday, 9, 5 * i) for i in range(21)]
+
+        def yahoo(code, start, end, *, interval="1m", **kwargs):
+            return bars_5m if interval == "5m" else []
+
+        class QuotaExhaustedApi:
+            def kbars(self, contract, start, end):
+                raise RuntimeError("history quota exhausted")
+
+        service = OtcIndexService()
+        fresh_hub = OtcIndexHub()
+        with patch("otc_index_service.get_otc_index_hub", return_value=fresh_hub), \
+                patch("otc_index_service.fetch_yahoo_minute_bars", yahoo):
+            result = service.bootstrap_today(QuotaExhaustedApi(), contract=object())
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["source"], "yahoo5m")
+        self.assertEqual(result["bars_5m"], 21)
+
+    def test_finmind_rescues_when_yahoo_fails(self) -> None:
+        today = datetime.now(TW).date()
+        yesterday = today - timedelta(days=1)
+        finmind_bars = [stored_bar(yesterday, 9, i) for i in range(105)]
+
+        def yahoo(*args, **kwargs):
+            raise RuntimeError("HTTP 404 Not Found")
+
+        class QuotaExhaustedApi:
+            def kbars(self, contract, start, end):
+                raise RuntimeError("history quota exhausted")
+
+        service = OtcIndexService()
+        fresh_hub = OtcIndexHub()
+        with patch("otc_index_service.get_otc_index_hub", return_value=fresh_hub), \
+                patch("otc_index_service.fetch_yahoo_minute_bars", yahoo), \
+                patch("otc_index_service.fetch_finmind_minute_bars", lambda *a, **k: finmind_bars):
+            result = service.bootstrap_today(QuotaExhaustedApi(), contract=object())
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["source"], "finmind")
+        self.assertEqual(result["bars_5m"], 21)
+        self.assertIsNone(fresh_hub.get_status()["bootstrap_error"])
+
+    def test_every_fallback_failure_stays_visible_in_the_error(self) -> None:
+        # 使用者只看得到「資料蒐集中」：每個來源為什麼沒拿到都要留在錯誤裡，才查得出卡在哪。
+        def yahoo(*args, **kwargs):
+            raise RuntimeError("HTTP 404 Not Found")
+
+        def finmind(*args, **kwargs):
+            raise RuntimeError("HTTP 400 Bad Request")
+
+        class QuotaExhaustedApi:
+            def kbars(self, contract, start, end):
+                raise RuntimeError("history quota exhausted")
+
+        service = OtcIndexService()
+        fresh_hub = OtcIndexHub()
+        with patch("otc_index_service.get_otc_index_hub", return_value=fresh_hub), \
+                patch("otc_index_service.fetch_yahoo_minute_bars", yahoo), \
+                patch("otc_index_service.fetch_finmind_minute_bars", finmind):
+            result = service.bootstrap_today(QuotaExhaustedApi(), contract=object())
+
+        self.assertFalse(result["ok"])
+        for fragment in ("quota exhausted", "yahoo: HTTP 404", "yahoo5m: HTTP 404", "finmind: HTTP 400"):
+            self.assertIn(fragment, result["error"])
+            self.assertIn(fragment, fresh_hub.get_status()["bootstrap_error"])
 
     def test_falls_back_to_stored_bars_when_kbars_fails_and_keeps_the_error_visible(self) -> None:
         today = datetime.now(TW).date()

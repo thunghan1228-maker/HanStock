@@ -454,5 +454,63 @@ class FinMindVolumeUnitTests(unittest.TestCase):
         self.assertEqual(yahoo_calls, [])
 
 
+class IndexSourceTests(unittest.TestCase):
+    """櫃買指數（OTC_INDEX）：Yahoo 用 ^TWOII、可指定 5m；FinMind 用 TPEx 且被拒不開斷路器。"""
+
+    def setUp(self) -> None:
+        module._reset_runtime_state()
+        self.env = patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"})
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        module._reset_runtime_state()
+
+    def test_yahoo_index_alias_and_interval(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fetcher(url, params):
+            calls.append((url.rsplit("/", 1)[1], params["interval"]))
+            return yahoo_payload(0)
+
+        bars = fetch_yahoo_minute_bars("OTC_INDEX", "2026-09-22", "2026-09-22", fetcher=fetcher, interval="5m")
+
+        self.assertEqual(calls, [("%5ETWOII", "5m")])
+        self.assertEqual(len(bars), 1)  # 指數沒有成交量也要留下 K 棒
+
+    def test_finmind_index_uses_tpex_id_and_never_opens_the_breaker(self) -> None:
+        seen: list[str] = []
+
+        def fetcher(url, params):
+            seen.append(params["data_id"])
+            raise module.SourceHttpError(400, "Bad Request", '{"msg":"no index data"}')
+
+        with self.assertRaises(module.SourceHttpError):
+            module.fetch_finmind_minute_bars("OTC_INDEX", "2026-09-22", "2026-09-22", fetcher=fetcher, block_on_error=False)
+
+        self.assertEqual(seen, ["TPEx"])
+        status = module.history_sources_status()["finmind"]
+        self.assertEqual(status["blockedForSeconds"], 0)
+        self.assertIn("no index data", status["lastError"])
+
+    def test_index_probe_reports_each_source(self) -> None:
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                return {"status": 200, "data": []}
+            if params["interval"] == "1m":
+                raise RuntimeError("no 1m for index")
+            return yahoo_payload(0)
+
+        probe = probe_history_sources("^TWOII", "2026-09-22", fetcher=fetcher)
+
+        self.assertEqual(probe["code"], "OTC_INDEX")
+        self.assertFalse(probe["yahoo1m"]["ok"])
+        self.assertIn("no 1m for index", probe["yahoo1m"]["error"])
+        self.assertTrue(probe["yahoo5m"]["ok"])
+        self.assertEqual(probe["finmind"]["dataId"], "TPEx")
+        self.assertFalse(probe["finmind"]["ok"])
+        self.assertEqual(module.history_sources_status()["finmind"]["blockedForSeconds"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

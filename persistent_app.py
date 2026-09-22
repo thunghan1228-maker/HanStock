@@ -13,7 +13,7 @@ from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
-from history_sources import history_sources_status, probe_history_sources, stock_market
+from history_sources import OTC_INDEX_CODE, history_sources_status, probe_history_sources, stock_market
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
@@ -26,7 +26,12 @@ from intraday_signal_store import load_latest_signals, load_latest_signals_by_ki
 from intraday_kline_signals import start_kline_signal_backfill_today, kline_signal_backfill_status
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
-from main_force_flip_signals import flip_signal_backfill_status, get_main_force_flip_monitor, start_flip_signal_backfill
+from main_force_flip_signals import (
+    flip_signal_backfill_status,
+    get_main_force_flip_monitor,
+    inspect_flip_signals,
+    start_flip_signal_backfill,
+)
 from history_quota import history_quota
 from otc_index import OTC_INDEX_DISPLAY_NAME, OTC_INDEX_HUB_CODE, TW_TZ, taipei_trade_date
 from otc_index_hub import get_otc_index_hub
@@ -195,14 +200,16 @@ def get_history_sources(
     service = get_quote_service()
     data: dict[str, Any] = {"shioaji": history_quota.snapshot(getattr(service, "api", None))}
     if probe:
-        code = _normalize_stock_code(probe)
+        raw = str(probe).strip().upper()
+        # 櫃買指數（OTC_INDEX／TPEX／^TWOII）走指數專用 probe：Yahoo 1 分／5 分 K 與 FinMind 櫃買分 K。
+        code = OTC_INDEX_CODE if raw in {"OTC_INDEX", "OTC", "TPEX", "^TWOII"} else _normalize_stock_code(probe)
         if not trade_date:
             now = datetime.now(TW_TZ)
             day = now.date() if (now.hour, now.minute) >= (13, 35) and now.weekday() < 5 else now.date() - timedelta(days=1)
             while day.weekday() >= 5:
                 day -= timedelta(days=1)
             trade_date = day.isoformat()
-        data["probe"] = probe_history_sources(code, trade_date, market=stock_market(code))
+        data["probe"] = probe_history_sources(code, trade_date, market=None if code == OTC_INDEX_CODE else stock_market(code))
     # 統計放在 probe 之後才拿，成交量單位校準、資料集自動換名這些 probe 觸發的結果才看得到。
     data["sources"] = history_sources_status()
     return {"status": "ok", "data": data}
@@ -224,6 +231,27 @@ def post_main_force_flip_backfill(trade_date: str | None = Query(None)) -> dict[
 @app.get("/api/hub/main-force-flip/backfill-status")
 def get_main_force_flip_backfill_status() -> dict[str, Any]:
     return {"status": "ok", "data": flip_signal_backfill_status()}
+
+
+@app.get("/api/hub/main-force-flip/inspect")
+def get_main_force_flip_inspect(
+    code: str = Query(...),
+    trade_date: str | None = Query(None),
+    trace: bool = Query(False),
+) -> dict[str, Any]:
+    """單檔重播主力累計翻多空的判定過程：每個零軸／VWAP 穿越的時間、同步視窗內被哪個濾網擋下
+    （nearMisses），trace=true 再附每根 1 分 K 的累計／VWAP／量比，用來跟另一台工具對條件。
+    不寫入訊號、不動即時偵測器；價量走 kbars 或備援來源，只涵蓋最近 5 個日曆天。"""
+    stock = _normalize_stock_code(code)
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    else:
+        trade_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    return {"status": "ok", "data": inspect_flip_signals(stock, trade_date, include_trace=trace)}
 
 
 @app.get("/api/hub/intraday-signals")
@@ -497,22 +525,28 @@ def get_otc_index_strength() -> dict[str, Any]:
     quote = hub.get_latest_quote()
     today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
-    if len(bars) < 20 or not quote or not today_bars:
+    if len(bars) < 20 or not today_bars:
         _kick_otc_index_bootstrap(hub)
+        hub_status = hub.get_status()
+        bootstrap_error = str(hub_status.get("bootstrap_error") or "").strip()
         return {
             "status": "ok",
             "ready": False,
             "reason": (
                 f"資料不足（5分K {len(bars)}/20 根、今日 {len(today_bars)} 根、"
                 f"即時報價{'有' if quote else '無'}），歷史5分K補齊中"
+                + (f"；補齊失敗：{bootstrap_error[:220]}" if bootstrap_error else "")
             ),
             "barCount": len(bars),
             "todayBarCount": len(today_bars),
-            "hub": hub.get_status(),
+            "hub": hub_status,
         }
     closes = [float(b["close"]) for b in bars[-20:]]
     ma20 = sum(closes) / len(closes)
-    price = float(quote.get("close") or bars[-1]["close"])
+    # 收盤後、或剛重啟還沒收到第一筆報價時，用今天最後一根 5 分 K 的收盤價；有即時報價就用報價。
+    quote_close = quote.get("close") if quote else None
+    price_source = "quote" if quote_close else "lastBar"
+    price = float(quote_close) if quote_close else float(today_bars[-1]["close"])
     above_ma20 = price > ma20
 
     ref_bar = today_bars[2] if len(today_bars) > 2 else today_bars[0]
@@ -536,6 +570,7 @@ def get_otc_index_strength() -> dict[str, Any]:
         "refBarIndex": 3,
         "refLow": ref_low,
         "aboveRefLow": above_ref_low,
+        "priceSource": price_source,
         "updatedAt": datetime.now(TW_TZ).isoformat(),
         "hub": hub.get_status(),
     }

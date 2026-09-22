@@ -89,13 +89,39 @@ class OtcIndexStrengthEndpointTests(unittest.TestCase):
         data = resp.json()
         self.assertFalse(data["ready"])
 
-    def test_not_ready_when_no_live_quote(self) -> None:
-        bars = [bar_at(i * 5, day=self.today, low=90.0, close=100.0) for i in range(20)]
+    def test_without_live_quote_uses_todays_last_bar_close(self) -> None:
+        # 收盤後、或剛重啟還沒收到第一筆報價：今天已經有 5 分 K 就用最後一根的收盤價判定，
+        # 不要整個晚上都顯示「資料蒐集中」。
+        bars = [bar_at(i * 5, day=self.today, low=90.0, close=100.0) for i in range(19)]
+        bars.append(bar_at(95, day=self.today, low=99.0, close=110.0))
         hub = FakeHub(bars, quote_close=None)
         with patch("persistent_app.get_otc_index_hub", return_value=hub):
             resp = self.client.get("/api/hub/index/otc/strength")
         data = resp.json()
+        self.assertTrue(data["ready"], data)
+        self.assertEqual(data["priceSource"], "lastBar")
+        self.assertEqual(data["price"], 110.0)
+        self.assertEqual(data["label"], "強多")
+
+    def test_not_ready_reason_shows_why_the_backfill_failed(self) -> None:
+        # 使用者只看得到小工具上的一行字：補齊失敗的原因要直接寫在 reason 裡。
+        class BrokenHub(FakeHub):
+            def get_status(self) -> dict:
+                return {
+                    "trade_date": datetime.now(TW).strftime("%Y-%m-%d"), "bootstrap_ok": False,
+                    "bootstrap_error": "櫃買指數歷史 Kbars 補齊失敗: quota；備援 yahoo: HTTP 404、yahoo5m: 0 根、finmind: 0 根",
+                }
+
+        bars = [bar_at(i * 5, day=self.today, low=90.0, close=100.0) for i in range(10)]
+        hub = BrokenHub(bars, quote_close=None)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub), \
+                patch("persistent_app._kick_otc_index_bootstrap", lambda hub: None):
+            resp = self.client.get("/api/hub/index/otc/strength")
+        data = resp.json()
         self.assertFalse(data["ready"])
+        self.assertIn("5分K 10/20 根", data["reason"])
+        self.assertIn("補齊失敗", data["reason"])
+        self.assertIn("yahoo: HTTP 404", data["reason"])
 
     def test_not_ready_when_bars_are_all_historical_with_none_from_today(self) -> None:
         # 有20根以上的歷史bar、也有quote，但今天自己一根bar都還沒有——
