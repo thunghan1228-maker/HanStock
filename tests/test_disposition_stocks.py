@@ -151,6 +151,37 @@ class PunishTests(unittest.TestCase):
         self.assertEqual(status["codes"], ["3661", "8996"])
 
 
+class EmptyListFallbackTests(unittest.TestCase):
+    def setUp(self) -> None:
+        module._map = {}
+        module._status = {"fetchedAt": None, "sources": {}, "count": 0}
+
+    def tearDown(self) -> None:
+        module._map = {}
+
+    def test_empty_punish_after_hours_keeps_entries_still_within_their_period(self) -> None:
+        # 永豐 punish 盤後回 0 筆（不是失敗）：上櫃處置股一到收盤就會沒有「處置到幾號」，
+        # 所以上一次仍在期間內的先沿用；期間過了的不留。
+        module.refresh(fetcher=lambda url: [], today=TODAY, punish_fetcher=PunishTests._punish)
+        self.assertEqual(module.get_disposition_map()["3661"]["end"], "2026-10-01")
+
+        status = module.refresh(fetcher=lambda url: [], today=TODAY, punish_fetcher=lambda: {"code": []})
+        self.assertTrue(status["sources"]["shioaji"]["ok"])
+        self.assertEqual(status["sources"]["shioaji"]["active"], 2)
+        self.assertIn("沿用", status["sources"]["shioaji"]["note"])
+        self.assertEqual(status["codes"], ["3661", "8996"])
+        self.assertEqual(module.get_disposition_map()["3661"]["end"], "2026-10-01")
+
+        # 過了 3661 的迄日再回空清單：3661 掉出去、8996（到 10/06）還在
+        status = module.refresh(fetcher=lambda url: [], today=date(2026, 10, 2), punish_fetcher=lambda: {"code": []})
+        self.assertEqual(status["codes"], ["8996"])
+
+    def test_empty_list_without_previous_entries_stays_empty(self) -> None:
+        status = module.refresh(fetcher=lambda url: [], today=TODAY, punish_fetcher=lambda: {"code": []})
+        self.assertEqual(status["codes"], [])
+        self.assertNotIn("note", status["sources"]["shioaji"])
+
+
 class StockFlagsEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(persistent_app.app)
