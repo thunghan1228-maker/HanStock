@@ -63,6 +63,9 @@ class OtcIndexStrengthEndpointTests(unittest.TestCase):
         self.assertTrue(data["ready"], data)
         # 18根昨天(close=100.0)+2根今天(close=101.0/102.0)=20根，MA20要跨日算。
         self.assertAlmostEqual(data["ma20"], (18 * 100.0 + 101.0 + 102.0) / 20, places=2)
+        # 櫃買今天的漲跌幅：昨收＝昨天最後一根 5 分 K 收盤 100，即時 110 → +10%（盤中打 333 用）
+        self.assertEqual(data["prevClose"], 100.0)
+        self.assertEqual(data["changePct"], 10.0)
 
     def test_ref_bar_is_todays_bar_not_index_2_of_the_full_multi_day_list(self) -> None:
         # 「第3根5K低點」語意上是今天自己的第3根bar，不能因為歷史K棒被
