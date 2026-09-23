@@ -24,7 +24,7 @@ from history_sources import OTC_INDEX_CODE, history_sources_status, probe_histor
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
 from daily_bars_collector import start_daily_bars_collector
-from daily_bars_store import daily_bars_storage_status, load_daily_bars
+from daily_bars_store import daily_bars_storage_status, latest_daily_trade_date_before, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
 from after_hours_fixed_price import load_after_hours_day, load_latest_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
@@ -32,9 +32,10 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
-from disposition_gap_prediction import build_gap_predictions
+from disposition_gap_prediction import build_gap_predictions, build_volume_gap_predictions
 from disposition_prediction import check_disposition_trigger, load_clause_log_for_date, official_group_code_names
 from disposition_prediction_collector import collect_once as run_disposition_prediction_once, start_disposition_prediction_collector
+from market_data_hub import get_market_data_hub
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
 from main_force_flip_signals import (
     flip_signal_backfill_status,
@@ -514,6 +515,66 @@ def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]
 def trigger_disposition_prediction_today() -> dict[str, Any]:
     """手動觸發：跟背景收集器跑的是同一個函式，今天已經跑過就直接回skipped，不會重算。"""
     return run_disposition_prediction_once()
+
+
+@app.get("/api/hub/disposition-risk/volume-watch")
+def get_disposition_volume_watch(trade_date: str | None = Query(None)) -> dict[str, Any]:
+    """第九(單日爆量)/十(週轉率)款差距預測的即時觀察版：門檻用trade_date(預設「目前
+    有資料的最新一個交易日」，不是今天——盤中今天還沒收盤，bars_1d還沒有今天這筆，
+    門檻要用「上一個已經收盤定案」的那天資料算，算出來的門檻對「這個尚未收盤的
+    交易日」整天都有效，這是disposition_gap_prediction.py文件開頭講的架構)算一次，
+    是收盤後批次計算，不是每次呼叫都重新反推；但拿去比較的「目前成交量」會盡量用
+    市場數據中樞(即時Shioaji tick餵進來的當日累計成交量)取代trade_date收盤時的量，
+    liveData=true代表這檔目前確實在即時追蹤範圍內。即時追蹤目前最多同時190檔個股
+    (Shioaji訂閱上限)，524檔官方族群範圍裡沒被追蹤到的股票liveData會是false，退回
+    用trade_date收盤量——這是誠實的限制，不是bug，前端要把liveData秀出來讓使用者
+    知道這筆是不是真即時。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+        date = trade_date
+    else:
+        tomorrow = (datetime.now(TW_TZ) + timedelta(days=1)).strftime("%Y-%m-%d")
+        date = latest_daily_trade_date_before(tomorrow) or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+
+    names = official_group_code_names()
+    predictions = build_volume_gap_predictions(date, set(names.keys()))
+    live_bars = get_market_data_hub().bars.get_all_latest()
+
+    results: list[dict[str, Any]] = []
+    live_count = 0
+    for p in predictions:
+        live_bar = live_bars.get(p.code)
+        live_data = live_bar is not None
+        current_volume = float(live_bar["total_volume"]) if live_data else p.reference_volume
+        if live_data:
+            live_count += 1
+        gap = p.threshold_volume - current_volume
+        detail = "量已達門檻" if gap <= 0 else f"還差約{gap:.0f}張（門檻{p.threshold_volume:.0f}張）"
+        results.append({
+            "code": p.code,
+            "name": names.get(p.code, p.code),
+            "clause": p.clause,
+            "thresholdVolume": p.threshold_volume,
+            "currentVolume": current_volume,
+            "liveData": live_data,
+            "detail": detail,
+        })
+    results.sort(key=lambda r: r["thresholdVolume"] - r["currentVolume"])
+    return {
+        "status": "ok",
+        "tradeDate": date,
+        "count": len(results),
+        "liveCount": live_count,
+        "liveSubscriptionCapNote": (
+            "即時成交量最多同時追蹤190檔個股（Shioaji訂閱上限），524檔官方族群範圍內"
+            "沒被追蹤到的股票liveData是false，退回用門檻計算那天收盤時的量估計。"
+        ),
+        "results": results,
+    }
 
 
 @app.get("/api/hub/kline-signals/purge-out-of-session")
