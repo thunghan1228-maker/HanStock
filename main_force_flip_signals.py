@@ -43,7 +43,10 @@ NET_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_NET_RATIO_STRONG", 
 VOLUME_RATIO_MIN = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_MIN", "1.5"))
 VOLUME_RATIO_STRONG = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_VOLUME_RATIO_STRONG", "") or VOLUME_RATIO_MIN)
 SYNC_WINDOW_MS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_SYNC_WINDOW_MINUTES", "5"))) * ONE_MIN_MS
-MIN_MAIN_GROSS_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_MAIN_LOTS", "30")))
+# 主力買賣合計至少這麼多張才判定（30 張只是 1.5 筆大單，2026-09-23 早盤一堆累計 ±3～30 張的雜訊）。
+MIN_MAIN_GROSS_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_MAIN_LOTS", "100")))
+# 翻過去之後累計淨額至少要有一筆大單的份量（主力大單門檻 20 張），不然只是買賣互相抵銷的零頭。
+MIN_CUM_NET_LOTS = max(0, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_NET_LOTS", "20")))
 MIN_BARS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MIN_BARS", "10")))
 # 從開盤第一根就看到的股票，前幾根只是開盤集合競價的餘波：另一台工具最早的訊號是 09:05，
 # 這裡前 4 根（收盤 09:01～09:04）不判定、09:05 起才看（較晚才訂閱到的仍用 MIN_BARS）。
@@ -51,8 +54,11 @@ OPEN_SKIP_BARS = max(0, int(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_OPEN_SKIP_BARS",
 # 判定規則版本：規則一改，收盤後重播排程就會把已標記完成的日期再重播一次，不然舊規則漏掉的
 # 訊號永遠補不回來。v2：從開盤第一根就看到的股票不暖機 10 根。v3：開盤前幾根不判定、主力買賣
 # 兩邊都要有過量才算「翻」。v4：照另一台工具的 14 筆實際訊號校準——門檻降到 5%／1.5×／1%、
-# 一律標強勢、09:05 起判定、累計反向再翻回來可以再發（同一檔一天不只一次）。
-FLIP_RULES_VERSION = 4
+# 一律標強勢、09:05 起判定、累計反向再翻回來可以再發（同一檔一天不只一次）。v5：「翻」一定要從
+# 另一邊翻過來——開盤後累計從 0 走出的第一個方向不算零軸穿越（2026-09-23 09:05 一口氣發了 25 筆
+# 都是這種，另一台工具 3532 的 09:01 從 0 翻正也沒發、11:38 真的從負翻正才發）；主力合計 30→100 張、
+# 累計淨額至少 ±20 張。
+FLIP_RULES_VERSION = 5
 MAX_VWAP_DISTANCE_PCT = float(os.getenv("HANSTOCK_MAIN_FORCE_FLIP_MAX_VWAP_DISTANCE_PCT", "3.0"))
 KIND_BULL = "mainForceFlipBull"
 KIND_BEAR = "mainForceFlipBear"
@@ -112,6 +118,7 @@ class _FlipState:
     total_volume: int = 0
     avg_daily_volume: float | None = None
     prev_above_vwap: bool | None = None
+    last_sign: int = 0  # 累計淨額最近一次非零的正負；0 = 還沒有任何主力量
     bull_zero_cross_ts: int | None = None
     bear_zero_cross_ts: int | None = None
     bull_vwap_cross_ts: int | None = None
@@ -161,6 +168,7 @@ class MainForceFlipMonitor:
                     "netRatioMin": NET_RATIO_MIN, "netRatioStrong": NET_RATIO_STRONG,
                     "volumeRatioMin": VOLUME_RATIO_MIN, "volumeRatioStrong": VOLUME_RATIO_STRONG,
                     "syncWindowMinutes": SYNC_WINDOW_MS // ONE_MIN_MS, "minMainLots": MIN_MAIN_GROSS_LOTS,
+                    "minNetLots": MIN_CUM_NET_LOTS,
                     "minBars": MIN_BARS, "openSkipBars": OPEN_SKIP_BARS, "maxVwapDistancePct": MAX_VWAP_DISTANCE_PCT,
                 },
             }
@@ -281,19 +289,26 @@ class MainForceFlipMonitor:
                     record["vwapCross"] = "down"
         state.prev_above_vwap = above
 
-        # 累計反向再翻回來就可以再發（另一台工具 3532 當天 11:38、11:57 各發一次）：
-        # 翻負時解除翻多的已發旗標，翻正時解除翻空的。
-        sign_before, sign_after = _sign(before_net), _sign(state.cum_net)
-        if sign_after > 0 and sign_before <= 0:
-            state.bull_zero_cross_ts = close_ts
-            state.fired_bear = False
-            if record is not None:
-                record["zeroCross"] = "bull"
-        if sign_after < 0 and sign_before >= 0:
-            state.bear_zero_cross_ts = close_ts
-            state.fired_bull = False
-            if record is not None:
-                record["zeroCross"] = "bear"
+        # 「翻」一定要從另一邊翻過來：累計最近一次非零的正負跟現在相反才算零軸穿越。開盤後從 0 走出
+        # 的第一個方向只是開盤偏向，不是翻（另一台工具 3532 09:01 從 0 翻正沒發、11:38 真的從負翻正才發）。
+        # 累計反向再翻回來就可以再發：翻負時解除翻多的已發旗標，翻正時解除翻空的。
+        del before_net
+        sign_after = _sign(state.cum_net)
+        if sign_after != 0 and sign_after != state.last_sign:
+            if state.last_sign == 0:
+                if record is not None:
+                    record["firstSign"] = "bull" if sign_after > 0 else "bear"
+            elif sign_after > 0:
+                state.bull_zero_cross_ts = close_ts
+                state.fired_bear = False
+                if record is not None:
+                    record["zeroCross"] = "bull"
+            else:
+                state.bear_zero_cross_ts = close_ts
+                state.fired_bull = False
+                if record is not None:
+                    record["zeroCross"] = "bear"
+            state.last_sign = sign_after
 
         # 三個比率先算好記進 trace（暖機中也要看得到），再做門檻判定。
         volume_ratio = self._volume_ratio(state, close_ts)
@@ -328,6 +343,7 @@ class MainForceFlipMonitor:
             if side == "bull":
                 checks = [
                     (state.cum_net > 0, "主力累計不在正值"),
+                    (state.cum_net >= MIN_CUM_NET_LOTS, f"主力累計 {state.cum_net:+d} 張未達 +{MIN_CUM_NET_LOTS} 張"),
                     (state.cum_sell > 0, "主力只有買方量、沒有賣方，不算翻多"),
                     (above, "收盤在VWAP之下"),
                     (net_ratio >= NET_RATIO_MIN, f"主力淨額率 {net_ratio * 100:+.1f}% 未達 +{NET_RATIO_MIN * 100:.0f}%"),
@@ -337,6 +353,7 @@ class MainForceFlipMonitor:
             else:
                 checks = [
                     (state.cum_net < 0, "主力累計不在負值"),
+                    (state.cum_net <= -MIN_CUM_NET_LOTS, f"主力累計 {state.cum_net:+d} 張未達 -{MIN_CUM_NET_LOTS} 張"),
                     (state.cum_buy > 0, "主力只有賣方量、沒有買方，不算翻空"),
                     (not above, "收盤在VWAP之上"),
                     (net_ratio <= -NET_RATIO_MIN, f"主力淨額率 {net_ratio * 100:+.1f}% 未達 -{NET_RATIO_MIN * 100:.0f}%"),
@@ -437,7 +454,7 @@ def inspect_flip_signals(
     near_misses = [row for row in trace if (row.get("bull") or {}).get("blockers") or (row.get("bear") or {}).get("blockers")]
     vwap = monitor._vwap(state) if state else None
     compact_keys = ("time", "close", "vwap", "cumNet", "cumGross", "netRatio", "volumeRatio", "distancePct", "aboveVwap",
-                    "skip", "zeroCross", "vwapCross")
+                    "skip", "firstSign", "zeroCross", "vwapCross")
 
     def compact(row: dict[str, Any]) -> dict[str, Any]:
         return {key: row[key] for key in compact_keys if row.get(key) is not None}
@@ -450,13 +467,15 @@ def inspect_flip_signals(
             "cumNet": state.cum_net, "cumGross": state.cum_gross, "volume": state.cum_volume,
             "vwap": round(vwap, 2) if vwap else None,
         } if state else None,
+        # 開盤後累計從 0 走出的第一個方向（不算翻）；真正從另一邊翻過來的才列在 zeroCrosses。
+        "firstSign": next(({"time": row["time"], "dir": row["firstSign"]} for row in trace if row.get("firstSign")), None),
         "zeroCrosses": [{"time": row["time"], "dir": row["zeroCross"]} for row in trace if row.get("zeroCross")],
         "vwapCrosses": [{"time": row["time"], "dir": row["vwapCross"]} for row in trace if row.get("vwapCross")],
         "signals": signals,
         "nearMissCount": len(near_misses), "nearMisses": near_misses[:60],
         # 開盤前 15 根與每個穿越當下的狀態：另一台工具若在暖機期就發訊號，從這裡對得出來。
         "head": [compact(row) for row in trace[:15]],
-        "crossStates": [compact(row) for row in trace if row.get("zeroCross") or row.get("vwapCross")][:40],
+        "crossStates": [compact(row) for row in trace if row.get("firstSign") or row.get("zeroCross") or row.get("vwapCross")][:40],
         "thresholds": monitor.status()["thresholds"],
     }
     if include_trace:
