@@ -11,6 +11,7 @@ from otc_index_store import save_index_bars_5m
 from stock_bars_5m_store import (
     bars_5m_coverage_complete,
     load_stock_bars_5m_before,
+    load_stock_bars_5m_on,
     prune_stock_bars_5m,
     save_stock_bars_5m,
     save_stock_bars_5m_many,
@@ -137,6 +138,18 @@ class StockBars5mStoreTests(unittest.TestCase):
     def test_coverage_only_checks_the_requested_trade_date(self):
         save_stock_bars_5m("2330", self._full_session_bars(17))  # 完整的是前一天，不是要問的那天
         self.assertFalse(bars_5m_coverage_complete("2330", "2026-09-18"))
+
+
+    def test_load_on_returns_only_that_days_bars_oldest_first(self):
+        save_stock_bars_5m("2330", [_bar(17, 13, 25, 90.0), _bar(18, 9, 0, 100.0), _bar(18, 9, 5, 101.0), _bar(19, 9, 0, 110.0)])
+        bars = load_stock_bars_5m_on("2330", "2026-09-18")
+        self.assertEqual([b["close"] for b in bars], [100.0, 101.0])
+        self.assertEqual(bars[0]["ts"], _ts(18, 9, 0))
+
+    def test_load_on_returns_empty_when_nothing_stored_for_that_day(self):
+        save_stock_bars_5m("2330", [_bar(17, 9, 0, 100.0)])
+        self.assertEqual(load_stock_bars_5m_on("2330", "2026-09-18"), [])
+        self.assertEqual(load_stock_bars_5m_on("9999", "2026-09-18"), [])
 
 
 if __name__ == "__main__":

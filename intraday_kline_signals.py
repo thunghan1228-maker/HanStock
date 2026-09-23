@@ -29,6 +29,7 @@ from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_bars_5m_store import (
     bars_5m_coverage_complete,
     load_stock_bars_5m_before,
+    load_stock_bars_5m_on,
     prune_stock_bars_5m,
     save_stock_bars_5m,
     save_stock_bars_5m_many,
@@ -268,9 +269,12 @@ class IntradayKlineSignalMonitor:
         self._states: dict[str, _KlineState] = {}
         self._lock = threading.Lock()
 
-    def _reset_for_new_day(
+    def _build_fresh_state(
         self, code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
     ) -> _KlineState:
+        """建一個全新、獨立的當日狀態（不寫進 self._states）：_reset_for_new_day 用它建立正式
+        的每日狀態，診斷用的 inspect_one_two_short 也用它回放，兩邊共用同一份建構邏輯、
+        不會各自維護一份容易兜不起來的複本。"""
         state = _KlineState(trade_date=trade_date)
         prior = previous_day_bars(code, trade_date)
         if prior:
@@ -293,6 +297,12 @@ class IntradayKlineSignalMonitor:
             state.seed_count = len(seeds)
             state.prev_ma20 = _moving_average(state.closes[:-1], 20)
             _sync_ma_state(state)
+        return state
+
+    def _reset_for_new_day(
+        self, code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
+    ) -> _KlineState:
+        state = self._build_fresh_state(code, trade_date, seed_bars)
         self._states[code] = state
         return state
 
@@ -306,6 +316,48 @@ class IntradayKlineSignalMonitor:
         code = str(code).strip().upper()
         with self._lock:
             self._reset_for_new_day(code, trade_date, seed_bars)
+
+    def inspect_one_two_short(self, code: str, trade_date: str) -> dict[str, Any]:
+        """診斷用：不動 self._states、不寫資料庫、不發即時訊號，只回放 bars_5m 裡已經存好的
+        trade_date 當天 5 分K，記錄「12空(五分K)」狀態機每一根的階段轉換。用來逐檔對照另一個
+        工具的名單，確認我們的邏輯（①破905低②墊1高③破位④墊2高⑤再轉弱）在真實走勢上有沒有
+        跑對，不用手動翻K棒。直接呼叫跟即時路徑、收盤後校正完全相同的 _process_bar，不重寫
+        任何判斷邏輯，保證看到的就是正式路徑會做的事。"""
+        code = str(code).strip().upper()
+        state = self._build_fresh_state(code, trade_date)
+        try:
+            bars = load_stock_bars_5m_on(code, trade_date)
+        except Exception as error:  # noqa: BLE001
+            return {"code": code, "tradeDate": trade_date, "error": f"讀取5分K失敗：{error}"}
+        bars = sorted(
+            (b for b in bars if taipei_trade_date(int(b["ts"])) == trade_date),
+            key=lambda b: int(b["ts"]),
+        )
+        transitions: list[dict[str, Any]] = []
+        prev_ots_stage = state.ots_stage
+        fired_ts: int | None = None
+        for bar in bars:
+            close_ts = int(bar["ts"]) + BAR_INTERVAL_5M_MS
+            minute_of_day = taipei_minute_of_day(close_ts)
+            signals = self._process_bar(code, state, bar, close_ts, trade_date, minute_of_day)
+            if state.ots_stage != prev_ots_stage or any(s["kind"] == "oneTwoShort" for s in signals):
+                transitions.append({
+                    "ts": close_ts,
+                    "close": float(bar["close"]), "high": float(bar["high"]), "low": float(bar["low"]),
+                    "stage": state.ots_stage, "ots1High": state.ots_1high, "ots2High": state.ots_2high,
+                    "ma20Slope": state.ma20_slope,
+                    "fired": any(s["kind"] == "oneTwoShort" for s in signals),
+                })
+                prev_ots_stage = state.ots_stage
+            if state.fired_one_two_short and fired_ts is None:
+                fired_ts = close_ts
+        return {
+            "code": code, "tradeDate": trade_date, "barCount": len(bars),
+            "seedCount": state.seed_count, "bar905High": state.bar905_high, "bar905Low": state.bar905_low,
+            "lateSubscription": state.late_subscription,
+            "fired": state.fired_one_two_short, "firedTs": fired_ts, "finalStage": state.ots_stage,
+            "transitions": transitions,
+        }
 
     def on_bar_completed(
         self, code: str, bar: dict[str, Any], *, persist: bool = True,
@@ -680,6 +732,13 @@ def get_intraday_kline_signal_monitor() -> IntradayKlineSignalMonitor:
             if _monitor is None:
                 _monitor = IntradayKlineSignalMonitor()
     return _monitor
+
+
+def inspect_one_two_short(codes: list[str], trade_date: str) -> dict[str, dict[str, Any]]:
+    """批次診斷多檔股票的「12空(五分K)」狀態機回放，一次呼叫涵蓋整份對照名單，
+    不用逐檔各打一次 API。"""
+    monitor = get_intraday_kline_signal_monitor()
+    return {code: monitor.inspect_one_two_short(code, trade_date) for code in codes}
 
 
 def backfill_today_kline_signals(

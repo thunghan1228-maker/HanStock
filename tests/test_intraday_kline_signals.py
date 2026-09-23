@@ -1034,3 +1034,84 @@ def test_bars_5m_coverage_complete_used_directly(monkeypatch):
     module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
 
     assert calls == [("2330", "2026-09-18")]
+
+
+# ---------------------------------------------------------------------------
+# 12空診斷用回放（不動 self._states／資料庫，重用真正的 _process_bar）
+# ---------------------------------------------------------------------------
+
+def test_inspect_one_two_short_traces_a_full_firing_sequence_without_touching_live_state(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    seeds = _yesterday_seed_bars([102.0 - i * 0.2 for i in range(21)])  # 跟種子測試同一組：MA20 下彎
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+    todays = [
+        bar(9, 0, 100.0, 100.4, 99.6, 100.2),   # 905K
+        bar(9, 5, 100.2, 100.3, 99.4, 99.8),    # ①破905低
+        bar(9, 10, 99.8, 100.2, 99.7, 100.1),   # ②墊1高
+        bar(9, 15, 100.0, 100.0, 98.0, 98.2),   # ③破位
+        bar(9, 20, 98.2, 99.0, 98.1, 98.8),     # ④墊2高
+        bar(9, 25, 98.8, 98.9, 97.0, 97.2),     # ⑤觸發
+    ]
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: todays)
+
+    # 先在正式（即時）路徑上跑一筆不相關的股票，確認 inspect 不會動到既有的 self._states。
+    monitor.on_bar_completed("9999", bar(9, 0, 1, 1, 1, 1))
+    live_states_before = dict(monitor._states)
+
+    result = monitor.inspect_one_two_short("2330", "2026-09-18")
+
+    assert result["fired"] is True
+    assert result["barCount"] == 6
+    assert result["seedCount"] == 21
+    assert "2330" not in monitor._states  # 診斷完全不寫進正式狀態
+    assert monitor._states == live_states_before  # 也沒動到其他股票的狀態
+    stages = [t["stage"] for t in result["transitions"]]
+    assert stages == ["tracking_1high", "tracking_2high", "done"]
+    assert result["transitions"][-1]["fired"] is True
+    assert result["firedTs"] == result["transitions"][-1]["ts"]
+    assert result["finalStage"] == "done"
+
+
+def test_inspect_one_two_short_reports_final_stage_when_it_never_fires(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: [
+        bar(9, 0, 100.0, 100.4, 99.6, 100.2),
+        bar(9, 5, 100.2, 100.3, 99.9, 100.1),  # 沒破905低，狀態機一直是idle
+    ])
+
+    result = monitor.inspect_one_two_short("2330", "2026-09-18")
+
+    assert result["fired"] is False
+    assert result["firedTs"] is None
+    assert result["finalStage"] == "idle"
+    assert result["transitions"] == []  # 沒有任何階段轉換
+
+
+def test_inspect_one_two_short_with_no_stored_bars_returns_empty_trace(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: [])
+
+    result = monitor.inspect_one_two_short("2330", "2026-09-18")
+
+    assert result["barCount"] == 0
+    assert result["fired"] is False
+    assert result["finalStage"] == "idle"
+
+
+def test_module_level_inspect_batches_multiple_codes(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
+    monkeypatch.setattr(module, "_monitor", None)
+    calls: list[tuple[str, str]] = []
+
+    def fake_bars(code, trade_date):
+        calls.append((code, trade_date))
+        return []
+
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", fake_bars)
+
+    result = module.inspect_one_two_short(["2330", "2317"], "2026-09-18")
+
+    assert set(result.keys()) == {"2330", "2317"}
+    assert all(r["fired"] is False for r in result.values())
+    assert set(calls) == {("2330", "2026-09-18"), ("2317", "2026-09-18")}

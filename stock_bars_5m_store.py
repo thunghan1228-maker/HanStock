@@ -122,6 +122,40 @@ def load_stock_bars_5m_before(code: str, trade_date: str, limit: int) -> list[di
     return bars
 
 
+def load_stock_bars_5m_on(code: str, trade_date: str) -> list[dict[str, Any]]:
+    """回傳 trade_date 當天（含）已存的 5 分 K（bar-start ts 由小到大）。跟 load_stock_bars_5m_before
+    （撈 trade_date 之前）互補，用於診斷／回放某一天已經走完的即時路徑（例如 12空狀態機追蹤）。"""
+    code = str(code).strip().upper()
+    if not code:
+        return []
+    initialize_database()
+    with get_connection() as connection:
+        rows = connection.execute(
+            """SELECT bar_time, open, high, low, close, volume
+               FROM bars_5m
+               WHERE stock_code = ? AND substr(bar_time, 1, 10) = ?
+               ORDER BY bar_time""",
+            (code, str(trade_date)[:10]),
+        ).fetchall()
+    bars: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            moment = datetime.fromisoformat(str(row["bar_time"]))
+        except ValueError:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=TW_TZ)
+        bars.append({
+            "ts": int(moment.timestamp() * 1000),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": int(row["volume"]),
+        })
+    return bars
+
+
 SESSION_OPEN = (9, 0)
 LAST_BAR_START = (13, 25)  # 最後一根5分K是13:25~13:30，收盤前最後一根的「起始」時間
 FULL_SESSION_BAR_SECONDS = 5 * 60
