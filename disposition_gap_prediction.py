@@ -253,7 +253,10 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
             )
             if threshold9 is not None and reference_volume >= threshold9 * VOLUME_GAP_INCLUDE_RATIO:
                 gap = threshold9 - reference_volume
-                detail = "量已達門檻" if gap <= 0 else f"還差約{gap:.0f}張（門檻{threshold9:.0f}張）"
+                detail = (
+                    "已達觸發注意門檻" if gap <= 0
+                    else f"觸發注意還差約 {gap:,.0f} 張（門檻 {threshold9:,.0f} 張）"
+                )
                 predictions.append(VolumeGapPrediction(
                     code=code, clause=VOLUME_ONLY_CLAUSE_9, threshold_volume=round(max(0.0, threshold9), 0),
                     reference_volume=reference_volume, detail=detail,
@@ -271,8 +274,8 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
                 if reference_volume >= threshold10 * VOLUME_GAP_INCLUDE_RATIO:
                     gap = threshold10 - reference_volume
                     detail = (
-                        "量已達門檻" if gap <= 0
-                        else f"還差約{gap:.0f}張（門檻{threshold10:.0f}張，卡在{binding}）"
+                        "已達觸發注意門檻" if gap <= 0
+                        else f"觸發注意還差約 {gap:,.0f} 張（門檻 {threshold10:,.0f} 張，卡在{binding}）"
                     )
                     predictions.append(VolumeGapPrediction(
                         code=code, clause=VOLUME_ONLY_CLAUSE_10, threshold_volume=round(threshold10, 0),
