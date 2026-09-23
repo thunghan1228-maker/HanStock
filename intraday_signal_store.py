@@ -15,7 +15,6 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossDown20ma",
     "short12",
     "combo12Bull",
-    "oneTwoShort",
     "blackDragon",
     "triangleNearBreakout",
     "triangleBreakoutPendingVolume",
@@ -363,13 +362,12 @@ KLINE_SIGNAL_KINDS = {
     "ma20turnUp",
     "ma520Down",
     "ma520Up",
-    "oneTwoShort",
     "short12",
     "watch12short",
 }
 # 訊號中心有專屬分頁的 5 分 K 訊號；其餘 K 線訊號只在 K 線圖上疊符號（走 /stock/{code} 端點），
 # 當日總表預設不回，免得幾千筆圖表用訊號把早盤的其他訊號擠出 limit。
-SIGNAL_CENTER_KLINE_KINDS = {"oneTwoShort", "combo12Bull", "blackDragon"}
+SIGNAL_CENTER_KLINE_KINDS = {"combo12Bull", "blackDragon"}
 CHART_ONLY_KLINE_KINDS = KLINE_SIGNAL_KINDS - SIGNAL_CENTER_KLINE_KINDS
 
 

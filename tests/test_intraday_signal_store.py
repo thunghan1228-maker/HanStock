@@ -222,13 +222,13 @@ class LoadLatestSignalsTests(unittest.TestCase):
         early = [
             {"tradeDate": "2026-09-22", "ticker": "3532", "kind": "mainForceFlipBull",
              "label": "主力累計強勢翻多", "barTs": 1_000, "price": 451.5, "note": "A～D同步濾網"},
-            {"tradeDate": "2026-09-22", "ticker": "2330", "kind": "oneTwoShort",
-             "label": "12空", "barTs": 1_500, "price": 1000.0},
+            {"tradeDate": "2026-09-22", "ticker": "2330", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": 1_500, "price": 1000.0},
         ]
         save_intraday_signals(chart_rows + early)
 
         signals = load_latest_signals("2026-09-22", limit=100)
-        self.assertEqual([s["kind"] for s in signals], ["oneTwoShort", "mainForceFlipBull"])
+        self.assertEqual([s["kind"] for s in signals], ["combo12Bull", "mainForceFlipBull"])
 
         full = load_latest_signals("2026-09-22", limit=100, include_chart_kinds=True)
         self.assertEqual(len(full), 100)
