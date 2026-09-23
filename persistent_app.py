@@ -32,6 +32,7 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
+from disposition_gap_prediction import build_gap_predictions
 from disposition_prediction import check_disposition_trigger, load_clause_log_for_date, official_group_code_names
 from disposition_prediction_collector import collect_once as run_disposition_prediction_once, start_disposition_prediction_collector
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
@@ -471,14 +472,19 @@ def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]
     一二三四六七)是不是已經累積到會被處置。trade_date預設今天；只回今天至少觸發一款、
     或正在累積中的股票，不是全部524檔都列出來——collectAt是收盤後背景收集器算好存進去
     的，不是即時重算。處置期間5天/7天已用第十三款(當日沖銷比例)實際資料判斷，durationCaveat
-    只在講一個殘留限制：視窗涵蓋Phase 3上線前的舊日期時，那幾天無法回溯確認。"""
+    只在講一個殘留限制：視窗涵蓋Phase 3上線前的舊日期時，那幾天無法回溯確認。gapPrediction
+    是「差距預測」：連續2個營業日命中第一款(還差1次就觸發路徑一)的股票，反推明天收盤價
+    門檻——用今天已經收盤定案的資料算「明天」的門檻，不是像第三方工具那樣盤中即時重算
+    「今天」；目前只做第一款(最常見、且不需要基本面等額外資料源就能反推收盤價門檻)。"""
     date = _validated_trade_date(trade_date)
     names = official_group_code_names()
     clause_log = load_clause_log_for_date(date)
+    gap_by_code = {p.code: p for p in build_gap_predictions(date, set(clause_log.keys()))}
     results: list[dict[str, Any]] = []
     for code, clause_results in clause_log.items():
         fired = [r for r in clause_results if r.fired]
         accumulation = check_disposition_trigger(code, date)
+        gap = gap_by_code.get(code)
         if not fired and accumulation.trigger_path is None:
             continue
         results.append({
@@ -491,6 +497,14 @@ def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]
                 "predictedDurationBusinessDays": accumulation.predicted_duration_business_days,
                 "durationCaveat": accumulation.duration_caveat,
             } if accumulation.trigger_path else None,
+            "gapPrediction": {
+                "clause": gap.clause,
+                "direction": gap.direction,
+                "thresholdClose": gap.threshold_close,
+                "changePctFromToday": gap.change_pct_from_today,
+                "easy": gap.easy,
+                "detail": gap.detail,
+            } if gap else None,
         })
     results.sort(key=lambda r: (r["accumulation"] is None, -len(r["firedToday"])))
     return {"status": "ok", "tradeDate": date, "count": len(results), "results": results}
