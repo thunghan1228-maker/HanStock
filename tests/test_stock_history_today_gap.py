@@ -83,6 +83,8 @@ class TodayGapTests(unittest.TestCase):
         clear_stock_history_cache()
         self.quota = patch.object(module, "history_quota", HistoryQuotaGate())
         self.quota.start()
+        self.reserve = patch.object(module, "INTERACTIVE_RESERVE_BYTES", 0)  # 假 API 的 usage 只剩幾百 bytes，這裡不測保留額度
+        self.reserve.start()
         self.market = patch.object(module, "stock_market", lambda code: "TSE")
         self.market.start()
         self.chain = patch.object(module, "fetch_minute_bars_chain", lambda *a, **k: ([], None))
@@ -93,6 +95,7 @@ class TodayGapTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.chain.stop()
         self.market.stop()
+        self.reserve.stop()
         self.quota.stop()
         clear_stock_history_cache()
 
@@ -216,6 +219,75 @@ class TodayGapTests(unittest.TestCase):
         self.assertEqual(today[0]["ts"], ts(TODAY, 9, 0))
         self.assertEqual(result["bootstrap"]["today_gap"]["source"], "finmind")
         self.assertEqual(result["bootstrap"]["today_gap"]["filled"], 12)  # 09:00 … 09:55
+
+
+
+    def test_history_cached_during_the_day_is_refetched_after_close_to_include_today(self) -> None:
+        api = FakeApi()
+        hub = FakeHub([], [])
+        self.fetch_5m(api, hub)  # 11:40 盤中：多日歷史不含今天（缺口另外補）
+        self.assertEqual(api.calls.count((YESTERDAY, TODAY)) + api.calls.count(("2026-09-21", TODAY)), 1)
+        api.last_minute = (13, 30)
+        result = self.fetch_5m(api, hub, now_ms=ts(TODAY, 14, 0))  # 收盤後：同一檔要重抓一次，今天整天含進來
+        range_calls = [c for c in api.calls if c[1] == TODAY and c[0] != TODAY]
+        self.assertEqual(len(range_calls), 2)
+        today = [b for b in result["bars"] if module.taipei_trade_date(b["ts"]) == TODAY]
+        self.assertEqual(len(today), 54)
+        self.assertIsNone(result["bootstrap"]["today_gap"])
+        self.fetch_5m(api, hub, now_ms=ts(TODAY, 14, 5))  # 收盤後抓過的就不用再抓
+        self.assertEqual(len([c for c in api.calls if c[1] == TODAY and c[0] != TODAY]), 2)
+
+
+class InteractiveReserveTests(unittest.TestCase):
+    """永豐額度剩不到保留門檻：開圖走備援，收盤後校正（priority=backfill）照用永豐。"""
+
+    class LowQuotaApi(FakeApi):
+        def usage(self):
+            return {"limit_bytes": 500_000_000, "remaining_bytes": 50_000_000}
+
+    def setUp(self) -> None:
+        clear_stock_history_cache()
+        self.quota = patch.object(module, "history_quota", HistoryQuotaGate())
+        self.quota.start()
+        self.reserve = patch.object(module, "INTERACTIVE_RESERVE_BYTES", 100_000_000)
+        self.reserve.start()
+        self.market = patch.object(module, "stock_market", lambda code: "TSE")
+        self.market.start()
+        self.chain_calls: list[tuple] = []
+
+        def chain(code, start, end, *, market=None, fetcher=None):
+            self.chain_calls.append((code, start, end))
+            return [bar(YESTERDAY, 9, m, 77.0) for m in range(0, 30)] + [bar(TODAY, 9, m, 88.0) for m in range(0, 30)], "yahoo"
+
+        self.chain = patch.object(module, "fetch_minute_bars_chain", chain)
+        self.chain.start()
+
+    def tearDown(self) -> None:
+        self.chain.stop()
+        self.market.stop()
+        self.reserve.stop()
+        self.quota.stop()
+        clear_stock_history_cache()
+
+    def test_interactive_request_below_reserve_uses_fallback_chain(self) -> None:
+        api = self.LowQuotaApi()
+        result = get_stock_history_bars_5m("8054", calendar_days=3, service=service_with(api), hub=FakeHub([], []),
+                                           now_ms=ts(TODAY, 14, 0), monotonic_fn=lambda: 1.0)
+        self.assertEqual(api.calls, [])
+        self.assertEqual(result["bootstrap"]["history_source"], "yahoo")
+        self.assertTrue(result["bootstrap"]["history_ok"])
+        self.assertEqual(len(self.chain_calls), 1)
+
+    def test_backfill_priority_still_uses_shioaji_below_reserve(self) -> None:
+        api = self.LowQuotaApi()
+        api.last_minute = (13, 30)
+        result = get_stock_history_bars_5m("8054", calendar_days=3, service=service_with(api), hub=FakeHub([], []),
+                                           now_ms=ts(TODAY, 14, 0), monotonic_fn=lambda: 1.0, priority="backfill")
+        self.assertEqual(len(api.calls), 1)
+        self.assertEqual(result["bootstrap"]["history_source"], "shioaji")
+        self.assertEqual(self.chain_calls, [])
+        today = [b for b in result["bars"] if module.taipei_trade_date(b["ts"]) == TODAY]
+        self.assertEqual(len(today), 54)
 
 
 if __name__ == "__main__":

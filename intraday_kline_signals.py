@@ -720,7 +720,8 @@ def backfill_today_kline_signals(
     flush_pending_bars_5m(force=True)
     for code in codes:
         try:
-            result = get_stock_history_bars_5m(code, calendar_days=3, service=service, hub=hub)
+            # priority=backfill：永豐額度留給收盤後校正的那一份也可以用（開圖等即時需求剩不到保留額度就走備援）
+            result = get_stock_history_bars_5m(code, calendar_days=3, service=service, hub=hub, priority="backfill")
             all_bars = sorted(result.get("bars", []), key=lambda b: int(b["ts"]))
             todays_bars = [b for b in all_bars if taipei_trade_date(int(b["ts"])) == trade_date]
             # kbars 裡 trade_date 之前那幾天的 K 棒直接當 MA20 種子（比本機 bars_5m 更不依賴

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -37,6 +38,7 @@ from shioaji_contracts import resolve_stock_contract
 logger = logging.getLogger("hanstock.stock_bar_bootstrap")
 
 RETRY_AFTER_SECONDS = 30.0
+INTERACTIVE_RESERVE_BYTES = max(0, int(float(os.getenv("HANSTOCK_HISTORY_INTERACTIVE_RESERVE_MB", "100")) * 1_000_000))
 SUCCESS_REFRESH_SECONDS = 180.0
 REPAIR_TARGET_TTL_SECONDS = 30 * 60.0
 REPAIR_BATCH_SIZE = 6
@@ -450,7 +452,8 @@ def _bootstrap_history(
     if not _history_slots.acquire(blocking=False):
         return _deferred_history(code, trade_date, now, "歷史回補處理中；即時行情持續顯示")
     try:
-        quota_error = history_quota.check(getattr(service, "api", None))
+        # 今日 kbars＋逐筆是最吃額度的（每檔每 3 分鐘重抓一次）：剩不到保留額度就先停，把額度留給收盤後訊號校正。
+        quota_error = history_quota.check_background(getattr(service, "api", None), reserve_bytes=INTERACTIVE_RESERVE_BYTES)
         if quota_error:
             return _deferred_history(code, trade_date, now, quota_error)
         entry = _bootstrap_history_once(

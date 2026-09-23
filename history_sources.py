@@ -529,6 +529,29 @@ def fetch_yahoo_minute_bars(
 
 # ------------------------------------------------------------------ chain
 
+def _fetch_source(name: str, code: str, start_date: str, end_date: str, *, market: Optional[str], fetcher: Optional[Fetcher]) -> list[dict[str, Any]]:
+    if name == "finmind":
+        return fetch_finmind_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
+    return fetch_yahoo_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
+
+
+def _covers_day(bars: list[dict[str, Any]], day: str) -> bool:
+    for bar in bars:
+        try:
+            if taipei_trade_date(int(bar["ts"])) == day:
+                return True
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _is_weekday(day: str) -> bool:
+    try:
+        return datetime.strptime(day, "%Y-%m-%d").weekday() < 5
+    except ValueError:
+        return False
+
+
 def fetch_minute_bars_chain(
     code: str,
     start_date: str,
@@ -537,18 +560,32 @@ def fetch_minute_bars_chain(
     market: Optional[str] = None,
     fetcher: Optional[Fetcher] = None,
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
-    """依序 FinMind → Yahoo，第一個拿到資料的來源勝出；都沒有回 ([], None)。"""
-    for name in SOURCE_ORDER:
+    """依序 FinMind → Yahoo，第一個拿到資料的來源勝出；都沒有回 ([], None)。
+
+    拿到的資料如果沒有涵蓋 end_date，後面的來源只補 end_date 那一天再合併（來源標成 a+b）：
+    2026-09-23 永豐額度用完，收盤後校正走 FinMind 拿到了前兩天卻沒有「今天」（FinMind 當天的
+    分 K 要晚一點才有），鏈在 FinMind 就停了，Yahoo 明明有今天的卻沒被問到，整天的 12空／
+    創高黑龍全部是 0。"""
+    for index, name in enumerate(SOURCE_ORDER):
         try:
-            if name == "finmind":
-                bars = fetch_finmind_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
-            else:
-                bars = fetch_yahoo_minute_bars(code, start_date, end_date, market=market, fetcher=fetcher)
+            bars = _fetch_source(name, code, start_date, end_date, market=market, fetcher=fetcher)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[HistorySources] %s %s 失敗: %s", name, code, exc)
             continue
-        if bars:
+        if not bars:
+            continue
+        if _covers_day(bars, end_date) or not _is_weekday(end_date):
             return bars, name
+        for later in SOURCE_ORDER[index + 1:]:
+            try:
+                extra = _fetch_source(later, code, end_date, end_date, market=market, fetcher=fetcher)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[HistorySources] %s %s 補 %s 失敗: %s", later, code, end_date, exc)
+                continue
+            if extra:
+                logger.info("[HistorySources] %s %s 沒有 %s，改由 %s 補 %d 根", name, code, end_date, later, len(extra))
+                return _dedupe_sorted(list(bars) + list(extra)), f"{name}+{later}"
+        return bars, name
     return [], None
 
 
