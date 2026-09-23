@@ -551,9 +551,11 @@ def get_main_force_backfill_status(stock_code: str) -> dict[str, Any]:
 def get_main_force_ranking(
     interval: str = Query("5m", pattern="^(1m|5m)$"),
     trade_date: str | None = Query(None),
-    limit: int = Query(30, ge=1, le=200),
+    limit: int = Query(30, ge=1, le=1000),
 ) -> dict[str, Any]:
-    """今日（或指定交易日）主力累計買賣超排行；只讀取既有主力副圖資料，不新增任何 Shioaji 連線。"""
+    """今日（或指定交易日）主力累計買賣超排行；只讀取既有主力副圖資料，不新增任何 Shioaji 連線。
+    limit 上限放寬到 1000：族群大戶力（前端逐族群取排行前幾名）要一次拿到全市場的排行，
+    不能被 30／200 檔的預設上限漏掉排名較後面的族群成員。"""
     date = trade_date
     if date:
         try:

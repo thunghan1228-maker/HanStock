@@ -320,6 +320,7 @@ def load_main_force_ranking(
             "netVolume": int(row["net_volume"] or 0),
             "buyVolume": int(row["buy_volume"] or 0),
             "sellVolume": int(row["sell_volume"] or 0),
+            "netAmount": round(buy_amount - sell_amount),  # 大戶買賣超金額(元)，正=買超
             "lastTs": int(row["last_ts"]),
             "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
             "strengthPct": strength_pct,

@@ -208,6 +208,19 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(ranking[1]["side"], "buy")
         self.assertEqual(ranking[1]["netVolume"], 90)
 
+    def test_ranking_includes_net_amount_in_dollars(self):
+        base_ts = BASE_TS
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_buy_amount": 40_000_000, "main_sell_amount": 5_000_000,
+            "main_force_available": True,
+        }])
+
+        ranking = {row["code"]: row for row in load_main_force_ranking(trade_date, interval="5m")}
+
+        self.assertEqual(ranking["2330"]["netAmount"], 35_000_000)
+
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
 
