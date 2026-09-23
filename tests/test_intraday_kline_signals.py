@@ -4,6 +4,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import pytest
+
 import stock_history_service
 import intraday_kline_signals as module
 from intraday_kline_signals import IntradayKlineSignalMonitor
@@ -20,6 +22,25 @@ def ts(hour: int, minute: int) -> int:
 
 def bar(hour: int, minute: int, o: float, h: float, l: float, c: float) -> dict:
     return {"ts": ts(hour, minute), "open": o, "high": h, "low": l, "close": c}
+
+
+def prev_day_bar(hour: int, minute: int, close: float, low: float | None = None, days_ago: int = 1) -> dict:
+    """幾天前（預設昨天2026-09-17）的5分K，給MA20跨日種子用。"""
+    low = close - 0.5 if low is None else low
+    return {"ts": ts(hour, minute) - days_ago * 24 * 60 * 60 * 1000,
+            "open": close, "high": close + 0.5, "low": low, "close": close, "volume": 10}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_bars_5m_store(monkeypatch):
+    """預設沒有昨天的5分K種子、也不真的寫本機資料庫；要測種子的測試自己再覆蓋。"""
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: [])
+    monkeypatch.setattr(module, "save_stock_bars_5m_many", lambda bars_by_code: 0)
+    monkeypatch.setattr(module, "save_stock_bars_5m", lambda code, bars: 0)
+    monkeypatch.setattr(module, "prune_stock_bars_5m", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(module, "_last_reset_trade_date", None)
+    monkeypatch.setattr(module, "_pending_bars_5m", {})
+    monkeypatch.setattr(module, "_pending_bars_count", 0)
 
 
 def new_monitor(
@@ -732,3 +753,204 @@ def test_black_dragon_fires_only_once_per_day(monkeypatch):
     assert "blackDragon" in kinds(result1)
     result2 = monitor.on_bar_completed("2330", bar(11, 5, 105, 110.0, 104, 103.0))
     assert "blackDragon" not in kinds(result2)
+
+
+# ---------------------------------------------------------------------------
+# 5分K MA20 跨日接續（昨天最後21根當種子）
+# ---------------------------------------------------------------------------
+
+def _yesterday_seed_bars(closes: list[float], lows: list[float] | None = None) -> list[dict]:
+    """昨天收盤前最後len(closes)根5分K（13:30往回推），舊到新。"""
+    bars = []
+    count = len(closes)
+    for index, close in enumerate(closes):
+        minute_from_open = (13 * 60 + 25) - (count - 1 - index) * 5
+        low = lows[index] if lows else None
+        bars.append(prev_day_bar(minute_from_open // 60, minute_from_open % 60, close, low))
+    return bars
+
+
+def test_seeded_previous_day_bars_give_ma20_and_slope_from_first_bar(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    # 昨天最後21根一路走低：MA20 下彎、昨收在 20MA 下方。
+    seeds = _yesterday_seed_bars([110.0 - i * 0.5 for i in range(21)])
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+
+    result = monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))
+
+    assert result == []  # 第一根照舊只建立基準、不發訊號
+    state = monitor._states["2330"]
+    assert state.seed_count == 21
+    assert state.bar_count == 1
+    assert len(state.closes) == 22  # 21根種子＋今天第一根
+    assert state.ma20_slope == "down"
+    assert state.prev_ma20 == pytest.approx(module._moving_average(state.closes, 20))
+    assert state.above_20ma is False  # 最後20根（109…100 加今天的100.5）MA20 約 104.3，100.5 在下方
+
+
+def test_seeded_ma20_lets_one_two_short_fire_before_1045(monkeypatch):
+    """2026-09-23 盤中一二空整天是 0 的根因：MA20 只用今天的 K 棒算，10:45 前算不出斜率。
+    有昨天的種子之後，10:45 前就能完成五步驟。"""
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    seeds = _yesterday_seed_bars([102.0 - i * 0.2 for i in range(21)])  # 102→98 一路走低：MA20 下彎、約 99.8
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+    kinds_seen: list[str] = []
+
+    def step(hour, minute, o, h, l, c):
+        kinds_seen.extend(kinds(monitor.on_bar_completed("2330", bar(hour, minute, o, h, l, c))))
+
+    step(9, 0, 100.0, 100.4, 99.6, 100.2)   # 905K：高100.4、低99.6
+    step(9, 5, 100.2, 100.3, 99.4, 99.8)    # ①破905低
+    state = monitor._states["2330"]
+    assert state.ots_stage == "tracking_1high"
+    step(9, 10, 99.8, 100.2, 99.7, 100.1)   # ②墊1高=100.3（①那根的高，<905高100.4），收盤仍在 MA20 上
+    assert state.ots_stage == "tracking_1high" and state.ots_1high == 100.3
+    step(9, 15, 100.0, 100.0, 98.0, 98.2)   # ③破位：前一根收盤≥前一根MA20、本根收盤<MA20、MA20 下彎
+    assert state.ma20_slope == "down"
+    assert state.ots_stage == "tracking_2high"
+    step(9, 20, 98.2, 99.0, 98.1, 98.8)     # ④墊2高=99.0（<1高100.3）
+    assert state.ots_2high == 99.0
+    step(9, 25, 98.8, 98.9, 97.0, 97.2)     # ⑤再轉弱：收盤、最低都比前一根低，仍在下彎的 MA20 下方
+    assert "oneTwoShort" in kinds_seen
+    assert state.fired_one_two_short is True
+
+
+def test_without_seeds_one_two_short_cannot_fire_before_ma20_has_twenty_one_bars(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    kinds_seen: list[str] = []
+
+    def step(hour, minute, o, h, l, c):
+        kinds_seen.extend(kinds(monitor.on_bar_completed("2330", bar(hour, minute, o, h, l, c))))
+
+    step(9, 0, 100.0, 100.4, 99.6, 100.2)
+    step(9, 5, 100.2, 100.3, 99.4, 99.8)
+    step(9, 10, 99.8, 100.2, 99.7, 100.1)
+    step(9, 15, 100.0, 100.0, 98.0, 98.2)
+    step(9, 20, 98.2, 99.0, 98.1, 98.8)
+    step(9, 25, 98.8, 98.9, 97.0, 97.2)
+    assert "oneTwoShort" not in kinds_seen
+    assert monitor._states["2330"].ots_stage == "tracking_1high"
+
+
+def test_seeds_do_not_emit_ma_signals_by_themselves_and_cross_is_relative_to_yesterday(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=98.0, prev_high=101.0)  # 第一根收99>昨收98：long_ok
+    seeds = _yesterday_seed_bars([100.0] * 21)  # 平的 MA20 = 100
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+
+    first = monitor.on_bar_completed("2330", bar(9, 0, 99.0, 99.5, 98.5, 99.0))  # 收在 20MA 下
+    assert first == []
+    state = monitor._states["2330"]
+    assert state.above_20ma is False
+    assert state.in_520_short is True  # 昨天平盤、今天開低：一開始就在五二零空的狀態，不算新事件
+
+    second = monitor.on_bar_completed("2330", bar(9, 5, 99.0, 100.6, 99.0, 100.5))  # 站回 20MA 上
+    assert "crossUp20ma" in kinds(second)  # 沒種子時要到第21根才可能出現
+    assert "firstCrossUp20ma" in kinds(second)
+    assert "ma520Up" in kinds(second)
+
+
+def test_seed_bars_are_ignored_when_older_than_market_previous_trade_date(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: "2026-09-17")
+    module._market_prev_cache.clear()
+    stale = _yesterday_seed_bars([100.0] * 21)
+    stale = [{**b, "ts": b["ts"] - 2 * 24 * 60 * 60 * 1000} for b in stale]  # 09-15 的 K，缺 09-17
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: stale)
+
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))
+    state = monitor._states["2330"]
+    assert state.seed_count == 0
+    assert state.closes == [100.5]
+    assert state.prev_ma20 is None
+
+
+def test_seed_bars_older_than_twelve_days_are_ignored_without_market_reference(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    old = [{**b, "ts": b["ts"] - 20 * 24 * 60 * 60 * 1000} for b in _yesterday_seed_bars([100.0] * 21)]
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: old)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))
+    assert monitor._states["2330"].seed_count == 0
+
+
+def test_seed_loader_failure_falls_back_to_today_only(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+
+    def boom(code, trade_date, limit):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", boom)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))
+    assert monitor._states["2330"].seed_count == 0
+    assert monitor._states["2330"].bar_count == 1
+
+
+def test_seeds_keep_only_last_21_bars_before_trade_date(monkeypatch):
+    seeds = _yesterday_seed_bars([100.0 + i for i in range(30)])
+    todays = [bar(9, 0, 1, 1, 1, 1)]  # 今天的 K 不能混進種子
+    result = module.previous_day_bars_5m("2330", "2026-09-18", seeds + todays)
+    assert len(result) == module.SEED_BARS == 21
+    assert [b["close"] for b in result] == [109.0 + i for i in range(21)]
+
+
+def test_live_bars_are_queued_and_flushed_in_one_batch(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    written: list[dict] = []
+    monkeypatch.setattr(module, "save_stock_bars_5m_many", lambda batch: written.append(batch) or 1)
+    monkeypatch.setattr(module, "PERSIST_FLUSH_SECONDS", 10_000.0)
+
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))
+    monitor.on_bar_completed("2317", bar(9, 0, 50, 51, 49, 50.5))
+    assert written == []  # 還沒到時間、也沒累積到門檻，先排隊
+    assert module._pending_bars_count == 2
+
+    assert module.flush_pending_bars_5m(force=True) == 1
+    assert list(written[0]) == ["2330", "2317"]
+    assert written[0]["2330"][0]["close"] == 100.5
+    assert module._pending_bars_count == 0
+
+
+def test_first_bar_of_a_new_day_force_flushes_yesterdays_pending_bars(monkeypatch):
+    monitor = new_monitor(monkeypatch)
+    written: list[dict] = []
+    monkeypatch.setattr(module, "save_stock_bars_5m_many", lambda batch: written.append(batch) or 1)
+    monkeypatch.setattr(module, "PERSIST_FLUSH_SECONDS", 10_000.0)
+
+    yesterday = {**bar(13, 25, 100, 101, 99, 100.5), "ts": ts(13, 25) - 24 * 60 * 60 * 1000}
+    monitor.on_bar_completed("2330", yesterday)
+    assert written == []
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))  # 新的一天第一根
+    assert len(written) == 1 and written[0]["2330"][0]["ts"] == yesterday["ts"]
+
+
+def test_backfill_replays_with_persist_off_seeds_from_kbars_and_stores_all_bars(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [
+        {"ts": "2026-09-17", "open": 100.0, "high": 1000.0, "low": 100.0, "close": 100.0, "volume": 1},
+    ])
+    monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: "2026-09-17")
+    module._market_prev_cache.clear()
+    monkeypatch.setattr(module, "_monitor", None)
+    queued: list[str] = []
+    monkeypatch.setattr(module, "queue_bar_5m", lambda code, b: queued.append(code))
+    stored: dict[str, int] = {}
+    monkeypatch.setattr(module, "save_stock_bars_5m", lambda code, bars: stored.setdefault(code, len(bars)))
+    pruned = []
+    monkeypatch.setattr(module, "prune_stock_bars_5m", lambda *a, **k: pruned.append(True) or 7)
+
+    seeds = _yesterday_seed_bars([100.0] * 21)
+
+    def fake_history(code, *, calendar_days=3, service=None, hub=None):
+        return {"status": "ok", "bars": seeds + [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)]}
+
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m", fake_history)
+
+    result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert result["barsReplayed"] == 2
+    assert result["barsStored"] == 23  # 昨天21根＋今天2根一起存
+    assert result["barsPruned"] == 7 and pruned == [True]
+    assert queued == []  # 回補不走即時佇列
+    state = module.get_intraday_kline_signal_monitor()._states["2330"]
+    assert state.seed_count == 21
+    assert state.bar_count == 2
