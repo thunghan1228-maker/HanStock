@@ -10,7 +10,9 @@ load_margin_short_range()同一份「由舊到新」的歷史裡取，不用分�
 全體平均值只涵蓋這524檔（43個官方族群），不是官方定義的全市場~1900檔——disposition_
 market_stats.py用bars_1d算的價格類橫斷面統計才是真全市場，這裡的本益比/週轉率/
 券資比平均是Phase 2資料收集範圍限制下的近似值，已經在finmind_disposition_
-fundamentals_collector.py的docstring寫清楚。
+fundamentals_collector.py的docstring寫清楚。第六款要的同類股淨值比平均(pbr_
+industry_avg)也是同樣的近似——只在這524檔範圍內依產業分類分組，同類<MIN_INDUSTRY_
+PEERS檔的產業不計入，門檻沿用disposition_market_stats.py同一個常數。
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 
 from daily_bars_store import load_daily_bars
 from disposition_fundamentals_store import load_fundamentals_day, load_margin_short_range
+from disposition_market_stats import MIN_INDUSTRY_PEERS
 
 
 @dataclass
@@ -98,9 +101,13 @@ def compute_margin_based_fundamentals(margin_history: list[dict], *, includes_to
     return short_margin_ratio_pct, margin_usage_pct, short_usage_pct, short_margin_ratio_min_6d_pct
 
 
-def build_fundamentals_by_code(trade_date: str, codes: set[str]) -> dict[str, dict[str, float | None]]:
+def build_fundamentals_by_code(
+    trade_date: str, codes: set[str], *, industry_by_code: dict[str, str] | None = None,
+) -> dict[str, dict[str, float | None]]:
     """組出disposition_prediction.build_clause_inputs()要的fundamentals_by_code
-    格式：{代號: {欄位: 值}}。"""
+    格式：{代號: {欄位: 值}}。industry_by_code是{代號: 產業分類}(來自FinMind
+    TaiwanStockInfo，見finmind_broker_branch_collector.fetch_industry_by_code)，
+    有給才會算出第六款要的pbr_industry_avg；不給就跟之前一樣全部是None。"""
     fundamentals_today = load_fundamentals_day(trade_date, codes)
     stock_fundamentals: dict[str, StockFundamentals] = {}
     for code in codes:
@@ -128,12 +135,24 @@ def build_fundamentals_by_code(trade_date: str, codes: set[str]) -> dict[str, di
     turnover_avg = _peer_avg([f.turnover_pct for f in stock_fundamentals.values()])
     cum_turnover_avg = _peer_avg([f.cum_turnover_6d_pct for f in stock_fundamentals.values()])
 
+    pbr_industry_avg_by_industry: dict[str, float] = {}
+    if industry_by_code:
+        pbr_by_industry: dict[str, list[float]] = {}
+        for code, f in stock_fundamentals.items():
+            industry = industry_by_code.get(code)
+            if industry and f.pbr is not None:
+                pbr_by_industry.setdefault(industry, []).append(f.pbr)
+        for industry, values in pbr_by_industry.items():
+            if len(values) >= MIN_INDUSTRY_PEERS:
+                pbr_industry_avg_by_industry[industry] = sum(values) / len(values)
+
     output: dict[str, dict[str, float | None]] = {}
     for code, f in stock_fundamentals.items():
+        industry = (industry_by_code or {}).get(code)
         output[code] = {
             "pe_ratio": f.pe_ratio, "pe_ratio_peer_avg": pe_avg,
             "pbr": f.pbr, "pbr_peer_avg": pbr_avg,
-            "pbr_industry_avg": None,  # 產業別淨值比平均需要產業分類，Phase 2尚未接上
+            "pbr_industry_avg": pbr_industry_avg_by_industry.get(industry) if industry else None,
             "turnover_pct": f.turnover_pct, "turnover_pct_peer_avg": turnover_avg,
             "cum_turnover_6d_pct": f.cum_turnover_6d_pct, "cum_turnover_6d_peer_avg_pct": cum_turnover_avg,
             "turnover_amount": f.turnover_amount,
