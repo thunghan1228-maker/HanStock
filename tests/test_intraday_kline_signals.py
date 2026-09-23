@@ -32,6 +32,8 @@ def new_monitor(
         previous = [{"ts": "2026-09-17", "open": prev_close, "high": prev_high,
                      "low": prev_close, "close": prev_close, "volume": 1000}]
     monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: previous)
+    monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: None)
+    module._market_prev_cache.clear()
     # 創高黑龍用的六均線排列分數：跟load_daily_bars是不同的計算(需要240天
     # 歷史)，這裡直接mock掉分數本身，不用另外墊240筆假日K，跟其他測試
     # 意圖無關的訊號家族保持隔離。
@@ -283,18 +285,58 @@ def test_new_trade_date_resets_state_and_reloads_previous_day(monkeypatch):
 
     def fake_load(code, limit=1):
         calls.append(code)
-        return [{"ts": "x", "open": 1, "high": 55.0, "low": 1, "close": 50.0, "volume": 1}]
+        return [{"ts": "2026-09-17", "open": 1, "high": 55.0, "low": 1, "close": 50.0, "volume": 1}]
 
     monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
     monkeypatch.setattr(module, "load_daily_bars", fake_load)
+    monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: "2026-09-17")
     monitor = IntradayKlineSignalMonitor()
     monitor.on_bar_completed("2330", bar(9, 0, 50, 51, 49, 50.5))
-    # 重置新的一天現在會呼叫load_daily_bars兩次：一次拿昨收/昨高(limit=1)，
-    # 一次拿創高黑龍用的前5日高點(limit=5)。
-    assert calls == ["2330", "2330"]
+    # 重置新的一天只呼叫一次load_daily_bars（最近幾根），昨收/昨高跟創高黑龍用的前5日高點都從裡面挑。
+    assert calls == ["2330"]
     state = monitor._states["2330"]
     assert state.prev_close == 50.0
     assert state.prev_high == 55.0
+
+
+def test_stale_previous_day_bar_is_ignored_so_prev_high_signals_cannot_fire(monkeypatch):
+    # 2026-09-23 的 6218（上櫃）：櫃買來源被擋、日K停在更早的日子，拿舊高點當昨高，09:10 沒過昨高卻發了 1+2多。
+    # 這檔最新的日K比全市場上一個交易日舊 → 當作沒有昨日資料：不判 1+2多／過昨高，也不算漲跌停價。
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "compute_ma_alignment_score", lambda code: None)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [
+        {"ts": "2026-09-15", "open": 60.0, "high": 61.0, "low": 59.0, "close": 60.0, "volume": 1000}])
+    monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: "2026-09-17")
+    module._market_prev_cache.clear()
+    monitor = IntradayKlineSignalMonitor()
+    monitor.on_bar_completed("6218", bar(9, 0, 60.0, 61.5, 59.5, 61.0))
+    state = monitor._states["6218"]
+    assert state.prev_high is None and state.prev_close is None and state.limit_up is None
+    # 過 905 高又過（舊的）昨高，也不能發 1+2多／過昨日高
+    signals = monitor.on_bar_completed("6218", bar(9, 5, 61.0, 63.5, 61.0, 63.4))
+    assert "combo12Bull" not in kinds(signals) and "crossUpPrevHigh" not in kinds(signals)
+    assert "firstCross905High" in kinds(signals)  # 只靠今天自己的 905 高的訊號照常
+
+    # 同一檔如果日K有跟上（就是市場上一個交易日的那根），照常判定
+    module._market_prev_cache.clear()
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [
+        {"ts": "2026-09-17", "open": 60.0, "high": 61.0, "low": 59.0, "close": 60.0, "volume": 1000}])
+    fresh = IntradayKlineSignalMonitor()
+    fresh.on_bar_completed("6218", bar(9, 0, 60.0, 61.5, 59.5, 61.0))
+    assert fresh._states["6218"].prev_high == 61.0
+    assert "combo12Bull" in kinds(fresh.on_bar_completed("6218", bar(9, 5, 61.0, 63.5, 61.0, 63.4)))
+
+
+def test_previous_day_bar_older_than_twelve_days_is_ignored_even_without_market_reference(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "compute_ma_alignment_score", lambda code: None)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [
+        {"ts": "2026-08-20", "open": 60.0, "high": 61.0, "low": 59.0, "close": 60.0, "volume": 1000}])
+    monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: None)
+    module._market_prev_cache.clear()
+    monitor = IntradayKlineSignalMonitor()
+    monitor.on_bar_completed("6218", bar(9, 0, 60.0, 61.5, 59.5, 61.0))
+    assert monitor._states["6218"].prev_high is None
 
 
 def test_reset_for_backfill_rebuilds_state_instead_of_accumulating(monkeypatch):
@@ -631,9 +673,8 @@ def _black_dragon_monitor(monkeypatch, ma_alignment_score=10, five_day_high=108.
     )
 
     def fake_load(code, limit=1):
-        if limit >= 5:
-            return [{"high": five_day_high, "close": 100.0}] * 5
-        return [{"close": 105.0, "high": 1000.0}]  # 跟new_monitor的prev_close=105一致
+        # 最近 5 根日K：昨收 105（跟 new_monitor 的 prev_close=105 一致）、前 5 日高點 = five_day_high
+        return [{"high": five_day_high, "close": 105.0}] * 5
 
     monkeypatch.setattr(module, "load_daily_bars", fake_load)
     return monitor

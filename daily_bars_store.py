@@ -35,6 +35,18 @@ def load_daily_bars(stock_code: str, limit: int = 260) -> list[dict[str, Any]]:
     } for row in rows]
 
 
+def latest_daily_trade_date_before(trade_date: str) -> str | None:
+    """全市場日K裡、早於 trade_date 的最新交易日（YYYY-MM-DD）。個股的「昨日」日K比這個日期舊，
+    就代表那檔的日K沒跟上（例如上櫃來源被擋），不能拿來當昨高／昨收。"""
+    initialize_database()
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT MAX(substr(bar_time, 1, 10)) AS d FROM bars_1d WHERE substr(bar_time, 1, 10) < ?",
+            (str(trade_date)[:10],),
+        ).fetchone()
+    return str(row["d"]) if row and row["d"] else None
+
+
 def prune_old_daily_bars(keep_days: int = 365) -> int:
     """只保留最近 keep_days 個「有資料的交易日」的日K，避免資料庫無限長大。
     用實際存在的交易日決定，不是單純日曆天數。"""

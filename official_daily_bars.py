@@ -387,6 +387,40 @@ def _save_day(rows: list[dict[str, Any]]) -> int:
         return connection.total_changes - changes_before_bars
 
 
+def _otc_bars_exist(trade_date: date, minimum: int = 100) -> bool:
+    """這天已經有夠多上櫃日K（官方或 FinMind 先前補過）就不用再打 FinMind。"""
+    try:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS n FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
+                WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) = ?
+                """,
+                (trade_date.isoformat(),),
+            ).fetchone()
+        return int(row["n"] if row else 0) >= minimum
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _finmind_otc_day(trade_date: date) -> tuple[list[dict[str, Any]], str]:
+    """櫃買來源拿不到時的備援：FinMind TaiwanStockPrice 全市場當日收盤，只挑資料庫已知是上櫃的代號。
+    回（列, 說明）；沒有 token 或這天沒資料回空列。"""
+    try:
+        from otc_gap_backfill import _known_otc_codes, _known_stock_names, _row_to_otc_bar, fetch_finmind_price_day
+
+        with get_connection() as connection:
+            known = _known_otc_codes(connection)
+            names = _known_stock_names(connection)
+        raw = fetch_finmind_price_day(trade_date)
+        if not raw:
+            return [], "FinMind 沒有 token 或這天沒有資料"
+        rows = [bar for entry in raw if (bar := _row_to_otc_bar(entry, trade_date, known, names))]
+        return rows, f"FinMind 補上櫃 {len(rows)} 檔" if rows else "FinMind 有資料但沒有對到已知的上櫃代號"
+    except Exception as error:  # noqa: BLE001
+        return [], f"FinMind 失敗：{type(error).__name__}: {error}"
+
+
 def download_official_daily_bars(
     days: int = 140,
     delay: float = 0.35,
@@ -417,12 +451,23 @@ def download_official_daily_bars(
             continue
 
         day_rows = list(twse_rows)
+        tpex_rows: list[dict[str, Any]] = []
+        tpex_error: str | None = None
         try:
-            day_rows.extend(fetch_tpex_day(trade_date))
+            tpex_rows = fetch_tpex_day(trade_date)
         except Exception as error:  # noqa: BLE001
-            source_failures.append(
-                {"date": trade_date.isoformat(), "source": "TPEx", "error": str(error)}
-            )
+            tpex_error = str(error)
+        if not tpex_rows and not _otc_bars_exist(trade_date):
+            # 櫃買中心從 Railway 出去被擋（2026-09-22 起 403／連線重置）：這天上櫃的日K還沒有，
+            # 改用 FinMind 補；只寫資料庫已知是上櫃的代號。
+            tpex_rows, finmind_note = _finmind_otc_day(trade_date)
+            source_failures.append({
+                "date": trade_date.isoformat(), "source": "TPEx", "error": tpex_error or "櫃買回空清單",
+                "finmind": finmind_note,
+            })
+        elif tpex_error:
+            source_failures.append({"date": trade_date.isoformat(), "source": "TPEx", "error": tpex_error})
+        day_rows.extend(tpex_rows)
         day_inserted = _save_day(day_rows)
         inserted += day_inserted
         print(
