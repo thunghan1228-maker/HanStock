@@ -255,7 +255,7 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
                 gap = threshold9 - reference_volume
                 detail = "量已達門檻" if gap <= 0 else f"還差約{gap:.0f}張（門檻{threshold9:.0f}張）"
                 predictions.append(VolumeGapPrediction(
-                    code=code, clause=VOLUME_ONLY_CLAUSE_9, threshold_volume=round(threshold9, 0),
+                    code=code, clause=VOLUME_ONLY_CLAUSE_9, threshold_volume=round(max(0.0, threshold9), 0),
                     reference_volume=reference_volume, detail=detail,
                 ))
 
