@@ -124,6 +124,38 @@ class DispositionMarketStatsTests(unittest.TestCase):
         self.assertTrue(snapshot.metrics_by_code["1105"].close_above_open_ref)
         self.assertFalse(snapshot.metrics_by_code["1106"].close_above_open_ref)
 
+    def test_is_6d_high_or_low_true_when_today_is_the_6d_max(self):
+        dates = self.days_95[-6:]
+        closes = [100.0, 105.0, 95.0, 102.0, 98.0, 110.0]  # 今天110是這6天最高
+        with get_connection() as connection:
+            _insert_bars(connection, "1109", dates, closes)
+        snapshot = build_market_snapshot(self.today.isoformat())
+        self.assertTrue(snapshot.metrics_by_code["1109"].is_6d_high_or_low)
+
+    def test_is_6d_high_or_low_true_when_today_is_the_6d_min(self):
+        dates = self.days_95[-6:]
+        closes = [100.0, 105.0, 95.0, 102.0, 98.0, 90.0]  # 今天90是這6天最低
+        with get_connection() as connection:
+            _insert_bars(connection, "1110", dates, closes)
+        snapshot = build_market_snapshot(self.today.isoformat())
+        self.assertTrue(snapshot.metrics_by_code["1110"].is_6d_high_or_low)
+
+    def test_is_6d_high_or_low_false_when_today_is_in_the_middle(self):
+        """6天內先大漲又回落，今天收盤價落在6天區間中段——不是最高也不是最低。"""
+        dates = self.days_95[-6:]
+        closes = [100.0, 130.0, 95.0, 102.0, 98.0, 105.0]  # 最高130、最低95，今天105在中間
+        with get_connection() as connection:
+            _insert_bars(connection, "1111", dates, closes)
+        snapshot = build_market_snapshot(self.today.isoformat())
+        self.assertFalse(snapshot.metrics_by_code["1111"].is_6d_high_or_low)
+
+    def test_is_6d_high_or_low_none_without_enough_history(self):
+        dates = self.days_95[-3:]
+        with get_connection() as connection:
+            _insert_bars(connection, "1112", dates, closes=[100.0, 101.0, 102.0])
+        snapshot = build_market_snapshot(self.today.isoformat())
+        self.assertIsNone(snapshot.metrics_by_code["1112"].is_6d_high_or_low)
+
     def test_stock_without_todays_row_is_excluded_from_snapshot(self):
         """今天沒資料(停牌/還沒寫進bars_1d)：這檔不該出現在橫斷面裡，也不該拉低全體平均。"""
         missing_today = self.days_95[:-1]

@@ -91,6 +91,7 @@ def build_clause_inputs(
         change_6d_peer_avg_pct=peer.get("change_6d_pct"),
         change_6d_industry_avg_pct=industry_avg.get("change_6d_pct"),
         price_diff_6d=metrics.price_diff_6d,
+        is_6d_high_or_low=metrics.is_6d_high_or_low,
         change_2d_30d_pct=metrics.change_2d_30d_pct,
         change_2d_30d_peer_avg_pct=peer.get("change_2d_30d_pct"),
         change_2d_60d_pct=metrics.change_2d_60d_pct,

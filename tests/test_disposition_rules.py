@@ -272,44 +272,50 @@ class Clause10Tests(unittest.TestCase):
 
 class Clause11Tests(unittest.TestCase):
     def test_fires_at_1000_to_2000_tier(self):
-        i = _base(close=1500.0, price_diff_6d=300.0, close_above_open_ref=True)
+        i = _base(close=1500.0, price_diff_6d=300.0, is_6d_high_or_low=True)
         self.assertTrue(check_clause_11(i).fired)
 
     def test_below_threshold_does_not_fire(self):
-        i = _base(close=1500.0, price_diff_6d=299.9, close_above_open_ref=True)
+        i = _base(close=1500.0, price_diff_6d=299.9, is_6d_high_or_low=True)
         self.assertFalse(check_clause_11(i).fired)
 
     def test_next_tier_adds_150(self):
-        i = _base(close=2500.0, price_diff_6d=450.0, close_above_open_ref=True)
+        i = _base(close=2500.0, price_diff_6d=450.0, is_6d_high_or_low=True)
         self.assertTrue(check_clause_11(i).fired)
-        i2 = _base(close=2500.0, price_diff_6d=449.9, close_above_open_ref=True)
+        i2 = _base(close=2500.0, price_diff_6d=449.9, is_6d_high_or_low=True)
         self.assertFalse(check_clause_11(i2).fired)
 
     def test_boundary_just_above_2000_is_next_tier(self):
         """2000.01元剛超過2000元邊界，門檻要跳到下一級距450元，不是還留在300元
         （用(close-1)//1000的舊算法在這個邊界會算錯，改用ceil(close/1000)-1）。"""
-        i = _base(close=2000.01, price_diff_6d=449.99, close_above_open_ref=True)
+        i = _base(close=2000.01, price_diff_6d=449.99, is_6d_high_or_low=True)
         self.assertFalse(check_clause_11(i).fired)
-        i2 = _base(close=2000.01, price_diff_6d=450.0, close_above_open_ref=True)
+        i2 = _base(close=2000.01, price_diff_6d=450.0, is_6d_high_or_low=True)
         self.assertTrue(check_clause_11(i2).fired)
 
     def test_exactly_2000_stays_in_first_tier(self):
         """close剛好2000元，門檻應該還是第一級距的300元，不是誤算成第二級距的450元
         ——用一個介於300~450之間的價差(440)驗證：門檻若誤算成450會不觸發，正確的
         300門檻則會觸發。"""
-        i = _base(close=2000.0, price_diff_6d=300.0, close_above_open_ref=True)
+        i = _base(close=2000.0, price_diff_6d=300.0, is_6d_high_or_low=True)
         self.assertTrue(check_clause_11(i).fired)
-        i2 = _base(close=2000.0, price_diff_6d=440.0, close_above_open_ref=True)
+        i2 = _base(close=2000.0, price_diff_6d=440.0, is_6d_high_or_low=True)
         self.assertTrue(check_clause_11(i2).fired)
-        i3 = _base(close=2000.0, price_diff_6d=299.0, close_above_open_ref=True)
+        i3 = _base(close=2000.0, price_diff_6d=299.0, is_6d_high_or_low=True)
         self.assertFalse(check_clause_11(i3).fired)
 
     def test_below_1000_does_not_apply(self):
-        i = _base(close=999.0, price_diff_6d=1000.0, close_above_open_ref=True)
+        i = _base(close=999.0, price_diff_6d=1000.0, is_6d_high_or_low=True)
         self.assertFalse(check_clause_11(i).fired)
 
-    def test_requires_high_or_low_flag(self):
-        i = _base(close=1500.0, price_diff_6d=300.0, close_above_open_ref=None)
+    def test_missing_high_or_low_data_does_not_fire(self):
+        i = _base(close=1500.0, price_diff_6d=300.0, is_6d_high_or_low=None)
+        self.assertFalse(check_clause_11(i).fired)
+
+    def test_price_diff_big_enough_but_not_actually_6d_extreme_does_not_fire(self):
+        """核心情境：6日內價格震盪出夠大的價差，但今天收盤價不是這6天的最高或最低
+        （例如6天內先大漲又回落到中間值）——不該觸發，這是修正前遺漏的檢查。"""
+        i = _base(close=1500.0, price_diff_6d=300.0, is_6d_high_or_low=False)
         self.assertFalse(check_clause_11(i).fired)
 
 
