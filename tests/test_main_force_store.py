@@ -8,6 +8,7 @@ from main_force_collector import collect_once
 from main_force_store import (
     classify_holder_strength,
     compute_holder_strength_pct,
+    latest_trade_date_with_data,
     list_tracked_stock_codes,
     load_daily_main_force_net,
     load_daily_main_force_net_amount,
@@ -223,6 +224,17 @@ class MainForceStoreTests(unittest.TestCase):
 
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
+
+    def test_latest_trade_date_with_data_looks_back_across_all_stocks(self):
+        base_ts = BASE_TS
+        trade_date = taipei_trade_date(base_ts)
+        save_main_force_bars("2330", "5m", [{
+            "ts": base_ts, "main_buy_volume": 100, "main_sell_volume": 10,
+            "main_force_available": True,
+        }])
+        self.assertEqual(latest_trade_date_with_data("2026-09-24"), trade_date)
+        self.assertIsNone(latest_trade_date_with_data(trade_date))  # 不含當天
+        self.assertIsNone(latest_trade_date_with_data("2026-09-24", interval="1m"))
 
     def test_ranking_codes_filter_keeps_only_listed_codes(self):
         # 收集器會追蹤任何開過圖的股票（含 ETF），排行端點用 codes 限縮在官方族群範圍。

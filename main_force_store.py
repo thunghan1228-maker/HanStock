@@ -403,6 +403,20 @@ def previous_trade_date_with_data(stock_code: str, before_date: str, interval: s
     return row["trade_date"] if row else None
 
 
+def latest_trade_date_with_data(before_date: str, interval: str = "5m") -> str | None:
+    """before_date 之前（不含）最近一個有任何主力副圖資料的交易日；沒有就 None。
+    排行端點在今天還沒有資料時（午夜過後到下一個交易日開盤前）拿來沿用上一個交易日。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        row = connection.execute(
+            "SELECT MAX(trade_date) AS trade_date FROM main_force_bars WHERE interval = ? AND trade_date < ?",
+            (interval, before_date),
+        ).fetchone()
+    return row["trade_date"] if row and row["trade_date"] else None
+
+
 def list_tracked_stock_codes(trade_date: str, interval: str = "1m") -> list[str]:
     """今日已有主力副圖資料的股票代號；用來找「目前實際在追蹤」的股票，
     不需要另外掃描或訂閱。"""
