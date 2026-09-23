@@ -144,6 +144,7 @@ class BuildFundamentalsByCodeTests(unittest.TestCase):
         self.assertAlmostEqual(result["2330"]["pe_ratio_peer_avg"], 15.0)  # (20+10)/2
         self.assertAlmostEqual(result["2330"]["pbr_peer_avg"], 2.0)  # (3+1)/2
         self.assertIsNotNone(result["2330"]["turnover_pct"])
+        self.assertAlmostEqual(result["2330"]["shares_outstanding"], 1000.0)  # 市值100,000/收盤價100
 
     def test_missing_stock_has_all_none_but_still_present(self):
         result = build_fundamentals_by_code("2026-09-22", {"9999"})

@@ -1,6 +1,8 @@
 """disposition_gap_prediction.py：連續2天(不多不少)命中第一款才算「還差1次」、明天
 收盤價門檻反推(32%/25%+價差兩個子條件挑較容易達成的、正確處理漲跌方向)、差幅門檻
-過濾掉不會用到的子條件、easy標籤跟人類可讀說明。"""
+過濾掉不會用到的子條件、easy標籤跟人類可讀說明。第九/十款的成交量門檻：不依賴當天
+資料(所以下一個交易日整天有效)、差幅在門檻值本身上檢查、第十款兩個子條件(AND)取
+較嚴格的那個。"""
 
 from __future__ import annotations
 
@@ -12,10 +14,14 @@ from unittest.mock import patch
 
 import database
 from database import get_connection, initialize_database
+from disposition_fundamentals_store import save_fundamentals_rows
 from disposition_gap_prediction import (
     _build_prediction,
     _clause_1_threshold,
     build_gap_predictions,
+    build_volume_gap_predictions,
+    clause_9_threshold_volume,
+    clause_10_threshold_volume,
     find_path1_near_miss,
 )
 from disposition_prediction import save_clause_results
@@ -192,6 +198,148 @@ class BuildGapPredictionsTests(unittest.TestCase):
         save_clause_results(days[1].isoformat(), "9999", _all_clauses_result({"一"}))
         # 沒有補bars_1d，snapshot裡不會有這檔的metrics。
         result = build_gap_predictions(self.today.isoformat(), {"9999"})
+        self.assertEqual(result, [])
+
+
+class Clause9ThresholdVolumeTests(unittest.TestCase):
+    def test_computes_5x_avg60(self):
+        self.assertAlmostEqual(clause_9_threshold_volume(1000.0, None), 5000.0)
+
+    def test_diff_ok_peer_avg_passes(self):
+        # |5.0-0.5|=4.5>=4，差幅子條件過
+        self.assertAlmostEqual(clause_9_threshold_volume(1000.0, 0.5), 5000.0)
+
+    def test_diff_not_ok_peer_avg_returns_none(self):
+        # |5.0-2.0|=3.0<4，差幅子條件過不了，不管量衝多高都不會觸發
+        self.assertIsNone(clause_9_threshold_volume(1000.0, 2.0))
+
+    def test_zero_or_none_avg_returns_none(self):
+        self.assertIsNone(clause_9_threshold_volume(0.0, None))
+        self.assertIsNone(clause_9_threshold_volume(None, None))
+
+
+class Clause10ThresholdVolumeTests(unittest.TestCase):
+    def test_cum_turnover_subcondition_is_binding(self):
+        # 發行股數10000張，前5日已經有3000張量，今日週轉率10%只需要1000張，
+        # 但6日累積週轉率50%還需要(10000*0.5-3000)=2000張，2000>1000所以以它為準。
+        result = clause_10_threshold_volume(10000.0, 3000.0, None, None)
+        self.assertIsNotNone(result)
+        threshold, binding = result
+        self.assertAlmostEqual(threshold, 2000.0)
+        self.assertEqual(binding, "6日累積週轉率")
+
+    def test_today_turnover_subcondition_is_binding_when_cum_already_satisfied(self):
+        # 前5日已經有5500張(超過股本的50%)，累積子條件早就滿足，門檻降回只看當日週轉率。
+        result = clause_10_threshold_volume(10000.0, 5500.0, None, None)
+        threshold, binding = result
+        self.assertAlmostEqual(threshold, 1000.0)
+        self.assertEqual(binding, "當日週轉率")
+
+    def test_diff_filters_out_when_peer_avg_too_close_to_threshold(self):
+        # |10-8|=2<5，當日週轉率差幅過不了；|50-45|=5<40，累積週轉率差幅也過不了。
+        result = clause_10_threshold_volume(10000.0, 3000.0, 8.0, 45.0)
+        self.assertIsNone(result)
+
+    def test_zero_or_none_shares_outstanding_returns_none(self):
+        self.assertIsNone(clause_10_threshold_volume(0.0, 3000.0, None, None))
+        self.assertIsNone(clause_10_threshold_volume(None, 3000.0, None, None))
+
+
+class BuildVolumeGapPredictionsTests(unittest.TestCase):
+    """端到端測試都刻意讓每個測試只放1檔股票進codes——peer_avg是跨全部bars_1d(第九款)
+    或跨呼叫時codes集合(第十款)算的橫斷面平均，放2檔會互相稀釋拉走差幅門檻(稀釋只會把
+    自我參照的ratio拉向1.0，數學上永遠到不了通過門檻需要的<=1.0，見clause_9_threshold_
+    volume的docstring)，所以用「只有自己1檔」讓peer_avg自我參照、刻意取極端的量能讓
+    自我參照的差幅也能通過門檻，藉此獨立驗證每個情境。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        initialize_database()
+        self.today = date(2026, 9, 23)
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _seed_volumes(self, code: str, volumes_by_date: dict[date, float], close: float = 100.0) -> None:
+        with get_connection() as connection:
+            rows = [
+                (code, d.isoformat() + "T00:00:00+00:00", close, close, close, close, v)
+                for d, v in volumes_by_date.items()
+            ]
+            connection.executemany(
+                "INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(stock_code, bar_time) DO UPDATE SET volume = excluded.volume",
+                rows,
+            )
+
+    def test_clause_9_qualifying_stock_appears_with_correct_threshold(self):
+        # 60天中前59天量100張、今天暴增到1100張：ratio約9.43，自我參照的peer_avg也是
+        # 9.43(這檔是全庫唯一有60天資料的)，|5.0-9.43|=4.43>=4.0通過差幅門檻；量本身也
+        # 遠超過門檻一半，兩個獨立的過濾條件都通過才會出現在結果裡。
+        days = _business_days_ending(self.today, 60)
+        volumes_by_date = {d: 100.0 for d in days[:-1]}
+        volumes_by_date[days[-1]] = 1100.0
+        self._seed_volumes("2330", volumes_by_date)
+
+        result = build_volume_gap_predictions(self.today.isoformat(), {"2330"})
+
+        avg60 = (59 * 100.0 + 1100.0) / 60
+        expected_threshold = 5.0 * avg60
+        self.assertEqual(len(result), 1)
+        prediction = result[0]
+        self.assertEqual(prediction.code, "2330")
+        self.assertEqual(prediction.clause, "九")
+        self.assertAlmostEqual(prediction.threshold_volume, round(expected_threshold, 0))
+        self.assertAlmostEqual(prediction.reference_volume, 1100.0)
+
+    def test_clause_9_quiet_stock_is_excluded(self):
+        # 60天量完全平穩(ratio=1.0)：自我參照差幅門檻剛好卡在邊界(|5-1|=4.0)算過，
+        # 門檻仍然算得出來，但量本身離門檻一半還很遠，靠獨立的量能過濾條件排除，
+        # 確認兩層過濾不會互相蓋過。
+        days = _business_days_ending(self.today, 60)
+        volumes_by_date = {d: 100.0 for d in days}
+        self._seed_volumes("2317", volumes_by_date)
+
+        result = build_volume_gap_predictions(self.today.isoformat(), {"2317"})
+
+        self.assertEqual(result, [])
+
+    def test_clause_10_qualifying_stock_appears_with_correct_threshold(self):
+        # 只seed5天(不足6天)，cum_turnover_6d_pct算不出來，第二個差幅門檻(累積週轉率)
+        # 自動略過；發行股數10,000張、當日週轉率16%，自我參照peer_avg也是16%，
+        # |10-16|=6>=5通過第一個差幅門檻。累積量8000張已經超過股本一半，累積子條件
+        # 不再卡關，門檻回到只看當日週轉率：10000*0.10=1000張。
+        days = _business_days_ending(self.today, 5)
+        volumes_by_date = {d: 1600.0 for d in days}
+        self._seed_volumes("3450", volumes_by_date)
+        save_fundamentals_rows([
+            {"code": "3450", "tradeDate": self.today.isoformat(), "marketValue": 1_000_000_000.0},
+        ])
+
+        result = build_volume_gap_predictions(self.today.isoformat(), {"3450"})
+
+        self.assertEqual(len(result), 1)
+        prediction = result[0]
+        self.assertEqual(prediction.code, "3450")
+        self.assertEqual(prediction.clause, "十")
+        self.assertAlmostEqual(prediction.threshold_volume, 1000.0)
+        self.assertAlmostEqual(prediction.reference_volume, 1600.0)
+
+    def test_clause_10_low_turnover_stock_is_excluded(self):
+        # 當日週轉率8%，自我參照peer_avg也是8%，|10-8|=2<5通不過差幅門檻，
+        # clause_10_threshold_volume直接回傳None，不會出現在結果裡。
+        days = _business_days_ending(self.today, 5)
+        volumes_by_date = {d: 800.0 for d in days}
+        self._seed_volumes("1101", volumes_by_date)
+        save_fundamentals_rows([
+            {"code": "1101", "tradeDate": self.today.isoformat(), "marketValue": 1_000_000_000.0},
+        ])
+
+        result = build_volume_gap_predictions(self.today.isoformat(), {"1101"})
+
         self.assertEqual(result, [])
 
 

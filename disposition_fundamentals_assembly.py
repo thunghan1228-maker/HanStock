@@ -32,6 +32,7 @@ class StockFundamentals:
     turnover_pct: float | None = None  # 當日週轉率%
     cum_turnover_6d_pct: float | None = None  # 最近6營業日累積週轉率%
     turnover_amount: float | None = None  # 當日成交金額(元)
+    shares_outstanding: float | None = None  # 發行股數(市值/收盤價近似)，供disposition_gap_prediction.py第十款反推複用，避免重算
     short_margin_ratio_pct: float | None = None  # 前一營業日券資比%
     margin_usage_pct: float | None = None  # 前一營業日融資使用率%
     short_usage_pct: float | None = None  # 前一營業日融券使用率%
@@ -66,6 +67,7 @@ def compute_price_based_fundamentals(
     shares = _shares_outstanding(fundamentals_today.get("marketValue"), close)
     if shares is None:
         return result
+    result.shares_outstanding = shares
     volume_shares = volume_lots * 1000
     result.turnover_pct = volume_shares / shares * 100
     result.turnover_amount = volume_shares * close
@@ -155,7 +157,7 @@ def build_fundamentals_by_code(
             "pbr_industry_avg": pbr_industry_avg_by_industry.get(industry) if industry else None,
             "turnover_pct": f.turnover_pct, "turnover_pct_peer_avg": turnover_avg,
             "cum_turnover_6d_pct": f.cum_turnover_6d_pct, "cum_turnover_6d_peer_avg_pct": cum_turnover_avg,
-            "turnover_amount": f.turnover_amount,
+            "turnover_amount": f.turnover_amount, "shares_outstanding": f.shares_outstanding,
             "short_margin_ratio_pct": f.short_margin_ratio_pct,
             "margin_usage_pct": f.margin_usage_pct, "short_usage_pct": f.short_usage_pct,
             "short_margin_ratio_min_6d_pct": f.short_margin_ratio_min_6d_pct,
