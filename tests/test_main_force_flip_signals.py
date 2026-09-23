@@ -98,7 +98,7 @@ def test_strong_label_can_be_split_out_again_with_higher_thresholds(monkeypatch)
 
 def test_bear_flip_mirrors_bull(monkeypatch):
     # 從 10:00 才看到（較晚訂閱）：前面主力偏買、站上 VWAP，第 10 根大單倒出把累計翻負、跌破 VWAP。
-    # （若從 09:00 就看到，開頭那段從 0 翻正加站上 VWAP 本身就是一筆合法的翻多，另有測試涵蓋。）
+    # 開頭那段從 0 翻正只是第一個方向、不算翻多（v5）。
     monitor = new_monitor(monkeypatch)
     bars = [bar(10, 0, 99.0, 100, main_buy=10)] + [bar(10, i, 100.0, 100, main_buy=10) for i in range(1, 9)]
     flip = bar(10, 9, 99.0, 100, main_sell=400)
@@ -133,27 +133,53 @@ def test_flip_during_first_bars_after_subscription_is_ignored(monkeypatch):
     assert feed(monitor, "3532", bars) == []
 
 
-def test_from_open_stock_skips_the_first_four_bars_then_fires_like_the_other_tool(monkeypatch):
+def test_first_direction_from_zero_at_the_open_is_not_a_flip(monkeypatch):
     # 正式環境 2026-09-22 的 3532（inspect 的實際數字）：09:01 主力累計 +134/156 張從 0 翻正，
-    # 09:02 就站上 VWAP、淨額率 82%；另一台工具最早的訊號是 09:05（所羅門、騰輝電子），所以
-    # 開盤前 4 根不判定。09:05 那根再次站上 VWAP（淨額率 23%、量比 5.3×），09:05 就發。
+    # 09:05 站上 VWAP、淨額率 23%、量比 5.3×。另一台工具沒有在 09:05 發（它 11:38 真的從負翻正才發）；
+    # 2026-09-23 我們 09:05 一口氣發了 25 筆全是這種「開盤第一個方向」。v5：從 0 走出的方向不算翻。
     monitor = new_monitor(monkeypatch, avg_daily_volume=7378.8)
+    monitor.enable_trace()
     bars = [
         bar(9, 0, 449.5, 214, main_buy=145, main_sell=11),
         bar(9, 1, 451.5, 142, main_buy=42, main_sell=8),
         bar(9, 2, 446.0, 149, main_buy=23, main_sell=63),
         bar(9, 3, 447.5, 98, main_buy=6, main_sell=36),
+        bar(9, 4, 450.0, 118, main_buy=23, main_sell=31),
+    ]
+    assert feed(monitor, "3532", bars) == []
+    assert monitor.trace()[0]["firstSign"] == "bull"
+    assert not any(row.get("zeroCross") for row in monitor.trace())
+
+
+def test_from_open_stock_skips_the_first_four_bars_then_fires_on_a_real_flip(monkeypatch):
+    # 從開盤就看到、09:01～09:03 主力偏賣（累計 -55 張），09:04 大單敲進翻正、09:05 站上 VWAP：
+    # 前 4 根一律不判定，09:05 那根才發，而且零軸時間是真的翻正的 09:04。
+    monitor = new_monitor(monkeypatch)
+    bars = [
+        bar(9, 0, 100.0, 100, main_sell=40),
+        bar(9, 1, 100.0, 100, main_sell=10),
+        bar(9, 2, 100.0, 100, main_sell=5),
+        bar(9, 3, 100.0, 100, main_buy=120),  # 收盤 09:04：累計 -55 → +65，真的從負翻正
     ]
     assert feed(monitor, "3532", bars) == []  # 09:01～09:04 一律不發
 
-    signals = feed(monitor, "3532", [bar(9, 4, 450.0, 118, main_buy=23, main_sell=31)])
+    signals = feed(monitor, "3532", [bar(9, 4, 101.0, 100, main_buy=60)])  # 收盤 09:05 站上 VWAP
 
     assert [s["label"] for s in signals] == ["主力累計強勢翻多"]
     assert signals[0]["barTs"] == ts(9, 5)
-    assert "主力零軸 09:01" in signals[0]["note"]
+    assert "主力零軸 09:04" in signals[0]["note"]
     assert "VWAP穿越 09:05" in signals[0]["note"]
-    assert "量比 5.28×" in signals[0]["note"]
-    assert "累計 +90 張" in signals[0]["note"]
+    assert "累計 +125 張" in signals[0]["note"]
+
+
+def test_tiny_net_after_a_real_flip_is_blocked(monkeypatch):
+    # 2026-09-23 的 5439 高技：淨額率 -6.67%、累計只有 -3 張，買賣互相抵銷的零頭不算翻空。
+    monitor = new_monitor(monkeypatch)
+    monitor.enable_trace()
+    bars = [bar(10, 0, 99.0, 100, main_buy=10)] + [bar(10, i, 100.0, 100, main_buy=10) for i in range(1, 9)]  # 累計 +90、站上 VWAP
+    dump = bar(10, 9, 99.0, 100, main_sell=100)  # 累計 -10、跌破 VWAP：真的翻負但太小
+    assert feed(monitor, "5439", bars + [dump]) == []
+    assert monitor.trace()[-1]["bear"]["blockers"] == ["主力累計 -10 張未達 -20 張"]
 
 
 def test_flip_can_fire_again_after_the_cumulative_reverses(monkeypatch):
@@ -181,8 +207,9 @@ def test_one_sided_main_force_from_zero_is_not_a_flip(monkeypatch):
     assert feed(monitor, "1582", quiet + [dump]) == []
 
     last = monitor.trace()[-1]
-    assert last["zeroCross"] == "bear" and last["vwapCross"] == "down"
-    assert last["bear"]["blockers"] == ["主力只有賣方量、沒有買方，不算翻空"]
+    # v5：從 0 走出的第一個方向連零軸穿越都不算，根本不會進到同步判定。
+    assert last["firstSign"] == "bear" and last["vwapCross"] == "down"
+    assert last.get("zeroCross") is None and "bear" not in last
 
 
 def test_missing_daily_history_or_thin_main_force_never_fires(monkeypatch):
@@ -287,8 +314,9 @@ def test_inspect_explains_which_filter_blocked_a_synchronized_flip(monkeypatch):
     assert report["mainForce"] == {"rows": 10, "matchedBars": 10}
     assert report["avgDailyVolume"] == 100000.0
     assert report["totals"]["cumNet"] == 310
-    # 第一根主力偏賣就從 0 翻負（跟即時路徑同一套判定），第 10 根才翻正。
-    assert report["zeroCrosses"] == [{"time": "09:01", "dir": "bear"}, {"time": "09:10", "dir": "bull"}]
+    # 第一根主力偏賣：累計從 0 走出的第一個方向（不算翻），第 10 根才真的翻正。
+    assert report["firstSign"] == {"time": "09:01", "dir": "bear"}
+    assert report["zeroCrosses"] == [{"time": "09:10", "dir": "bull"}]
     assert report["vwapCrosses"] == [{"time": "09:10", "dir": "up"}]
     assert report["nearMissCount"] == 1
     blockers = report["nearMisses"][0]["bull"]["blockers"]
@@ -299,6 +327,7 @@ def test_inspect_explains_which_filter_blocked_a_synchronized_flip(monkeypatch):
     assert report["head"][0]["netRatio"] == -1.0
     assert report["head"][0]["volumeRatio"] == round(100 * 270 / 1 / 100000, 2)
     assert [row["time"] for row in report["crossStates"]] == ["09:01", "09:10"]
+    assert report["crossStates"][0]["firstSign"] == "bear"
     assert report["crossStates"][1]["zeroCross"] == "bull" and report["crossStates"][1]["vwapCross"] == "up"
     assert report["trace"][-1]["netRatio"] == round(310 / 490, 4)
     assert saved == []
