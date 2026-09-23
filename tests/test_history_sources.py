@@ -160,6 +160,43 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(source, "finmind")
         self.assertEqual(bars[0]["ts"], ts("2026-09-22", 9, 0))
 
+    def test_end_date_missing_from_finmind_is_filled_by_yahoo_and_merged(self) -> None:
+        # 2026-09-23 實況：FinMind 有昨天、沒有今天（當天分 K 要晚點才有）；以前鏈在 FinMind 就停，
+        # 收盤後校正整天沒有今天的 K 棒。現在缺 end_date 那天就向 Yahoo 只補那一天再合併。
+        yahoo_calls: list[dict] = []
+
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                if params["start_date"] == "2026-09-22":
+                    return {"status": 200, "data": [
+                        {"date": "2026-09-22", "minute": "09:01:00", "open": 100, "max": 101, "min": 99, "close": 100.5, "volume": 1000},
+                    ]}
+                return {"status": 200, "data": []}
+            yahoo_calls.append(dict(params))
+            return yahoo_payload(1000, day="2026-09-23")
+
+        with patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"}), patch.object(module, "FINMIND_MINUTE_VOLUME_UNIT", "lots"):
+            bars, source = fetch_minute_bars_chain("2330", "2026-09-22", "2026-09-23", market="TSE", fetcher=fetcher)
+
+        self.assertEqual(source, "finmind+yahoo")
+        self.assertEqual([module.taipei_trade_date(b["ts"]) for b in bars], ["2026-09-22", "2026-09-23"])
+        self.assertEqual(len(yahoo_calls), 1)
+        self.assertEqual(int(yahoo_calls[0]["period1"]), module._tw_epoch("2026-09-23"))  # 只補今天那一天
+
+    def test_end_date_on_a_weekend_is_not_filled(self) -> None:
+        def fetcher(url, params):
+            if url.startswith(module.FINMIND_DATA_URL):
+                return {"status": 200, "data": [
+                    {"date": "2026-09-25", "minute": "09:01:00", "open": 100, "max": 101, "min": 99, "close": 100.5, "volume": 1000},
+                ]}
+            raise AssertionError("週末沒有交易，不該再打 Yahoo")
+
+        with patch.dict(os.environ, {"FINMIND_TOKEN": "dummy"}), patch.object(module, "FINMIND_MINUTE_VOLUME_UNIT", "lots"):
+            bars, source = fetch_minute_bars_chain("2330", "2026-09-25", "2026-09-26", market="TSE", fetcher=fetcher)
+
+        self.assertEqual(source, "finmind")
+        self.assertEqual(len(bars), 1)
+
     def test_no_token_skips_finmind_and_empty_everywhere_returns_none(self) -> None:
         calls: list[str] = []
 

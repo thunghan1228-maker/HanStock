@@ -51,10 +51,13 @@ class StockHistoryFallbackTests(unittest.TestCase):
         clear_stock_history_cache()
         self.quota = patch.object(module, "history_quota", HistoryQuotaGate())
         self.quota.start()
+        self.reserve = patch.object(module, "INTERACTIVE_RESERVE_BYTES", 0)  # 假 API 的 usage 只剩幾百 bytes，這裡不測保留額度
+        self.reserve.start()
         self.market = patch.object(module, "stock_market", lambda code: "TSE")
         self.market.start()
 
     def tearDown(self) -> None:
+        self.reserve.stop()
         self.quota.stop()
         self.market.stop()
         clear_stock_history_cache()

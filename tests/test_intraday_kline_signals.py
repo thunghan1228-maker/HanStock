@@ -393,7 +393,7 @@ def test_backfill_today_kline_signals_replays_bars_and_records_failures(monkeypa
     ])
     monkeypatch.setattr(module, "_monitor", None)
 
-    def fake_history(code, *, calendar_days=3, service=None, hub=None):
+    def fake_history(code, *, calendar_days=3, service=None, hub=None, **kwargs):
         if code == "2330":
             bars = [
                 bar(9, 0, 100, 102, 99, 101.5),
@@ -427,7 +427,7 @@ def test_backfill_today_kline_signals_is_safe_to_rerun(monkeypatch):
     monkeypatch.setattr(
         stock_history_service,
         "get_stock_history_bars_5m",
-        lambda code, *, calendar_days=3, service=None, hub=None: {
+        lambda code, *, calendar_days=3, service=None, hub=None, **kwargs: {
             "status": "ok",
             "bars": [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)],
         },
@@ -455,7 +455,7 @@ def test_backfill_deletes_existing_kline_signals_before_replaying_when_bars_are_
     monkeypatch.setattr(
         stock_history_service,
         "get_stock_history_bars_5m",
-        lambda code, *, calendar_days=3, service=None, hub=None: {
+        lambda code, *, calendar_days=3, service=None, hub=None, **kwargs: {
             "status": "ok",
             "bars": [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)],
         },
@@ -478,7 +478,7 @@ def test_backfill_does_not_delete_when_no_bars_found_for_the_date(monkeypatch):
     monkeypatch.setattr(
         stock_history_service,
         "get_stock_history_bars_5m",
-        lambda code, *, calendar_days=3, service=None, hub=None: {"status": "ok", "bars": []},
+        lambda code, *, calendar_days=3, service=None, hub=None, **kwargs: {"status": "ok", "bars": []},
     )
     deleted_for = []
     monkeypatch.setattr(module, "delete_kline_signals_for_ticker", lambda trade_date, ticker: deleted_for.append((trade_date, ticker)))
@@ -939,7 +939,7 @@ def test_backfill_replays_with_persist_off_seeds_from_kbars_and_stores_all_bars(
 
     seeds = _yesterday_seed_bars([100.0] * 21)
 
-    def fake_history(code, *, calendar_days=3, service=None, hub=None):
+    def fake_history(code, *, calendar_days=3, service=None, hub=None, **kwargs):
         return {"status": "ok", "bars": seeds + [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)]}
 
     monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})

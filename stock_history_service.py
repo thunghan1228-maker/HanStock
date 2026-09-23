@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -25,6 +26,18 @@ DEFAULT_CALENDAR_DAYS = 14
 MAX_HISTORY_5M = 300  # 5分K每個交易日約54根（09:00-13:30），300根約可涵蓋5個交易日
 MAX_HISTORY_1M = 1500  # 1分K每個交易日約270根，1500根約可涵蓋5個交易日
 RETRY_AFTER_SECONDS = 30.0
+# 永豐一天 500MB 歷史流量：開圖、今日缺口這些「即時」需求剩不到這麼多時就改走 FinMind／Yahoo，
+# 把額度留給收盤後訊號校正（priority="backfill"，全部股票都要今天的 K 棒）。2026-09-23 額度在
+# 13:35 前就被用光，校正抓不到今天的 K 棒，整天 12空／創高黑龍都是 0。
+INTERACTIVE_RESERVE_BYTES = max(0, int(float(os.getenv("HANSTOCK_HISTORY_INTERACTIVE_RESERVE_MB", "100")) * 1_000_000))
+PRIORITY_INTERACTIVE = "interactive"
+PRIORITY_BACKFILL = "backfill"
+
+
+def _quota_error(api: Any, priority: str) -> Optional[str]:
+    if priority == PRIORITY_BACKFILL:
+        return history_quota.check(api)
+    return history_quota.check_background(api, reserve_bytes=INTERACTIVE_RESERVE_BYTES)
 
 
 @dataclass
@@ -37,6 +50,7 @@ class _History5mEntry:
     ok: bool
     error: Optional[str] = None
     source: str = "shioaji"
+    settled: bool = False  # 收盤後（13:35+）抓的，已含「今天」；盤中抓的收盤後要重抓一次
 
 
 # 永豐拿不到、備援也都失敗時，這檔 5 分鐘內不再重打 FinMind/Yahoo（前端每 15 秒輪詢、
@@ -67,13 +81,23 @@ def _code_lock(code: str) -> threading.Lock:
         return lock
 
 
-def _cached(code: str, trade_date: str, start_date: str, now_mono: float) -> Optional[_History5mEntry]:
+def _is_settled(now_ms: int) -> bool:
+    """13:35 收盤後 kbars 對「今天」已經穩定；跟 kline_signal_backfill_collector 的門檻一致。"""
+    now_local = datetime.fromtimestamp(now_ms / 1000, TW_TZ)
+    return (now_local.hour, now_local.minute) >= (13, 35)
+
+
+def _cached(code: str, trade_date: str, start_date: str, now_mono: float, now_ms: Optional[int] = None) -> Optional[_History5mEntry]:
     with _lock:
         entry = _cache.get(code)
     if entry is None or entry.trade_date != trade_date:
         return None
     # 已快取的起日更早（或相同）就足以滿足本次需求。
     if entry.start_date > start_date:
+        return None
+    # 盤中抓的不含「今天」；收盤後要重抓一次把今天含進來，不然 2408 這種盤中開過圖的股票，
+    # 收盤後整天的 K 棒都不見（Hub 又剛好重啟過就什麼都沒有）。
+    if now_ms is not None and _is_settled(now_ms) and not entry.settled:
         return None
     if not entry.ok and now_mono - entry.fetched_at_monotonic >= RETRY_AFTER_SECONDS:
         return None
@@ -135,13 +159,14 @@ def _fetch_history(
     service: Any,
     now_ms: int,
     monotonic_fn: Callable[[], float],
+    priority: str = PRIORITY_INTERACTIVE,
 ) -> _History5mEntry:
     # Share the broker budget with same-day backfill. Requests must not queue
     # behind slow SDK calls while current Hub bars are already available.
     if not _history_slots.acquire(blocking=False):
         return _deferred_history(code, trade_date, start_date, monotonic_fn())
     try:
-        quota_error = history_quota.check(getattr(service, "api", None))
+        quota_error = _quota_error(getattr(service, "api", None), priority)
         if quota_error:
             fallback = _fallback_history(
                 code, trade_date, start_date, now_ms=now_ms, monotonic_fn=monotonic_fn, reason=quota_error,
@@ -197,7 +222,7 @@ def _fetch_history_once(
         return failed("Shioaji 多日 Kbars 暫無資料")
     entry = _store(code, _History5mEntry(
         trade_date=trade_date, start_date=start_date, bars_5m=bars_5m, bars_1m=bars_1m,
-        fetched_at_monotonic=monotonic_fn(), ok=True, error=None,
+        fetched_at_monotonic=monotonic_fn(), ok=True, error=None, settled=_is_settled(now_ms),
     ))
     logger.info("[Stock History5m] %s 多日補齊: start=%s end=%s bars=%d", code, start_date, trade_date, len(bars_5m))
     return entry
@@ -217,8 +242,7 @@ def _trim_to_settled_window(
     第一次查看、當天完全沒被即時追蹤過的股票(Hub也沒有資料)會整天完全看不到今天
     的K棒。收盤前一律不含「今天」，交給即時Hub負責(get_stock_history_bars_5m/1m
     每次都會重新讀Hub，不會有這個快取過期問題)。"""
-    now_local = datetime.fromtimestamp(now_ms / 1000, TW_TZ)
-    today_settled = (now_local.hour, now_local.minute) >= (13, 35)
+    today_settled = _is_settled(now_ms)
     upper_date = trade_date if today_settled else (
         datetime.strptime(trade_date, "%Y-%m-%d").date() - timedelta(days=1)
     ).isoformat()
@@ -261,7 +285,7 @@ def _fallback_history(
     logger.info("[Stock History5m] %s 永豐不可用（%s），改用 %s 補齊: bars=%d", code, reason, source, len(bars_5m))
     return _store(code, _History5mEntry(
         trade_date=trade_date, start_date=start_date, bars_5m=bars_5m, bars_1m=bars_1m,
-        fetched_at_monotonic=monotonic_fn(), ok=True, error=None, source=source,
+        fetched_at_monotonic=monotonic_fn(), ok=True, error=None, source=source, settled=_is_settled(now_ms),
     ))
 
 
@@ -329,6 +353,7 @@ def _today_gap_bars(
     now_ms: int,
     monotonic_fn: Callable[[], float],
     fetch: bool = True,
+    priority: str = PRIORITY_INTERACTIVE,
 ) -> Optional[_TodayGapEntry]:
     """live_first_ts＝Hub 今天第一根的 bar-start ts；None 代表 Hub 今天完全沒有這檔的資料。
     fetch=False（同一檔的多日歷史正被另一個請求抓著）時只回已快取的，不再多打一次 kbars。
@@ -357,7 +382,7 @@ def _today_gap_bars(
         return entry
     try:
         return _fetch_today_gap_once(
-            code, trade_date, service=service, now_ms=now_ms, monotonic_fn=monotonic_fn, previous=entry,
+            code, trade_date, service=service, now_ms=now_ms, monotonic_fn=monotonic_fn, previous=entry, priority=priority,
         )
     finally:
         _history_slots.release()
@@ -371,6 +396,7 @@ def _fetch_today_gap_once(
     now_ms: int,
     monotonic_fn: Callable[[], float],
     previous: Optional[_TodayGapEntry],
+    priority: str = PRIORITY_INTERACTIVE,
 ) -> _TodayGapEntry:
     def failed(error: str) -> _TodayGapEntry:
         fallback = _fallback_today_gap(code, trade_date, now_ms=now_ms, monotonic_fn=monotonic_fn, reason=error)
@@ -390,7 +416,7 @@ def _fetch_today_gap_once(
     logged_in = bool(getattr(getattr(service, "state", None), "logged_in", False))
     if api is None or not logged_in:
         return failed("Shioaji 尚未登入")
-    quota_error = history_quota.check(api)
+    quota_error = _quota_error(api, priority)
     if quota_error:
         return failed(quota_error)
     contract = _resolve_stock_contract(service, code)
@@ -460,8 +486,10 @@ def get_stock_history_bars_5m(
     hub: Any = None,
     now_ms: Optional[int] = None,
     monotonic_fn: Callable[[], float] = time.monotonic,
+    priority: str = PRIORITY_INTERACTIVE,
 ) -> dict[str, Any]:
-    """取得策略用多日 5 分 K；歷史由 Shioaji kbars，今天即時由 Hub 覆蓋。"""
+    """取得策略用多日 5 分 K；歷史由 Shioaji kbars，今天即時由 Hub 覆蓋。
+    priority="backfill"（收盤後訊號校正）可以用到永豐留給它的保留額度，其他呼叫剩不到保留額度就走備援。"""
     code = str(stock_code).strip().upper()
     days = max(3, min(int(calendar_days), 31))
     service = service if service is not None else _default_service()
@@ -478,7 +506,7 @@ def get_stock_history_bars_5m(
         # 歷史 Kbars 仍可能可用；訂閱失敗不阻斷整段歷史。
         subscription = {"requested": [code], "failed": {code: str(exc)}}
 
-    entry = _cached(code, trade_date, start_date, monotonic_fn())
+    entry = _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_value)
     fetch_gap = True
     if entry is None:
         code_lock = _code_lock(code)
@@ -487,7 +515,7 @@ def get_stock_history_bars_5m(
             fetch_gap = False  # 這檔正在抓歷史，這次不再多打一次 kbars
         else:
             try:
-                entry = _cached(code, trade_date, start_date, monotonic_fn())
+                entry = _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_value)
                 if entry is None:
                     entry = _fetch_history(
                         code,
@@ -496,6 +524,7 @@ def get_stock_history_bars_5m(
                         service=service,
                         now_ms=now_value,
                         monotonic_fn=monotonic_fn,
+                        priority=priority,
                     )
             finally:
                 code_lock.release()
@@ -503,7 +532,7 @@ def get_stock_history_bars_5m(
     # 歷史先放、今天開盤到 Hub 第一根之前的缺口次之、即時最後；同 timestamp 由即時 Hub 覆蓋。
     live = list(hub.get_live_bars(code) or [])
     live_first = _first_ts_on(live, trade_date)
-    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap)
+    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_5m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     merged: dict[int, dict[str, Any]] = {}
     for source in (entry.bars_5m, gap_bars, live):
@@ -546,6 +575,7 @@ def get_stock_history_bars_1m(
     hub: Any = None,
     now_ms: Optional[int] = None,
     monotonic_fn: Callable[[], float] = time.monotonic,
+    priority: str = PRIORITY_INTERACTIVE,
 ) -> dict[str, Any]:
     """取得個股多日1分K；歷史由Shioaji kbars，今天即時由Hub覆蓋。跟5分K共用
     同一份多日kbars抓取快取（_fetch_history*一次抓kbars同時產出1分/5分兩種，
@@ -565,7 +595,7 @@ def get_stock_history_bars_1m(
     except Exception as exc:  # noqa: BLE001
         subscription = {"requested": [code], "failed": {code: str(exc)}}
 
-    entry = _cached(code, trade_date, start_date, monotonic_fn())
+    entry = _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_value)
     fetch_gap = True
     if entry is None:
         code_lock = _code_lock(code)
@@ -574,7 +604,7 @@ def get_stock_history_bars_1m(
             fetch_gap = False  # 這檔正在抓歷史，這次不再多打一次 kbars
         else:
             try:
-                entry = _cached(code, trade_date, start_date, monotonic_fn())
+                entry = _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_value)
                 if entry is None:
                     entry = _fetch_history(
                         code,
@@ -583,13 +613,14 @@ def get_stock_history_bars_1m(
                         service=service,
                         now_ms=now_value,
                         monotonic_fn=monotonic_fn,
+                        priority=priority,
                     )
             finally:
                 code_lock.release()
 
     live = list(hub.get_live_bars_1m(code) or [])
     live_first = _first_ts_on(live, trade_date)
-    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap)
+    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_1m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     merged: dict[int, dict[str, Any]] = {}
     for source in (entry.bars_1m, gap_bars, live):
