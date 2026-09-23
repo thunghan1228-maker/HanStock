@@ -9,8 +9,10 @@ from intraday_signal_store import (
     delete_kline_signals_for_ticker,
     find_out_of_session_kline_signals,
     load_latest_signals,
+    load_latest_signals_by_kind,
     load_signals_for_ticker,
     purge_out_of_session_kline_signals,
+    purge_retired_signal_kinds,
     save_intraday_signals,
 )
 
@@ -233,6 +235,39 @@ class LoadLatestSignalsTests(unittest.TestCase):
         full = load_latest_signals("2026-09-22", limit=100, include_chart_kinds=True)
         self.assertEqual(len(full), 100)
         self.assertTrue(all(s["kind"] == "watch12short" for s in full))  # 帶完整資料時早盤那兩筆就被上限吃掉
+
+    def _save_retired_and_live_rows(self):
+        # 2026-09-23 正式環境：oneTwoShort 的程式碼已經整個移除，但移除前寫進 SQLite 的
+        # 182 筆還在，而且它不在 KLINE_SIGNAL_KINDS 裡、chart-only 過濾不認得它，
+        # 所以照樣出現在訊號中心。每個讀取路徑都要當它不存在。
+        save_intraday_signals([
+            {"tradeDate": "2026-09-23", "ticker": "2610", "kind": "oneTwoShort",
+             "label": "12空", "barTs": 1_790_141_100_000, "price": 20.35},
+            {"tradeDate": "2026-09-23", "ticker": "1519", "kind": "oneTwoShort",
+             "label": "12空", "barTs": 1_790_141_100_000, "price": 705.0},
+            {"tradeDate": "2026-09-23", "ticker": "2610", "kind": "combo12Bull",
+             "label": "1+2多", "barTs": 1_790_130_000_000, "price": 20.0},
+        ])
+
+    def test_retired_kinds_are_hidden_from_the_daily_list_even_with_chart_kinds(self):
+        self._save_retired_and_live_rows()
+        self.assertEqual([s["kind"] for s in load_latest_signals("2026-09-23", limit=50)], ["combo12Bull"])
+        full = load_latest_signals("2026-09-23", limit=50, include_chart_kinds=True)
+        self.assertEqual([s["kind"] for s in full], ["combo12Bull"])
+
+    def test_retired_kinds_are_hidden_from_by_kind_and_per_ticker_loaders(self):
+        self._save_retired_and_live_rows()
+        self.assertEqual(load_latest_signals_by_kind("2026-09-23", "oneTwoShort"), [])
+        self.assertEqual(
+            [s["kind"] for s in load_signals_for_ticker("2610", "2026-09-23")],
+            ["combo12Bull"],
+        )
+
+    def test_purge_retired_kinds_deletes_only_those_rows_and_returns_count(self):
+        self._save_retired_and_live_rows()
+        self.assertEqual(purge_retired_signal_kinds(), 2)
+        self.assertEqual(purge_retired_signal_kinds(), 0)
+        self.assertEqual(len(load_signals_for_ticker("2610", "2026-09-23")), 1)
 
 
 class DeleteKlineSignalsForTickerTests(unittest.TestCase):
