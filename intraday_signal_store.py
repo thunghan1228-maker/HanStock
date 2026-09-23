@@ -28,6 +28,33 @@ ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
 INSTANT_LARGE_KINDS = {"instantLargeBuy", "instantLargeSell"}
 COOLDOWN_KINDS = INSTANT_LARGE_KINDS | {"mainForceFlipBull", "mainForceFlipBear"}
 EARLY_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000
+# 已經整個從程式碼移除的訊號 kind。程式碼刪了，Railway SQLite 裡移除前寫進去的列還在，
+# 而且這些 kind 不在 KLINE_SIGNAL_KINDS 裡、當日總表的 chart-only 過濾根本不認得它們，
+# 所以 2026-09-23 那 182 筆 oneTwoShort（標籤「12空」）移除後照樣出現在訊號中心。
+# 這裡讓每個讀取路徑都當它們不存在，並在程序第一次碰資料庫時把舊列刪掉。
+RETIRED_SIGNAL_KINDS = {"oneTwoShort"}
+_retired_purged = False
+
+
+def purge_retired_signal_kinds() -> int:
+    """刪掉 RETIRED_SIGNAL_KINDS 所有交易日的列；回傳刪了幾筆。表要先存在。"""
+    kinds = tuple(sorted(RETIRED_SIGNAL_KINDS))
+    if not kinds:
+        return 0
+    placeholders = ", ".join("?" for _ in kinds)
+    with get_connection() as connection:
+        cursor = connection.execute(
+            f"DELETE FROM intraday_signals WHERE kind IN ({placeholders})",
+            kinds,
+        )
+        return max(0, int(cursor.rowcount or 0))
+
+
+def _retired_kinds_clause() -> tuple[str, tuple[str, ...]]:
+    kinds = tuple(sorted(RETIRED_SIGNAL_KINDS))
+    if not kinds:
+        return "", ()
+    return f" AND kind NOT IN ({', '.join('?' for _ in kinds)})", kinds
 
 
 def _ensure_table() -> None:
@@ -69,6 +96,12 @@ def _ensure_table() -> None:
             ON intraday_signals (kind, trade_date, bar_ts DESC)
             """
         )
+    global _retired_purged
+    if not _retired_purged:
+        # 一個程序只跑一次：部署後第一個碰到資料庫的請求就把移除前殘留的舊列清掉，
+        # 不用另外記得去打清除端點。
+        _retired_purged = True
+        purge_retired_signal_kinds()
 
 
 def _clean_signal(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -236,6 +269,9 @@ def load_latest_signals(
     limit = max(1, min(int(limit), 20000))
     where = "trade_date = ?"
     params: list[Any] = [trade_date]
+    retired_clause, retired_kinds = _retired_kinds_clause()
+    where += retired_clause
+    params.extend(retired_kinds)
     if market_only:
         where += " AND kind = 'break15kLow'"
     else:
@@ -263,6 +299,8 @@ def load_latest_signals_by_kind(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     _ensure_table()
+    if kind in RETIRED_SIGNAL_KINDS:
+        return []
     # 族群瞬間大單在活躍盤勢中一日可能超過 500 筆。這裡若先截成
     # 500，網站即使要求完整交易日也只能拿到最後一小段，早盤紀錄會
     # 看似消失。公開 API 仍有自己的上限；儲存層允許一次讀回完整日。
@@ -293,6 +331,10 @@ def load_signals_for_ticker(
     limit = max(1, min(int(limit), 2000))
     clauses = ["ticker = ?"]
     params: list[Any] = [ticker]
+    retired_clause, retired_kinds = _retired_kinds_clause()
+    if retired_clause:
+        clauses.append(retired_clause[len(" AND "):])
+        params.extend(retired_kinds)
     if trade_date:
         clauses.append("trade_date = ?")
         params.append(trade_date)
