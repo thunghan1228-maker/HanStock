@@ -1,6 +1,8 @@
-"""收盤後背景收集器：依賴official_daily_bars.py先把今天的bars_1d寫好，對43個官方族群
-股票跑disposition_prediction.py的14款判定，讓處置股預測結果每天自動更新，不用手動
-觸發。一天只需要真正跑一次（收盤價當天不會再變），偵測到今天已經跑過就跳過。"""
+"""收盤後背景收集器：依賴official_daily_bars.py先把今天的bars_1d寫好，收集FinMind
+Phase 2(本益比/淨值比/融資融券)+Phase 3(當沖成交量/借券賣出成交量)資料、抓產業分類，
+對43個官方族群股票跑disposition_prediction.py的14款判定，讓處置股預測結果每天自動
+更新，不用手動觸發。一天只需要真正跑一次（收盤價當天不會再變），偵測到今天已經跑過
+就跳過。"""
 
 from __future__ import annotations
 
@@ -12,9 +14,11 @@ from datetime import datetime, timedelta, timezone
 
 from daily_bars_store import daily_bars_storage_status
 from disposition_fundamentals_assembly import build_fundamentals_by_code
+from disposition_phase3_assembly import build_phase3_by_code
 from disposition_prediction import official_group_codes, run_universe_for_date
 from finmind_broker_branch_collector import fetch_industry_by_code
 from finmind_disposition_fundamentals_collector import collect_trade_date as collect_finmind_fundamentals
+from finmind_disposition_phase3_collector import collect_trade_date as collect_finmind_phase3
 
 logger = logging.getLogger("hanstock.disposition_prediction_collector")
 TW_TZ = timezone(timedelta(hours=8))
@@ -43,7 +47,11 @@ def collect_once(*, now: datetime | None = None) -> dict:
         logger.warning("抓產業分類失敗，這次先不套用同類股比較", exc_info=True)
         industry_by_code = {}
     fundamentals_result = collect_finmind_fundamentals(trade_date, list(codes))
+    phase3_result = collect_finmind_phase3(trade_date, list(codes))
     fundamentals_by_code = build_fundamentals_by_code(trade_date, codes, industry_by_code=industry_by_code)
+    phase3_by_code = build_phase3_by_code(trade_date, codes)
+    for code, extra in phase3_by_code.items():
+        fundamentals_by_code.setdefault(code, {}).update(extra)
     results = run_universe_for_date(
         trade_date, codes=codes, industry_by_code=industry_by_code, fundamentals_by_code=fundamentals_by_code,
     )
@@ -52,6 +60,7 @@ def collect_once(*, now: datetime | None = None) -> dict:
     return {
         "status": "ok", "tradeDate": trade_date, "stockCount": len(results), "firedCount": fired_count,
         "fundamentals": fundamentals_result,
+        "phase3": phase3_result,
     }
 
 
