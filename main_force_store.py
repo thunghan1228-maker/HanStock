@@ -268,19 +268,31 @@ def load_main_force_ranking(
     trade_date: str,
     interval: str = "5m",
     limit: int = 30,
+    codes: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     """依交易日彙總主力累計買賣超排行；只讀取既有已收集資料，不新增任何即時訂閱。
 
     strengthPct/holderLabel 是官方大戶力公式（大單淨額÷累計成交額×100%，
     見classify_holder_strength）；total_amount欄位上線前的舊資料兩者都會
-    是None，代表當時沒有累計成交額資料可以算，不是0%。"""
+    是None，代表當時沒有累計成交額資料可以算，不是0%。
+
+    codes 有給就只排這些代號：主力副圖收集器會追蹤任何開過圖的股票（含 ETF），對外的
+    排行端點要限縮在 stock_groups 的官方族群範圍。limit 上限 1000（不是 200）：族群大戶力
+    要一次拿到全市場排行，夾在 200 會漏掉排名較後面的族群成員。"""
     if interval not in {"1m", "5m"}:
         raise ValueError(f"不支援 interval: {interval}")
     _ensure_table()
-    limit = max(1, min(int(limit), 200))
+    limit = max(1, min(int(limit), 1000))
+    code_clause = ""
+    code_params: list[str] = []
+    if codes is not None:
+        code_params = sorted({str(code).strip().upper() for code in codes if str(code).strip()})
+        if not code_params:
+            return []
+        code_clause = f" AND b.stock_code IN ({', '.join('?' for _ in code_params)})"
     with database.get_connection() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT b.stock_code,
                    SUM(b.main_net_volume) AS net_volume,
                    SUM(b.main_buy_volume) AS buy_volume,
@@ -292,12 +304,12 @@ def load_main_force_ranking(
                    s.stock_name AS stock_name
             FROM main_force_bars b
             LEFT JOIN stocks s ON s.stock_code = b.stock_code
-            WHERE b.trade_date = ? AND b.interval = ?
+            WHERE b.trade_date = ? AND b.interval = ?{code_clause}
             GROUP BY b.stock_code
             ORDER BY ABS(SUM(b.main_net_volume)) DESC
             LIMIT ?
             """,
-            (trade_date, interval, limit),
+            (trade_date, interval, *code_params, limit),
         ).fetchall()
     from stock_trading_eligibility import get_trading_eligibility
 

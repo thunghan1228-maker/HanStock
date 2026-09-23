@@ -224,6 +224,21 @@ class MainForceStoreTests(unittest.TestCase):
     def test_ranking_defaults_to_empty_when_no_data_for_date(self):
         self.assertEqual(load_main_force_ranking("2000-01-01"), [])
 
+    def test_ranking_codes_filter_keeps_only_listed_codes(self):
+        # 收集器會追蹤任何開過圖的股票（含 ETF），排行端點用 codes 限縮在官方族群範圍。
+        base_ts = BASE_TS
+        trade_date = taipei_trade_date(base_ts)
+        for code, buy in (("2330", 100), ("00632R", 500), ("00991A", 400)):
+            save_main_force_bars(code, "5m", [{
+                "ts": base_ts, "main_buy_volume": buy, "main_sell_volume": 0,
+                "main_force_available": True,
+            }])
+        unfiltered = [row["code"] for row in load_main_force_ranking(trade_date, interval="5m")]
+        self.assertEqual(unfiltered, ["00632R", "00991A", "2330"])
+        filtered = [row["code"] for row in load_main_force_ranking(trade_date, interval="5m", codes={"2330", "2317"})]
+        self.assertEqual(filtered, ["2330"])
+        self.assertEqual(load_main_force_ranking(trade_date, interval="5m", codes=set()), [])
+
     def test_ranking_includes_official_strength_pct_and_label(self):
         base_ts = BASE_TS
         trade_date = taipei_trade_date(base_ts)
