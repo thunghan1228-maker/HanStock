@@ -12,6 +12,15 @@
 多少量」——真正即時的部分是「目前成交量」，不是這個門檻本身；門檻本身收盤後算一次
 就夠用到下一個交易日收盤為止。
 
+差幅門檻(跟全體平均比)不是在「最低倍數/百分比」這一點測一次就決定有沒有解：官方原文
+檢查的是「當天實際達成的倍數/百分比」跟peer_avg的差幅，不是固定用5倍或10%去檢查。
+只要把倍數/百分比推得夠高，差幅條件對任何有限的peer_avg幾乎都找得到解，所以peer_avg
+剛好落在「最低倍數」附近±差幅門檻這個「死區」時，正確的反推門檻是peer_avg+差幅門檻
+（比最低倍數更高），不是直接視為無解——見_min_ratio_satisfying_diff_gate()。第九款
+另外還有「6日均量/60日均量>=5倍」這個獨立子條件(跟「當日量/60日均量>=5倍」是OR的
+關係，兩個子條件各自反推門檻、取較容易達成的)，用「明天」的6日均量(前5個已知交易日
++明天的量)反推，跟clause_10的累積週轉率子條件是同樣的線性反推結構。
+
 跟參考的第三方工具（盤中即時、用還沒收盤的價格持續重算「今天」會不會觸發）不一樣：
 本模組收盤後才跑一次算門檻，不是自己另外接tick級即時資料重算全部邏輯——這是刻意的
 架構選擇，門檻計算維持跟disposition_prediction.py整套收盤後批次一致，即時性交給
@@ -142,17 +151,41 @@ class VolumeGapPrediction:
     detail: str  # 人類可讀說明
 
 
-def clause_9_threshold_volume(avg_60d_volume: float | None, peer_avg_ratio_60d: float | None) -> float | None:
-    """算出「當日量」子條件要多少成交量(張)才會觸發第九款：today_volume/avg60>=5，
-    且差幅(跟全體平均放大倍數)>=4。avg_60d_volume是不含當天的最近60個營業日日均量。
-    差幅在門檻值5.0上檢查——連差幅在5.0這個門檻上都不夠的話，代表無論量衝到多高，
-    差幅子條件都不會過，直接回傳None（近似：真正的差幅要看當天實際放大倍數，但5.0
-    已經是最低要求，用門檻值本身檢查是保守但一致的做法）。"""
+def _min_ratio_satisfying_diff_gate(min_ratio: float, peer_avg: float | None, min_diff: float) -> float:
+    """「數值本身要>=min_ratio」且「差幅|數值-peer_avg|>=min_diff」兩個條件都要滿足時，
+    回傳最小的合格數值。peer_avg是None代表沒有同類/全體資料可比，直接用min_ratio。
+    差幅條件不是在min_ratio這一點測一次就決定有沒有解——只要把數值推得夠高，差幅
+    條件對任何有限的peer_avg都找得到解，所以min_ratio附近的差幅不夠只代表門檻要
+    墊高到peer_avg+min_diff，不是無解（不會發生：官方原文檢查的是「實際達成值」
+    跟peer_avg的差幅，不是固定在min_ratio這一點檢查）。"""
+    if peer_avg is None or abs(min_ratio - peer_avg) >= min_diff:
+        return min_ratio
+    return peer_avg + min_diff
+
+
+def clause_9_threshold_volume(
+    avg_60d_volume: float | None,
+    peer_avg_ratio_60d: float | None,
+    *,
+    cum_volume_prior_5d_lots: float | None = None,
+    peer_avg_ratio_6d_60d: float | None = None,
+) -> float | None:
+    """算出第九款成交量門檻(張)：官方原文兩個子條件是OR關係(符合其一即觸發)，各自
+    反推門檻後取較容易達成(較小)的那個。子條件一：當日量/60日均量>=5倍(差幅>=4，
+    用_min_ratio_satisfying_diff_gate找出最小合格倍數，peer_avg卡在死區時門檻會
+    墊高，不是直接無解)。子條件二：明天的6日均量/60日均量>=5倍(差幅>=4)——明天
+    6日均量=(前5個已知交易日累積量cum_volume_prior_5d_lots + 明天的量)/6，一樣
+    反推明天的量。avg_60d_volume是最近60個營業日(含trade_date，近似明天的60日
+    均量)日均量。cum_volume_prior_5d_lots沒給時只算子條件一(呼叫端沒有這個資料
+    時的退回，例如歷史不足5天)。"""
     if not avg_60d_volume or avg_60d_volume <= 0:
         return None
-    if peer_avg_ratio_60d is not None and not _diff_ok(5.0, peer_avg_ratio_60d, 4.0):
-        return None
-    return 5.0 * avg_60d_volume
+    ratio1 = _min_ratio_satisfying_diff_gate(5.0, peer_avg_ratio_60d, 4.0)
+    candidates = [ratio1 * avg_60d_volume]
+    if cum_volume_prior_5d_lots is not None:
+        ratio2 = _min_ratio_satisfying_diff_gate(5.0, peer_avg_ratio_6d_60d, 4.0)
+        candidates.append(6.0 * ratio2 * avg_60d_volume - cum_volume_prior_5d_lots)
+    return min(candidates)
 
 
 def clause_10_threshold_volume(
@@ -160,19 +193,18 @@ def clause_10_threshold_volume(
     turnover_peer_avg_pct: float | None, cum_turnover_peer_avg_pct: float | None,
 ) -> tuple[float, str] | None:
     """算出成交量(張)要多少才會同時滿足第十款兩個子條件(AND，缺一不可)：當日週轉率
-    >=10%、6日累積週轉率(前5個營業日已知量+當天量)>50%——回傳(門檻張數,是哪個子條件
-    卡關)，取兩個各自反推出來的門檻量較大(較嚴格)的那個。shares_outstanding_lots=
-    發行股數換算成張(市值/收盤價/1000近似，股本短期內視為常數)；
-    cum_volume_prior_5d_lots=不含當天的前5個營業日累積成交量(張)。差幅檢查同
-    clause_9_threshold_volume的近似邏輯。"""
+    >=10%(差幅>=5)、6日累積週轉率(前5個營業日已知量+當天量)>50%(差幅>=40)——回傳
+    (門檻張數,是哪個子條件卡關)，取兩個各自反推出來的門檻量較大(較嚴格)的那個。
+    差幅門檻用_min_ratio_satisfying_diff_gate找最小合格百分比，peer_avg卡在死區
+    時門檻百分比會墊高，不是直接無解。shares_outstanding_lots=發行股數換算成張
+    (市值/收盤價/1000近似，股本短期內視為常數)；cum_volume_prior_5d_lots=不含
+    當天的前5個營業日累積成交量(張)。"""
     if not shares_outstanding_lots or shares_outstanding_lots <= 0:
         return None
-    if turnover_peer_avg_pct is not None and not _diff_ok(10.0, turnover_peer_avg_pct, 5.0):
-        return None
-    if cum_turnover_peer_avg_pct is not None and not _diff_ok(50.0, cum_turnover_peer_avg_pct, 40.0):
-        return None
-    volume_for_today_turnover = shares_outstanding_lots * 0.10
-    volume_for_cum_turnover = shares_outstanding_lots * 0.50 - cum_volume_prior_5d_lots
+    today_turnover_ratio = _min_ratio_satisfying_diff_gate(10.0, turnover_peer_avg_pct, 5.0)
+    cum_turnover_ratio = _min_ratio_satisfying_diff_gate(50.0, cum_turnover_peer_avg_pct, 40.0)
+    volume_for_today_turnover = shares_outstanding_lots * today_turnover_ratio / 100.0
+    volume_for_cum_turnover = shares_outstanding_lots * cum_turnover_ratio / 100.0 - cum_volume_prior_5d_lots
     if volume_for_cum_turnover > volume_for_today_turnover:
         return volume_for_cum_turnover, "6日累積週轉率"
     return volume_for_today_turnover, "當日週轉率"
@@ -190,6 +222,7 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
     盡量用即時Hub資料覆蓋，沒有即時資料時才退回用這個。"""
     snapshot = build_market_snapshot(trade_date)
     peer_avg_ratio_60d = snapshot.peer_avg.get("volume_ratio_60d")
+    peer_avg_ratio_6d_60d = snapshot.peer_avg.get("avg_volume_ratio_6d_60d")
     series_by_code = load_market_series(trade_date)
     fundamentals_by_code = build_fundamentals_by_code(trade_date, codes)
     turnover_peer_avg = next(
@@ -208,10 +241,16 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
         if metrics is None or metrics.volume is None or series is None:
             continue
         reference_volume = metrics.volume
+        # 前5個已知交易日累積量：第九款子條件二(明天6日均量)、第十款(明天6日累積
+        # 週轉率)都要用到，這裡算一次共用，不用各自重算。
+        cum_volume_prior_5d_lots = sum(series.volumes[-5:]) if len(series.volumes) >= 5 else None
 
         if len(series.volumes) >= 60:
             avg60 = sum(series.volumes[-60:]) / 60
-            threshold9 = clause_9_threshold_volume(avg60, peer_avg_ratio_60d)
+            threshold9 = clause_9_threshold_volume(
+                avg60, peer_avg_ratio_60d,
+                cum_volume_prior_5d_lots=cum_volume_prior_5d_lots, peer_avg_ratio_6d_60d=peer_avg_ratio_6d_60d,
+            )
             if threshold9 is not None and reference_volume >= threshold9 * VOLUME_GAP_INCLUDE_RATIO:
                 gap = threshold9 - reference_volume
                 detail = "量已達門檻" if gap <= 0 else f"還差約{gap:.0f}張（門檻{threshold9:.0f}張）"
@@ -223,8 +262,7 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
         fundamentals = fundamentals_by_code.get(code) or {}
         shares_outstanding = fundamentals.get("shares_outstanding")
         shares_outstanding_lots = shares_outstanding / 1000 if shares_outstanding else None
-        if shares_outstanding_lots is not None and len(series.volumes) >= 5:
-            cum_volume_prior_5d_lots = sum(series.volumes[-5:])
+        if shares_outstanding_lots is not None and cum_volume_prior_5d_lots is not None:
             result10 = clause_10_threshold_volume(
                 shares_outstanding_lots, cum_volume_prior_5d_lots, turnover_peer_avg, cum_turnover_peer_avg,
             )
