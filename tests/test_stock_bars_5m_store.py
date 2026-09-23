@@ -9,6 +9,7 @@ from database import get_connection, initialize_database
 from otc_index import OTC_INDEX_HUB_CODE, TW_TZ
 from otc_index_store import save_index_bars_5m
 from stock_bars_5m_store import (
+    bars_5m_coverage_complete,
     load_stock_bars_5m_before,
     prune_stock_bars_5m,
     save_stock_bars_5m,
@@ -99,6 +100,43 @@ class StockBars5mStoreTests(unittest.TestCase):
         self.assertEqual(self._count("2330"), 1)
         self.assertEqual(self._count(OTC_INDEX_HUB_CODE), 1)
         self.assertEqual(load_stock_bars_5m_before("2330", "2026-09-18", 5)[0]["close"], 100.0)
+
+    def _full_session_bars(self, day: int, close: float = 100.0):
+        """09:00~13:25每5分鐘一根、共54根，模擬即時路徑整天連續追到的一天。"""
+        bars = []
+        minute = 0
+        while minute <= 4 * 60 + 25:  # 09:00 起算的分鐘數，到 13:25 為止
+            hour, mins = 9 + minute // 60, minute % 60
+            bars.append(_bar(day, hour, mins, close))
+            minute += 5
+        return bars
+
+    def test_coverage_complete_true_for_a_full_uninterrupted_session(self):
+        save_stock_bars_5m("2330", self._full_session_bars(18))
+        self.assertTrue(bars_5m_coverage_complete("2330", "2026-09-18"))
+
+    def test_coverage_incomplete_when_no_bars_for_that_day(self):
+        self.assertFalse(bars_5m_coverage_complete("2330", "2026-09-18"))
+
+    def test_coverage_incomplete_when_a_middle_bar_is_missing(self):
+        bars = self._full_session_bars(18)
+        del bars[30]  # 拿掉中間一根，模擬晚訂閱恢復後中途斷過的缺口
+        save_stock_bars_5m("2330", bars)
+        self.assertFalse(bars_5m_coverage_complete("2330", "2026-09-18"))
+
+    def test_coverage_incomplete_when_first_bar_is_not_the_open(self):
+        bars = self._full_session_bars(18)[2:]  # 09:10 才開始追到，不是真正的09:00
+        save_stock_bars_5m("2330", bars)
+        self.assertFalse(bars_5m_coverage_complete("2330", "2026-09-18"))
+
+    def test_coverage_incomplete_when_tracking_stopped_before_the_close(self):
+        bars = self._full_session_bars(18)[:-5]  # 提前停在中途，沒追到收盤前最後一根
+        save_stock_bars_5m("2330", bars)
+        self.assertFalse(bars_5m_coverage_complete("2330", "2026-09-18"))
+
+    def test_coverage_only_checks_the_requested_trade_date(self):
+        save_stock_bars_5m("2330", self._full_session_bars(17))  # 完整的是前一天，不是要問的那天
+        self.assertFalse(bars_5m_coverage_complete("2330", "2026-09-18"))
 
 
 if __name__ == "__main__":

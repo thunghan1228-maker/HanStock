@@ -27,6 +27,7 @@ from ma_alignment_score import compute_ma_alignment_score
 from market_data_hub import BAR_INTERVAL_5M_MS
 from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_bars_5m_store import (
+    bars_5m_coverage_complete,
     load_stock_bars_5m_before,
     prune_stock_bars_5m,
     save_stock_bars_5m,
@@ -703,7 +704,15 @@ def backfill_today_kline_signals(
     09:00起走勢，用它重算才是準的；只有ONCE_PER_DAY_KINDS去重、不覆蓋
     的話，這筆錯的舊紀錄會一直卡住，回補等於白做。只有當這次確實抓到
     今天的bars時才會刪除重寫，避免用一次抓資料失敗/沒資料的結果把既有
-    正確資料整個清空又補不回來。"""
+    正確資料整個清空又補不回來。
+
+    524檔逐檔打歷史kbars很吃永豐的歷史流量額度（2026-09-23實測一天500MB額度
+    在收盤前就會用完），使用者要求降低「全市場都掃一遍」的頻率。頻率本身沒得降
+    ——每天都要跑，訊號才不會整天停在錯的基準；能降的是規模：這裡先看
+    bars_5m_coverage_complete，這檔今天從開盤到收盤最後一根都連續追到了（即時
+    路徑沒有晚訂閱、沒有缺根）就直接跳過，不打任何外部API；只有真的有缺口
+    （晚訂閱、中途斷線、完全沒追蹤到）的股票才重抓歷史kbars。大多數股票多數
+    交易日即時路徑其實整天都追得到，實際會重抓的通常是一小部分。"""
     from datetime import datetime
 
     from otc_index import TW_TZ
@@ -716,10 +725,20 @@ def backfill_today_kline_signals(
     bars_replayed = 0
     signals_emitted = 0
     bars_stored = 0
+    codes_skipped_complete = 0
     failures: list[dict[str, str]] = []
     flush_pending_bars_5m(force=True)
     for code in codes:
         try:
+            if bars_5m_coverage_complete(code, trade_date):
+                # 即時路徑今天從開盤到收盤最後一根都連續追到了（沒有晚訂閱、沒有缺根），
+                # 當天即時算出的訊號本來就是對的，不用再打一次歷史 kbars 重抓／重播一遍——
+                # 全市場524檔逐檔重抓很吃永豐的歷史流量額度，只有真的有缺口的股票才需要。
+                # 完整的不用打任何外部 API，不需要延遲；跳過的檔數越多，這一輪收盤後校正
+                # 整體要花的時間跟吃掉的額度也跟著降低。
+                codes_skipped_complete += 1
+                processed += 1
+                continue
             # priority=backfill：永豐額度留給收盤後校正的那一份也可以用（開圖等即時需求剩不到保留額度就走備援）
             result = get_stock_history_bars_5m(code, calendar_days=3, service=service, hub=hub, priority="backfill")
             all_bars = sorted(result.get("bars", []), key=lambda b: int(b["ts"]))
@@ -754,6 +773,7 @@ def backfill_today_kline_signals(
         "tradeDate": trade_date,
         "codeCount": len(codes),
         "codesProcessed": processed,
+        "codesSkippedComplete": codes_skipped_complete,
         "barsReplayed": bars_replayed,
         "signalsEmitted": signals_emitted,
         "barsStored": bars_stored,

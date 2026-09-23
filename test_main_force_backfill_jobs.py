@@ -15,6 +15,7 @@ from main_force_backfill_jobs import (
     request_main_force_backfill,
     process_main_force_backfill_job,
 )
+import main_force_backfill_jobs as main_force_backfill_jobs_module
 from main_force_store import save_main_force_bars, load_main_force_bars
 from stock_bar_bootstrap import _HistoryEntry, _store_entry, _cached_entry, clear_stock_bar_bootstrap_cache
 from otc_index import TW_TZ
@@ -231,6 +232,39 @@ class MainForceBackfillJobTests(unittest.TestCase):
         for date in ("2026-09-09", "2020-01-01"):
             with self.assertRaises(ValueError):
                 request_main_force_backfill("2455", date, now=self.now)
+
+    def test_request_for_a_stock_outside_the_43_groups_does_not_queue_a_job(self):
+        # 使用者 2026-09-23：主力歷史每日回補只補我們的43個官方族群，其他股票不要回補。
+        # "9999"不在任何族群裡；不該建立任何工作，也不該碰資料庫（不然使用者隨便搜尋
+        # 一檔股票查歷史就又排進了永久追蹤的回補佇列）。
+        result = request_main_force_backfill("9999", "2026-09-08", now=self.now)
+        self.assertEqual(result, {"queued": False, "status": "not_in_official_groups",
+                                   "attempts": 0, "nextAttemptAt": None, "result": None})
+        self.assertEqual(list_main_force_backfill_jobs("9999"), [])
+        self.assertIsNone(process_main_force_backfill_job(now=self.now, backfill=Mock()))
+
+    def test_legacy_job_outside_the_43_groups_is_skipped_without_calling_shioaji(self):
+        # 改版前就排進去的（或當時使用者開圖排的）非族群工作：撈到要直接標記終止、
+        # 完全不打Shioaji，讓殘留的pending工作自然清掉，不會一直吃額度。
+        queue_backfill_for_codes(["9999"], ["2026-09-08"], now=self.now)
+        never_called = Mock(side_effect=AssertionError("不該打Shioaji"))
+
+        result = process_main_force_backfill_job(now=self.now, backfill=never_called)
+
+        self.assertEqual(result["status"], "skipped_not_in_group")
+        self.assertEqual(result["code"], "9999")
+        never_called.assert_not_called()
+        jobs = list_main_force_backfill_jobs("9999")
+        self.assertEqual(jobs[0]["status"], "skipped_not_in_group")
+        # 已經是終止狀態，不會再被撈到重跑。
+        self.assertIsNone(process_main_force_backfill_job(now=self.now + 1, backfill=never_called))
+
+    def test_batch_and_explicit_queueing_for_group_stocks_are_unaffected(self):
+        # "2455"是43個官方族群成員之一：既有的批次/明確要求排隊行為不受這次限縮影響。
+        self.assertTrue(main_force_backfill_jobs_module._in_official_groups("2455"))
+        self.assertTrue(request_main_force_backfill("2455", "2026-09-08", now=self.now)["queued"])
+        self.assertEqual(process_main_force_backfill_job(now=self.now, backfill=lambda *a, **kw: dict(self.success))["status"],
+                         "complete")
 
     def test_endpoint_queues_partial_day_but_readonly_never_queues(self):
         # Execute the actual endpoint without starting the unrelated quote services.
