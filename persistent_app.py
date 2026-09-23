@@ -32,7 +32,7 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
-from disposition_gap_prediction import build_gap_predictions, build_volume_gap_predictions
+from disposition_gap_prediction import build_clause_11_gap_predictions, build_gap_predictions, build_volume_gap_predictions
 from disposition_prediction import check_disposition_trigger, load_clause_log_for_date, official_group_code_names
 from disposition_prediction_collector import collect_once as run_disposition_prediction_once, start_disposition_prediction_collector
 from market_data_hub import get_market_data_hub
@@ -476,7 +476,13 @@ def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]
     只在講一個殘留限制：視窗涵蓋Phase 3上線前的舊日期時，那幾天無法回溯確認。gapPrediction
     是「差距預測」：連續2個營業日命中第一款(還差1次就觸發路徑一)的股票，反推明天收盤價
     門檻——用今天已經收盤定案的資料算「明天」的門檻，不是像第三方工具那樣盤中即時重算
-    「今天」；目前只做第一款(最常見、且不需要基本面等額外資料源就能反推收盤價門檻)。"""
+    「今天」；只做第一款(最常見、且不需要基本面等額外資料源就能反推收盤價門檻)。
+    priceExtremeWatch是第十一款(6日收盤價價差、創6日新高或新低)的差距預測，範圍是全部
+    524檔(不像gapPrediction侷限在today已經觸發某款的股票)，因為第十一款單日獨立判定、
+    不算入第六條累積路徑(跟九/十款一樣)，沒觸發過也可能正在接近門檻；反推出來的門檻若
+    超過台股單日漲跌幅限制(±10%)代表明天一天到不了，不列入。第九/十款(成交量類)的差距
+    預測改走專門的/api/hub/disposition-risk/volume-watch端點，因為那個需要比對盤中
+    即時成交量，跟這個端點的600秒快取不合。"""
     date = _validated_trade_date(trade_date)
     names = official_group_code_names()
     clause_log = load_clause_log_for_date(date)
@@ -508,7 +514,23 @@ def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]
             } if gap else None,
         })
     results.sort(key=lambda r: (r["accumulation"] is None, -len(r["firedToday"])))
-    return {"status": "ok", "tradeDate": date, "count": len(results), "results": results}
+    price_extreme_watch = [
+        {
+            "code": p.code,
+            "name": names.get(p.code, p.code),
+            "clause": p.clause,
+            "direction": p.direction,
+            "thresholdClose": p.threshold_close,
+            "changePctFromToday": p.change_pct_from_today,
+            "easy": p.easy,
+            "detail": p.detail,
+        }
+        for p in build_clause_11_gap_predictions(date, set(names.keys()))
+    ]
+    return {
+        "status": "ok", "tradeDate": date, "count": len(results), "results": results,
+        "priceExtremeWatch": price_extreme_watch,
+    }
 
 
 @app.get("/api/hub/disposition-risk/run-today")

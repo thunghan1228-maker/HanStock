@@ -2,7 +2,9 @@
 收盤價門檻反推(32%/25%+價差兩個子條件挑較容易達成的、正確處理漲跌方向)、差幅門檻
 過濾掉不會用到的子條件、easy標籤跟人類可讀說明。第九/十款的成交量門檻：不依賴當天
 資料(所以下一個交易日整天有效)、差幅在門檻值本身上檢查、第十款兩個子條件(AND)取
-較嚴格的那個。"""
+較嚴格的那個。第十一款：創6日新高/新低兩條路徑各自反推、級距門檻逐級距掃描收斂
+(不能簡單套不動點迭代，"創新低"方向會在級距邊界震盪)、超過台股單日漲跌幅限制的
+門檻不列入結果。"""
 
 from __future__ import annotations
 
@@ -16,12 +18,17 @@ import database
 from database import get_connection, initialize_database
 from disposition_fundamentals_store import save_fundamentals_rows
 from disposition_gap_prediction import (
+    _build_clause_11_prediction,
     _build_prediction,
     _clause_1_threshold,
+    _solve_clause_11_down,
+    _solve_clause_11_up,
+    build_clause_11_gap_predictions,
     build_gap_predictions,
     build_volume_gap_predictions,
     clause_9_threshold_volume,
     clause_10_threshold_volume,
+    clause_11_threshold_close,
     find_path1_near_miss,
 )
 from disposition_prediction import save_clause_results
@@ -382,6 +389,139 @@ class BuildVolumeGapPredictionsTests(unittest.TestCase):
         self.assertEqual(prediction.clause, "十")
         self.assertAlmostEqual(prediction.threshold_volume, 1300.0)
         self.assertAlmostEqual(prediction.reference_volume, 800.0)
+
+
+class Clause11SolveExtremeThresholdTests(unittest.TestCase):
+    def test_up_within_same_tier(self):
+        # tier(1550)=1，threshold=300；candidate=max(1550,1550+300)=1850，
+        # 1850仍在同一級距(1000~2000)內，不用跨級距。
+        self.assertAlmostEqual(_solve_clause_11_up(1550.0, 1550.0), 1850.0)
+
+    def test_up_crosses_tier_boundary(self):
+        # 第一次猜candidate=1900+300=2200(超出tier 1上界2000)，換成tier 2
+        # (threshold=450)重算：1900+450=2350，落在tier 2(2000~3000)內，收斂。
+        self.assertAlmostEqual(_solve_clause_11_up(1900.0, 1900.0), 2350.0)
+
+    def test_up_known_max_dominates_price_diff(self):
+        # 某天大漲讓known_max=2500遠高於ref(1100)+threshold，門檻由known_max
+        # 決定，不是由價差反推。
+        self.assertAlmostEqual(_solve_clause_11_up(1100.0, 2500.0), 2500.0)
+
+    def test_up_below_1000_returns_none(self):
+        self.assertIsNone(_solve_clause_11_up(100.0, 100.0))
+
+    def test_down_within_same_tier(self):
+        self.assertAlmostEqual(_solve_clause_11_down(2500.0, 2500.0), 2050.0)
+
+    def test_down_crosses_tier_boundary(self):
+        """這是用不動點迭代(candidate=ref-threshold(candidate))會在1900跟2050
+        之間無限震盪、永遠收斂不了的情境——因為級距往下跳時門檻反而變小，
+        推著候選價格往回跳。改成逐級距掃描、候選價格clamp在該級距範圍內，
+        才能正確收斂到2000。"""
+        self.assertAlmostEqual(_solve_clause_11_down(2350.0, 2350.0), 2000.0)
+
+    def test_down_known_min_dominates_price_diff(self):
+        self.assertAlmostEqual(_solve_clause_11_down(3000.0, 1200.0), 1200.0)
+
+    def test_down_to_1000_or_below_returns_none(self):
+        self.assertIsNone(_solve_clause_11_down(1000.0, 800.0))
+
+
+class Clause11ThresholdCloseTests(unittest.TestCase):
+    def test_returns_none_with_fewer_than_6_closes(self):
+        self.assertIsNone(clause_11_threshold_close([100.0] * 5))
+
+    def test_picks_up_when_closer_to_today(self):
+        # ref=1550(closes[-5])，今天已經是known_max(1900)，"創新高"門檻剛好等於
+        # 今天收盤價(距離0)；"創新低"門檻(1250)離今天(1900)遠得多，選較近的up。
+        closes = [1000.0, 1550.0, 1550.0, 1550.0, 1550.0, 1900.0]
+        threshold, direction = clause_11_threshold_close(closes)
+        self.assertEqual(direction, "up")
+        self.assertAlmostEqual(threshold, 1900.0)
+
+    def test_picks_down_when_closer_to_today(self):
+        closes = [1000.0, 2500.0, 2500.0, 2500.0, 2500.0, 2050.0]
+        threshold, direction = clause_11_threshold_close(closes)
+        self.assertEqual(direction, "down")
+        self.assertAlmostEqual(threshold, 2050.0)
+
+
+class BuildClause11PredictionTests(unittest.TestCase):
+    def test_easy_label_when_threshold_at_todays_close(self):
+        closes = [1000.0, 1550.0, 1550.0, 1550.0, 1550.0, 1900.0]
+        prediction = _build_clause_11_prediction("2330", closes)
+        self.assertIsNotNone(prediction)
+        self.assertTrue(prediction.easy)
+        self.assertEqual(prediction.direction, "up")
+        self.assertAlmostEqual(prediction.change_pct_from_today, 0.0)
+        self.assertIn("創6日新高", prediction.detail)
+
+    def test_specific_pct_label_when_real_move_needed(self):
+        closes = [1000.0, 1550.0, 1550.0, 1550.0, 1550.0, 1700.0]
+        prediction = _build_clause_11_prediction("2330", closes)
+        self.assertFalse(prediction.easy)
+        self.assertAlmostEqual(prediction.threshold_close, 1850.0)
+        self.assertAlmostEqual(prediction.change_pct_from_today, 8.82, places=2)
+        self.assertIn("漲幅", prediction.detail)
+
+    def test_none_when_move_exceeds_daily_limit(self):
+        # up跟down都需要約19.35%的單日變動，超過台股±10%單日漲跌幅限制，
+        # 明天一天到不了，不列入結果。
+        closes = [1000.0, 1550.0, 1550.0, 1550.0, 1550.0, 1550.0]
+        self.assertIsNone(_build_clause_11_prediction("2330", closes))
+
+    def test_none_when_insufficient_history(self):
+        self.assertIsNone(_build_clause_11_prediction("2330", [100.0] * 5))
+
+
+class BuildClause11GapPredictionsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        initialize_database()
+        self.today = date(2026, 9, 23)
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _seed_bars(self, code: str, closes_by_date: dict[date, float]) -> None:
+        with get_connection() as connection:
+            rows = [
+                (code, d.isoformat() + "T00:00:00+00:00", c, c, c, c, 1000.0)
+                for d, c in closes_by_date.items()
+            ]
+            connection.executemany(
+                "INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(stock_code, bar_time) DO UPDATE SET close = excluded.close",
+                rows,
+            )
+
+    def test_qualifying_stock_appears(self):
+        days = _business_days_ending(self.today, 6)
+        closes = [1000.0, 1550.0, 1550.0, 1550.0, 1550.0, 1900.0]
+        self._seed_bars("2330", dict(zip(days, closes)))
+
+        result = build_clause_11_gap_predictions(self.today.isoformat(), {"2330"})
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "2330")
+        self.assertEqual(result[0].clause, "十一")
+        self.assertAlmostEqual(result[0].threshold_close, 1900.0)
+
+    def test_stock_needing_over_10pct_move_is_excluded(self):
+        days = _business_days_ending(self.today, 6)
+        closes = [1000.0, 1550.0, 1550.0, 1550.0, 1550.0, 1550.0]
+        self._seed_bars("2317", dict(zip(days, closes)))
+
+        result = build_clause_11_gap_predictions(self.today.isoformat(), {"2317"})
+
+        self.assertEqual(result, [])
+
+    def test_stock_missing_from_series_is_skipped_not_erroring(self):
+        result = build_clause_11_gap_predictions(self.today.isoformat(), {"9999"})
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

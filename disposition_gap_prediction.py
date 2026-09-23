@@ -26,6 +26,15 @@
 架構選擇，門檻計算維持跟disposition_prediction.py整套收盤後批次一致，即時性交給
 「拿門檻去跟盤中即時量比對」這一步，不是每次都重新反推門檻。
 
+第十一款(6日起迄收盤價"價差"，跟第九/十款一樣不需要連續天數、不算入第六條累積路徑，
+也沒有peer_avg差幅子條件)：官方規則是「創6日新高」跟「創6日新低」兩條互相獨立的路徑
+(見check_clause_11)，各自反推明天收盤價門檻、取較容易達成的方向。門檻本身隨收盤價
+級距墊高(每超過1000元一級距+150元)，而門檻算出來的候選價格又會回頭影響自己所在的
+級距，所以不能一次算完，要逐級距掃描到候選價格真的落在算它時所用的那個級距範圍內
+(自洽)才算數；見_solve_clause_11_up()/_solve_clause_11_down()docstring解釋為什麼
+兩個方向不能共用同一套簡單的不動點迭代。反推出來的門檻如果需要明天單日漲跌超過台股
+漲跌幅限制(±10%)，代表一天內到不了，不列入結果。
+
 不做的款：二/三/四/六/七要嘛涉及基本面(本益比/淨值比不會因單日大幅改變，反推意義
 不大)、要嘛跟第一款一樣需要連續天數但计算更複雜，之後如果需要可以再擴充。
 
@@ -35,6 +44,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from disposition_fundamentals_assembly import build_fundamentals_by_code
@@ -45,13 +55,14 @@ from disposition_rules import _diff_ok
 PATH1_CLAUSE = "一"
 VOLUME_ONLY_CLAUSE_9 = "九"
 VOLUME_ONLY_CLAUSE_10 = "十"
+PRICE_EXTREME_CLAUSE_11 = "十一"
 
 
 @dataclass(frozen=True)
 class GapPrediction:
     code: str
-    clause: str  # 目前只會是"一"
-    direction: str  # "up" 或 "down"，跟今天change_6d_pct同號
+    clause: str  # "一"(6日累積漲跌%)或"十一"(6日起迄價差+創新高/新低)
+    direction: str  # "up"或"down"：第一款跟今天change_6d_pct同號；第十一款是創6日新高/新低
     threshold_close: float  # 明天收盤價要達到(direction="up"則≥、"down"則≤)這個價才會補中
     change_pct_from_today: float  # 門檻相對今天收盤價的漲跌%，方便前端顯示
     easy: bool  # 門檻是否已經很接近今天收盤價(近似"收平盤/收紅就達標")
@@ -283,4 +294,117 @@ def build_volume_gap_predictions(trade_date: str, codes: set[str]) -> list[Volum
                     ))
 
     predictions.sort(key=lambda p: p.threshold_volume - p.reference_volume)
+    return predictions
+
+
+CLAUSE_11_MAX_REACHABLE_PCT = 10.0  # 台股單日漲跌幅限制±10%，反推門檻超過這個範圍代表
+# 明天一天到不了(理論上要好幾天才會發生)，列出來只是雜訊，不列入結果
+
+
+def _clause_11_tier_threshold(price: float) -> float:
+    """收盤價每超過1000元一個級距，價差門檻+150元(1000~2000元區間300元)——跟
+    check_clause_11同一個公式，這裡反推門檻要用同一套才會一致。"""
+    tier = math.ceil(price / 1000) - 1
+    return 300.0 + max(0, tier - 1) * 150.0
+
+
+def _solve_clause_11_up(ref: float, known_max: float) -> float | None:
+    """反推明天收盤價門檻(創6日新高路徑，明天收盤價>=known_max且跟ref的價差達到
+    門檻)：由known_max所在級距開始往上掃，找第一個「用該級距門檻算出來的候選價格」
+    真的落在該級距範圍內的級距。這個方向可以用不動點迭代收斂，因為候選價格越高、
+    門檻只會同向變高(或持平)，兩者往同一個方向移動，一定找得到自洽點。"""
+    tier = math.ceil(known_max / 1000) - 1
+    for _ in range(50):  # 50個級距=5萬元，現實中台股沒有這麼高的收盤價，保守上限
+        threshold = 300.0 + max(0, tier - 1) * 150.0
+        upper = (tier + 1) * 1000.0
+        candidate = max(known_max, ref + threshold)
+        if candidate <= upper:
+            return candidate if candidate > 1000 else None
+        tier += 1
+    return None
+
+
+def _solve_clause_11_down(ref: float, known_min: float) -> float | None:
+    """反推明天收盤價門檻(創6日新低路徑)：跟_solve_clause_11_up方向相反，不能用
+    同一套不動點迭代——候選價格降到跨過級距下界時，那個更低級距的門檻反而更小，
+    會把候選價格推回去，在級距邊界附近來回震盪、永遠不收斂(已用具體數字驗證過)。
+    改成把候選價格clamp在目前掃描的級距範圍內，逐級距往下掃才會自洽收斂。"""
+    tier = math.ceil(known_min / 1000) - 1
+    for _ in range(50):
+        if tier <= 0:
+            return None  # 已經到1000元以下這一級，第十一款不適用
+        threshold = 300.0 + max(0, tier - 1) * 150.0
+        lower = tier * 1000.0
+        upper = (tier + 1) * 1000.0
+        candidate = min(known_min, ref - threshold, upper)
+        if candidate > lower:
+            return candidate if candidate > 1000 else None
+        tier -= 1
+    return None
+
+
+def clause_11_threshold_close(closes: list[float]) -> tuple[float, str] | None:
+    """closes是bars_1d由舊到新排序、最後一筆是今天。回傳(明天收盤價門檻, 方向)，
+    "up"代表明天收盤價要創6日新高、"down"代表創6日新低——官方規則兩條路徑互相
+    獨立(見check_clause_11)，各自反推門檻後取離今天收盤價較近(較容易達成)的
+    那個。第十一款沒有差幅(跟全體平均比)這個子條件，純粹是價格級距門檻，不用
+    像第一款那樣處理peer_avg過濾。"""
+    if len(closes) < 6:
+        return None
+    window5 = closes[-5:]  # ref到今天，明天窗口除了明天以外的5天
+    ref = window5[0]
+    today_close = closes[-1]
+    known_max = max(window5)
+    known_min = min(window5)
+    candidates: list[tuple[float, str]] = []
+    up = _solve_clause_11_up(ref, known_max)
+    if up is not None:
+        candidates.append((up, "up"))
+    down = _solve_clause_11_down(ref, known_min)
+    if down is not None:
+        candidates.append((down, "down"))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: abs(c[0] - today_close))
+
+
+def _build_clause_11_prediction(code: str, closes: list[float]) -> GapPrediction | None:
+    result = clause_11_threshold_close(closes)
+    if result is None:
+        return None
+    threshold, direction = result
+    today_close = closes[-1]
+    if today_close <= 0:
+        return None
+    change_pct = (threshold - today_close) / today_close * 100
+    if abs(change_pct) > CLAUSE_11_MAX_REACHABLE_PCT:
+        return None
+    easy = abs(change_pct) <= 0.5
+    extreme = "6日新高" if direction == "up" else "6日新低"
+    if easy:
+        detail = f"收平盤附近就可能創{extreme}達標"
+    else:
+        detail = f"{'漲幅' if direction == 'up' else '跌幅'} {change_pct:+.2f}% 創{extreme}才會達標"
+    return GapPrediction(
+        code=code, clause=PRICE_EXTREME_CLAUSE_11, direction=direction, threshold_close=round(threshold, 2),
+        change_pct_from_today=round(change_pct, 2), easy=easy, detail=detail,
+    )
+
+
+def build_clause_11_gap_predictions(trade_date: str, codes: set[str]) -> list[GapPrediction]:
+    """對codes裡每一檔算出第十一款(收盤價價差)的明天收盤價門檻，回傳list(門檻越
+    容易達成的排越前面)。第十一款不像第一款需要連續天數(也不算入第六條累積路徑，
+    這點跟第九/十款一樣)，所以每天都能獨立算，不用先篩「已經連續2天中」。用不到
+    的股票(歷史不足6天、兩個方向都反推不出合格價格、或反推出來的門檻超過台股
+    單日漲跌幅限制)不會出現在結果裡。"""
+    series_by_code = load_market_series(trade_date)
+    predictions: list[GapPrediction] = []
+    for code in codes:
+        series = series_by_code.get(code)
+        if series is None or not series.closes:
+            continue
+        prediction = _build_clause_11_prediction(code, series.closes)
+        if prediction is not None:
+            predictions.append(prediction)
+    predictions.sort(key=lambda p: (not p.easy, abs(p.change_pct_from_today)))
     return predictions
