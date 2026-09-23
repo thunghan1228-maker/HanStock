@@ -35,6 +35,16 @@ def official_group_codes() -> set[str]:
     return codes
 
 
+def official_group_code_names() -> dict[str, str]:
+    """{代號: 股名}，同一代號在多個族群出現時取第一個遇到的名稱（各族群裡的股名本來就
+    該一致，不一致是資料問題，不是這裡要解決的事）。"""
+    names: dict[str, str] = {}
+    for members in STOCK_GROUPS.values():
+        for code, name in members:
+            names.setdefault(code, name)
+    return names
+
+
 def _ensure_table() -> None:
     initialize_database()
     with get_connection() as connection:
@@ -141,6 +151,24 @@ def run_universe_for_date(
         results = [checker(inputs) for checker in CHECKERS.values()]
         output[code] = results
         save_clause_results(trade_date, code, results)
+    return output
+
+
+def load_clause_log_for_date(trade_date: str, codes: set[str] | None = None) -> dict[str, list[ClauseResult]]:
+    """讀出已經存好的某天判定結果（不重新計算），給API用；codes給了就只回那些代號。"""
+    _ensure_table()
+    query = "SELECT stock_code, clause, fired, detail FROM disposition_clause_log WHERE trade_date = ?"
+    params: list[object] = [trade_date]
+    with get_connection() as connection:
+        rows = connection.execute(query, params).fetchall()
+    output: dict[str, list[ClauseResult]] = {}
+    for row in rows:
+        code = row["stock_code"]
+        if codes is not None and code not in codes:
+            continue
+        output.setdefault(code, []).append(
+            ClauseResult(row["clause"], bool(row["fired"]), row["detail"])
+        )
     return output
 
 

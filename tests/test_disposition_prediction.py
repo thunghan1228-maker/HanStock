@@ -15,6 +15,8 @@ from database import get_connection, initialize_database
 from disposition_prediction import (
     build_clause_inputs,
     check_disposition_trigger,
+    load_clause_log_for_date,
+    official_group_code_names,
     official_group_codes,
     run_universe_for_date,
     save_clause_results,
@@ -57,6 +59,12 @@ class OfficialGroupCodesTests(unittest.TestCase):
         codes = official_group_codes()
         self.assertGreater(len(codes), 0)
         self.assertTrue(all(isinstance(c, str) for c in codes))
+
+    def test_code_names_cover_the_same_codes(self):
+        names = official_group_code_names()
+        codes = official_group_codes()
+        self.assertEqual(set(names), codes)
+        self.assertTrue(all(isinstance(n, str) and n for n in names.values()))
 
 
 class BuildClauseInputsTests(unittest.TestCase):
@@ -117,6 +125,23 @@ class RunUniverseForDateTests(unittest.TestCase):
     def test_skips_codes_with_no_snapshot_data(self):
         results = run_universe_for_date(self.today.isoformat(), codes={"0000"})
         self.assertEqual(results, {})
+
+    def test_load_clause_log_for_date_reads_back_saved_results(self):
+        with get_connection() as connection:
+            _insert_bars(connection, "2330", self.dates, [100.0] * 5 + [140.0])
+        run_universe_for_date(self.today.isoformat(), codes={"2330"})
+        loaded = load_clause_log_for_date(self.today.isoformat())
+        self.assertIn("2330", loaded)
+        self.assertEqual({r.clause for r in loaded["2330"]}, set(CHECKERS))
+
+    def test_load_clause_log_for_date_filters_by_codes(self):
+        with get_connection() as connection:
+            _insert_bars(connection, "2330", self.dates, [100.0] * 6)
+            _insert_bars(connection, "2317", self.dates, [100.0] * 6)
+        run_universe_for_date(self.today.isoformat(), codes={"2330", "2317"})
+        loaded = load_clause_log_for_date(self.today.isoformat(), codes={"2330"})
+        self.assertIn("2330", loaded)
+        self.assertNotIn("2317", loaded)
 
 
 class SaveAndCheckDispositionTriggerTests(unittest.TestCase):
