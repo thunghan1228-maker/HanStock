@@ -49,12 +49,15 @@ def _load_rows(codes: list[str], *, today: str) -> list[tuple[str, str, float]]:
 
 
 def compute_group_daily_changes(days: int = 3, *, today: str | None = None) -> dict[str, Any]:
-    """回 {dates: [昨天, 前天, ...], groups: {族群: {pct: [...], rank: [...], members: [...]}}}；
-    pct 是百分比（+1.23 代表漲 1.23%），rank 1 = 那天最強。"""
+    """回 {dates: [昨天, 前天, ...], groups: {族群: {pct: [...], rank: [...], members: [...]}},
+    stocks: {代號: {pct: [...], close: [...], change: [...]}}}；pct 是百分比（+1.23 代表漲 1.23%），
+    rank 1 = 那天最強；close／change 是那天的收盤價與對前一個交易日的漲跌金額（沒資料為 None）。"""
     today = today or _today()
     days = max(1, min(int(days), 10))
     groups = {name: members for name, members in STOCK_GROUPS.items() if name not in EXCLUDED_GROUPS}
-    codes = sorted({str(code).strip().upper() for members in groups.values() for code, _name in members})
+    # 收盤價要涵蓋全部官方族群成員（含只在股期標的清單裡的，例如 2330）：前端三個大戶力分頁看
+    # 昨天／前天時，盤中大戶力的平面排行也要有那天的成交價；族群平均仍只算 43 個一般族群。
+    codes = sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
     closes: dict[str, dict[str, float]] = {}
     for code, day, close in _load_rows(codes, today=today):
         if close > 0:
@@ -62,18 +65,26 @@ def compute_group_daily_changes(days: int = 3, *, today: str | None = None) -> d
     market_dates = sorted({day for by_day in closes.values() for day in by_day}, reverse=True)[: days + 1]
     # 最舊的那天沒有再前一天可以比，不算一天
     dates = [day for index, day in enumerate(market_dates[:days]) if index + 1 < len(market_dates)]
-    # 每檔個股同一組交易日的漲跌幅（馬火多：🐎 比昨天強、🚀 比前天強 要用）
+    # 每檔個股同一組交易日的漲跌幅（馬火多：🐎 比昨天強、🚀 比前天強 要用），以及那天的收盤價與
+    # 漲跌金額（三個大戶力分頁切到昨天／前天時當成交價、漲跌欄位用；使用者 2026-09-24）。
     per_stock: dict[str, dict[str, Any]] = {}
     for code, by_day in closes.items():
         pcts: list[float | None] = []
+        close_list: list[float | None] = []
+        change_list: list[float | None] = []
         for index, day in enumerate(dates):
             prev_day = market_dates[index + 1] if index + 1 < len(market_dates) else None
-            if prev_day and day in by_day and prev_day in by_day:
-                pcts.append(round((by_day[day] / by_day[prev_day] - 1) * 100, 2))
+            close = by_day.get(day)
+            prev_close = by_day.get(prev_day) if prev_day else None
+            close_list.append(close)
+            if close is not None and prev_close:
+                pcts.append(round((close / prev_close - 1) * 100, 2))
+                change_list.append(round(close - prev_close, 2))
             else:
                 pcts.append(None)
-        if any(value is not None for value in pcts):
-            per_stock[code] = {"pct": pcts}
+                change_list.append(None)
+        if any(value is not None for value in close_list):
+            per_stock[code] = {"pct": pcts, "close": close_list, "change": change_list}
     per_group: dict[str, dict[str, Any]] = {}
     for name, members in groups.items():
         pcts: list[float | None] = []

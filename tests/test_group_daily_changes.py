@@ -19,6 +19,7 @@ def _rows():
         "2317": {"2026-09-18": 50.0, "2026-09-19": 50.0, "2026-09-22": 47.5},     # 前天 0%、昨天 -5%
         "1101": {"2026-09-18": 30.0, "2026-09-19": 36.0},                          # 前天 +20%、昨天缺
         "1102": {"2026-09-18": 20.0, "2026-09-19": 20.0, "2026-09-22": 21.0},     # 前天 0%、昨天 +5%
+        "2454": {"2026-09-19": 1000.0, "2026-09-22": 1010.0},                     # 只在股期標的清單裡
     }
     for code, by_day in closes.items():
         for day, close in by_day.items():
@@ -26,7 +27,7 @@ def _rows():
     return rows
 
 
-FAKE_GROUPS = {"半導體": [("2330", "台積電"), ("2317", "鴻海")], "水泥": [("1101", "台泥"), ("1102", "亞泥")], "股期標的": [("2330", "台積電")]}
+FAKE_GROUPS = {"半導體": [("2330", "台積電"), ("2317", "鴻海")], "水泥": [("1101", "台泥"), ("1102", "亞泥")], "股期標的": [("2330", "台積電"), ("2454", "聯發科")]}
 
 
 class GroupDailyChangesTests(unittest.TestCase):
@@ -51,6 +52,16 @@ class GroupDailyChangesTests(unittest.TestCase):
         self.assertEqual(result["stocks"]["2330"]["pct"], [-10.0, 10.0])
         self.assertEqual(result["stocks"]["1101"]["pct"], [None, 20.0])
         self.assertEqual(result["stocks"]["1102"]["pct"], [5.0, 0.0])
+        # 那天的收盤價與漲跌金額（三個大戶力分頁看昨天／前天用）
+        self.assertEqual(result["stocks"]["2330"]["close"], [99.0, 110.0])
+        self.assertEqual(result["stocks"]["2330"]["change"], [-11.0, 10.0])
+        self.assertEqual(result["stocks"]["1101"]["close"], [None, 36.0])
+        self.assertEqual(result["stocks"]["1101"]["change"], [None, 6.0])
+        # 只在股期標的清單裡的股票也要有收盤價（盤中大戶力平面排行會列它），但不算進任何族群平均
+        self.assertEqual(result["stocks"]["2454"]["close"], [1010.0, 1000.0])
+        self.assertEqual(result["stocks"]["2454"]["pct"], [1.0, None])
+        self.assertEqual(result["stocks"]["2454"]["change"], [10.0, None])
+        self.assertNotIn("2454", str(result["groups"]))
 
     def test_endpoint_and_cache(self) -> None:
         calls = []
