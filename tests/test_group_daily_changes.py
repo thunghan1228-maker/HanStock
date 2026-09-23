@@ -47,6 +47,10 @@ class GroupDailyChangesTests(unittest.TestCase):
         self.assertEqual(cement["rank"], [1, 1])
         self.assertEqual(semi["rank"], [2, 2])
         self.assertEqual(result["rankedCount"], [2, 2])
+        # 個股自己的昨天／前天漲跌幅（馬火多用）
+        self.assertEqual(result["stocks"]["2330"]["pct"], [-10.0, 10.0])
+        self.assertEqual(result["stocks"]["1101"]["pct"], [None, 20.0])
+        self.assertEqual(result["stocks"]["1102"]["pct"], [5.0, 0.0])
 
     def test_endpoint_and_cache(self) -> None:
         calls = []
