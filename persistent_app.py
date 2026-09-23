@@ -30,11 +30,7 @@ from after_hours_fixed_price import load_after_hours_day, load_latest_after_hour
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
-from intraday_kline_signals import (
-    inspect_one_two_short,
-    kline_signal_backfill_status,
-    start_kline_signal_backfill_today,
-)
+from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
 from main_force_flip_signals import (
@@ -424,31 +420,6 @@ def trigger_kline_signal_backfill_today(trade_date: str | None = Query(None)) ->
 @app.get("/api/hub/kline-signals/backfill-today/status")
 def get_kline_signal_backfill_today_status() -> dict[str, Any]:
     return {"status": "ok", **kline_signal_backfill_status()}
-
-
-@app.get("/api/hub/kline-signals/one-two-short/inspect")
-def get_one_two_short_inspect(
-    codes: str = Query(..., description="逗號分隔的股票代號，例如 2330,2317"),
-    trade_date: str | None = Query(None),
-) -> dict[str, Any]:
-    """診斷：逐根回放「12空(五分K)」狀態機，用來對照其他工具的名單、確認邏輯有沒有跑對。
-    只讀 bars_5m 裡已經存好的資料，不觸發任何 Shioaji 連線；一檔股票如果今天完全沒被即時
-    路徑／收盤後校正存過 5 分K，會回傳 barCount=0。"""
-    date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    if trade_date:
-        try:
-            datetime.strptime(trade_date, "%Y-%m-%d")
-        except ValueError as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
-    code_list = [c.strip().upper() for c in codes.split(",") if c.strip()]
-    if not code_list:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=422, detail="codes 不能是空的")
-    if len(code_list) > 100:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=422, detail="一次最多查詢100檔")
-    return {"status": "ok", "tradeDate": date, "results": inspect_one_two_short(code_list, date)}
 
 
 @app.get("/api/hub/kline-signals/audit-out-of-session")

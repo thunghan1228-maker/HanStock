@@ -29,7 +29,6 @@ from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_bars_5m_store import (
     bars_5m_coverage_complete,
     load_stock_bars_5m_before,
-    load_stock_bars_5m_on,
     prune_stock_bars_5m,
     save_stock_bars_5m,
     save_stock_bars_5m_many,
@@ -99,10 +98,6 @@ class _KlineState:
     ever_watch12: bool = False
     watch_stage: str = "idle"
     watch_wait: int = 0
-    ots_stage: str = "idle"  # 12空(五分K)新版獨立機制：idle/tracking_1high/tracking_2high/done
-    ots_1high: float | None = None
-    ots_2high: float | None = None
-    fired_one_two_short: bool = False
     today_open: float | None = None
     five_day_high: float | None = None
     ma_alignment_score: int | None = None
@@ -273,8 +268,7 @@ class IntradayKlineSignalMonitor:
         self, code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
     ) -> _KlineState:
         """建一個全新、獨立的當日狀態（不寫進 self._states）：_reset_for_new_day 用它建立正式
-        的每日狀態，診斷用的 inspect_one_two_short 也用它回放，兩邊共用同一份建構邏輯、
-        不會各自維護一份容易兜不起來的複本。"""
+        的每日狀態，跟正式路徑共用同一份建構邏輯，不會各自維護一份容易兜不起來的複本。"""
         state = _KlineState(trade_date=trade_date)
         prior = previous_day_bars(code, trade_date)
         if prior:
@@ -316,48 +310,6 @@ class IntradayKlineSignalMonitor:
         code = str(code).strip().upper()
         with self._lock:
             self._reset_for_new_day(code, trade_date, seed_bars)
-
-    def inspect_one_two_short(self, code: str, trade_date: str) -> dict[str, Any]:
-        """診斷用：不動 self._states、不寫資料庫、不發即時訊號，只回放 bars_5m 裡已經存好的
-        trade_date 當天 5 分K，記錄「12空(五分K)」狀態機每一根的階段轉換。用來逐檔對照另一個
-        工具的名單，確認我們的邏輯（①破905低②墊1高③破位④墊2高⑤再轉弱）在真實走勢上有沒有
-        跑對，不用手動翻K棒。直接呼叫跟即時路徑、收盤後校正完全相同的 _process_bar，不重寫
-        任何判斷邏輯，保證看到的就是正式路徑會做的事。"""
-        code = str(code).strip().upper()
-        state = self._build_fresh_state(code, trade_date)
-        try:
-            bars = load_stock_bars_5m_on(code, trade_date)
-        except Exception as error:  # noqa: BLE001
-            return {"code": code, "tradeDate": trade_date, "error": f"讀取5分K失敗：{error}"}
-        bars = sorted(
-            (b for b in bars if taipei_trade_date(int(b["ts"])) == trade_date),
-            key=lambda b: int(b["ts"]),
-        )
-        transitions: list[dict[str, Any]] = []
-        prev_ots_stage = state.ots_stage
-        fired_ts: int | None = None
-        for bar in bars:
-            close_ts = int(bar["ts"]) + BAR_INTERVAL_5M_MS
-            minute_of_day = taipei_minute_of_day(close_ts)
-            signals = self._process_bar(code, state, bar, close_ts, trade_date, minute_of_day)
-            if state.ots_stage != prev_ots_stage or any(s["kind"] == "oneTwoShort" for s in signals):
-                transitions.append({
-                    "ts": close_ts,
-                    "close": float(bar["close"]), "high": float(bar["high"]), "low": float(bar["low"]),
-                    "stage": state.ots_stage, "ots1High": state.ots_1high, "ots2High": state.ots_2high,
-                    "ma20Slope": state.ma20_slope,
-                    "fired": any(s["kind"] == "oneTwoShort" for s in signals),
-                })
-                prev_ots_stage = state.ots_stage
-            if state.fired_one_two_short and fired_ts is None:
-                fired_ts = close_ts
-        return {
-            "code": code, "tradeDate": trade_date, "barCount": len(bars),
-            "seedCount": state.seed_count, "bar905High": state.bar905_high, "bar905Low": state.bar905_low,
-            "lateSubscription": state.late_subscription,
-            "fired": state.fired_one_two_short, "firedTs": fired_ts, "finalStage": state.ots_stage,
-            "transitions": transitions,
-        }
 
     def on_bar_completed(
         self, code: str, bar: dict[str, Any], *, persist: bool = True,
@@ -476,7 +428,6 @@ class IntradayKlineSignalMonitor:
         self._detect_20ma_turn(state, ma20, emit)
         self._detect_a8_and_905d(state, close, minute_of_day, emit)
         self._detect_12short_family(state, close, broke_through, minute_of_day, emit)
-        self._detect_one_two_short(state, close, high, low, ma20, emit)
         bar_start_minute = taipei_minute_of_day(int(bar["ts"]))
         self._detect_black_dragon(state, close, high, bar_start_minute, group_name, emit)
 
@@ -637,65 +588,6 @@ class IntradayKlineSignalMonitor:
                 if minute_of_day < CUTOFF_MINUTE:
                     emit("short12", "12空")
 
-    def _detect_one_two_short(
-        self, state: _KlineState, close: float, high: float, low: float, ma20: float | None, emit
-    ) -> None:
-        """12空(五分K)／一二空：跟上面_detect_12short_family（注意12空/12空/
-        加強12空）是完全獨立、不互相影響的另一套機制（使用者2026-09-18
-        訂正提供）。順序：①先破905低；②反彈形成1高，1高不能碰到或超過
-        905高（否則整段作廢重來）；③破位＝前一根收盤≥前一根20MA、本根
-        收盤跌到本根20MA下方、且20MA正在下彎，三者同根同時成立；④破位後
-        再反彈形成2高，2高不能碰到或超過1高（否則整段作廢重來）；⑤2高後
-        重新轉弱，同一根收盤與最低價都比前一根更低、20MA仍在下彎、收盤
-        仍在20MA下方，且2高仍未超過1高，才正式觸發，一天一次。"""
-        if state.fired_one_two_short or state.bar905_low is None or state.bar905_high is None:
-            return
-
-        prev_close = state.closes[-2] if len(state.closes) >= 2 else None
-        prev_low = state.lows[-2] if len(state.lows) >= 2 else None
-        prev_ma20 = _moving_average(state.closes[:-1], 20)
-
-        if state.ots_stage == "idle":
-            if low < state.bar905_low:
-                state.ots_stage = "tracking_1high"
-                state.ots_1high = high
-            return
-
-        if state.ots_stage == "tracking_1high":
-            if state.ots_1high is None or high > state.ots_1high:
-                state.ots_1high = high
-            if state.ots_1high >= state.bar905_high:
-                state.ots_stage = "idle"
-                state.ots_1high = None
-                return
-            broke = (
-                prev_close is not None and prev_ma20 is not None and ma20 is not None
-                and prev_close >= prev_ma20 and close < ma20 and state.ma20_slope == "down"
-            )
-            if broke:
-                state.ots_stage = "tracking_2high"
-                state.ots_2high = None
-            return
-
-        if state.ots_stage == "tracking_2high":
-            if state.ots_1high is not None and high >= state.ots_1high:
-                state.ots_stage = "idle"
-                state.ots_1high = None
-                state.ots_2high = None
-                return
-            if state.ots_2high is None or high > state.ots_2high:
-                state.ots_2high = high
-            weakened = (
-                prev_close is not None and prev_low is not None and ma20 is not None
-                and close < prev_close and low < prev_low
-                and state.ma20_slope == "down" and close < ma20
-                and state.ots_2high < state.ots_1high
-            )
-            if weakened:
-                emit("oneTwoShort", "12空")
-                state.fired_one_two_short = True
-                state.ots_stage = "done"
-
     def _detect_black_dragon(
         self, state: _KlineState, close: float, high: float, bar_start_minute: int, group_name: str, emit
     ) -> None:
@@ -732,13 +624,6 @@ def get_intraday_kline_signal_monitor() -> IntradayKlineSignalMonitor:
             if _monitor is None:
                 _monitor = IntradayKlineSignalMonitor()
     return _monitor
-
-
-def inspect_one_two_short(codes: list[str], trade_date: str) -> dict[str, dict[str, Any]]:
-    """批次診斷多檔股票的「12空(五分K)」狀態機回放，一次呼叫涵蓋整份對照名單，
-    不用逐檔各打一次 API。"""
-    monitor = get_intraday_kline_signal_monitor()
-    return {code: monitor.inspect_one_two_short(code, trade_date) for code in codes}
 
 
 def backfill_today_kline_signals(
