@@ -114,7 +114,7 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.hub = FakeHub()
         self.now_ms = ts(2026, 8, 7, 9, 7)
 
-    def test_today_bars_come_only_from_live_hub_not_stale_kbars_snapshot(self):
+    def test_today_bars_before_first_live_bar_come_from_today_kbars_and_live_overrides(self):
         result = get_stock_history_bars_5m(
             "2344", calendar_days=14, service=self.service, hub=self.hub, now_ms=self.now_ms,
         )
@@ -122,13 +122,14 @@ class StockHistoryServiceTests(unittest.TestCase):
             bar for bar in result["bars"]
             if datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") == "2026-08-07"
         ]
-        # FakeApi的kbars另外還回傳09:01/09:02/09:03/09:04/09:06這幾根「今天」
-        # 的資料，但這些不該進最終結果：kbars查到的「今天」常常是查詢當下還
-        # 沒到齊的殘缺快照，一旦被快取住就會卡一整天，之後Hub即使收到更多
-        # 即時資料也補不回這些「今天」bar，因為它們根本沒有機會被merge蓋掉
-        # (merge只在同一個ts才會覆蓋，kbars多出來的那幾根ts在Hub裡沒有對應)。
-        # 今天完全交給即時Hub負責，Hub沒有的分鐘就是真的還沒有資料。
-        self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, 5)])
+        # 多日歷史快取在收盤前仍然不含「今天」（kbars 查到的今天常是殘缺快照，快取住就卡一整天）。
+        # 但 Hub 09:05 才開始有這檔（09:05 才訂閱到／中途重啟），09:00 那根用「今天開盤到 Hub 第一根
+        # 之前」的缺口補回來（不夠齊會再抓）；Hub 有的 09:05 仍以 Hub 為準、09:05 這個進行中的
+        # 5 分 K 也不會被 kbars 的殘缺版本塞進來。
+        self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, 0), ts(2026, 8, 7, 9, 5)])
+        self.assertEqual(today_bars[0]["close"], 104.5)
+        self.assertEqual(today_bars[1]["close"], 111)
+        self.assertEqual(result["bootstrap"]["today_gap"]["filled"], 1)
 
     def test_today_kbars_included_once_market_has_closed(self):
         after_close_ms = ts(2026, 8, 7, 13, 40)
@@ -156,7 +157,8 @@ class StockHistoryServiceTests(unittest.TestCase):
             now_ms=self.now_ms,
         )
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(self.service.api.calls, [("2026-07-25", "2026-08-07")])
+        # 多日範圍一次，加上「今天開盤到 Hub 第一根(09:05)之前」的缺口一次（start=end=今天）。
+        self.assertEqual(self.service.api.calls, [("2026-07-25", "2026-08-07"), ("2026-08-07", "2026-08-07")])
         self.assertTrue(result["bootstrap"]["history_ok"])
         self.assertEqual(result["bootstrap"]["source"], "shioaji_kbars_range+realtime_hub")
 
@@ -183,7 +185,8 @@ class StockHistoryServiceTests(unittest.TestCase):
         )
         self.assertGreater(first["bar_count"], 0)
         self.assertEqual(first["bar_count"], second["bar_count"])
-        self.assertEqual(len(self.service.api.calls), 1)
+        # 多日範圍＋今天缺口各一次，第二次全部沿用快取。
+        self.assertEqual(len(self.service.api.calls), 2)
 
     def test_busy_shared_broker_budget_returns_live_bars_without_rpc(self):
         self.assertTrue(_history_slots.acquire(blocking=False))
@@ -231,7 +234,9 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertEqual(failed["bars"], first["bars"])
         self.assertEqual(failed["bootstrap"]["error"], "broker unavailable")
 
-    def test_today_1m_bars_come_only_from_live_hub_not_stale_kbars_snapshot(self):
+    def test_today_1m_bars_before_first_live_minute_come_from_today_kbars_and_live_overrides(self):
+        """Hub 09:05 才開始有（09:05 才訂閱到／中途重啟），09:00～09:04 從當日 kbars 補回來；
+        Hub 有的那根仍以 Hub 為準，不會被 kbars 的版本蓋掉。"""
         result = get_stock_history_bars_1m(
             "2344", calendar_days=5, service=self.service, hub=self.hub, now_ms=self.now_ms,
         )
@@ -239,7 +244,10 @@ class StockHistoryServiceTests(unittest.TestCase):
             bar for bar in result["bars"]
             if datetime.fromtimestamp(bar["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") == "2026-08-07"
         ]
-        self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, 5)])
+        self.assertEqual([bar["ts"] for bar in today_bars], [ts(2026, 8, 7, 9, m) for m in range(0, 6)])
+        self.assertEqual(today_bars[-1]["close"], 105.5)  # 09:05 是 Hub 的
+        self.assertEqual(today_bars[-2]["close"], 104.5)  # 09:04 是 kbars 補的
+        self.assertEqual(result["bootstrap"]["today_gap"]["filled"], 5)
 
     def test_multiday_1m_history_keeps_previous_day_and_live_overrides_today(self):
         result = get_stock_history_bars_1m(
@@ -269,9 +277,9 @@ class StockHistoryServiceTests(unittest.TestCase):
         )
         self.assertTrue(five_min["bootstrap"]["history_ok"])
         self.assertTrue(one_min["bootstrap"]["history_ok"])
-        # 5分K先抓了較寬的範圍，1分K的請求範圍較窄，應該直接沿用快取，
-        # 不會為了1分K再打一次Shioaji kbars。
-        self.assertEqual(len(self.service.api.calls), 1)
+        # 5分K先抓了較寬的範圍（＋今天缺口一次），1分K的請求範圍較窄，應該直接沿用快取，
+        # 缺口也共用同一份，不會為了1分K再打 Shioaji kbars。
+        self.assertEqual(len(self.service.api.calls), 2)
 
 
 if __name__ == "__main__":

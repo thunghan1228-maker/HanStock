@@ -54,6 +54,8 @@ def clear_stock_history_cache() -> None:
         _cache.clear()
         _code_locks.clear()
         _fallback_failed_at.clear()
+        _gap_cache.clear()
+        _gap_fallback_failed_at.clear()
 
 
 def _code_lock(code: str) -> threading.Lock:
@@ -263,6 +265,193 @@ def _fallback_history(
     ))
 
 
+# ---------------------------------------------------------------------------
+# 今天開盤到 Hub 第一根之前的缺口（Railway 中途重啟／部署後最常見）
+# ---------------------------------------------------------------------------
+# 收盤前多日歷史刻意不含「今天」（見 _trim_to_settled_window），今天整段交給即時 Hub；但 Hub 只活在
+# 記憶體裡，Railway 中途重啟（例如部署）之後只從重啟那一刻開始累積，開盤到重啟之間那幾個小時的
+# K 棒就整段消失，要到收盤後才會從多日歷史補回來（2026-09-23 11:25 部署後，8054 的 5 分 K 只剩
+# 11:30 以後）。這裡在 Hub 今天的第一根不是 09:00 那根時，用 Shioaji 當日 kbars 只補「開盤到 Hub
+# 第一根之前」這段；Hub 有的部分永遠以 Hub 為準。補到的結果快取到收盤，補不齊（盤中 kbars 常落後）
+# 才隔一段時間再抓一次。
+GAP_RETRY_SECONDS = 120.0
+GAP_MIN_MINUTES_AFTER_OPEN = 5
+FIVE_MIN_MS = 5 * 60_000
+
+
+@dataclass
+class _TodayGapEntry:
+    trade_date: str
+    bars_1m: list[dict[str, Any]]
+    bars_5m: list[dict[str, Any]]
+    covers_until_ms: Optional[int]  # 這次抓到的最後一根 5 分 K（bar-start）
+    fetched_at_monotonic: float
+    ok: bool
+    error: Optional[str] = None
+    source: str = "shioaji"
+
+
+_gap_cache: dict[str, _TodayGapEntry] = {}
+_gap_fallback_failed_at: dict[str, float] = {}  # 跟多日歷史的備援冷卻分開：多日抓不到不代表今天也抓不到
+
+
+def _session_open_ms(trade_date: str) -> int:
+    return int(datetime.strptime(trade_date, "%Y-%m-%d").replace(hour=9, minute=0, tzinfo=TW_TZ).timestamp() * 1000)
+
+
+def _first_ts_on(bars: list[dict[str, Any]], trade_date: str) -> Optional[int]:
+    """這批 bars 裡屬於 trade_date 的最早一根 bar-start ts；沒有就 None。"""
+    first: Optional[int] = None
+    for raw in bars:
+        try:
+            ts = int(raw["ts"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if taipei_trade_date(ts) != trade_date:
+            continue
+        if first is None or ts < first:
+            first = ts
+    return first
+
+
+def _store_gap(code: str, entry: _TodayGapEntry) -> _TodayGapEntry:
+    with _lock:
+        _gap_cache[code] = entry
+    return entry
+
+
+def _today_gap_bars(
+    code: str,
+    trade_date: str,
+    live_first_ts: Optional[int],
+    *,
+    service: Any,
+    now_ms: int,
+    monotonic_fn: Callable[[], float],
+    fetch: bool = True,
+) -> Optional[_TodayGapEntry]:
+    """live_first_ts＝Hub 今天第一根的 bar-start ts；None 代表 Hub 今天完全沒有這檔的資料。
+    fetch=False（同一檔的多日歷史正被另一個請求抓著）時只回已快取的，不再多打一次 kbars。
+    回 None 代表不需要補：還沒開盤／已收盤（多日歷史自己就含今天）／週末／Hub 從開盤就有。"""
+    now_dt = datetime.fromtimestamp(now_ms / 1000, TW_TZ)
+    if now_dt.strftime("%Y-%m-%d") != trade_date or now_dt.weekday() >= 5:
+        return None
+    open_ms = _session_open_ms(trade_date)
+    if now_ms < open_ms + GAP_MIN_MINUTES_AFTER_OPEN * 60_000:
+        return None
+    if (now_dt.hour, now_dt.minute) >= (13, 35):
+        return None
+    if live_first_ts is not None and live_first_ts <= open_ms:
+        return None
+    need_until = live_first_ts if live_first_ts is not None else now_ms
+    now = monotonic_fn()
+    with _lock:
+        entry = _gap_cache.get(code)
+    if entry is not None and entry.trade_date == trade_date:
+        complete = entry.ok and entry.covers_until_ms is not None and entry.covers_until_ms >= need_until - FIVE_MIN_MS
+        if complete or now - entry.fetched_at_monotonic < GAP_RETRY_SECONDS:
+            return entry
+    else:
+        entry = None
+    if not fetch or not _history_slots.acquire(blocking=False):
+        return entry
+    try:
+        return _fetch_today_gap_once(
+            code, trade_date, service=service, now_ms=now_ms, monotonic_fn=monotonic_fn, previous=entry,
+        )
+    finally:
+        _history_slots.release()
+
+
+def _fetch_today_gap_once(
+    code: str,
+    trade_date: str,
+    *,
+    service: Any,
+    now_ms: int,
+    monotonic_fn: Callable[[], float],
+    previous: Optional[_TodayGapEntry],
+) -> _TodayGapEntry:
+    def failed(error: str) -> _TodayGapEntry:
+        fallback = _fallback_today_gap(code, trade_date, now_ms=now_ms, monotonic_fn=monotonic_fn, reason=error)
+        if fallback is not None:
+            return fallback
+        # 抓不到就先留著上一次補到的，不要把已經補回來的又清掉。
+        return _store_gap(code, _TodayGapEntry(
+            trade_date=trade_date,
+            bars_1m=previous.bars_1m if previous is not None else [],
+            bars_5m=previous.bars_5m if previous is not None else [],
+            covers_until_ms=previous.covers_until_ms if previous is not None else None,
+            fetched_at_monotonic=monotonic_fn(), ok=False, error=error,
+            source=previous.source if previous is not None else "shioaji",
+        ))
+
+    api = getattr(service, "api", None)
+    logged_in = bool(getattr(getattr(service, "state", None), "logged_in", False))
+    if api is None or not logged_in:
+        return failed("Shioaji 尚未登入")
+    quota_error = history_quota.check(api)
+    if quota_error:
+        return failed(quota_error)
+    contract = _resolve_stock_contract(service, code)
+    if contract is None:
+        return failed(f"找不到股票合約：{code}")
+    try:
+        kbars = api.kbars(contract=contract, start=trade_date, end=trade_date)
+        bars_1m = normalize_kbars_1m(kbars, trade_date=trade_date, include_current=False, now_ms=now_ms)
+        bars_5m = aggregate_1m_to_5m(bars_1m, include_current=False, now_ms=now_ms)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Stock History5m] %s 今日缺口 kbars 失敗: %s", code, exc)
+        return failed(str(exc))
+    covers = max((int(bar["ts"]) for bar in bars_5m), default=None)
+    entry = _store_gap(code, _TodayGapEntry(
+        trade_date=trade_date, bars_1m=bars_1m, bars_5m=bars_5m, covers_until_ms=covers,
+        fetched_at_monotonic=monotonic_fn(), ok=True, error=None,
+    ))
+    logger.info("[Stock History5m] %s 今日缺口補齊: bars_5m=%d", code, len(bars_5m))
+    return entry
+
+
+def _fallback_today_gap(
+    code: str, trade_date: str, *, now_ms: int, monotonic_fn: Callable[[], float], reason: str,
+) -> Optional[_TodayGapEntry]:
+    """永豐拿不到今天的 kbars 時改走 FinMind → Yahoo（跟多日歷史同一條備援鏈，各自的失敗冷卻）。"""
+    now = monotonic_fn()
+    with _lock:
+        failed_at = _gap_fallback_failed_at.get(code)
+    if failed_at is not None and now - failed_at < FALLBACK_RETRY_SECONDS:
+        return None
+    try:
+        bars_1m, source = fetch_minute_bars_chain(code, trade_date, trade_date, market=stock_market(code))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Stock History5m] %s 今日缺口備援來源失敗: %s", code, exc)
+        bars_1m, source = [], None
+    current_minute_start = now_ms - (now_ms % 60_000)
+    bars_1m = [bar for bar in bars_1m if int(bar["ts"]) < current_minute_start and taipei_trade_date(int(bar["ts"])) == trade_date]
+    bars_5m = aggregate_1m_to_5m(bars_1m, include_current=False, now_ms=now_ms)
+    if source is None or not bars_5m:
+        with _lock:
+            _gap_fallback_failed_at[code] = now
+        return None
+    with _lock:
+        _gap_fallback_failed_at.pop(code, None)
+    logger.info("[Stock History5m] %s 今日缺口永豐不可用（%s），改用 %s 補齊: bars=%d", code, reason, source, len(bars_5m))
+    return _store_gap(code, _TodayGapEntry(
+        trade_date=trade_date, bars_1m=bars_1m, bars_5m=bars_5m,
+        covers_until_ms=max((int(bar["ts"]) for bar in bars_5m), default=None),
+        fetched_at_monotonic=monotonic_fn(), ok=True, error=None, source=source,
+    ))
+
+
+def _gap_info(gap: Optional[_TodayGapEntry], filled: int, live_first_ts: Optional[int]) -> Optional[dict[str, Any]]:
+    if gap is None:
+        return None
+    return {
+        "filled": filled, "ok": gap.ok, "error": gap.error, "source": gap.source,
+        "covers_until": gap.covers_until_ms, "live_first": live_first_ts,
+    }
+
+
 def get_stock_history_bars_5m(
     stock_code: str,
     *,
@@ -290,10 +479,12 @@ def get_stock_history_bars_5m(
         subscription = {"requested": [code], "failed": {code: str(exc)}}
 
     entry = _cached(code, trade_date, start_date, monotonic_fn())
+    fetch_gap = True
     if entry is None:
         code_lock = _code_lock(code)
         if not code_lock.acquire(blocking=False):
             entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
+            fetch_gap = False  # 這檔正在抓歷史，這次不再多打一次 kbars
         else:
             try:
                 entry = _cached(code, trade_date, start_date, monotonic_fn())
@@ -309,9 +500,13 @@ def get_stock_history_bars_5m(
             finally:
                 code_lock.release()
 
-    # 歷史先放、即時後放；同 timestamp 由即時 Hub 覆蓋。
+    # 歷史先放、今天開盤到 Hub 第一根之前的缺口次之、即時最後；同 timestamp 由即時 Hub 覆蓋。
+    live = list(hub.get_live_bars(code) or [])
+    live_first = _first_ts_on(live, trade_date)
+    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap)
+    gap_bars = [bar for bar in gap.bars_5m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     merged: dict[int, dict[str, Any]] = {}
-    for source in (entry.bars_5m, list(hub.get_live_bars(code) or [])):
+    for source in (entry.bars_5m, gap_bars, live):
         for raw in source:
             bar = _safe_bar(raw)
             if bar is None:
@@ -335,6 +530,7 @@ def get_stock_history_bars_5m(
             "history_ok": entry.ok,
             "history_source": entry.source,
             "error": entry.error,
+            "today_gap": _gap_info(gap, len(gap_bars), live_first),
             "subscription": subscription,
             "source": "shioaji_kbars_range+realtime_hub",
             "max_history_5m": MAX_HISTORY_5M,
@@ -370,10 +566,12 @@ def get_stock_history_bars_1m(
         subscription = {"requested": [code], "failed": {code: str(exc)}}
 
     entry = _cached(code, trade_date, start_date, monotonic_fn())
+    fetch_gap = True
     if entry is None:
         code_lock = _code_lock(code)
         if not code_lock.acquire(blocking=False):
             entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
+            fetch_gap = False  # 這檔正在抓歷史，這次不再多打一次 kbars
         else:
             try:
                 entry = _cached(code, trade_date, start_date, monotonic_fn())
@@ -389,8 +587,12 @@ def get_stock_history_bars_1m(
             finally:
                 code_lock.release()
 
+    live = list(hub.get_live_bars_1m(code) or [])
+    live_first = _first_ts_on(live, trade_date)
+    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap)
+    gap_bars = [bar for bar in gap.bars_1m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     merged: dict[int, dict[str, Any]] = {}
-    for source in (entry.bars_1m, list(hub.get_live_bars_1m(code) or [])):
+    for source in (entry.bars_1m, gap_bars, live):
         for raw in source:
             bar = _safe_bar(raw)
             if bar is None:
@@ -414,6 +616,7 @@ def get_stock_history_bars_1m(
             "history_ok": entry.ok,
             "history_source": entry.source,
             "error": entry.error,
+            "today_gap": _gap_info(gap, len(gap_bars), live_first),
             "subscription": subscription,
             "source": "shioaji_kbars_range+realtime_hub",
             "max_history_1m": MAX_HISTORY_1M,
