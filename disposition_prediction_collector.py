@@ -11,7 +11,9 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from daily_bars_store import daily_bars_storage_status
+from disposition_fundamentals_assembly import build_fundamentals_by_code
 from disposition_prediction import official_group_codes, run_universe_for_date
+from finmind_disposition_fundamentals_collector import collect_trade_date as collect_finmind_fundamentals
 
 logger = logging.getLogger("hanstock.disposition_prediction_collector")
 TW_TZ = timezone(timedelta(hours=8))
@@ -33,10 +35,16 @@ def collect_once(*, now: datetime | None = None) -> dict:
         return {"status": "skipped", "reason": "今天已經跑過", "tradeDate": trade_date}
     if not _today_bars_ready(trade_date):
         return {"status": "waiting", "reason": "今天的bars_1d還沒寫好（等official_daily_bars.py先跑）", "tradeDate": trade_date}
-    results = run_universe_for_date(trade_date, codes=official_group_codes())
+    codes = official_group_codes()
+    fundamentals_result = collect_finmind_fundamentals(trade_date, list(codes))
+    fundamentals_by_code = build_fundamentals_by_code(trade_date, codes)
+    results = run_universe_for_date(trade_date, codes=codes, fundamentals_by_code=fundamentals_by_code)
     _last_run_date = trade_date
     fired_count = sum(1 for clauses in results.values() if any(r.fired for r in clauses))
-    return {"status": "ok", "tradeDate": trade_date, "stockCount": len(results), "firedCount": fired_count}
+    return {
+        "status": "ok", "tradeDate": trade_date, "stockCount": len(results), "firedCount": fired_count,
+        "fundamentals": fundamentals_result,
+    }
 
 
 def _loop() -> None:
