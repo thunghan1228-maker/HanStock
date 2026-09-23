@@ -122,6 +122,48 @@ def load_stock_bars_5m_before(code: str, trade_date: str, limit: int) -> list[di
     return bars
 
 
+SESSION_OPEN = (9, 0)
+LAST_BAR_START = (13, 25)  # 最後一根5分K是13:25~13:30，收盤前最後一根的「起始」時間
+FULL_SESSION_BAR_SECONDS = 5 * 60
+
+
+def bars_5m_coverage_complete(code: str, trade_date: str) -> bool:
+    """trade_date 當天這檔股票的 5 分 K 是不是從開盤（09:00）到收盤前最後一根（13:25）都有、
+    中間沒有缺根。完整代表即時路徑當天全程都有正常追蹤到、基準沒有算錯（沒有晚訂閱），
+    收盤後校正可以直接信任即時算出的訊號、跳過這檔的歷史 kbars 重抓——全市場逐檔重抓
+    很吃永豐的歷史流量額度，大多數股票即時路徑其實整天都追得到，值得先看有沒有必要再抓。
+    """
+    code = str(code).strip().upper()
+    if not code:
+        return False
+    initialize_database()
+    with get_connection() as connection:
+        row = connection.execute(
+            """SELECT COUNT(*) AS n, MIN(bar_time) AS first_bt, MAX(bar_time) AS last_bt
+               FROM bars_5m WHERE stock_code = ? AND substr(bar_time, 1, 10) = ?""",
+            (code, str(trade_date)[:10]),
+        ).fetchone()
+    count = int(row["n"] or 0)
+    if count == 0 or not row["first_bt"] or not row["last_bt"]:
+        return False
+    try:
+        first = datetime.fromisoformat(str(row["first_bt"]))
+        last = datetime.fromisoformat(str(row["last_bt"]))
+    except ValueError:
+        return False
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=TW_TZ)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=TW_TZ)
+    expected_first = first.replace(hour=SESSION_OPEN[0], minute=SESSION_OPEN[1], second=0, microsecond=0)
+    expected_last = first.replace(hour=LAST_BAR_START[0], minute=LAST_BAR_START[1], second=0, microsecond=0)
+    if first != expected_first or last != expected_last:
+        return False
+    # first/last 對得上、又是規律的5分鐘網格，數量對了就代表中間沒有缺根（bar_time是主鍵不會重複）。
+    expected_count = int((last - first).total_seconds() // FULL_SESSION_BAR_SECONDS) + 1
+    return count == expected_count
+
+
 def prune_stock_bars_5m(keep_calendar_days: int = KEEP_CALENDAR_DAYS, today: str | None = None) -> int:
     """刪掉個股太舊的 5 分 K；櫃買指數 OTC_INDEX 那些由 otc_index_store 自己管，不動。"""
     today_date = date.fromisoformat(str(today)[:10]) if today else datetime.now(TW_TZ).date()

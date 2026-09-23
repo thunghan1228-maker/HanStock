@@ -12,6 +12,20 @@ from database import get_connection
 TW_TZ = timezone(timedelta(hours=8))
 
 
+def _in_official_groups(code: str) -> bool:
+    """這檔股票是不是在 stock_groups.py 的 43 個官方族群裡。使用者 2026-09-23 要求主力歷史
+    每日回補只補這個範圍：逐檔打 Shioaji 歷史 kbars／逐筆是額度最大消耗者之一，43 個族群
+    以外的股票（例如使用者搜尋、任意打開的個股）不在我們固定追蹤的範圍，不需要每天背景回補。
+    即時開圖當下的資料（get_resilient_stock_bars）不受影響，這裡只管背景排程這條路徑。"""
+    import stock_groups
+    code = str(code).strip().upper()
+    return any(
+        code == str(member_code).strip().upper()
+        for members in stock_groups.STOCK_GROUPS.values()
+        for member_code, _name in members
+    )
+
+
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS main_force_backfill_jobs (
         stock_code TEXT NOT NULL, trade_date TEXT NOT NULL,
@@ -27,6 +41,10 @@ def request_main_force_backfill(code, trade_date, *, now=None):
     requested_date = datetime.strptime(trade_date, "%Y-%m-%d").date()
     if not today - timedelta(days=400) <= requested_date <= today:
         raise ValueError("主力回補日期須在過去 400 天內，且不可為未來日期")
+    if not _in_official_groups(code):
+        # 不建工作、不碰資料庫：這檔不在我們固定追蹤的43個族群，背景回補不管它。
+        return {"queued": False, "status": "not_in_official_groups", "attempts": 0,
+                "nextAttemptAt": None, "result": None}
     # The API validates the ticker before entering this function.
     with get_connection() as connection:
         _schema(connection)
@@ -151,6 +169,15 @@ def process_main_force_backfill_job(*, service=None, now=None, backfill=None):
         code, date = row["stock_code"], row["trade_date"]
         connection.execute("""UPDATE main_force_backfill_jobs SET next_attempt=?, attempts=attempts+1
             WHERE stock_code=? AND trade_date=?""", (now + 900, code, date))
+    if not _in_official_groups(code):
+        # 舊的（改版前排進去的，或使用者當時開圖排的）非族群工作：標記成終止狀態、不再被撈到，
+        # 完全不打 Shioaji，讓殘留的 pending 工作自然清掉。
+        skip_result = {"skipped": "not_in_official_groups"}
+        with get_connection() as connection:
+            connection.execute("""UPDATE main_force_backfill_jobs SET status=?, result_json=?
+                WHERE stock_code=? AND trade_date=?""",
+                ("skipped_not_in_group", json.dumps(skip_result, ensure_ascii=False), code, date))
+        return {"code": code, "tradeDate": date, "status": "skipped_not_in_group", **skip_result}
     if backfill is None:
         from stock_bar_bootstrap import backfill_main_force_date
         backfill = backfill_main_force_date

@@ -38,6 +38,7 @@ def _isolated_bars_5m_store(monkeypatch):
     monkeypatch.setattr(module, "save_stock_bars_5m_many", lambda bars_by_code: 0)
     monkeypatch.setattr(module, "save_stock_bars_5m", lambda code, bars: 0)
     monkeypatch.setattr(module, "prune_stock_bars_5m", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(module, "bars_5m_coverage_complete", lambda code, trade_date: False)
     monkeypatch.setattr(module, "_last_reset_trade_date", None)
     monkeypatch.setattr(module, "_pending_bars_5m", {})
     monkeypatch.setattr(module, "_pending_bars_count", 0)
@@ -954,3 +955,82 @@ def test_backfill_replays_with_persist_off_seeds_from_kbars_and_stores_all_bars(
     state = module.get_intraday_kline_signal_monitor()._states["2330"]
     assert state.seed_count == 21
     assert state.bar_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 收盤後校正：已經完整追到的股票跳過重抓（降低全市場逐檔掃描的成本）
+# ---------------------------------------------------------------------------
+
+def test_backfill_skips_codes_whose_live_coverage_is_already_complete(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [
+        {"ts": "2026-09-17", "open": 100.0, "high": 1000.0, "low": 100.0, "close": 100.0, "volume": 1},
+    ])
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電"), ("2317", "鴻海")]})
+
+    complete = {"2330"}  # 2330 今天已經完整、2317 沒有（晚訂閱／有缺口）
+    monkeypatch.setattr(module, "bars_5m_coverage_complete", lambda code, trade_date: code in complete)
+
+    fetch_calls: list[str] = []
+
+    def fake_history(code, *, calendar_days=3, service=None, hub=None, **kwargs):
+        fetch_calls.append(code)
+        return {"status": "ok", "bars": [bar(9, 0, 100, 102, 99, 101.5), bar(9, 5, 101.5, 103, 101, 102.5)]}
+
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m", fake_history)
+    deleted: list[str] = []
+    monkeypatch.setattr(module, "delete_kline_signals_for_ticker", lambda trade_date, code: deleted.append(code))
+
+    result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert fetch_calls == ["2317"]  # 完整的 2330 完全沒有打歷史 API
+    assert deleted == ["2317"]
+    assert result["codeCount"] == 2
+    assert result["codesProcessed"] == 2
+    assert result["codesSkippedComplete"] == 1
+    assert result["barsReplayed"] == 2  # 只有 2317 重播
+    monitor = module.get_intraday_kline_signal_monitor()
+    assert "2330" not in monitor._states  # 沒碰過，維持即時路徑原本算出的狀態
+    assert monitor._states["2317"].bar_count == 2
+
+
+def test_backfill_does_not_sleep_between_skipped_codes(monkeypatch):
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電"), ("2317", "鴻海"), ("2454", "聯發科")]})
+    monkeypatch.setattr(module, "bars_5m_coverage_complete", lambda code, trade_date: True)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("全部都完整，不該打任何歷史 API")
+
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m", boom)
+    slept: list[float] = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0.3)
+
+    assert result["codesSkippedComplete"] == 3
+    assert result["codesProcessed"] == 3
+    assert slept == []  # 跳過的檔不打外部API，不需要延遲
+
+
+def test_bars_5m_coverage_complete_used_directly(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_complete(code, trade_date):
+        calls.append((code, trade_date))
+        return False
+
+    monkeypatch.setattr(module, "bars_5m_coverage_complete", fake_complete)
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [])
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m",
+                         lambda code, *, calendar_days=3, service=None, hub=None, **kwargs: {"status": "ok", "bars": []})
+
+    module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert calls == [("2330", "2026-09-18")]
