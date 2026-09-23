@@ -26,6 +26,12 @@ from intraday_signal_store import delete_kline_signals_for_ticker, save_intraday
 from ma_alignment_score import compute_ma_alignment_score
 from market_data_hub import BAR_INTERVAL_5M_MS
 from otc_index import taipei_minute_of_day, taipei_trade_date
+from stock_bars_5m_store import (
+    load_stock_bars_5m_before,
+    prune_stock_bars_5m,
+    save_stock_bars_5m,
+    save_stock_bars_5m_many,
+)
 from stock_groups import STOCK_GROUPS
 
 logger = logging.getLogger("hanstock.intraday_kline_signals")
@@ -100,6 +106,7 @@ class _KlineState:
     ma_alignment_score: int | None = None
     fired_black_dragon: bool = False
     late_subscription: bool = False
+    seed_count: int = 0  # 昨天種進來的 5 分 K 根數（MA20 跨日接續用），0 = 沒種
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -111,6 +118,8 @@ def _moving_average(closes: list[float], length: int) -> float | None:
 
 # 「昨日」日K最多能比今天舊幾個日曆天（連假最多也就這麼長）；再舊就是資料沒跟上，不能當昨高。
 MAX_PREV_BAR_AGE_DAYS = 12
+# 跨日接續 5 分 K MA20 用的種子：MA20 要 20 根、斜率再多 1 根。
+SEED_BARS = 21
 _market_prev_cache: dict[str, str | None] = {}
 
 
@@ -151,12 +160,116 @@ def previous_day_bars(code: str, trade_date: str) -> list[dict[str, Any]]:
     return prior[-5:]
 
 
+def previous_day_bars_5m(
+    code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """trade_date 之前、最後 SEED_BARS 根 5 分 K（舊到新、只留 ts/close/low），給 MA20 跨日接續用。
+    seed_bars 有給就直接用（收盤後回補用 Shioaji kbars 拿到的前幾天 bars），沒有就從本機 bars_5m 撈。
+    最後一根一定要是市場上一個交易日的（日K知道上一個交易日的話），太舊就當沒有：
+    寧可 MA20 晚一點才算得出來，也不要拿上週的 K 棒接到今天後面。"""
+    bars = list(seed_bars or [])
+    if not bars:
+        try:
+            bars = load_stock_bars_5m_before(code, trade_date, SEED_BARS)
+        except Exception:  # noqa: BLE001
+            logger.warning("撈昨天5分K種子失敗 code=%s", code, exc_info=True)
+            return []
+    prior: list[dict[str, Any]] = []
+    for bar in bars:
+        try:
+            ts = int(bar["ts"])
+            close = float(bar["close"])
+            low = float(bar["low"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if close <= 0 or taipei_trade_date(ts) >= trade_date:
+            continue
+        prior.append({"ts": ts, "close": close, "low": low})
+    prior.sort(key=lambda b: b["ts"])
+    prior = prior[-SEED_BARS:]
+    if not prior:
+        return []
+    last_date = taipei_trade_date(prior[-1]["ts"])
+    market_prev = _market_previous_trade_date(trade_date)
+    if market_prev and last_date < market_prev:
+        return []
+    try:
+        age_days = (date.fromisoformat(trade_date[:10]) - date.fromisoformat(last_date)).days
+    except ValueError:
+        age_days = 0
+    if age_days > MAX_PREV_BAR_AGE_DAYS:
+        return []
+    return prior
+
+
+def _sync_ma_state(state: _KlineState) -> None:
+    """靜默更新 MA 衍生的「目前狀態」（不發訊號）：MA20 值與斜率、收盤在 20MA 上或下、
+    五二零多／空。種子種進來時、以及有種子的當天第一根都會呼叫，讓第二根起偵測到的
+    跨越／轉彎是相對於昨天連續下來的真實狀態，而不是相對於「今天才開始算」的假 MA。"""
+    if not state.closes:
+        return
+    close = state.closes[-1]
+    ma5 = _moving_average(state.closes, 5)
+    ma20 = _moving_average(state.closes, 20)
+    if ma20 is None:
+        return
+    if state.prev_ma20 is not None and ma20 != state.prev_ma20:
+        state.ma20_slope = "up" if ma20 > state.prev_ma20 else "down"
+    state.prev_ma20 = ma20
+    state.above_20ma = close > ma20
+    if ma5 is not None:
+        state.in_520_multi = close > ma5 and close > ma20
+        state.in_520_short = close < ma5 and close < ma20
+
+
+# 即時路徑每根走完的 5 分 K 先排隊，累積到一定數量或隔一段時間再一次寫進 bars_5m：
+# 一百多檔同時走完一根 K，不要在 tick 執行緒上每檔各開一次交易。
+PERSIST_FLUSH_SECONDS = 30.0
+PERSIST_FLUSH_MAX_BARS = 300
+_pending_bars_5m: dict[str, list[dict[str, Any]]] = {}
+_pending_bars_count = 0
+_pending_bars_lock = threading.Lock()
+_pending_last_flush = time.monotonic()
+_last_reset_trade_date: str | None = None
+
+
+def queue_bar_5m(code: str, bar: dict[str, Any]) -> None:
+    global _pending_bars_count
+    with _pending_bars_lock:
+        _pending_bars_5m.setdefault(code, []).append(bar)
+        _pending_bars_count += 1
+
+
+def flush_pending_bars_5m(*, force: bool = False) -> int:
+    """把排隊中的 5 分 K 寫進 bars_5m；回傳寫了幾根。"""
+    global _pending_bars_count, _pending_last_flush
+    with _pending_bars_lock:
+        due = force or _pending_bars_count >= PERSIST_FLUSH_MAX_BARS or (
+            _pending_bars_count > 0 and time.monotonic() - _pending_last_flush >= PERSIST_FLUSH_SECONDS
+        )
+        if not due:
+            return 0
+        batch = dict(_pending_bars_5m)
+        _pending_bars_5m.clear()
+        _pending_bars_count = 0
+        _pending_last_flush = time.monotonic()
+    if not batch:
+        return 0
+    try:
+        return save_stock_bars_5m_many(batch)
+    except Exception:  # noqa: BLE001
+        logger.exception("五分鐘K寫入bars_5m失敗 codes=%d", len(batch))
+        return 0
+
+
 class IntradayKlineSignalMonitor:
     def __init__(self) -> None:
         self._states: dict[str, _KlineState] = {}
         self._lock = threading.Lock()
 
-    def _reset_for_new_day(self, code: str, trade_date: str) -> _KlineState:
+    def _reset_for_new_day(
+        self, code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
+    ) -> _KlineState:
         state = _KlineState(trade_date=trade_date)
         prior = previous_day_bars(code, trade_date)
         if prior:
@@ -170,29 +283,55 @@ class IntradayKlineSignalMonitor:
             state.ma_alignment_score = compute_ma_alignment_score(code)
         except Exception:  # noqa: BLE001
             state.ma_alignment_score = None
+        seeds = previous_day_bars_5m(code, trade_date, seed_bars)
+        if seeds:
+            # 昨天最後幾根 5 分 K 先放進 closes/lows（今天的 K 棒接在後面），MA20 從今天
+            # 第一根起就是跨日連續的看盤軟體算法；種子本身不發任何訊號。
+            state.closes = [b["close"] for b in seeds]
+            state.lows = [b["low"] for b in seeds]
+            state.seed_count = len(seeds)
+            state.prev_ma20 = _moving_average(state.closes[:-1], 20)
+            _sync_ma_state(state)
         self._states[code] = state
         return state
 
-    def reset_for_backfill(self, code: str, trade_date: str) -> None:
+    def reset_for_backfill(
+        self, code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
+    ) -> None:
         """歷史回補用：強制重建這檔股票在trade_date當天的狀態，避免重複
         呼叫回補（例如重試）時，因為state.trade_date沒變而誤判成「同一天
         繼續累積」，導致bar_count/closes等狀態疊加成兩天份、算出錯誤結果。
         每次回補一檔股票的完整當日bars之前，都要先呼叫這個。"""
         code = str(code).strip().upper()
         with self._lock:
-            self._reset_for_new_day(code, trade_date)
+            self._reset_for_new_day(code, trade_date, seed_bars)
 
-    def on_bar_completed(self, code: str, bar: dict[str, Any]) -> list[dict[str, Any]]:
+    def on_bar_completed(
+        self, code: str, bar: dict[str, Any], *, persist: bool = True,
+    ) -> list[dict[str, Any]]:
+        """persist=True（即時路徑）會把這根 K 排進 bars_5m 寫入佇列，當明天 MA20 的種子；
+        收盤後回補自己整批存檔，傳 persist=False。"""
+        global _last_reset_trade_date
         code = str(code).strip().upper()
         close_ts = int(bar["ts"]) + BAR_INTERVAL_5M_MS
         trade_date = taipei_trade_date(close_ts)
         minute_of_day = taipei_minute_of_day(close_ts)
+
+        if persist and trade_date != _last_reset_trade_date:
+            # 新的一天第一根（整個程序一天一次）：昨天收盤前還排隊中的 K 棒先寫進去，
+            # 接下來每檔重置時撈種子才撈得到。
+            _last_reset_trade_date = trade_date
+            flush_pending_bars_5m(force=True)
 
         with self._lock:
             state = self._states.get(code)
             if state is None or state.trade_date != trade_date:
                 state = self._reset_for_new_day(code, trade_date)
             signals = self._process_bar(code, state, bar, close_ts, trade_date, minute_of_day)
+
+        if persist:
+            queue_bar_5m(code, bar)
+            flush_pending_bars_5m()
 
         if signals:
             try:
@@ -251,6 +390,10 @@ class IntradayKlineSignalMonitor:
             # session_high/today_open是None做防呆)自然整天跳過這檔股票，
             # 寧可當天沒訊號、也不要給錯的訊號；正確結果要靠收盤後的
             # backfill_today_kline_signals用歷史kbars重建。
+            if state.seed_count:
+                # 有昨天的種子時，MA 衍生狀態（20MA 上下／五二零／斜率）跟著第一根靜默更新，
+                # 第二根起偵測到的才是真的跨越；第一根本身照舊不發訊號。
+                _sync_ma_state(state)
             if minute_of_day > FIRST_BAR_MAX_CLOSE_MINUTE:
                 state.late_subscription = True
                 return out
@@ -572,32 +715,48 @@ def backfill_today_kline_signals(
     processed = 0
     bars_replayed = 0
     signals_emitted = 0
+    bars_stored = 0
     failures: list[dict[str, str]] = []
+    flush_pending_bars_5m(force=True)
     for code in codes:
         try:
             result = get_stock_history_bars_5m(code, calendar_days=3, service=service, hub=hub)
-            todays_bars = sorted(
-                (b for b in result.get("bars", []) if taipei_trade_date(int(b["ts"])) == trade_date),
-                key=lambda b: b["ts"],
-            )
+            all_bars = sorted(result.get("bars", []), key=lambda b: int(b["ts"]))
+            todays_bars = [b for b in all_bars if taipei_trade_date(int(b["ts"])) == trade_date]
+            # kbars 裡 trade_date 之前那幾天的 K 棒直接當 MA20 種子（比本機 bars_5m 更不依賴
+            # 前一天有沒有存到）；週一 calendar_days=3 抓不到上週五時，reset 會退回本機資料。
+            prior_bars = [b for b in all_bars if taipei_trade_date(int(b["ts"])) < trade_date]
             if todays_bars:
                 delete_kline_signals_for_ticker(trade_date, code)
-            monitor.reset_for_backfill(code, trade_date)
+            monitor.reset_for_backfill(code, trade_date, seed_bars=prior_bars)
             for bar in todays_bars:
-                emitted = monitor.on_bar_completed(code, bar)
+                emitted = monitor.on_bar_completed(code, bar, persist=False)
                 bars_replayed += 1
                 signals_emitted += len(emitted)
+            # 這幾天的 5 分 K 一併存進 bars_5m：明天開盤 MA20 的種子就齊了，即時路徑
+            # 沒訂閱到的股票也有。
+            try:
+                bars_stored += save_stock_bars_5m(code, all_bars)
+            except Exception:  # noqa: BLE001
+                logger.warning("五分鐘K存檔失敗 code=%s", code, exc_info=True)
             processed += 1
         except Exception as error:  # noqa: BLE001
             failures.append({"code": code, "error": str(error)})
             logger.exception("五分鐘K訊號回補失敗 code=%s", code)
         time.sleep(max(0.0, delay))
+    try:
+        bars_pruned = prune_stock_bars_5m()
+    except Exception:  # noqa: BLE001
+        logger.warning("清除舊的個股5分K失敗", exc_info=True)
+        bars_pruned = 0
     return {
         "tradeDate": trade_date,
         "codeCount": len(codes),
         "codesProcessed": processed,
         "barsReplayed": bars_replayed,
         "signalsEmitted": signals_emitted,
+        "barsStored": bars_stored,
+        "barsPruned": bars_pruned,
         "failures": failures,
     }
 
