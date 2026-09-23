@@ -77,6 +77,9 @@ class ClauseInputs:
     short_usage_pct: float | None = None  # 前一營業日融券使用率%
     short_margin_ratio_min_6d_pct: float | None = None  # 最近6營業日（從前一營業日起）最低券資比%
 
+    # ---- 第十一款：起迄兩營業日收盤價價差 ----
+    is_6d_high_or_low: bool | None = None  # 當日收盤價是不是最近6營業日(含當日)最高或最低
+
     # ---- 第十二款：借券賣出比例 ----
     sbl_short_sale_cum_6d_ratio_pct: float | None = None  # 最近6營業日(從前一營業日起)借券賣出量/總成交量
     sbl_short_sale_prev_day_volume: float | None = None  # 前一營業日借券賣出成交量（張）
@@ -281,9 +284,10 @@ def check_clause_10(i: ClauseInputs) -> ClauseResult:
 
 def check_clause_11(i: ClauseInputs) -> ClauseResult:
     """第12條第1項：收盤價每超過1000元一個級距，6日起迄兩營業日收盤價"價差"門檻
-    +150元(1000~2000元區間300元)，且當日收盤價為最近6日最高或最低。只在
-    close_above_open_ref標示"是最近6日最高"(True)或"是最近6日最低"(False)、
-    price_diff_6d有值時才判定；None一律視為不成立。"""
+    +150元(1000~2000元區間300元)，且當日收盤價為最近6日最高或最低(is_6d_high_or_low)。
+    is_6d_high_or_low是None(資料不足6天)一律視為不成立；是False(今天收盤價不是6日
+    最高也不是最低，只是6天內震盪出來的價差剛好夠大)也不成立——這是判定的必要條件，
+    不是只檢查有沒有資料而已。"""
     if i.price_diff_6d is None or i.close <= 1000:
         return ClauseResult("十一", False, "收盤價未超過1000元或無6日價差資料")
     # 級距是「逾N千至(N+1)千以下」，剛好等於某個千元整數算下一級距的下界(含)，
@@ -293,8 +297,8 @@ def check_clause_11(i: ClauseInputs) -> ClauseResult:
     threshold = 300 + max(0, tier - 1) * 150
     if i.price_diff_6d < threshold:
         return ClauseResult("十一", False, f"6日價差{i.price_diff_6d:.0f}元未達門檻{threshold}元")
-    if i.close_above_open_ref is None:
-        return ClauseResult("十一", False, "無法判定是否為6日最高/最低收盤價")
+    if not i.is_6d_high_or_low:
+        return ClauseResult("十一", False, "收盤價未達6日最高或最低")
     return ClauseResult("十一", True, f"收盤價{i.close:.0f}元，6日價差{i.price_diff_6d:.0f}元≥{threshold}元")
 
 

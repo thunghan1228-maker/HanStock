@@ -42,6 +42,7 @@ class StockPriceMetrics:
     volume: float | None
     change_6d_pct: float | None = None
     price_diff_6d: float | None = None
+    is_6d_high_or_low: bool | None = None  # 當日收盤價是不是最近6營業日(含當日)最高或最低
     change_2d_30d_pct: float | None = None
     change_2d_60d_pct: float | None = None
     change_2d_90d_pct: float | None = None
@@ -91,6 +92,8 @@ def compute_stock_metrics(series: StockDailySeries) -> StockPriceMetrics | None:
     if n >= 6 and series.closes[-6] > 0:
         metrics.change_6d_pct = (close - series.closes[-6]) / series.closes[-6] * 100
         metrics.price_diff_6d = abs(close - series.closes[-6])
+        window6 = series.closes[-6:]
+        metrics.is_6d_high_or_low = close >= max(window6) or close <= min(window6)
     for days, attr in ((30, "change_2d_30d_pct"), (60, "change_2d_60d_pct"), (90, "change_2d_90d_pct")):
         if n >= days and series.closes[-days] > 0:
             setattr(metrics, attr, (close - series.closes[-days]) / series.closes[-days] * 100)
