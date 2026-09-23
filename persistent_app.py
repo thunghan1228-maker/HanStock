@@ -610,6 +610,12 @@ def get_otc_index_strength() -> dict[str, Any]:
     quote = hub.get_latest_quote()
     today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
+    # 櫃買指數今天的漲跌幅（盤中打 333 的「漲幅 ≥ 櫃買%」用）：昨收＝上一個交易日最後一根 5 分 K 的收盤。
+    prev_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) < today]
+    prev_close = float(prev_bars[-1]["close"]) if prev_bars else None
+    quote_close_early = quote.get("close") if quote else None
+    early_price = float(quote_close_early) if quote_close_early else (float(today_bars[-1]["close"]) if today_bars else None)
+    change_pct = round((early_price / prev_close - 1) * 100, 2) if (prev_close and early_price) else None
     if len(bars) < 20 or not today_bars:
         _kick_otc_index_bootstrap(hub)
         hub_status = hub.get_status()
@@ -617,6 +623,8 @@ def get_otc_index_strength() -> dict[str, Any]:
         return {
             "status": "ok",
             "ready": False,
+            "prevClose": prev_close,
+            "changePct": change_pct,
             "reason": (
                 f"資料不足（5分K {len(bars)}/20 根、今日 {len(today_bars)} 根、"
                 f"即時報價{'有' if quote else '無'}），歷史5分K補齊中"
@@ -650,6 +658,8 @@ def get_otc_index_strength() -> dict[str, Any]:
         "ready": True,
         "label": label,
         "price": price,
+        "prevClose": prev_close,
+        "changePct": round((price / prev_close - 1) * 100, 2) if prev_close else None,
         "ma20": round(ma20, 2),
         "aboveMa20": above_ma20,
         "refBarIndex": 3,
@@ -659,6 +669,15 @@ def get_otc_index_strength() -> dict[str, Any]:
         "updatedAt": datetime.now(TW_TZ).isoformat(),
         "hub": hub.get_status(),
     }
+
+
+@app.get("/api/hub/group-daily-changes")
+def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[str, Any]:
+    """43 個族群最近幾個交易日的平均漲跌幅與名次（昨天、前天…），給盤中打 333 的 188 做多／199 做空
+    名單與 ⚔️🔪 標記用；來源是官方日K，半小時快取。"""
+    from group_daily_changes import get_group_daily_changes
+
+    return get_group_daily_changes(days)
 
 
 @app.get("/api/hub/bars1d/{stock_code}")
