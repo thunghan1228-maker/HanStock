@@ -87,7 +87,7 @@ async def _persistent_lifespan(fastapi_app):
             # 處理，不管優先序設多高，attempts永遠停在0。這裡補上真正啟動
             # 這個背景執行緒。
             start_stock_bar_repair_collector()
-            # 5分鐘K盤中訊號(905/1+2多/12空/創高黑龍等)收盤後(13:35+)用歷史
+            # 5分鐘K盤中訊號(905/1+2多/創高黑龍等)收盤後(13:35+)用歷史
             # kbars自動重播校正一次，修正即時路徑受動態訂閱時機影響、當天
             # 可能已經算錯或漏掉的訊號；之前這個回補只有手動觸發的端點，
             # 沒有排程，沒人記得打就永遠不會自動修正。
@@ -350,7 +350,7 @@ def get_intraday_signals(
 ) -> dict[str, Any]:
     """讀取已永久保存的盤中訊號。
 
-    5 分鐘K線結構性訊號(12空/1+2多/創高黑龍等)由intraday_kline_signals.py
+    5 分鐘K線結構性訊號(1+2多/創高黑龍等)由intraday_kline_signals.py
     在本機即時偵測寫入；即時大單與四項精選也共用同一個永久訊號表。此端點
     只讀取已保存資料，不對外連線。不指定 kind 的當日總表預設不含只在 K 線圖
     上疊符號的 5 分 K 訊號（905／20MA 穿越等），那些一天就幾千筆，會把早盤的
@@ -389,7 +389,7 @@ def get_intraday_signals_for_stock(
     trade_date: str | None = Query(None),
     limit: int = Query(500, ge=1, le=2000),
 ) -> dict[str, Any]:
-    """單一股票當日所有已保存K線訊號（905/12空/1+2多/520等），依時間
+    """單一股票當日所有已保存K線訊號（905/1+2多/520等），依時間
     由舊到新排序，供K線圖疊上符號標記使用。"""
     code = _normalize_stock_code(stock_code)
     if trade_date:
@@ -412,7 +412,7 @@ def get_intraday_signals_for_stock(
 @app.get("/api/hub/kline-signals/backfill-today")
 def trigger_kline_signal_backfill_today(trade_date: str | None = Query(None)) -> dict[str, Any]:
     """一次性回補：用Shioaji歷史kbars重播trade_date(預設今天)已經走完的
-    5分K，補回12空/905/520/1+2多/創高黑龍等訊號偵測引擎剛上線那天漏掉的
+    5分K，補回905/520/1+2多/創高黑龍等訊號偵測引擎剛上線那天漏掉的
     部分。也可以指定過去幾天內的日期(例如假日想先驗證上一個交易日的
     資料)，只要在Shioaji歷史kbars查詢範圍內就抓得到。背景執行緒跑，
     馬上回應；進度看/api/hub/kline-signals/backfill-today/status。"""
@@ -432,7 +432,7 @@ def get_kline_signal_backfill_today_status() -> dict[str, Any]:
 
 @app.get("/api/hub/kline-signals/audit-out-of-session")
 def audit_kline_signals_out_of_session(trade_date: str | None = Query(None)) -> dict[str, Any]:
-    """稽核用：列出trade_date(預設今天)裡，K線訊號家族(12空/905/520/
+    """稽核用：列出trade_date(預設今天)裡，K線訊號家族(905/520/
     1+2多/創高黑龍等)中bar_ts落在09:00~13:30正常盤中時段之外的異常
     資料列——這是盤前試撮tick混入bar聚合器的舊bug留下的髒資料(bug已
     在market_data_hub修掉，這裡只是清點bug修復之前寫入的舊資料)。

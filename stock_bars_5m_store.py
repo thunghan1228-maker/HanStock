@@ -1,8 +1,8 @@
 """個股 5 分 K 本機持久化：讓五分鐘K訊號的 MA20 跨日接續。
 
 五分鐘K訊號監視器（intraday_kline_signals）的 state.closes 原本每天從零開始累積：
-5 分 K MA20 要 20 根、MA20 斜率再多 1 根，也就是 10:45 之後才算得出來。12空（一二空）
-第③步破位要「20MA 正在下彎」，10:45 前根本不可能成立，跟一般看盤軟體的 5 分 K MA20
+5 分 K MA20 要 20 根、MA20 斜率再多 1 根，也就是 10:45 之後才算得出來。當時的12空（一二空，
+已移除）第③步破位要「20MA 正在下彎」，這類靠 20MA 斜率的訊號 10:45 前根本不可能成立，跟一般看盤軟體的 5 分 K MA20
 （跨日連續，09:10 就有值、有斜率）不一樣；2026-09-23 盤中一二空整天是 0 就是這個原因。
 
 這裡把每根走完的個股 5 分 K 存進既有的 bars_5m 表（跟櫃買指數 OTC_INDEX 共用同一張表、
@@ -124,7 +124,7 @@ def load_stock_bars_5m_before(code: str, trade_date: str, limit: int) -> list[di
 
 def load_stock_bars_5m_on(code: str, trade_date: str) -> list[dict[str, Any]]:
     """回傳 trade_date 當天（含）已存的 5 分 K（bar-start ts 由小到大）。跟 load_stock_bars_5m_before
-    （撈 trade_date 之前）互補，用於診斷／回放某一天已經走完的即時路徑（例如 12空狀態機追蹤）。"""
+    （撈 trade_date 之前）互補，用於診斷／回放某一天已經走完的即時路徑（例如 5 分 K 訊號狀態機追蹤）。"""
     code = str(code).strip().upper()
     if not code:
         return []

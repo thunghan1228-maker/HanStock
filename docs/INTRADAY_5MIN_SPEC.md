@@ -30,12 +30,11 @@
 |------|------|------|------|
 | Ⓓ | 破905D | break905d | 深綠 #047857 |
 | Ⓐ | A8空 | a8short | 深綠 #047857 |
-| ㊟ | 注意12空 | watch12short | 綠 #22c55e |
-| ⑫ | 12空 | short12 | 藍 #3b82f6 |
-| ⑫實心 | 加強12空 | enhanced12short | 紫 #c084fc |
 | ⑳↓ᴺ | 第N次跌破20MA | crossDown20ma | 綠 #22c55e |
 | ⑳↓★ | 首次跌破20MA | firstCrossDown20ma | 綠 #22c55e |
 | ↑/↓ | 20MA轉向 | ma20turn | 紅 #dc2626 / 綠 #22c55e |
+
+> 2026-09-23：注意12空／12空／加強12空（watch12short／short12／enhanced12short）依使用者要求整個移除，不再偵測、不再畫符號，舊資料列由 intraday_signal_store.RETIRED_SIGNAL_KINDS 隱藏並清除。
 
 ## 大盤警示
 
