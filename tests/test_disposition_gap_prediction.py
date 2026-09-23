@@ -205,17 +205,35 @@ class Clause9ThresholdVolumeTests(unittest.TestCase):
     def test_computes_5x_avg60(self):
         self.assertAlmostEqual(clause_9_threshold_volume(1000.0, None), 5000.0)
 
-    def test_diff_ok_peer_avg_passes(self):
-        # |5.0-0.5|=4.5>=4，差幅子條件過
+    def test_diff_ok_peer_avg_keeps_5x(self):
+        # |5.0-0.5|=4.5>=4，5倍這個點差幅就過了，門檻維持5倍。
         self.assertAlmostEqual(clause_9_threshold_volume(1000.0, 0.5), 5000.0)
 
-    def test_diff_not_ok_peer_avg_returns_none(self):
-        # |5.0-2.0|=3.0<4，差幅子條件過不了，不管量衝多高都不會觸發
-        self.assertIsNone(clause_9_threshold_volume(1000.0, 2.0))
+    def test_diff_dead_zone_raises_threshold_instead_of_none(self):
+        # |5.0-2.0|=3.0<4，5倍這個點差幅不夠，但不代表無解——把倍數推高到
+        # peer_avg+4=6.0倍，差幅就變成|6-2|=4>=4，同時滿足「>=5倍」跟差幅門檻。
+        self.assertAlmostEqual(clause_9_threshold_volume(1000.0, 2.0), 6000.0)
 
     def test_zero_or_none_avg_returns_none(self):
         self.assertIsNone(clause_9_threshold_volume(0.0, None))
         self.assertIsNone(clause_9_threshold_volume(None, None))
+
+    def test_subcondition_2_can_be_easier_than_subcondition_1(self):
+        # 子條件二(明天6日均量/60日均量>=5倍)：前5天已經累積28000張，60日均量
+        # 1000張，明天6日均量要達到5倍(5000張總量)只需要再6*5*1000-28000=2000張，
+        # 比子條件一的5*1000=5000張容易，取兩者較小值。
+        threshold = clause_9_threshold_volume(
+            1000.0, None, cum_volume_prior_5d_lots=28000.0, peer_avg_ratio_6d_60d=None,
+        )
+        self.assertAlmostEqual(threshold, 2000.0)
+
+    def test_subcondition_2_dead_zone_also_raises_threshold(self):
+        # 子條件二peer_avg=2.0一樣卡死區，門檻倍數墊高到6.0：
+        # 6*6.0*1000-28000=8000，比子條件一(5000)嚴格，改取子條件一。
+        threshold = clause_9_threshold_volume(
+            1000.0, None, cum_volume_prior_5d_lots=28000.0, peer_avg_ratio_6d_60d=2.0,
+        )
+        self.assertAlmostEqual(threshold, 5000.0)
 
 
 class Clause10ThresholdVolumeTests(unittest.TestCase):
@@ -235,10 +253,15 @@ class Clause10ThresholdVolumeTests(unittest.TestCase):
         self.assertAlmostEqual(threshold, 1000.0)
         self.assertEqual(binding, "當日週轉率")
 
-    def test_diff_filters_out_when_peer_avg_too_close_to_threshold(self):
-        # |10-8|=2<5，當日週轉率差幅過不了；|50-45|=5<40，累積週轉率差幅也過不了。
+    def test_diff_dead_zone_raises_threshold_instead_of_none(self):
+        # |10-8|=2<5，當日週轉率門檻墊高到8+5=13%(1300張)；|50-45|=5<40，累積
+        # 週轉率門檻墊高到45+40=85%(8500張，扣掉前5天3000張還需要5500張)。
+        # 5500>1300，累積週轉率仍是較嚴格的子條件——不是像修正前那樣直接判定無解。
         result = clause_10_threshold_volume(10000.0, 3000.0, 8.0, 45.0)
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        threshold, binding = result
+        self.assertAlmostEqual(threshold, 5500.0)
+        self.assertEqual(binding, "6日累積週轉率")
 
     def test_zero_or_none_shares_outstanding_returns_none(self):
         self.assertIsNone(clause_10_threshold_volume(0.0, 3000.0, None, None))
@@ -329,8 +352,22 @@ class BuildVolumeGapPredictionsTests(unittest.TestCase):
         self.assertAlmostEqual(prediction.reference_volume, 1600.0)
 
     def test_clause_10_low_turnover_stock_is_excluded(self):
-        # 當日週轉率8%，自我參照peer_avg也是8%，|10-8|=2<5通不過差幅門檻，
-        # clause_10_threshold_volume直接回傳None，不會出現在結果裡。
+        # 當日週轉率只有1%，遠低於10%門檻——不是差幅死區邊界，是真的量太少，
+        # 就算死區把門檻墊高，量本身也遠遠不到門檻一半，仍然被排除。
+        days = _business_days_ending(self.today, 5)
+        volumes_by_date = {d: 100.0 for d in days}
+        self._seed_volumes("1101", volumes_by_date)
+        save_fundamentals_rows([
+            {"code": "1101", "tradeDate": self.today.isoformat(), "marketValue": 1_000_000_000.0},
+        ])
+
+        result = build_volume_gap_predictions(self.today.isoformat(), {"1101"})
+
+        self.assertEqual(result, [])
+
+    def test_clause_10_dead_zone_gate_still_includes_stock_with_raised_threshold(self):
+        # 當日週轉率8%，自我參照peer_avg也是8%，差幅死區把門檻墊高到13%(1300張)，
+        # 不是直接判定無解排除掉——800張量已經超過門檻一半，應該出現在結果裡。
         days = _business_days_ending(self.today, 5)
         volumes_by_date = {d: 800.0 for d in days}
         self._seed_volumes("1101", volumes_by_date)
@@ -340,7 +377,11 @@ class BuildVolumeGapPredictionsTests(unittest.TestCase):
 
         result = build_volume_gap_predictions(self.today.isoformat(), {"1101"})
 
-        self.assertEqual(result, [])
+        self.assertEqual(len(result), 1)
+        prediction = result[0]
+        self.assertEqual(prediction.clause, "十")
+        self.assertAlmostEqual(prediction.threshold_volume, 1300.0)
+        self.assertAlmostEqual(prediction.reference_volume, 800.0)
 
 
 if __name__ == "__main__":
