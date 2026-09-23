@@ -11,7 +11,13 @@ from fastapi import Query
 
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
-from main_force_store import load_daily_main_force_net, load_main_force_bars, load_main_force_ranking, main_force_storage_status
+from main_force_store import (
+    latest_trade_date_with_data,
+    load_daily_main_force_net,
+    load_main_force_bars,
+    load_main_force_ranking,
+    main_force_storage_status,
+)
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
 from stock_trading_eligibility import (
@@ -677,6 +683,19 @@ def get_main_force_backfill_status(stock_code: str) -> dict[str, Any]:
     return {"status": "ok", "code": code, "jobs": list_main_force_backfill_jobs(code)}
 
 
+RANKING_HOLD_UNTIL_MINUTE = 8 * 60 + 45  # 下一個交易日開盤前 15 分鐘
+
+
+def _should_hold_previous_ranking(now: datetime) -> bool:
+    """今天還沒有主力資料時，要不要繼續給上一個交易日的排行。使用者 2026-09-24：
+    盤中大戶力／族群大戶力／族群綜合表的資料過午夜不能不見，要留到下一個交易日開盤前
+    15 分鐘（08:45）。週末整天都留；平日 08:45 起清空等開盤。沒有假日行事曆可查，
+    平日的國定假日會從 08:45 起提早清空，接受這個誤差。"""
+    if now.weekday() >= 5:
+        return True
+    return now.hour * 60 + now.minute < RANKING_HOLD_UNTIL_MINUTE
+
+
 @app.get("/api/hub/main-force/ranking")
 def get_main_force_ranking(
     interval: str = Query("5m", pattern="^(1m|5m)$"),
@@ -697,10 +716,21 @@ def get_main_force_ranking(
         date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     # 只排 stock_groups 官方族群（含股期標的）裡的股票：收集器也會追蹤開過圖的 ETF 等
     # 族群外的代號，使用者 2026-09-23 要求排行不要出現 ETF。
-    ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=official_group_code_names().keys())
+    codes = official_group_code_names().keys()
+    ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=codes)
+    held_from = None
+    if not trade_date and not ranking and _should_hold_previous_ranking(datetime.now(TW_TZ)):
+        # 沒指定日期、今天還沒有資料（午夜過後到開盤前）：沿用上一個交易日的最終排行，
+        # tradeDate 回真正的資料日期，heldFrom 標示是替哪一天暫留的。
+        previous = latest_trade_date_with_data(date, interval=interval)
+        if previous:
+            ranking = load_main_force_ranking(previous, interval=interval, limit=limit, codes=codes)
+            held_from = date
+            date = previous
     return {
         "status": "ok",
         "tradeDate": date,
+        "heldFrom": held_from,
         "interval": interval,
         "count": len(ranking),
         "ranking": ranking,
