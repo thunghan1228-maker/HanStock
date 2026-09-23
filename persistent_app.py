@@ -32,6 +32,8 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
+from disposition_prediction import check_disposition_trigger, load_clause_log_for_date, official_group_code_names
+from disposition_prediction_collector import collect_once as run_disposition_prediction_once, start_disposition_prediction_collector
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
 from main_force_flip_signals import (
     flip_signal_backfill_status,
@@ -92,6 +94,10 @@ async def _persistent_lifespan(fastapi_app):
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
             start_disposition_collector()
+            # 處置股「預測」(跟上面start_disposition_collector抓的官方現況公告不同，這個是
+            # 用證交所公布或通知注意交易資訊暨處置作業要點第四條門檻自己算)：收盤後bars_1d
+            # 寫好today's資料後，跑43個官方族群股票的14款判定，一天一次。
+            start_disposition_prediction_collector()
             start_trading_eligibility_warmer(_group_stock_codes)
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但幾百檔股票還是有感時間，丟背景
@@ -444,6 +450,56 @@ def audit_kline_signals_out_of_session(trade_date: str | None = Query(None)) -> 
         "count": len(rows),
         "signals": rows,
     }
+
+
+def _validated_trade_date(trade_date: str | None) -> str:
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    return trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+
+
+@app.get("/api/hub/disposition-risk")
+def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]:
+    """處置股預測：43個官方族群股票，依證交所公布或通知注意交易資訊暨處置作業要點第四條
+    14款異常標準（目前算得出來一二三四六七九十十一款，五需要券商分點資料、八限台灣存託
+    憑證、十二十三需要借券／當日沖銷比例資料，我們沒有這幾項）今天觸發了哪些款，以及依
+    第六條累積規則(連續3天款一／連續5天款一到八／10天內6次／30天內12次，後三條只算我們
+    做得到的六款)是不是已經累積到會被處置。trade_date預設今天；只回今天至少觸發一款、
+    或正在累積中的股票，不是全部524檔都列出來——collectAt是收盤後背景收集器算好存進去
+    的，不是即時重算。處置期間官方新制固定5個營業日，若基數期間也曾因當日沖銷比例過高
+    會加重為7天，我們沒有這項資料，durationCaveat就是在講這件事。"""
+    date = _validated_trade_date(trade_date)
+    names = official_group_code_names()
+    clause_log = load_clause_log_for_date(date)
+    results: list[dict[str, Any]] = []
+    for code, clause_results in clause_log.items():
+        fired = [r for r in clause_results if r.fired]
+        accumulation = check_disposition_trigger(code, date)
+        if not fired and accumulation.trigger_path is None:
+            continue
+        results.append({
+            "code": code,
+            "name": names.get(code, code),
+            "firedToday": [{"clause": r.clause, "detail": r.detail} for r in fired],
+            "accumulation": {
+                "triggerPath": accumulation.trigger_path,
+                "firedDates": accumulation.fired_dates,
+                "predictedDurationBusinessDays": accumulation.predicted_duration_business_days,
+                "durationCaveat": accumulation.duration_caveat,
+            } if accumulation.trigger_path else None,
+        })
+    results.sort(key=lambda r: (r["accumulation"] is None, -len(r["firedToday"])))
+    return {"status": "ok", "tradeDate": date, "count": len(results), "results": results}
+
+
+@app.get("/api/hub/disposition-risk/run-today")
+def trigger_disposition_prediction_today() -> dict[str, Any]:
+    """手動觸發：跟背景收集器跑的是同一個函式，今天已經跑過就直接回skipped，不會重算。"""
+    return run_disposition_prediction_once()
 
 
 @app.get("/api/hub/kline-signals/purge-out-of-session")
