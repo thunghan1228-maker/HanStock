@@ -18,7 +18,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from daily_bars_store import load_daily_bars
+from datetime import date
+
+from daily_bars_store import latest_daily_trade_date_before, load_daily_bars
 from daytrade_flow import _tick_size, limit_down_price, limit_up_price
 from intraday_signal_store import delete_kline_signals_for_ticker, save_intraday_signals
 from ma_alignment_score import compute_ma_alignment_score
@@ -107,6 +109,48 @@ def _moving_average(closes: list[float], length: int) -> float | None:
     return sum(window) / length
 
 
+# 「昨日」日K最多能比今天舊幾個日曆天（連假最多也就這麼長）；再舊就是資料沒跟上，不能當昨高。
+MAX_PREV_BAR_AGE_DAYS = 12
+_market_prev_cache: dict[str, str | None] = {}
+
+
+def _market_previous_trade_date(trade_date: str) -> str | None:
+    if trade_date not in _market_prev_cache:
+        try:
+            value = latest_daily_trade_date_before(trade_date)
+        except Exception:  # noqa: BLE001
+            value = None
+        _market_prev_cache.clear()
+        _market_prev_cache[trade_date] = value
+    return _market_prev_cache[trade_date]
+
+
+def previous_day_bars(code: str, trade_date: str) -> list[dict[str, Any]]:
+    """trade_date 之前的日K（最多 5 根、舊到新）。最後一根一定要是市場上一個交易日的那根：
+    2026-09-23 的 6218（上櫃）就是因為櫃買來源從 Railway 出去被擋、日K停在更早的日子，
+    拿更早那天的高點當「昨日高」，09:10 明明沒過昨高卻發了 1+2多。日K沒跟上就當作沒有昨日資料，
+    寧可少發也不要發錯。"""
+    try:
+        bars = load_daily_bars(code, limit=6)
+    except Exception:  # noqa: BLE001
+        return []
+    prior = [b for b in bars if str(b.get("ts", ""))[:10] < trade_date]
+    if not prior:
+        return []
+    last_date = str(prior[-1].get("ts", ""))[:10]
+    if last_date:
+        market_prev = _market_previous_trade_date(trade_date)
+        if market_prev and last_date < market_prev:
+            return []
+        try:
+            age_days = (date.fromisoformat(trade_date[:10]) - date.fromisoformat(last_date)).days
+        except ValueError:
+            age_days = 0
+        if age_days > MAX_PREV_BAR_AGE_DAYS:
+            return []
+    return prior[-5:]
+
+
 class IntradayKlineSignalMonitor:
     def __init__(self) -> None:
         self._states: dict[str, _KlineState] = {}
@@ -114,21 +158,14 @@ class IntradayKlineSignalMonitor:
 
     def _reset_for_new_day(self, code: str, trade_date: str) -> _KlineState:
         state = _KlineState(trade_date=trade_date)
-        try:
-            previous = load_daily_bars(code, limit=1)
-        except Exception:  # noqa: BLE001
-            previous = []
-        if previous:
-            state.prev_close = float(previous[-1]["close"])
-            state.prev_high = float(previous[-1]["high"])
+        prior = previous_day_bars(code, trade_date)
+        if prior:
+            state.prev_close = float(prior[-1]["close"])
+            state.prev_high = float(prior[-1]["high"])
             state.limit_up = limit_up_price(state.prev_close)
             state.limit_down = limit_down_price(state.prev_close)
-        try:
-            recent5 = load_daily_bars(code, limit=5)
-        except Exception:  # noqa: BLE001
-            recent5 = []
-        if len(recent5) >= 5:
-            state.five_day_high = max(float(b["high"]) for b in recent5[-5:])
+        if len(prior) >= 5:
+            state.five_day_high = max(float(b["high"]) for b in prior[-5:])
         try:
             state.ma_alignment_score = compute_ma_alignment_score(code)
         except Exception:  # noqa: BLE001

@@ -229,6 +229,57 @@ def load_tests(loader, tests, pattern):  # noqa: ARG001
         test_tpex_falls_back_to_legacy_endpoint_when_modern_is_empty,
         test_closed_market_day_never_accepts_stale_tpex_rows,
         test_save_day_fills_gaps_without_overwriting_existing_bar,
+        test_tpex_failure_falls_back_to_finmind_for_otc_rows,
     ):
         suite.addTest(unittest.FunctionTestCase(function))
     return suite
+
+
+def test_tpex_failure_falls_back_to_finmind_for_otc_rows():
+    # 櫃買中心從 Railway 出去被擋（2026-09-22 起 403／連線重置）：上櫃日K改用 FinMind 補，
+    # 上市照常來自證交所；有補到才寫入，失敗原因跟補了幾檔都記在 source_failures。
+    trade_date = date(2026, 9, 22)
+    saved: list[list[dict]] = []
+    twse_row = {
+        "stock_code": "2330", "stock_name": "台積電", "market": "TSE",
+        "time": datetime(2026, 9, 22, tzinfo=timezone.utc),
+        "open": 100.0, "high": 105.0, "low": 99.0, "close": 104.0, "volume": 1000,
+    }
+    otc_row = {**twse_row, "stock_code": "6218", "stock_name": "豪勉", "market": "OTC", "high": 64.0, "close": 61.0}
+    originals = {
+        name: getattr(official_module, name)
+        for name in ("fetch_twse_day", "fetch_tpex_day", "_finmind_otc_day", "_otc_bars_exist", "_save_day", "get_connection")
+    }
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, *args):
+            class _Row:
+                def fetchone(self):
+                    return [0]
+            return _Row()
+
+    def _raise(_trade_date):
+        raise RuntimeError("官方盤後資料取得失敗：Connection reset by peer")
+
+    official_module.fetch_twse_day = lambda _trade_date: [twse_row]
+    official_module.fetch_tpex_day = _raise
+    official_module._finmind_otc_day = lambda _trade_date: ([otc_row], "FinMind 補上櫃 1 檔")
+    official_module._otc_bars_exist = lambda _trade_date, minimum=100: False
+    official_module._save_day = lambda rows: saved.append(rows) or len(rows)
+    official_module.get_connection = lambda: _Conn()
+    try:
+        result = official_module.download_official_daily_bars(days=60, delay=0, end_date=trade_date, run_triangle_scan=False)
+    finally:
+        for name, value in originals.items():
+            setattr(official_module, name, value)
+
+    assert any(rows and {row["stock_code"] for row in rows} == {"2330", "6218"} for rows in saved)
+    failure = [f for f in result["source_failures"] if f["date"] == "2026-09-22" and f["source"] == "TPEx"][0]
+    assert "Connection reset" in failure["error"]
+    assert failure["finmind"] == "FinMind 補上櫃 1 檔"
