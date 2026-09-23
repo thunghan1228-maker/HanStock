@@ -62,6 +62,18 @@ def compute_group_daily_changes(days: int = 3, *, today: str | None = None) -> d
     market_dates = sorted({day for by_day in closes.values() for day in by_day}, reverse=True)[: days + 1]
     # 最舊的那天沒有再前一天可以比，不算一天
     dates = [day for index, day in enumerate(market_dates[:days]) if index + 1 < len(market_dates)]
+    # 每檔個股同一組交易日的漲跌幅（馬火多：🐎 比昨天強、🚀 比前天強 要用）
+    per_stock: dict[str, dict[str, Any]] = {}
+    for code, by_day in closes.items():
+        pcts: list[float | None] = []
+        for index, day in enumerate(dates):
+            prev_day = market_dates[index + 1] if index + 1 < len(market_dates) else None
+            if prev_day and day in by_day and prev_day in by_day:
+                pcts.append(round((by_day[day] / by_day[prev_day] - 1) * 100, 2))
+            else:
+                pcts.append(None)
+        if any(value is not None for value in pcts):
+            per_stock[code] = {"pct": pcts}
     per_group: dict[str, dict[str, Any]] = {}
     for name, members in groups.items():
         pcts: list[float | None] = []
@@ -88,6 +100,7 @@ def compute_group_daily_changes(days: int = 3, *, today: str | None = None) -> d
         "status": "ok", "today": today, "dates": dates, "groupCount": len(per_group),
         "rankedCount": [sum(1 for info in per_group.values() if info["rank"][i] is not None) for i in range(len(dates))],
         "groups": per_group,
+        "stocks": per_stock,
         "generatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
     }
 
