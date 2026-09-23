@@ -695,7 +695,9 @@ def get_main_force_ranking(
             raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
     else:
         date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    ranking = load_main_force_ranking(date, interval=interval, limit=limit)
+    # 只排 stock_groups 官方族群（含股期標的）裡的股票：收集器也會追蹤開過圖的 ETF 等
+    # 族群外的代號，使用者 2026-09-23 要求排行不要出現 ETF。
+    ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=official_group_code_names().keys())
     return {
         "status": "ok",
         "tradeDate": date,
