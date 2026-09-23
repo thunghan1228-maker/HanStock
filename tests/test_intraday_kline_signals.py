@@ -75,7 +75,6 @@ def test_first_bar_only_establishes_baseline_no_signals(monkeypatch):
     assert state.bar905_high == 102
     assert state.bar905_low == 99
     assert state.a8 == 100.5
-    assert state.session_high == 102
 
 
 def test_late_first_bar_skips_baseline_and_suppresses_905_family_signals(monkeypatch):
@@ -90,7 +89,6 @@ def test_late_first_bar_skips_baseline_and_suppresses_905_family_signals(monkeyp
     assert state.bar905_high is None
     assert state.bar905_low is None
     assert state.a8 is None
-    assert state.session_high is None
     assert state.today_open is None
     assert state.late_subscription is True
 
@@ -235,71 +233,6 @@ def test_a8_short_not_fired_after_1030(monkeypatch):
     result = monitor.on_bar_completed("2330", bar(10, 35, 100.5, 100.5, 90, 90))
     assert "a8short" not in kinds(result)
     assert "break905d" not in kinds(result)
-
-
-def test_full_12short_family_flow_matches_spec_sequence(monkeypatch):
-    # 注意：訊號判定用的是每根bar的「收盤時間」(bar["ts"]+5分)，不是bar起始時間；
-    # 下面註解一律標示收盤時間，跟watch_stage/minute_of_day的判斷對齊。
-    # 905高=100（bar1的high）→ session_high初始=100；_tick_size(100)=0.5（100不<100，落在<500檔位），
-    # 5檔=2.5，區域=[97.5,100)。
-    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=1000.0)
-    monitor.on_bar_completed("2330", bar(9, 0, 99, 100, 98, 99.5))  # 收09:05：建立基準
-    # 收09:10（=WATCH_START_MINUTE）：收盤99.6在[97.5,100)內，開始偵測注意12空。
-    r1 = monitor.on_bar_completed("2330", bar(9, 5, 99.5, 99.6, 99.4, 99.6))
-    assert kinds(r1) == []
-    state = monitor._states["2330"]
-    assert state.watch_stage == "entering"
-    # 收09:15：第1個等待K，仍未突破。
-    r2 = monitor.on_bar_completed("2330", bar(9, 10, 99.6, 99.7, 99.5, 99.6))
-    assert kinds(r2) == []
-    assert state.watch_stage == "entering"
-    # 收09:20：第2個等待K，仍未突破 → 注意12空成立。
-    r3 = monitor.on_bar_completed("2330", bar(9, 15, 99.6, 99.7, 99.5, 99.6))
-    assert "watch12short" in kinds(r3)
-    assert state.watch_stage == "confirmed_watching_exit"
-    # 收09:25：跌出5檔區域外（97.0<97.5）→ 離開，可以重新偵測。
-    monitor.on_bar_completed("2330", bar(9, 20, 99.6, 99.6, 96.8, 97.0))
-    assert state.watch_stage == "idle2_armed"
-    # 收09:30：再次回到前高下方5檔內。
-    monitor.on_bar_completed("2330", bar(9, 25, 97.0, 99.2, 97.0, 99.0))
-    assert state.watch_stage == "entering2"
-    # 收09:35：第1個等待K。
-    monitor.on_bar_completed("2330", bar(9, 30, 99.0, 99.3, 98.8, 99.0))
-    assert state.watch_stage == "entering2"
-    # 收09:40：第2個等待K，仍未突破，且未超過10:30 → 12空成立。
-    r4 = monitor.on_bar_completed("2330", bar(9, 35, 99.0, 99.3, 98.8, 99.0))
-    assert "short12" in kinds(r4)
-    assert state.watch_stage == "done"
-
-
-def test_enhanced_12short_fires_independently_once_watch12_unlocked(monkeypatch):
-    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=1000.0)
-    state = monitor._states.setdefault("2330", module._KlineState(trade_date="2026-09-18"))
-    state.ever_watch12 = True
-    state.above_20ma = True
-    state.closes = [100.0] * 19  # 湊出20MA視窗（連同這根bar共20筆）
-    # 收盤明顯走弱，讓20MA由上方跌到下方。
-    signals = []
-
-    def emit(kind, label, note="", ma20_down=None):
-        signals.append({"kind": kind, "label": label, "note": note, "ma20Down": ma20_down})
-
-    monitor._detect_20ma_cross(state, 90.0, 99.0, emit)
-    assert "crossDown20ma" in kinds(signals)
-    assert "enhanced12short" in kinds(signals)
-
-
-def test_breakthrough_during_watch12_invalidates_and_updates_session_high(monkeypatch):
-    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=1000.0)
-    monitor.on_bar_completed("2330", bar(9, 0, 99, 100, 98, 99.5))
-    monitor.on_bar_completed("2330", bar(9, 5, 99.5, 99.5, 99, 99.3))
-    monitor.on_bar_completed("2330", bar(9, 10, 99.3, 99.6, 99.4, 99.6))
-    state = monitor._states["2330"]
-    assert state.watch_stage == "entering"
-    # 這一根創新高，突破前高 → 作廢，重新更新前高。
-    monitor.on_bar_completed("2330", bar(9, 15, 99.6, 101.0, 99.5, 100.8))
-    assert state.watch_stage == "idle"
-    assert state.session_high == 101.0
 
 
 def test_new_trade_date_resets_state_and_reloads_previous_day(monkeypatch):

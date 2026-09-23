@@ -1,4 +1,4 @@
-"""五分鐘K盤中訊號狀態機：905/A8/520/12空/1+2多系列。
+"""五分鐘K盤中訊號狀態機：905/A8/520/1+2多系列。
 
 規格來源：使用者提供文件《HANSTOCK｜策略定義備份》（整理日期2026-08-13，
 以《HanStock 5分鐘K線盤中選股規則》2026/08/04版為底）。範圍限五分鐘盤中
@@ -21,7 +21,7 @@ from typing import Any
 from datetime import date
 
 from daily_bars_store import latest_daily_trade_date_before, load_daily_bars
-from daytrade_flow import _tick_size, limit_down_price, limit_up_price
+from daytrade_flow import limit_down_price, limit_up_price
 from intraday_signal_store import delete_kline_signals_for_ticker, save_intraday_signals
 from ma_alignment_score import compute_ma_alignment_score
 from market_data_hub import BAR_INTERVAL_5M_MS
@@ -38,10 +38,7 @@ from stock_groups import STOCK_GROUPS
 logger = logging.getLogger("hanstock.intraday_kline_signals")
 
 LONG_PRECONDITION_MAX_PCT = 6.0  # 905收盤漲幅需<6%（相對昨收）才適用【5】/20MA上彎系列
-ZONE_TICKS = 5  # 「前高下方5檔內」
-WAIT_BARS = 2  # 注意12空／12空都要等2根5分K（=10分鐘）未突破
-WATCH_START_MINUTE = 9 * 60 + 10  # 09:10起才開始偵測注意12空
-CUTOFF_MINUTE = 10 * 60 + 30  # A8空／破905D／12空的期限
+CUTOFF_MINUTE = 10 * 60 + 30  # A8空／破905D的期限
 FIRST_BAR_MAX_CLOSE_MINUTE = 9 * 60 + 10  # 真正的905K收盤時間=09:05，多留5分鐘緩衝
 BLACK_DRAGON_START_MINUTE = 11 * 60  # 創高黑龍11:00後才成立
 BLACK_DRAGON_END_MINUTE = 13 * 60 + 30  # 到13:30收盤
@@ -77,7 +74,6 @@ class _KlineState:
     bar905_low: float | None = None
     a8: float | None = None
     long_ok: bool = False
-    session_high: float | None = None
     above_20ma: bool | None = None
     above_prev_high: bool = False
     above_905_5ma: bool = False
@@ -95,9 +91,6 @@ class _KlineState:
     fired_combo12_bull: bool = False
     fired_a8short: bool = False
     fired_break905d: bool = False
-    ever_watch12: bool = False
-    watch_stage: str = "idle"
-    watch_wait: int = 0
     today_open: float | None = None
     five_day_high: float | None = None
     ma_alignment_score: int | None = None
@@ -392,7 +385,7 @@ class IntradayKlineSignalMonitor:
             # 昨日高combo的基準會產生假訊號(跟backfill_today_kline_signals
             # 文件字串描述的是同一個根因)。這裡只用bar自己的收盤時間驗證，
             # 不合理就不建立基準，讓後面所有偵測函式(都已經對905高/a8/
-            # session_high/today_open是None做防呆)自然整天跳過這檔股票，
+            # today_open是None做防呆)自然整天跳過這檔股票，
             # 寧可當天沒訊號、也不要給錯的訊號；正確結果要靠收盤後的
             # backfill_today_kline_signals用歷史kbars重建。
             if state.seed_count:
@@ -405,17 +398,11 @@ class IntradayKlineSignalMonitor:
             state.bar905_high = high
             state.bar905_low = low
             state.a8 = (state.bar905_high + state.bar905_low) / 2
-            state.session_high = state.bar905_high
             state.today_open = float(bar["open"])
             if state.prev_close is not None and state.prev_close > 0:
                 pct = (close / state.prev_close - 1) * 100
                 state.long_ok = close > state.prev_close and pct < LONG_PRECONDITION_MAX_PCT
             return out
-
-        old_session_high = state.session_high
-        broke_through = old_session_high is not None and high > old_session_high
-        if broke_through:
-            state.session_high = high
 
         ma5 = _moving_average(state.closes, 5)
         ma20 = _moving_average(state.closes, 20)
@@ -427,7 +414,6 @@ class IntradayKlineSignalMonitor:
         self._detect_520(state, close, ma5, ma20, emit)
         self._detect_20ma_turn(state, ma20, emit)
         self._detect_a8_and_905d(state, close, minute_of_day, emit)
-        self._detect_12short_family(state, close, broke_through, minute_of_day, emit)
         bar_start_minute = taipei_minute_of_day(int(bar["ts"]))
         self._detect_black_dragon(state, close, high, bar_start_minute, group_name, emit)
 
@@ -496,8 +482,6 @@ class IntradayKlineSignalMonitor:
             if not state.fired_first_20down:
                 state.fired_first_20down = True
                 emit("firstCrossDown20ma", "首次跌破20MA")
-            if state.ever_watch12:
-                emit("enhanced12short", "加強12空", "注意12空後再跌破20MA", ma20_down=True)
         state.above_20ma = is_above
 
     def _detect_520(self, state: _KlineState, close: float, ma5: float | None, ma20: float | None, emit) -> None:
@@ -539,54 +523,6 @@ class IntradayKlineSignalMonitor:
         if not state.fired_break905d and state.bar905_low is not None and close < state.bar905_low:
             state.fired_break905d = True
             emit("break905d", "破905D")
-
-    def _detect_12short_family(
-        self, state: _KlineState, close: float, broke_through: bool, minute_of_day: int, emit
-    ) -> None:
-        if state.session_high is None:
-            return
-        tick = _tick_size(state.session_high)
-        zone_lower = state.session_high - ZONE_TICKS * tick
-        in_zone = zone_lower <= close < state.session_high
-
-        if broke_through and state.watch_stage == "entering":
-            # 判定注意12空期間突破：作廢，前高已經在上層更新，重新偵測。
-            state.watch_stage = "idle"
-            state.watch_wait = 0
-            return
-        if broke_through and state.watch_stage == "entering2":
-            # 判定12空期間突破：不整段作廢（注意12空已經成立過），回到
-            # 「等待離開/更新前高」，等下一次回到新前高5檔內再重新判定12空。
-            state.watch_stage = "confirmed_watching_exit"
-            state.watch_wait = 0
-            return
-
-        if state.watch_stage == "idle":
-            if WATCH_START_MINUTE <= minute_of_day < CUTOFF_MINUTE and in_zone:
-                state.watch_stage = "entering"
-                state.watch_wait = 0
-        elif state.watch_stage == "entering":
-            state.watch_wait += 1
-            if state.watch_wait >= WAIT_BARS:
-                state.watch_stage = "confirmed_watching_exit"
-                state.ever_watch12 = True
-                emit("watch12short", "注意12空")
-        elif state.watch_stage == "confirmed_watching_exit":
-            # 離開條件：跌出5檔區域，或突破前高（上面broke_through那個分支已經
-            # 處理過entering2的突破；這裡處理注意12空成立後、還沒進入entering2
-            # 前，區域外的任何一根新高一樣算「離開」）。
-            if not in_zone or broke_through:
-                state.watch_stage = "idle2_armed"
-        elif state.watch_stage == "idle2_armed":
-            if minute_of_day < CUTOFF_MINUTE and in_zone:
-                state.watch_stage = "entering2"
-                state.watch_wait = 0
-        elif state.watch_stage == "entering2":
-            state.watch_wait += 1
-            if state.watch_wait >= WAIT_BARS:
-                state.watch_stage = "done"
-                if minute_of_day < CUTOFF_MINUTE:
-                    emit("short12", "12空")
 
     def _detect_black_dragon(
         self, state: _KlineState, close: float, high: float, bar_start_minute: int, group_name: str, emit

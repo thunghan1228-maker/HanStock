@@ -32,21 +32,21 @@ class LoadSignalsForTickerTests(unittest.TestCase):
 
     def test_returns_only_requested_ticker_and_date_sorted_ascending(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "watch12short",
-             "label": "注意12空", "barTs": 3_000, "price": 100.0},
+            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 3_000, "price": 100.0},
             {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "firstCross905High",
              "label": "首次過905高", "barTs": 1_000, "price": 101.0},
             {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "crossUpPrevHigh",
              "label": "第1次站上昨日高", "barTs": 2_000, "price": 102.0, "note": "第1次"},
-            {"tradeDate": "2026-09-18", "ticker": "9999", "kind": "watch12short",
-             "label": "注意12空", "barTs": 1_500, "price": 50.0},
-            {"tradeDate": "2026-09-17", "ticker": "2330", "kind": "watch12short",
-             "label": "注意12空", "barTs": 500, "price": 90.0},
+            {"tradeDate": "2026-09-18", "ticker": "9999", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 1_500, "price": 50.0},
+            {"tradeDate": "2026-09-17", "ticker": "2330", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 500, "price": 90.0},
         ])
         signals = load_signals_for_ticker("2330", "2026-09-18")
         self.assertEqual([s["barTs"] for s in signals], [1_000, 2_000, 3_000])
         self.assertEqual([s["kind"] for s in signals], [
-            "firstCross905High", "crossUpPrevHigh", "watch12short",
+            "firstCross905High", "crossUpPrevHigh", "ma520Up",
         ])
         self.assertTrue(all(s["ticker"] == "2330" for s in signals))
 
@@ -56,23 +56,23 @@ class LoadSignalsForTickerTests(unittest.TestCase):
 
     def test_trade_date_is_optional_and_returns_all_dates_when_omitted(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-17", "ticker": "2330", "kind": "watch12short",
-             "label": "注意12空", "barTs": 500, "price": 90.0},
-            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "short12",
-             "label": "12空", "barTs": 3_000, "price": 100.0},
+            {"tradeDate": "2026-09-17", "ticker": "2330", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 500, "price": 90.0},
+            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "crossUp20ma",
+             "label": "第1次站上20MA", "barTs": 3_000, "price": 100.0},
         ])
         signals = load_signals_for_ticker("2330")
         self.assertEqual([s["tradeDate"] for s in signals], ["2026-09-17", "2026-09-18"])
 
     def test_since_ts_filters_out_earlier_bars(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "watch12short",
-             "label": "注意12空", "barTs": 1_000, "price": 90.0},
-            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "short12",
-             "label": "12空", "barTs": 3_000, "price": 100.0},
+            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 1_000, "price": 90.0},
+            {"tradeDate": "2026-09-18", "ticker": "2330", "kind": "crossUp20ma",
+             "label": "第1次站上20MA", "barTs": 3_000, "price": 100.0},
         ])
         signals = load_signals_for_ticker("2330", "2026-09-18", since_ts=2_000)
-        self.assertEqual([s["kind"] for s in signals], ["short12"])
+        self.assertEqual([s["kind"] for s in signals], ["crossUp20ma"])
 
     def test_ticker_matching_is_case_sensitive_caller_must_normalize(self):
         # load_signals_for_ticker本身不做正規化；呼叫端(persistent_app的端點)
@@ -103,8 +103,8 @@ class OutOfSessionKlineSignalTests(unittest.TestCase):
 
     def test_finds_pre_market_and_after_hours_kline_rows_but_not_in_session_ones(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-18", "ticker": "1101", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1101", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(8, 50), "price": 10.0},
             {"tradeDate": "2026-09-18", "ticker": "1102", "kind": "combo12Bull",
              "label": "1+2多", "barTs": self._ts(14, 0), "price": 20.0},
             {"tradeDate": "2026-09-18", "ticker": "1103", "kind": "ma520Up",
@@ -115,10 +115,10 @@ class OutOfSessionKlineSignalTests(unittest.TestCase):
 
     def test_boundary_0900_is_in_session_and_1330_is_out_of_session(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-18", "ticker": "1104", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(9, 0), "price": 10.0},
-            {"tradeDate": "2026-09-18", "ticker": "1105", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(13, 30), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1104", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(9, 0), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1105", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(13, 30), "price": 10.0},
         ])
         rows = find_out_of_session_kline_signals("2026-09-18")
         self.assertEqual([r["ticker"] for r in rows], ["1105"])
@@ -132,18 +132,18 @@ class OutOfSessionKlineSignalTests(unittest.TestCase):
 
     def test_only_returns_requested_trade_date(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-17", "ticker": "1107", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(8, 50, day=17), "price": 10.0},
-            {"tradeDate": "2026-09-18", "ticker": "1108", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+            {"tradeDate": "2026-09-17", "ticker": "1107", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(8, 50, day=17), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1108", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(8, 50), "price": 10.0},
         ])
         rows = find_out_of_session_kline_signals("2026-09-18")
         self.assertEqual([r["ticker"] for r in rows], ["1108"])
 
     def test_purge_deletes_only_out_of_session_kline_rows_and_returns_count(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-18", "ticker": "1109", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1109", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(8, 50), "price": 10.0},
             {"tradeDate": "2026-09-18", "ticker": "1110", "kind": "combo12Bull",
              "label": "1+2多", "barTs": self._ts(14, 0), "price": 20.0},
             {"tradeDate": "2026-09-18", "ticker": "1111", "kind": "ma520Up",
@@ -160,10 +160,10 @@ class OutOfSessionKlineSignalTests(unittest.TestCase):
 
     def test_purge_only_affects_requested_trade_date(self):
         save_intraday_signals([
-            {"tradeDate": "2026-09-17", "ticker": "1113", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(8, 50, day=17), "price": 10.0},
-            {"tradeDate": "2026-09-18", "ticker": "1114", "kind": "watch12short",
-             "label": "注意12空", "barTs": self._ts(8, 50), "price": 10.0},
+            {"tradeDate": "2026-09-17", "ticker": "1113", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(8, 50, day=17), "price": 10.0},
+            {"tradeDate": "2026-09-18", "ticker": "1114", "kind": "ma520Up",
+             "label": "五二零上", "barTs": self._ts(8, 50), "price": 10.0},
         ])
         deleted = purge_out_of_session_kline_signals("2026-09-18")
         self.assertEqual(deleted, 1)
@@ -187,8 +187,8 @@ class LoadLatestSignalsTests(unittest.TestCase):
         # 只回傳ORDER BY bar_ts DESC的最新200筆，早盤那些訊號不是沒發生，
         # 是直接被這個上限砍掉、看起來像消失了。
         rows = [
-            {"tradeDate": "2026-09-21", "ticker": "TEST", "kind": "watch12short",
-             "label": "注意12空", "barTs": 1_000 + i, "price": 100.0}
+            {"tradeDate": "2026-09-21", "ticker": "TEST", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 1_000 + i, "price": 100.0}
             for i in range(250)
         ]
         save_intraday_signals(rows)
@@ -217,8 +217,8 @@ class LoadLatestSignalsTests(unittest.TestCase):
         # 全被 ORDER BY bar_ts DESC LIMIT 砍掉，前端只看得到 12:19 的那一筆。訊號中心根本
         # 不顯示圖表用的 kind，當日總表預設就不要回它們。
         chart_rows = [
-            {"tradeDate": "2026-09-22", "ticker": "TEST", "kind": "watch12short",
-             "label": "注意12空", "barTs": 2_000 + i, "price": 100.0}
+            {"tradeDate": "2026-09-22", "ticker": "TEST", "kind": "ma520Up",
+             "label": "五二零上", "barTs": 2_000 + i, "price": 100.0}
             for i in range(300)
         ]
         early = [
@@ -234,7 +234,7 @@ class LoadLatestSignalsTests(unittest.TestCase):
 
         full = load_latest_signals("2026-09-22", limit=100, include_chart_kinds=True)
         self.assertEqual(len(full), 100)
-        self.assertTrue(all(s["kind"] == "watch12short" for s in full))  # 帶完整資料時早盤那兩筆就被上限吃掉
+        self.assertTrue(all(s["kind"] == "ma520Up" for s in full))  # 帶完整資料時早盤那兩筆就被上限吃掉
 
     def _save_retired_and_live_rows(self):
         # 2026-09-23 正式環境：oneTwoShort 的程式碼已經整個移除，但移除前寫進 SQLite 的
