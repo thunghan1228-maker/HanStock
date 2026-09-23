@@ -232,6 +232,51 @@ class SaveAndCheckDispositionTriggerTests(unittest.TestCase):
         status = check_disposition_trigger("2330", self.today.isoformat())
         self.assertIsNone(status.trigger_path)
 
+    def test_path_1_escalates_to_7_days_when_clause_13_fired_in_window(self):
+        """路徑一(連續3天款一)期間內，其中一天也命中第十三款(當日沖銷比例)——處置期間
+        應該從5天加重為7天。"""
+        days = _business_days_ending(self.today, 3)
+        self._seed("2330", {days[0]: {"一", "十三"}, days[1]: {"一"}, days[2]: {"一"}})
+        status = check_disposition_trigger("2330", self.today.isoformat())
+        self.assertEqual(status.trigger_path, "連續3個營業日依第一款發布注意")
+        self.assertEqual(status.predicted_duration_business_days, 7)
+
+    def test_path_1_stays_5_days_when_clause_13_never_fired(self):
+        days = _business_days_ending(self.today, 3)
+        self._seed("2330", {d: {"一"} for d in days})
+        status = check_disposition_trigger("2330", self.today.isoformat())
+        self.assertEqual(status.predicted_duration_business_days, 5)
+
+    def test_path_1_stays_5_days_when_clause_13_fired_outside_window(self):
+        """第十三款命中發生在3天視窗以外的更早日期——不該影響這次判定的處置天數。"""
+        days = _business_days_ending(self.today, 4)
+        outside_day, window_days = days[0], days[1:]
+        self._seed("2330", {outside_day: {"十三"}, **{d: {"一"} for d in window_days}})
+        status = check_disposition_trigger("2330", self.today.isoformat())
+        self.assertEqual(status.trigger_path, "連續3個營業日依第一款發布注意")
+        self.assertEqual(status.predicted_duration_business_days, 5)
+
+    def test_path_2_escalates_to_7_days_when_clause_13_fired_in_window(self):
+        days = _business_days_ending(self.today, 5)
+        clauses_per_day = [{"一", "十三"}, {"二"}, {"三"}, {"四"}, {"六"}]
+        self._seed("2330", dict(zip(days, clauses_per_day)))
+        status = check_disposition_trigger("2330", self.today.isoformat())
+        self.assertIn("連續5個營業日", status.trigger_path)
+        self.assertEqual(status.predicted_duration_business_days, 7)
+
+    def test_path_3_escalates_to_7_days_when_clause_13_fired_anywhere_in_full_window(self):
+        """路徑三/四的視窗是「整個10天/30天窗口」，不只是命中款一到八的那6天——第十三款
+        命中發生在窗口內、但不是那6個命中日之一，一樣要加重為7天。"""
+        days = _business_days_ending(self.today, 10)
+        date_to_clauses = {d: set() for d in days}
+        for d in days[:6]:
+            date_to_clauses[d] = {"二"}
+        date_to_clauses[days[7]] = {"十三"}  # 命中六款的6天之外、但仍在10天窗口內
+        self._seed("2330", date_to_clauses)
+        status = check_disposition_trigger("2330", self.today.isoformat())
+        self.assertIn("最近10個營業日內有6天", status.trigger_path)
+        self.assertEqual(status.predicted_duration_business_days, 7)
+
 
 if __name__ == "__main__":
     unittest.main()

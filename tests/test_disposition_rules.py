@@ -19,6 +19,8 @@ from disposition_rules import (
     check_clause_9,
     check_clause_10,
     check_clause_11,
+    check_clause_12,
+    check_clause_13,
 )
 
 
@@ -309,6 +311,73 @@ class Clause11Tests(unittest.TestCase):
     def test_requires_high_or_low_flag(self):
         i = _base(close=1500.0, price_diff_6d=300.0, close_above_open_ref=None)
         self.assertFalse(check_clause_11(i).fired)
+
+
+class Clause12Tests(unittest.TestCase):
+    def test_fires_via_cum_6d_ratio_path(self):
+        i = _base(sbl_short_sale_cum_6d_ratio_pct=12.0)
+        self.assertTrue(check_clause_12(i).fired)
+
+    def test_does_not_fire_below_12pct_cum_ratio(self):
+        i = _base(sbl_short_sale_cum_6d_ratio_pct=11.9)
+        self.assertFalse(check_clause_12(i).fired)
+
+    def test_fires_via_5x_spike_path(self):
+        i = _base(sbl_short_sale_prev_day_volume=500.0, sbl_short_sale_avg_60d_volume=100.0)
+        self.assertTrue(check_clause_12(i).fired)
+
+    def test_does_not_fire_below_5x_spike(self):
+        i = _base(sbl_short_sale_prev_day_volume=499.0, sbl_short_sale_avg_60d_volume=100.0)
+        self.assertFalse(check_clause_12(i).fired)
+
+    def test_no_price_condition_needed(self):
+        i = _base(sbl_short_sale_cum_6d_ratio_pct=12.0, change_6d_pct=0.0)
+        self.assertTrue(check_clause_12(i).fired)
+
+    def test_excluded_when_prev_day_sbl_volume_below_100(self):
+        i = _base(
+            sbl_short_sale_cum_6d_ratio_pct=50.0, sbl_short_sale_prev_day_volume=99.0,
+            sbl_short_sale_avg_60d_volume=1.0,
+        )
+        self.assertFalse(check_clause_12(i).fired)
+
+    def test_excluded_when_turnover_below_0_3pct(self):
+        i = _base(sbl_short_sale_cum_6d_ratio_pct=50.0, turnover_pct=0.29)
+        self.assertFalse(check_clause_12(i).fired)
+
+    def test_excluded_when_volume_below_500(self):
+        i = _base(sbl_short_sale_cum_6d_ratio_pct=50.0, volume=499.0)
+        self.assertFalse(check_clause_12(i).fired)
+
+
+class Clause13Tests(unittest.TestCase):
+    def test_fires_via_cum_6d_ratio_path(self):
+        i = _base(day_trading_cum_6d_ratio_pct=60.1)
+        self.assertTrue(check_clause_13(i).fired)
+
+    def test_does_not_fire_at_exactly_60pct(self):
+        i = _base(day_trading_cum_6d_ratio_pct=60.0)
+        self.assertFalse(check_clause_13(i).fired)
+
+    def test_fires_via_prev_day_ratio_path(self):
+        i = _base(day_trading_prev_day_ratio_pct=60.1)
+        self.assertTrue(check_clause_13(i).fired)
+
+    def test_no_price_condition_needed(self):
+        i = _base(day_trading_cum_6d_ratio_pct=60.1, change_6d_pct=0.0)
+        self.assertTrue(check_clause_13(i).fired)
+
+    def test_excluded_when_turnover_at_or_below_5pct(self):
+        i = _base(day_trading_cum_6d_ratio_pct=60.1, turnover_pct=5.0)
+        self.assertFalse(check_clause_13(i).fired)
+
+    def test_excluded_when_turnover_amount_at_or_below_5e8(self):
+        i = _base(day_trading_cum_6d_ratio_pct=60.1, turnover_amount=500_000_000)
+        self.assertFalse(check_clause_13(i).fired)
+
+    def test_excluded_when_prev_day_volume_at_or_below_5000(self):
+        i = _base(day_trading_cum_6d_ratio_pct=60.1, day_trading_prev_day_volume=5000.0)
+        self.assertFalse(check_clause_13(i).fired)
 
 
 class CheckAllClausesTests(unittest.TestCase):

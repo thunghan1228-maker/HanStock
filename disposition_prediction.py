@@ -9,8 +9,10 @@
 也可能觸發，我們這邊真的沒辦法算，資料庫裡沒有這兩款的紀錄不代表那天真的沒有異常。
 
 處置期間：官方新制固定5個營業日，除非基數計算期間內也曾依第十三款(當日沖銷比例過高)
-發布注意才加重為7個營業日——我們沒有當沖比例資料，所以本模組永遠只回報5個營業日，
-並在結果裡標注「可能因當沖比例過高而延長為7個營業日，我們沒有這項資料」。
+發布注意才加重為7個營業日——Phase 3接上第十三款的實際資料後，check_disposition_
+trigger()會真的檢查同一個累積視窗內有沒有命中第十三款，不再固定回報5天。唯一殘留的
+限制：第十三款是Phase 3才開始逐日紀錄的，如果視窗剛好涵蓋Phase 3上線前的舊日期，那
+幾天沒有第十三款紀錄、無法回溯確認，仍會在duration_caveat裡註明。
 """
 
 from __future__ import annotations
@@ -25,7 +27,8 @@ from stock_groups import STOCK_GROUPS
 
 TW_TZ = timezone(timedelta(hours=8))
 
-DISPOSITION_DURATION_BUSINESS_DAYS = 5  # 新制固定5天；7天加重規則需要當沖比例資料，我們沒有
+DISPOSITION_DURATION_BUSINESS_DAYS = 5  # 新制標準天數
+DISPOSITION_DURATION_ESCALATED_BUSINESS_DAYS = 7  # 基數期間內也命中第十三款(當沖比例)時加重
 
 
 def official_group_codes() -> set[str]:
@@ -70,8 +73,9 @@ def build_clause_inputs(
     fundamentals: dict[str, float | None] | None = None,
 ) -> ClauseInputs | None:
     """組出單一股票的ClauseInputs：價格/成交量欄位來自snapshot(全市場橫斷面統計)，
-    週轉率/本益比/淨值比/券資比等Phase 2欄位由fundamentals(呼叫端合併好的{欄位:值})
-    覆蓋——沒給就全部是None，對應款直接判定不成立，不會誤觸發。"""
+    週轉率/本益比/淨值比/券資比(Phase 2)、借券賣出/當沖比例(Phase 3)等欄位由
+    fundamentals(呼叫端合併好Phase 2+Phase 3的{欄位:值})覆蓋——沒給就全部是None，
+    對應款直接判定不成立，不會誤觸發。"""
     metrics = snapshot.metrics_by_code.get(code)
     if metrics is None:
         return None
@@ -111,6 +115,12 @@ def build_clause_inputs(
         margin_usage_pct=fundamentals.get("margin_usage_pct"),
         short_usage_pct=fundamentals.get("short_usage_pct"),
         short_margin_ratio_min_6d_pct=fundamentals.get("short_margin_ratio_min_6d_pct"),
+        sbl_short_sale_cum_6d_ratio_pct=fundamentals.get("sbl_short_sale_cum_6d_ratio_pct"),
+        sbl_short_sale_prev_day_volume=fundamentals.get("sbl_short_sale_prev_day_volume"),
+        sbl_short_sale_avg_60d_volume=fundamentals.get("sbl_short_sale_avg_60d_volume"),
+        day_trading_prev_day_ratio_pct=fundamentals.get("day_trading_prev_day_ratio_pct"),
+        day_trading_cum_6d_ratio_pct=fundamentals.get("day_trading_cum_6d_ratio_pct"),
+        day_trading_prev_day_volume=fundamentals.get("day_trading_prev_day_volume"),
     )
 
 
@@ -210,11 +220,19 @@ def _recent_clause_log(code: str, trade_date: str, lookback_dates: int = 35) -> 
 
 def check_disposition_trigger(code: str, trade_date: str) -> AccumulationStatus:
     """依官方第六條累積規則，用disposition_clause_log的歷史判定這檔股票是不是已經走到
-    會被處置的地步。三條路徑依序檢查，中第一條就回傳；都沒中回傳trigger_path=None。"""
+    會被處置的地步。三條路徑依序檢查，中第一條就回傳；都沒中回傳trigger_path=None。
+    處置期間5天/7天：檢查同一個累積視窗(不只是貢獻到觸發的那幾天，是整個視窗)內是否也
+    命中第十三款(當日沖銷比例)，命中就是7天——官方原文的加重規則。"""
     history = _recent_clause_log(code, trade_date, lookback_dates=35)
+
+    def _duration_days(window_dates: list[str]) -> int:
+        window_set = set(window_dates)
+        clause_13_fired = any("十三" in clauses for trade, clauses in history if trade in window_set)
+        return DISPOSITION_DURATION_ESCALATED_BUSINESS_DAYS if clause_13_fired else DISPOSITION_DURATION_BUSINESS_DAYS
+
     caveat = (
-        "官方規則：處置基數期間若也曾因當日沖銷比例過高(第十三款)被列注意，處置期間會從5個"
-        "營業日加重為7個營業日；我們沒有當日沖銷資料，這裡固定顯示5天，實際可能是7天。"
+        "5天/7天已用第十三款(當日沖銷比例)的實際資料判斷；若累積視窗涵蓋Phase 3上線前的"
+        "舊日期，那幾天沒有第十三款紀錄，無法回溯確認是否也命中。"
     )
 
     # 路徑一：連續3個營業日都依第一款發布注意。
@@ -227,10 +245,8 @@ def check_disposition_trigger(code: str, trade_date: str) -> AccumulationStatus:
         else:
             break
     if len(consecutive_clause_1) >= 3:
-        return AccumulationStatus(
-            code, "連續3個營業日依第一款發布注意", list(reversed(consecutive_clause_1[:3])),
-            DISPOSITION_DURATION_BUSINESS_DAYS, caveat,
-        )
+        window = list(reversed(consecutive_clause_1[:3]))
+        return AccumulationStatus(code, "連續3個營業日依第一款發布注意", window, _duration_days(window), caveat)
 
     def _any_accumulation_clause(clauses: set[str]) -> bool:
         return bool(clauses & ACCUMULATION_CLAUSES)
@@ -245,9 +261,10 @@ def check_disposition_trigger(code: str, trade_date: str) -> AccumulationStatus:
         else:
             break
     if len(consecutive_any) >= 5:
+        window = list(reversed(consecutive_any[:5]))
         return AccumulationStatus(
             code, "連續5個營業日依第一款至第八款發布注意(僅計我們做得到的一二三四六七款)",
-            list(reversed(consecutive_any[:5])), DISPOSITION_DURATION_BUSINESS_DAYS, caveat,
+            window, _duration_days(window), caveat,
         )
 
     # 路徑三：最近10個營業日內有6天；路徑四：最近30個營業日內有12天。
@@ -257,7 +274,7 @@ def check_disposition_trigger(code: str, trade_date: str) -> AccumulationStatus:
         if len(hit_dates) >= need:
             return AccumulationStatus(
                 code, f"{label}依第一款至第八款發布注意(僅計我們做得到的一二三四六七款)",
-                list(reversed(hit_dates[:need])), DISPOSITION_DURATION_BUSINESS_DAYS, caveat,
+                list(reversed(hit_dates[:need])), _duration_days(window_dates), caveat,
             )
 
     return AccumulationStatus(code, None, [], None, None)

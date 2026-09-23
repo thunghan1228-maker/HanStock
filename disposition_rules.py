@@ -8,13 +8,13 @@
   一(6日累積漲跌%)、二(30/60/90日起迄兩營業日漲跌%)、三(一款+成交量異常放大)、
   四(一款+當日週轉率過高)、六(本益比/股價淨值比異常+週轉率，不含分點/投資人集中度子
   條件)、七(一款+券資比明顯放大)、九(成交量異常放大，無需價格條件)、十(累積週轉率過
-  高，無需價格條件)、十一(起迄兩營業日收盤價價差)。
+  高，無需價格條件)、十一(起迄兩營業日收盤價價差)、十二(借券賣出比例)、十三(當日沖銷
+  比例——官方規則裡唯一決定處置期間5天/7天的款，見disposition_prediction.
+  check_disposition_trigger)。
 
 不實作：
   五(需要券商分點當日買賣金額，一般管道拿不到)、六的分點/投資人集中度子條件(同上)、
-  八(限台灣存託憑證TDR，不在追蹤範圍)、十二(借券賣出量，目前沒有資料源)、十三(當日
-  沖銷成交量比例，目前沒有資料源——這一款也是官方規則裡唯一決定處置期間5天/7天的
-  款，所以本模組只推算「會不會」被列注意/處置，不推算處置期間長短)。
+  八(限台灣存託憑證TDR，不在追蹤範圍)。
 
 每個判定函式對應「本要點第四條異常標準之詳細數據」裡的一條，函式開頭的註解引用該條
 文號方便日後對照官方文字校正；輸入一律是已經算好的數字（ClauseInputs），不在這裡查
@@ -76,6 +76,16 @@ class ClauseInputs:
     margin_usage_pct: float | None = None  # 前一營業日融資使用率%
     short_usage_pct: float | None = None  # 前一營業日融券使用率%
     short_margin_ratio_min_6d_pct: float | None = None  # 最近6營業日（從前一營業日起）最低券資比%
+
+    # ---- 第十二款：借券賣出比例 ----
+    sbl_short_sale_cum_6d_ratio_pct: float | None = None  # 最近6營業日(從前一營業日起)借券賣出量/總成交量
+    sbl_short_sale_prev_day_volume: float | None = None  # 前一營業日借券賣出成交量（張）
+    sbl_short_sale_avg_60d_volume: float | None = None  # 最近60營業日(從前一營業日起)日均借券賣出量（張）
+
+    # ---- 第十三款：當日沖銷比例（唯一決定處置期間5天/7天的款） ----
+    day_trading_prev_day_ratio_pct: float | None = None  # 前一營業日當沖成交量/該日總成交量
+    day_trading_cum_6d_ratio_pct: float | None = None  # 最近6營業日(從前一營業日起)當沖成交量/總成交量
+    day_trading_prev_day_volume: float | None = None  # 前一營業日當沖成交量（張）
 
 
 @dataclass(frozen=True)
@@ -288,8 +298,53 @@ def check_clause_11(i: ClauseInputs) -> ClauseResult:
     return ClauseResult("十一", True, f"收盤價{i.close:.0f}元，6日價差{i.price_diff_6d:.0f}元≥{threshold}元")
 
 
+def check_clause_12(i: ClauseInputs) -> ClauseResult:
+    """第13條：最近6營業日(從前一營業日起)借券賣出成交量占總成交量比率≥12%；或前一
+    營業日借券賣出成交量較最近60營業日日均借券賣出量放大≥5倍。當日週轉率<0.3%或當日
+    成交量<500單位或前一營業日借券賣出量<100單位不適用(週轉率/成交量的排除規則官方原
+    文用的是「當日」，這裡用ClauseInputs既有的「當日」欄位近似「前一營業日」，兩者短期
+    內通常變化不大)。"""
+    if i.sbl_short_sale_prev_day_volume is not None and i.sbl_short_sale_prev_day_volume < 100:
+        return ClauseResult("十二", False, "前一營業日借券賣出量<100單位，除外")
+    if i.turnover_pct is not None and i.turnover_pct < 0.3:
+        return ClauseResult("十二", False, "週轉率<0.3%，除外")
+    if i.volume is not None and i.volume < 500:
+        return ClauseResult("十二", False, "成交量<500單位，除外")
+    if i.sbl_short_sale_cum_6d_ratio_pct is not None and i.sbl_short_sale_cum_6d_ratio_pct >= 12:
+        return ClauseResult("十二", True, f"6日借券賣出比例{i.sbl_short_sale_cum_6d_ratio_pct:.1f}%≥12%")
+    if (
+        i.sbl_short_sale_prev_day_volume is not None
+        and i.sbl_short_sale_avg_60d_volume is not None
+        and i.sbl_short_sale_avg_60d_volume > 0
+        and i.sbl_short_sale_prev_day_volume >= i.sbl_short_sale_avg_60d_volume * 5
+    ):
+        ratio = i.sbl_short_sale_prev_day_volume / i.sbl_short_sale_avg_60d_volume
+        return ClauseResult("十二", True, f"前一營業日借券賣出量達60日均量{ratio:.1f}倍")
+    return ClauseResult("十二", False, "借券賣出比例未達門檻")
+
+
+def check_clause_13(i: ClauseInputs) -> ClauseResult:
+    """第14條：最近6營業日(從前一營業日起)當日沖銷成交量占總成交量比率超過60%；或前一
+    營業日當日沖銷成交量占該日總成交量比率超過60%——本款是官方規則裡唯一決定處置期間
+    5天/7天的款(見disposition_prediction.check_disposition_trigger)。當日週轉率≤5%
+    或當日成交金額≤5億或前一營業日當沖量≤5000單位不適用(週轉率/成交金額同第十二款，
+    用「當日」近似「前一營業日」)。"""
+    if i.turnover_pct is not None and i.turnover_pct <= 5:
+        return ClauseResult("十三", False, "週轉率≤5%，除外")
+    if i.turnover_amount is not None and i.turnover_amount <= 500_000_000:
+        return ClauseResult("十三", False, "成交金額≤5億，除外")
+    if i.day_trading_prev_day_volume is not None and i.day_trading_prev_day_volume <= 5000:
+        return ClauseResult("十三", False, "前一營業日當沖量≤5000單位，除外")
+    if i.day_trading_cum_6d_ratio_pct is not None and i.day_trading_cum_6d_ratio_pct > 60:
+        return ClauseResult("十三", True, f"6日當沖比例{i.day_trading_cum_6d_ratio_pct:.1f}%>60%")
+    if i.day_trading_prev_day_ratio_pct is not None and i.day_trading_prev_day_ratio_pct > 60:
+        return ClauseResult("十三", True, f"前一營業日當沖比例{i.day_trading_prev_day_ratio_pct:.1f}%>60%")
+    return ClauseResult("十三", False, "當沖比例未達門檻")
+
+
 # 對應第六條「連續5個營業日或最近10個營業日內有6天或最近30個營業日內有12天，依第一款
-# 至第八款發布交易資訊」——本模組做得到的款只到七，八(TDR)不適用一般股票。
+# 至第八款發布交易資訊」——本模組做得到的款只到七，八(TDR)不適用一般股票。十二/十三
+# 不在第一款至第八款範圍內，不計入這個累積基數，但十三會另外決定處置期間5天/7天。
 CHECKERS = {
     "一": check_clause_1,
     "二": check_clause_2,
@@ -300,6 +355,8 @@ CHECKERS = {
     "九": check_clause_9,
     "十": check_clause_10,
     "十一": check_clause_11,
+    "十二": check_clause_12,
+    "十三": check_clause_13,
 }
 # 第六條處置累積基數只看第一款到第八款；本模組能做的款是這個集合跟CHECKERS的交集。
 ACCUMULATION_CLAUSES = {"一", "二", "三", "四", "六", "七"}
