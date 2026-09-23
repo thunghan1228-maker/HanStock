@@ -238,11 +238,29 @@ def refresh(
     with _lock:
         previous = dict(_map)
 
+    def _still_active(source: str) -> dict[str, dict[str, Any]]:
+        """上一次這個來源的清單裡，處置期間還沒過的（沒有迄日的也留著，等它被新清單取代）。"""
+        return {
+            code: item for code, item in previous.items()
+            if item.get("source") == source and (not item.get("end") or item["end"] >= today.isoformat())
+        }
+
     def _keep_previous(source: str, error: str) -> None:
-        kept = {code: item for code, item in previous.items() if item.get("source") == source}
+        kept = _still_active(source)
         for item in kept.values():
             _remember(merged, item)
         sources[source] = {"ok": False, "active": len(kept), "rows": None, "fields": [], "error": error[:200]}
+
+    def _fill_empty(source: str, rows: dict[str, dict[str, Any]], status: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """來源成功但回空清單（永豐 punish 盤後就是 0 筆）：上一次仍在處置期間內的先沿用，處置到期自然消失，
+        不然上櫃處置股一到收盤就沒有「處置到幾號」。"""
+        if rows:
+            return rows
+        kept = _still_active(source)
+        if kept:
+            status["active"] = len(kept)
+            status["note"] = f"這次回空清單，沿用上次仍在期間內的 {len(kept)} 檔"
+        return kept
 
     try:
         payload = punish_call()
@@ -252,7 +270,7 @@ def refresh(
             rows = extract_punish(payload, today=today)
             fields = list(payload.keys())[:12] if hasattr(payload, "keys") else []
             sources["shioaji"] = {"ok": True, "active": len(rows), "rows": len(_column(payload, "code")), "fields": fields, "error": None}
-            for item in rows.values():
+            for item in _fill_empty("shioaji", rows, sources["shioaji"]).values():
                 _remember(merged, item)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Disposition] shioaji punish 查詢失敗: %s", exc)
@@ -267,7 +285,7 @@ def refresh(
                 "ok": True, "active": len(rows), "rows": len(payload) if isinstance(payload, list) else None,
                 "fields": list(sample.keys())[:12] if sample else [], "error": None,
             }
-            for item in rows.values():
+            for item in _fill_empty(source, rows, sources[source]).values():
                 _remember(merged, item)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Disposition] %s 抓取失敗: %s", source, exc)
