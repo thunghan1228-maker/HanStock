@@ -146,7 +146,7 @@ def _request_json(url: str, params: dict[str, str], *, retries: int = 3) -> dict
     raise RuntimeError(str(last_error or "FinMind request failed"))
 
 
-def _latest_stock_universe(rows: list[dict[str, Any]]) -> list[str]:
+def _latest_rows_by_code(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for item in rows:
         code = str(item.get("stock_id") or "").strip().upper()
@@ -156,7 +156,11 @@ def _latest_stock_universe(rows: list[dict[str, Any]]) -> list[str]:
         previous = latest.get(code)
         if previous is None or item_date >= str(previous.get("date") or ""):
             latest[code] = item
+    return latest
 
+
+def _latest_stock_universe(rows: list[dict[str, Any]]) -> list[str]:
+    latest = _latest_rows_by_code(rows)
     valid_dates = [str(item.get("date") or "")[:10] for item in latest.values() if item.get("date")]
     newest_date = max(valid_dates) if valid_dates else ""
     active_cutoff = (
@@ -193,6 +197,29 @@ def fetch_stock_universe(*, force: bool = False) -> list[str]:
         raise RuntimeError("FinMind TaiwanStockInfo 未取得上市櫃股票")
     _universe_cache = (time.time(), universe)
     return list(universe)
+
+
+_industry_cache: tuple[float, dict[str, str]] = (0.0, {})
+
+
+def fetch_industry_by_code(*, force: bool = False) -> dict[str, str]:
+    """{代號: 產業分類}，來自FinMind TaiwanStockInfo同一份資料集——跟fetch_stock_universe()
+    共用_request_json抓法，但這裡取的是industry_category欄位，不是拿來過濾universe。
+    產業分類幾乎不會變動，快取24小時，跟fetch_stock_universe()的12小時快取分開管理。"""
+    global _industry_cache
+    cached_at, cached = _industry_cache
+    if cached and not force and time.time() - cached_at < 24 * 3600:
+        return dict(cached)
+    payload = _request_json(FINMIND_DATA_URL, {"dataset": "TaiwanStockInfo"})
+    rows = payload.get("data") if isinstance(payload.get("data"), list) else []
+    latest = _latest_rows_by_code(rows)
+    industry_by_code = {
+        code: category
+        for code, item in latest.items()
+        if (category := str(item.get("industry_category") or "").strip())
+    }
+    _industry_cache = (time.time(), industry_by_code)
+    return dict(industry_by_code)
 
 
 def fetch_latest_trade_dates(days: int = 5) -> list[str]:

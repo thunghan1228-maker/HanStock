@@ -1,13 +1,16 @@
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import finmind_broker_branch_collector as collector
 from finmind_broker_branch_collector import (
     BROKER_BRANCH_SOURCE,
     RollingHourlyLimiter,
     _latest_stock_universe,
     aggregate_branch_rows,
     broker_branch_collection_allowed,
+    fetch_industry_by_code,
     has_meaningful_day_coverage,
 )
 
@@ -88,6 +91,45 @@ class FinMindBrokerBranchCollectorTests(unittest.TestCase):
         limiter.acquire()
         limiter.acquire()
         limiter.acquire()
+
+
+class FetchIndustryByCodeTests(unittest.TestCase):
+    def setUp(self):
+        collector._industry_cache = (0.0, {})
+
+    def test_parses_industry_category_by_code(self):
+        payload = {"data": [
+            {"stock_id": "2330", "industry_category": "半導體", "date": "2026-08-21"},
+            {"stock_id": "1101", "industry_category": "水泥工業", "date": "2026-08-21"},
+        ]}
+        with patch.object(collector, "_request_json", return_value=payload) as request_mock:
+            result = fetch_industry_by_code()
+        self.assertEqual(result, {"2330": "半導體", "1101": "水泥工業"})
+        request_mock.assert_called_once_with(collector.FINMIND_DATA_URL, {"dataset": "TaiwanStockInfo"})
+
+    def test_keeps_latest_row_per_code_and_skips_empty_category(self):
+        payload = {"data": [
+            {"stock_id": "2330", "industry_category": "舊分類", "date": "2020-01-01"},
+            {"stock_id": "2330", "industry_category": "半導體", "date": "2026-08-21"},
+            {"stock_id": "9999", "industry_category": "", "date": "2026-08-21"},
+        ]}
+        with patch.object(collector, "_request_json", return_value=payload):
+            result = fetch_industry_by_code()
+        self.assertEqual(result, {"2330": "半導體"})
+
+    def test_second_call_uses_cache_without_refetching(self):
+        payload = {"data": [{"stock_id": "2330", "industry_category": "半導體", "date": "2026-08-21"}]}
+        with patch.object(collector, "_request_json", return_value=payload) as request_mock:
+            fetch_industry_by_code()
+            fetch_industry_by_code()
+        request_mock.assert_called_once()
+
+    def test_force_bypasses_cache(self):
+        payload = {"data": [{"stock_id": "2330", "industry_category": "半導體", "date": "2026-08-21"}]}
+        with patch.object(collector, "_request_json", return_value=payload) as request_mock:
+            fetch_industry_by_code()
+            fetch_industry_by_code(force=True)
+        self.assertEqual(request_mock.call_count, 2)
 
 
 if __name__ == "__main__":

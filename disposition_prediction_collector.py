@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from daily_bars_store import daily_bars_storage_status
 from disposition_fundamentals_assembly import build_fundamentals_by_code
 from disposition_prediction import official_group_codes, run_universe_for_date
+from finmind_broker_branch_collector import fetch_industry_by_code
 from finmind_disposition_fundamentals_collector import collect_trade_date as collect_finmind_fundamentals
 
 logger = logging.getLogger("hanstock.disposition_prediction_collector")
@@ -36,9 +37,16 @@ def collect_once(*, now: datetime | None = None) -> dict:
     if not _today_bars_ready(trade_date):
         return {"status": "waiting", "reason": "今天的bars_1d還沒寫好（等official_daily_bars.py先跑）", "tradeDate": trade_date}
     codes = official_group_codes()
+    try:
+        industry_by_code = fetch_industry_by_code()
+    except Exception:  # noqa: BLE001
+        logger.warning("抓產業分類失敗，這次先不套用同類股比較", exc_info=True)
+        industry_by_code = {}
     fundamentals_result = collect_finmind_fundamentals(trade_date, list(codes))
-    fundamentals_by_code = build_fundamentals_by_code(trade_date, codes)
-    results = run_universe_for_date(trade_date, codes=codes, fundamentals_by_code=fundamentals_by_code)
+    fundamentals_by_code = build_fundamentals_by_code(trade_date, codes, industry_by_code=industry_by_code)
+    results = run_universe_for_date(
+        trade_date, codes=codes, industry_by_code=industry_by_code, fundamentals_by_code=fundamentals_by_code,
+    )
     _last_run_date = trade_date
     fired_count = sum(1 for clauses in results.values() if any(r.fired for r in clauses))
     return {

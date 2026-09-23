@@ -159,6 +159,31 @@ class BuildFundamentalsByCodeTests(unittest.TestCase):
         result = build_fundamentals_by_code("2026-09-22", {"2330"})
         self.assertAlmostEqual(result["2330"]["short_margin_ratio_pct"], 200 / 800 * 100)
 
+    def test_pbr_industry_avg_computed_when_industry_has_enough_peers(self):
+        # 半導體5檔(含2330)，pbr=1..5，平均3.0；電子零組件只有1檔，同類太少不計入
+        codes = {f"S{i}" for i in range(1, 5)} | {"2330", "E1"}
+        rows = []
+        for i in range(1, 5):
+            self._seed_bars(f"S{i}", 10.0, 1.0, range(17, 23))
+            rows.append({"code": f"S{i}", "tradeDate": "2026-09-22", "pbr": float(i)})
+        self._seed_bars("2330", 10.0, 1.0, range(17, 23))
+        rows.append({"code": "2330", "tradeDate": "2026-09-22", "pbr": 5.0})
+        self._seed_bars("E1", 10.0, 1.0, range(17, 23))
+        rows.append({"code": "E1", "tradeDate": "2026-09-22", "pbr": 100.0})
+        save_fundamentals_rows(rows)
+        industry_by_code = {**{f"S{i}": "半導體" for i in range(1, 5)}, "2330": "半導體", "E1": "電子零組件"}
+
+        result = build_fundamentals_by_code("2026-09-22", codes, industry_by_code=industry_by_code)
+
+        self.assertAlmostEqual(result["2330"]["pbr_industry_avg"], 3.0)  # (1+2+3+4+5)/5
+        self.assertIsNone(result["E1"]["pbr_industry_avg"])  # 同類只有1檔，未達MIN_INDUSTRY_PEERS
+
+    def test_pbr_industry_avg_none_without_industry_by_code(self):
+        self._seed_bars("2330", 100.0, 10.0, range(17, 23))
+        save_fundamentals_rows([{"code": "2330", "tradeDate": "2026-09-22", "pbr": 3.0}])
+        result = build_fundamentals_by_code("2026-09-22", {"2330"})
+        self.assertIsNone(result["2330"]["pbr_industry_avg"])
+
 
 if __name__ == "__main__":
     unittest.main()
