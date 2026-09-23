@@ -553,7 +553,13 @@ def get_disposition_volume_watch(trade_date: str | None = Query(None)) -> dict[s
         if live_data:
             live_count += 1
         gap = p.threshold_volume - current_volume
-        detail = "量已達門檻" if gap <= 0 else f"還差約{gap:.0f}張（門檻{p.threshold_volume:.0f}張）"
+        # 明確寫出「觸發注意」而不是只寫「達門檻」：這裡只代表會觸發一次公布注意交易
+        # 資訊(第四條異常標準)，不是處置——第九/十款不算入第六條累積路徑，跟處置
+        # 無關，用字要避免讓人誤以為量補齊就會被處置。千分位逗號方便閱讀大數字。
+        detail = (
+            "已達觸發注意門檻" if gap <= 0
+            else f"觸發注意還差約 {gap:,.0f} 張（門檻 {p.threshold_volume:,.0f} 張）"
+        )
         results.append({
             "code": p.code,
             "name": names.get(p.code, p.code),

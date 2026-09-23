@@ -108,7 +108,7 @@ class DispositionVolumeWatchEndpointTests(unittest.TestCase):
         self.assertTrue(matches[0]["liveData"])
         self.assertAlmostEqual(matches[0]["currentVolume"], 3000.0)
         # 量已經遠超過門檻(threshold約5*avg60)，detail要顯示已達門檻，不是還差多少。
-        self.assertEqual(matches[0]["detail"], "量已達門檻")
+        self.assertEqual(matches[0]["detail"], "已達觸發注意門檻")
 
     def test_defaults_trade_date_to_latest_available_not_caller_today(self):
         # 呼叫當下的日曆日期不見得跟這裡seed的資料一致(今天盤中bars_1d本來就不會有
