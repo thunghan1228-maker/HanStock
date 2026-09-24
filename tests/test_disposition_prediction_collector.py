@@ -20,6 +20,23 @@ _INDUSTRY_BY_CODE = {"2330": "半導體"}
 class DispositionPredictionCollectorTests(unittest.TestCase):
     def setUp(self):
         collector._last_run_date = None
+        otc_patch = patch.object(collector, "_otc_bars_ready", return_value=True)
+        otc_patch.start()
+        self.addCleanup(otc_patch.stop)
+
+    def test_waits_for_otc_bars_until_1700_then_runs_anyway(self):
+        industry_patch, fetch_patch, phase3_fetch_patch, build_patch, phase3_build_patch, run_patch = self._patches(run_result={"2330": []})
+        with (
+            patch.object(collector, "_otc_bars_ready", return_value=False),
+            patch.object(collector, "daily_bars_storage_status", return_value={"lastTradeDate": "2026-09-24"}),
+            patch.object(collector, "official_group_codes", return_value={"2330"}),
+            industry_patch, fetch_patch, phase3_fetch_patch, build_patch, phase3_build_patch, run_patch as run_mock,
+        ):
+            waiting = collector.collect_once(now=datetime(2026, 9, 24, 15, 0, tzinfo=TW_TZ))
+            self.assertEqual(waiting["status"], "waiting")       # 上市到了、上櫃還沒：先等
+            run_mock.assert_not_called()
+            late = collector.collect_once(now=datetime(2026, 9, 24, 17, 0, tzinfo=TW_TZ))
+        self.assertEqual(late["status"], "ok")                    # 17:00 以後不等了
 
     def _patches(self, *, industry=_INDUSTRY_BY_CODE, fundamentals=None, phase3=None, run_result=None):
         return (
