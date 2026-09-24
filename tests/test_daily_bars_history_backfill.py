@@ -16,7 +16,7 @@ from database import get_connection
 from official_daily_bars import _save_day
 
 UTC = timezone.utc
-FAKE_GROUPS = {"半導體": [("2330", "台積電"), ("8069", "元太")], "股期標的": [("2330", "台積電")]}
+FAKE_GROUPS = {"電子紙": [("8069", "元太")], "股期標的": [("2330", "台積電")]}
 
 
 def _bar(code, name, market, day, close):
@@ -49,13 +49,13 @@ class GroupHistoryBackfillTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _fetcher(self, calls, fail_on=None):
+        # FinMind 逐檔查詢：回這檔 since～until 的日K（09/22、09/23 兩天）
         def fetch(url, params):
-            day = params["start_date"]
-            calls.append(day)
-            if fail_on and day == fail_on:
+            code = params["data_id"]
+            calls.append(code)
+            if fail_on and code == fail_on:
                 raise OSError("boom")
-            # 全市場：含不在 stocks 表的代號 9999（要略過）
-            return {"data": [_finmind_row("2330", 999.0), _finmind_row("8069", 210.0), _finmind_row("9999", 5.0)]}
+            return {"data": [dict(_finmind_row(code, 210.0 if code == "8069" else 999.0), date=d) for d in ("2026-09-22", "2026-09-23")]}
         return fetch
 
     def _bars(self, code):
@@ -65,34 +65,40 @@ class GroupHistoryBackfillTests(unittest.TestCase):
             ).fetchall()
         return {row["d"]: (row["close"], row["volume"]) for row in rows}
 
-    def test_fills_only_days_below_coverage_and_known_codes(self) -> None:
+    def test_fetches_only_stocks_short_of_history_and_keeps_existing(self) -> None:
         calls: list[str] = []
-        with patch.object(module, "LOOKBACK_CALENDAR_DAYS", 3):  # 09/21(一)～09/23(三)
+        with patch.object(module, "MIN_BARS", 2):  # 8069 只有 1 根 → 要抓（2330 只在股期標的，不在 43 族群，不抓）
             result = module.backfill_group_history(today=date(2026, 9, 24), delay=0, fetcher=self._fetcher(calls))
-        # 09/21 完全沒資料、09/23 只有一半（8069 缺）→ 要補；09/22 兩檔都有 → 跳過
-        self.assertEqual(calls, ["2026-09-21", "2026-09-23"])
-        self.assertEqual(result["requestedDays"], 2)
-        self.assertEqual(result["insertedBars"], 3)                           # 09/21 兩檔＋09/23 的 8069
-        self.assertEqual(result["failures"], [])
-        self.assertEqual(self._bars("8069")["2026-09-23"], (210.0, 2000))   # 補上缺的那天，量換成張
-        self.assertEqual(self._bars("2330")["2026-09-23"], (1010.0, 1000))  # 已經有的不覆蓋
-        self.assertEqual(self._bars("9999"), {})                              # 不在 stocks 表的不寫
+        self.assertEqual(calls, ["8069"])
+        self.assertEqual(result["requestedStocks"], 1)
+        self.assertEqual(result["insertedBars"], 1)                            # 09/22 已經有，只新增 09/23
+        self.assertEqual(result["failureCount"], 0)
+        self.assertEqual(self._bars("8069")["2026-09-23"], (210.0, 2000))    # 補上缺的那天，量換成張
+        self.assertEqual(self._bars("8069")["2026-09-22"], (200.0, 1000))    # 已經有的不覆蓋
         with get_connection() as connection:
             markets = {row["stock_code"]: row["market"] for row in connection.execute("SELECT stock_code, market FROM stocks").fetchall()}
-        self.assertEqual(markets, {"2330": "TWSE", "8069": "OTC"})           # 市場不會被改掉
+        self.assertEqual(markets, {"2330": "TWSE", "8069": "OTC"})            # 市場不會被改掉
 
-    def test_failed_day_is_reported(self) -> None:
+    def test_only_43_group_stocks_and_known_codes_are_requested(self) -> None:
         calls: list[str] = []
-        with patch.object(module, "LOOKBACK_CALENDAR_DAYS", 3):
-            result = module.backfill_group_history(today=date(2026, 9, 24), delay=0, fetcher=self._fetcher(calls, fail_on="2026-09-21"))
-        self.assertEqual([f["date"] for f in result["failures"]], ["2026-09-21"])
-        self.assertEqual(self._bars("8069")["2026-09-23"], (210.0, 2000))   # 其他天照補
+        groups = dict(FAKE_GROUPS, 其他=[("9999", "不在stocks表")])
+        with patch.object(module, "STOCK_GROUPS", groups), patch.object(module, "MIN_BARS", 99):
+            module.backfill_group_history(today=date(2026, 9, 24), delay=0, fetcher=self._fetcher(calls))
+        # 2330 只在股期標的 → 不在 43 族群；9999 不在 stocks 表 → 不抓；8069 在族群且在 stocks 表 → 抓
+        self.assertEqual(calls, ["8069"])
+
+    def test_failed_stock_is_reported(self) -> None:
+        calls: list[str] = []
+        with patch.object(module, "MIN_BARS", 99):
+            result = module.backfill_group_history(today=date(2026, 9, 24), delay=0, fetcher=self._fetcher(calls, fail_on="8069"))
+        self.assertEqual(result["failureCount"], 1)
+        self.assertEqual(result["failures"][0]["code"], "8069")
 
     def test_run_once_marks_done_only_without_failures(self) -> None:
-        with patch.object(module, "backfill_group_history", lambda: {"insertedBars": 5, "failures": [{"date": "2026-09-21", "error": "x"}]}):
+        with patch.object(module, "backfill_group_history", lambda: {"insertedBars": 5, "failureCount": 1, "failures": [{"code": "8069", "error": "x"}]}):
             module._run_once()
         self.assertFalse(module.backfill_state()["done"])      # 有失敗 → 下次開機重試
-        with patch.object(module, "backfill_group_history", lambda: {"insertedBars": 7, "failures": []}):
+        with patch.object(module, "backfill_group_history", lambda: {"insertedBars": 7, "failureCount": 0, "failures": []}):
             module._run_once()
         state = module.backfill_state()
         self.assertTrue(state["done"])
