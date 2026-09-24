@@ -229,7 +229,9 @@ def _history_backfill_status() -> dict[str, Any] | None:
         return None
     result = state.get("result") or {}
     return {"done": state["done"], "progress": state.get("progress"), "updatedAt": state.get("updatedAt"),
-            "insertedBars": result.get("insertedBars"), "failures": len(result.get("failures") or [])}
+            "source": result.get("source"), "insertedBars": result.get("insertedBars"),
+            "failures": result.get("failureCount", len(result.get("failures") or [])),
+            "mismatchCount": result.get("mismatchCount"), "stillShortCount": result.get("stillShortCount")}
 
 
 def get_brew_launch() -> dict[str, Any]:
