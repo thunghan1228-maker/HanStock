@@ -253,6 +253,7 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         "shortable": sum(1 for info in stocks.values() if info.get("shortable")),
         "dayTradeEligible": sum(1 for info in stocks.values() if info.get("dayTradeEligible")),
         "disposition": sum(1 for info in stocks.values() if info.get("disposition")),
+        "attention": sum(1 for info in stocks.values() if info.get("attention")),
         "total": len(stocks),
     }
     return {
@@ -267,6 +268,8 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         # 公告清單（TWSE／TPEx／Shioaji punish）＋ 永豐個股資訊列處置等級 > 0 的，合在一起
         "dispositionCodes": sorted(code for code, info in stocks.items() if info.get("disposition")),
         "dispositionLevelCodes": sorted(code for code, info in stocks.items() if int(info.get("dispositionLevel") or 0) > 0),
+        # 官方注意股（永豐個股資訊列的 attention_flag，交易所當天公布注意交易資訊的股票）
+        "attentionCodes": sorted(code for code, info in stocks.items() if info.get("attention")),
         "disposition": disposition_status(),
         # 診斷：背景暖機上一輪對一檔合約的檢查結果（合約型別、contracts.info 欄位、各條路的耗時），
         # 融資券旗標全是 null／false 時看這裡；請求路徑本身不碰 Shioaji。

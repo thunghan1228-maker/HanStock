@@ -174,9 +174,29 @@ def _collect_one_stock(code: str, trade_date: str) -> tuple[dict[str, Any] | Non
     return fundamentals_row, margin_row
 
 
+FINMIND_UNAVAILABLE_CODES = {401, 402, 403}
+
+
+def _finmind_unavailable_reason(code: str, trade_date: str) -> str | None:
+    """整批開打前先試一檔：FinMind 回 401／402／403（token 失效、付費方案到期、IP 被封）就整批跳過，
+    不要 391 檔 × 3 個資料集一起打（2026-09-23 方案到期後就是這樣一直打，打到 IP 被封）。
+    其他錯誤（逾時、單檔沒資料）照舊逐檔處理。"""
+    try:
+        fetch_per_pbr(code, trade_date)
+    except urllib.error.HTTPError as error:
+        if error.code in FINMIND_UNAVAILABLE_CODES:
+            return f"HTTP {error.code}: {error.reason}"
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def collect_trade_date(trade_date: str, codes: list[str], *, workers: int = 12) -> dict[str, Any]:
     if not _token():
         return {"status": "skipped", "reason": "FINMIND_TOKEN 未設定", "tradeDate": trade_date}
+    reason = _finmind_unavailable_reason(codes[0], trade_date) if codes else None
+    if reason:
+        return {"status": "skipped", "reason": f"FinMind 無法使用（{reason}），這次整批跳過", "tradeDate": trade_date}
     fundamentals_rows: list[dict[str, Any]] = []
     margin_rows: list[dict[str, Any]] = []
     failures: list[str] = []
