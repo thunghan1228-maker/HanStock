@@ -34,6 +34,7 @@ from daily_bars_store import daily_bars_storage_status, latest_daily_trade_date_
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
 from after_hours_fixed_price import load_after_hours_day, load_latest_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
+from daily_bars_history_backfill import start_group_history_backfill, backfill_state as group_history_backfill_state
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
@@ -87,6 +88,7 @@ async def _persistent_lifespan(fastapi_app):
             start_daily_bars_collector()
             start_after_hours_fixed_price_collector()
             start_otc_gap_backfill()
+            start_group_history_backfill()
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -157,6 +159,7 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_OTC_GAP_BACKFILL_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "otcGapBackfill": otc_gap_backfill_state(),
+            "groupHistoryBackfill": group_history_backfill_state(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
             "mainForceBackfillPausedReason": backfill_pause_reason(),
