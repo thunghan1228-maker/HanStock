@@ -499,7 +499,9 @@ def backfill_flip_signals(
     起算，不準）；只有真的拿到當天 kbars 才刪除重寫。歷史額度用完時整批停下、回報
     quotaBlocked，排程之後再試。"""
     target = codes if codes is not None else list_main_force_codes_for_date(trade_date, "1m")
-    group_codes = {str(code).upper() for members in STOCK_GROUPS.values() for code, _name in members}
+    group_codes = {  # 只重播 43 個一般族群的股票，股期標的清單不算
+        str(code).upper() for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES for code, _name in members
+    }
     target_codes = sorted(code for code in {str(code).strip().upper() for code in target} if code in group_codes)
     monitor = get_main_force_flip_monitor()
     processed = bars_replayed = signals_emitted = skipped_no_bars = 0

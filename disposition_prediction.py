@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from database import get_connection, initialize_database
 from disposition_market_stats import MarketSnapshot, build_market_snapshot
 from disposition_rules import ACCUMULATION_CLAUSES, CHECKERS, ClauseInputs, ClauseResult
-from stock_groups import STOCK_GROUPS
+from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -32,8 +32,11 @@ DISPOSITION_DURATION_ESCALATED_BUSINESS_DAYS = 7  # 基數期間內也命中第�
 
 
 def official_group_codes() -> set[str]:
+    """43 個一般族群的代號（不含股期標的清單；2026-09-24 使用者：不在 43 個族群裡的不要掃）。"""
     codes: set[str] = set()
-    for members in STOCK_GROUPS.values():
+    for name, members in STOCK_GROUPS.items():
+        if name in SPECIAL_GROUP_NAMES:
+            continue
         codes.update(code for code, _name in members)
     return codes
 
@@ -42,7 +45,9 @@ def official_group_code_names() -> dict[str, str]:
     """{代號: 股名}，同一代號在多個族群出現時取第一個遇到的名稱（各族群裡的股名本來就
     該一致，不一致是資料問題，不是這裡要解決的事）。"""
     names: dict[str, str] = {}
-    for members in STOCK_GROUPS.values():
+    for group_name, members in STOCK_GROUPS.items():
+        if group_name in SPECIAL_GROUP_NAMES:
+            continue
         for code, name in members:
             names.setdefault(code, name)
     return names

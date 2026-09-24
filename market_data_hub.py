@@ -399,7 +399,9 @@ class MarketDataHub:
             self._total_bars_1m_completed += 1
             try:
                 from main_force_flip_signals import get_main_force_flip_monitor
-                get_main_force_flip_monitor().on_bar_completed(code, completed_bar_1m.to_dict())
+                from stock_groups import industry_group_codes
+                if code in industry_group_codes():  # 只掃 43 個族群的股票（開過圖的 ETF／股期標的不掃）
+                    get_main_force_flip_monitor().on_bar_completed(code, completed_bar_1m.to_dict())
             except Exception:  # noqa: BLE001
                 logger.exception("主力累計翻多空偵測失敗 code=%s", code)
             self._broadcast({
@@ -420,7 +422,9 @@ class MarketDataHub:
             self._total_bars_completed += 1
             try:
                 from intraday_kline_signals import get_intraday_kline_signal_monitor
-                get_intraday_kline_signal_monitor().on_bar_completed(code, completed_bar.to_dict())
+                from stock_groups import industry_group_codes
+                if code in industry_group_codes():  # 只掃 43 個族群的股票（開過圖的 ETF／股期標的不掃）
+                    get_intraday_kline_signal_monitor().on_bar_completed(code, completed_bar.to_dict())
             except Exception:  # noqa: BLE001
                 logger.exception("五分鐘K訊號偵測失敗 code=%s", code)
             self._broadcast({

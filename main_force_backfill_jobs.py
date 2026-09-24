@@ -19,9 +19,9 @@ def _in_official_groups(code: str) -> bool:
     即時開圖當下的資料（get_resilient_stock_bars）不受影響，這裡只管背景排程這條路徑。"""
     import stock_groups
     code = str(code).strip().upper()
-    return any(
+    return any(  # 股期標的是特殊清單不是族群，不算（2026-09-24 使用者：只掃 43 個族群）
         code == str(member_code).strip().upper()
-        for members in stock_groups.STOCK_GROUPS.values()
+        for name, members in stock_groups.STOCK_GROUPS.items() if name not in stock_groups.SPECIAL_GROUP_NAMES
         for member_code, _name in members
     )
 
@@ -130,7 +130,10 @@ def queue_backfill_for_all_group_stocks(days=3, *, now=None):
     回補是Shioaji歷史額度的最大消耗者，之後的日子由每天的即時落盤自然累積。"""
     import stock_groups
     now = time.time() if now is None else now
-    codes = sorted({code for members in stock_groups.STOCK_GROUPS.values() for code, _name in members})
+    codes = sorted({
+        code for name, members in stock_groups.STOCK_GROUPS.items() if name not in stock_groups.SPECIAL_GROUP_NAMES
+        for code, _name in members
+    })
     dates = _recent_weekdays(days, now)
     attempted = queue_backfill_for_codes(codes, dates, now=now)
     return {"stockCount": len(codes), "dates": dates, "attempted": attempted}

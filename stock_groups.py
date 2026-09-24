@@ -804,3 +804,19 @@ def resolve_group_names(keyword: str) -> list[str]:
 def regular_group_names() -> list[str]:
     """回傳一般看盤族群，不含股期標的。"""
     return [name for name in STOCK_GROUPS if name not in SPECIAL_GROUP_NAMES]
+
+
+_INDUSTRY_CODES: frozenset[str] | None = None
+
+
+def industry_group_codes() -> frozenset[str]:
+    """43 個一般族群（不含股期標的清單）裡的全部代號。盤中訊號、收盤後校正、處置股預測、大戶力排行
+    都只掃這些（2026-09-24 使用者：不在 43 個族群裡的股票不要掃描，浪費資源）。"""
+    global _INDUSTRY_CODES
+    if _INDUSTRY_CODES is None:
+        _INDUSTRY_CODES = frozenset(
+            str(code).strip().upper()
+            for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES
+            for code, _name in members
+        )
+    return _INDUSTRY_CODES

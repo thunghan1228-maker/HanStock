@@ -84,7 +84,7 @@ class MainForceBackfillJobTests(unittest.TestCase):
     def test_batch_jobs_run_most_recent_date_first_but_explicit_requests_win(self):
         # 一天500MB額度撐不完全族群x30天：批次工作要「最近交易日優先」，每檔都先
         # 有最近幾天；使用者明確要求的(next_attempt=0)則一律插隊到最前面。
-        queue_backfill_for_codes(["2330", "2455"], ["2026-09-01", "2026-09-05", "2026-09-03"], now=self.now - 10)
+        queue_backfill_for_codes(["2317", "2455"], ["2026-09-01", "2026-09-05", "2026-09-03"], now=self.now - 10)
         request_main_force_backfill("2455", "2026-09-01", now=self.now)
         seen = []
 

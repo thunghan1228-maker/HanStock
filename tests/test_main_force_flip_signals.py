@@ -257,7 +257,7 @@ def test_backfill_stops_and_reports_when_history_quota_is_exhausted(monkeypatch)
     monitor = new_monitor(monkeypatch)
     monkeypatch.setattr(module, "get_main_force_flip_monitor", lambda: monitor)
     monkeypatch.setattr(module, "delete_signals_for_ticker", lambda *a: 0)
-    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["3532", "2330"])
+    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["3532", "2317"])
     calls: list[str] = []
 
     def exhausted(code, **kwargs):
@@ -270,7 +270,19 @@ def test_backfill_stops_and_reports_when_history_quota_is_exhausted(monkeypatch)
 
     assert result["quotaBlocked"] is True
     assert result["processed"] == 0
-    assert calls == ["2330"]  # 第一檔就撞到額度用完，整批停下、不再逐檔浪費
+    assert calls == ["2317"]  # 第一檔就撞到額度用完，整批停下、不再逐檔浪費
+
+
+def test_backfill_skips_stocks_only_on_stock_futures_list(monkeypatch):
+    # 2330 只在「股期標的」清單、不在 43 個族群裡：不重播、不花歷史額度（2026-09-24 使用者）
+    monitor = new_monitor(monkeypatch)
+    monkeypatch.setattr(module, "get_main_force_flip_monitor", lambda: monitor)
+    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["2330"])
+    calls: list[str] = []
+    monkeypatch.setattr(module, "get_stock_history_bars_1m", lambda code, **kwargs: calls.append(code) or {"bars": []})
+    result = module.backfill_flip_signals("2026-09-18")
+    assert calls == []
+    assert result["processed"] == 0
 
 
 def test_tick_total_amount_and_volume_give_session_vwap_and_volume_ratio(monkeypatch):
