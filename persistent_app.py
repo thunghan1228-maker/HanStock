@@ -873,6 +873,20 @@ def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[
     return get_group_daily_changes(days)
 
 
+@app.get("/api/hub/brew-launch")
+def get_brew_launch_endpoint(codes: str | None = Query(None, description="只回這些代號（逗號分隔），查特定個股用")) -> dict[str, Any]:
+    """醞釀／發動選股（43 個族群成員）：每檔的近 10 日箱頂／箱底、六條均線與均線分數、給前端用即時價
+    重算均線的部分和、5 日均量、發行張數，以及上一個交易日收盤是否符合「醞釀」；「發動」要用即時價量，
+    由前端判斷。來源是官方日K＋市值，半小時快取。"""
+    from brew_launch import get_brew_launch
+
+    payload = get_brew_launch()
+    if codes:
+        wanted = {code.strip().upper() for code in codes.split(",") if code.strip()}
+        payload = dict(payload, stocks={code: info for code, info in payload["stocks"].items() if code in wanted})
+    return payload
+
+
 @app.get("/api/hub/bars1d/{stock_code}")
 def get_daily_bars(
     stock_code: str,
