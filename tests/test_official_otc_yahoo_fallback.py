@@ -96,6 +96,30 @@ class OtcYahooFallbackTests(unittest.TestCase):
             market = connection.execute("SELECT market FROM stocks WHERE stock_code = '8069'").fetchone()["market"]
         self.assertEqual(market, "OTC")
 
+    def test_only_codes_still_missing_the_day_are_fetched(self) -> None:
+        # 上一輪補到一半被部署打斷：8069 已經有 9/24，這輪只補還缺的 6488、3529
+        _save_day([_bar("8069", "元太", "OTC", "2026-09-24", 105.0)])
+        calls: list[str] = []
+        result = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=self._fetcher(calls, flaky=()),
+                                        now=datetime(2026, 9, 24, 15, 0, tzinfo=TW))
+        self.assertEqual(sorted(set(calls)), ["3529.TWO", "6488.TWO"])
+        self.assertEqual(result["stocks"], 2)
+        calls.clear()
+        module._yahoo_otc_attempted.clear()
+        again = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=self._fetcher(calls, flaky=()),
+                                       now=datetime(2026, 9, 24, 19, 0, tzinfo=TW))
+        self.assertEqual(calls, ["6488.TWO"])                                  # 只剩價格對不上的那檔還缺
+        self.assertEqual(again["inserted"], 0)
+
+    def test_otc_day_complete_needs_97_percent_of_previous_day(self) -> None:
+        codes = [f"{6000 + n}" for n in range(110)]
+        _save_day([_bar(code, code, "OTC", "2026-09-23", 50.0) for code in codes])
+        _save_day([_bar(code, code, "OTC", "2026-09-24", 50.0) for code in codes[:100]])
+        self.assertFalse(module.otc_day_complete(date(2026, 9, 24)))            # 前一天 113 檔，今天才 100 檔：還在補
+        _save_day([_bar(code, code, "OTC", "2026-09-24", 50.0) for code in codes[100:]])
+        self.assertTrue(module.otc_day_complete(date(2026, 9, 24)))             # 110／113 ≥ 97%
+        self.assertFalse(module.otc_day_complete(date(2026, 9, 25)))            # 一檔都沒有
+
     def test_same_day_not_refetched_within_three_hours_and_today_waits_until_1430(self) -> None:
         calls: list[str] = []
         early = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=self._fetcher(calls),
@@ -129,6 +153,23 @@ class OtcYahooFallbackTests(unittest.TestCase):
         self.assertEqual(captured, [[date(2026, 9, 24)]])
         self.assertEqual(result["yahoo_otc"], {"inserted": 7})
         self.assertEqual(result["inserted_bars"], 1 + 7)                         # 上市 1 根 + Yahoo 補的 7 根
+
+        # 櫃買被擋：第一天失敗之後這一輪不再打（每天重試三個網址要等十幾秒）
+        tpex_calls: list[date] = []
+
+        def tpex_counting(d):
+            tpex_calls.append(d)
+            raise RuntimeError("HTTP Error 403: Forbidden")
+
+        with patch.object(module, "fetch_twse_day", lambda d: [dict(twse_row, time=datetime.combine(d, datetime.min.time(), tzinfo=UTC))] if d.weekday() < 5 else []), \
+                patch.object(module, "fetch_tpex_day", tpex_counting), \
+                patch.object(module, "_finmind_otc_day", lambda d: ([], "FinMind 失敗")), \
+                patch.object(module, "_yahoo_otc_fill", fake_fill):
+            result = module.download_official_daily_bars(days=60, delay=0, end_date=date(2026, 9, 24), run_triangle_scan=False)
+        self.assertEqual(len(tpex_calls), 1)
+        self.assertEqual(len(captured[-1]), module.YAHOO_OTC_MAX_DATES)       # 只檢查最近 10 個櫃買沒給的交易日
+        self.assertEqual(captured[-1][-1], date(2026, 9, 24))
+        self.assertTrue(any("略過" in f["error"] and "403" in f["error"] for f in result["source_failures"]))
 
         captured.clear()
         with patch.object(module, "fetch_twse_day", lambda d: [dict(twse_row, time=datetime.combine(d, datetime.min.time(), tzinfo=UTC))] if d == date(2026, 9, 24) else []), \
