@@ -106,6 +106,79 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(client.get("/api/hub/brew-launch/history?date=2026-09-23").json()["days"]["2026-09-23"], {"brew": [], "launch": []})
         self.assertEqual(client.get("/api/hub/brew-launch/history?date=bad").status_code, 422)
 
+    def _insert_bars(self, rows) -> None:
+        with database.get_connection() as connection:
+            connection.executemany(
+                "INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows
+            )
+
+    def _backfill(self, **kwargs):
+        # compute_brew_launch 是 brew_launch 的：回補時用那天「之前」的日K重算醞釀，這裡直接給算好的 payload
+        with patch("brew_launch.compute_brew_launch", side_effect=lambda *, session: dict(self.payload, session=session)), \
+             patch("brew_launch.group_codes", return_value=["6207", "3016", "2881"]):
+            return module.backfill_past_days(**kwargs)
+
+    def test_backfill_past_day_from_daily_bars(self) -> None:
+        # 保存功能上線前的日子：醞釀快照補回來，發動用收盤價回推（收盤過箱頂＋全天量夠），標 eod
+        self._insert_bars([
+            ("6207", "2026-09-23T00:00:00", 120, 121, 119, 120, 800),     # 9/23 只有一檔日K → 不完整，先不回推
+            ("6207", "2026-09-24T00:00:00", 120, 126, 119, 125, 1200),    # 收盤 125 > 箱頂 124；1200 張 ÷ 20000 張 = 6% ≥ 5%
+            ("3016", "2026-09-24T00:00:00", 150, 160, 150, 160, 500),     # 160 沒過箱頂 170
+            ("2881", "2026-09-24T00:00:00", 90, 100, 90, 100, 99999),     # 金融股不算
+        ])
+        result = self._backfill(session="2026-09-25", days=3, now=datetime(2026, 9, 25, 0, 30, tzinfo=TW))
+        self.assertEqual([(d["date"], d["status"]) for d in result["days"]], [("2026-09-24", "ok"), ("2026-09-23", "skipped")])
+        self.assertEqual(result["days"][0]["brewAdded"], 1)
+        self.assertEqual(result["days"][0]["launchAdded"], 1)
+        self.assertIn("還不完整", result["days"][1]["reason"])
+        day = module.history(date="2026-09-24")["days"]["2026-09-24"]
+        self.assertEqual([r["code"] for r in day["brew"]], ["6207"])
+        launch = day["launch"]
+        self.assertEqual(len(launch), 1)
+        self.assertEqual(launch[0]["code"], "6207")
+        self.assertTrue(launch[0]["eod"])
+        self.assertEqual(launch[0]["recordedAt"], "2026-09-24T13:30:00+08:00")
+        self.assertEqual(launch[0]["price"], 125.0)
+        self.assertAlmostEqual(launch[0]["projTurnoverPct"], 6.0)
+        self.assertAlmostEqual(launch[0]["changePct"], round((125 / 96 - 1) * 100, 2))
+        self.assertEqual(module.history(date="2026-09-23")["days"]["2026-09-23"], {"brew": [], "launch": []})
+        # 再跑一次不重複
+        again = self._backfill(session="2026-09-25", days=3, now=datetime(2026, 9, 25, 0, 30, tzinfo=TW))
+        self.assertEqual((again["days"][0]["brewAdded"], again["days"][0]["launchAdded"]), (0, 0))
+
+    def test_backfill_keeps_intraday_record_and_includes_session_day_after_1530(self) -> None:
+        # 盤中已經記到的那筆（10:00、125 元）不會被收盤回推蓋掉；session 當天 15:30 前不回推、之後才算
+        self._scan()  # 9/24 10:00 記到 6207 發動
+        self._insert_bars([
+            ("6207", "2026-09-24T00:00:00", 120, 130, 119, 128, 1500),
+            ("3016", "2026-09-24T00:00:00", 150, 175, 150, 172, 3000),    # 收盤 172 > 箱頂 170、3000 ÷ 20000 = 15%：盤中沒掃到，收盤回推補上
+            ("2881", "2026-09-24T00:00:00", 90, 100, 90, 100, 99999),
+        ])
+        before = self._backfill(session="2026-09-24", now=datetime(2026, 9, 24, 15, 0, tzinfo=TW))
+        self.assertEqual(before["days"], [])
+        after = self._backfill(session="2026-09-24", now=datetime(2026, 9, 24, 15, 30, tzinfo=TW))
+        self.assertEqual(after["days"][0]["date"], "2026-09-24")
+        self.assertEqual(after["days"][0]["brewAdded"], 0)       # 快照當天已經存過
+        self.assertEqual(after["days"][0]["launchAdded"], 1)     # 只補 3016
+        launch = {r["code"]: r for r in module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]}
+        self.assertEqual(launch["6207"]["price"], 125.0)          # 盤中那筆保留
+        self.assertFalse(launch["6207"].get("eod"))
+        self.assertTrue(launch["6207"]["recordedAt"].startswith("2026-09-24T10:00"))
+        self.assertTrue(launch["3016"]["eod"])
+        self.assertEqual(launch["3016"]["price"], 172.0)
+
+    def test_backfill_due_at_startup_then_daily_after_1530(self) -> None:
+        module._state["backfillDate"] = None
+        self.assertTrue(module._backfill_due(datetime(2026, 9, 24, 10, 0, tzinfo=TW)))
+        with patch.object(module, "backfill_past_days", return_value={"days": []}):
+            module._run_backfill(datetime(2026, 9, 24, 10, 0, tzinfo=TW))
+            self.assertFalse(module._backfill_due(datetime(2026, 9, 24, 12, 0, tzinfo=TW)))   # 開機跑過，15:30 前不再跑
+            self.assertTrue(module._backfill_due(datetime(2026, 9, 24, 15, 30, tzinfo=TW)))
+            module._run_backfill(datetime(2026, 9, 24, 15, 30, tzinfo=TW))
+            self.assertFalse(module._backfill_due(datetime(2026, 9, 24, 18, 0, tzinfo=TW)))   # 當天跑過
+            self.assertTrue(module._backfill_due(datetime(2026, 9, 25, 15, 31, tzinfo=TW)))
+        module._state["backfillDate"] = None
+
     def test_volume_factor_and_window(self) -> None:
         self.assertEqual(module.volume_factor("2026-09-24", "10:00:00", "2026-09-24"), 4.0)
         self.assertAlmostEqual(module.volume_factor("2026-09-24", "12:00:00", "2026-09-24"), 1.5)
