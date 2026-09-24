@@ -651,8 +651,18 @@ def get_otc_index_strength() -> dict[str, Any]:
     hub = get_otc_index_hub()
     bars = hub.get_bars_5m(include_current=True)
     quote = hub.get_latest_quote()
-    today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    now = datetime.now(TW_TZ)
+    today = now.strftime("%Y-%m-%d")
     today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
+    held_from = None
+    # 使用者 2026-09-25：過午夜不能變成「資料蒐集中」，上一個交易日收盤時的判斷要留到下一個交易日
+    # 開盤前 15 分鐘（08:45），跟大戶力排行同一條規則（週末整天留）；沿用時價格用那天最後一根 5 分 K 的收盤。
+    if not today_bars and bars and _should_hold_previous_ranking(now):
+        last_day = taipei_trade_date(int(bars[-1]["ts"]))
+        if last_day < today:
+            held_from, today = today, last_day
+            today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
+            quote = None
     # 櫃買指數今天的漲跌幅（盤中打 333 的「漲幅 ≥ 櫃買%」用）：昨收＝上一個交易日最後一根 5 分 K 的收盤。
     prev_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) < today]
     prev_close = float(prev_bars[-1]["close"]) if prev_bars else None
@@ -709,6 +719,8 @@ def get_otc_index_strength() -> dict[str, Any]:
         "refLow": ref_low,
         "aboveRefLow": above_ref_low,
         "priceSource": price_source,
+        "tradeDate": today,
+        "heldFrom": held_from,  # 有值＝現在還沒到下一個交易日 08:45，畫面上是 tradeDate 那天收盤時的判斷
         "updatedAt": datetime.now(TW_TZ).isoformat(),
         "hub": hub.get_status(),
     }
