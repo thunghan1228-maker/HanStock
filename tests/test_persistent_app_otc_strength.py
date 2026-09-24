@@ -150,9 +150,11 @@ class OtcIndexStrengthEndpointTests(unittest.TestCase):
     def test_not_ready_when_bars_are_all_historical_with_none_from_today(self) -> None:
         # 有20根以上的歷史bar、也有quote，但今天自己一根bar都還沒有——
         # 這種狀態下沒有today_bars可以當ref_bar，不該假裝ready。
+        # （2026-09-25 起：08:45 之前會沿用上一個交易日，所以這裡明確指定「已經過 08:45」的情境。）
         bars = [bar_at(i * 5, day=self.yesterday, low=90.0, close=100.0) for i in range(20)]
         hub = FakeHub(bars, quote_close=100.0)
-        with patch("persistent_app.get_otc_index_hub", return_value=hub):
+        with patch("persistent_app.get_otc_index_hub", return_value=hub), \
+                patch("persistent_app._should_hold_previous_ranking", return_value=False):
             resp = self.client.get("/api/hub/index/otc/strength")
         data = resp.json()
         self.assertFalse(data["ready"])
