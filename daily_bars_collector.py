@@ -8,10 +8,10 @@ import logging
 import os
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from daily_bars_store import daily_bars_storage_status, prune_old_daily_bars
-from official_daily_bars import download_official_daily_bars
+from official_daily_bars import download_official_daily_bars, download_progress
 
 logger = logging.getLogger("hanstock.daily_bars_collector")
 POLL_SECONDS = max(1800, int(os.getenv("HANSTOCK_DAILY_BARS_COLLECTOR_SECONDS", str(60 * 60))))
@@ -20,6 +20,7 @@ CATCHUP_DAYS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_CATCHUP_DAYS", "5")))
 KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "365")))
 _started = False
 _lock = threading.Lock()
+_last_run: dict = {"running": False, "startedAt": None, "finishedAt": None, "result": None, "error": None}
 
 
 def _needs_full_backfill(status: dict, *, today: date | None = None) -> bool:
@@ -52,13 +53,35 @@ def collect_once() -> dict:
     return result
 
 
+def _now_text() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def collector_status() -> dict:
+    """最近一輪收集的摘要（給 /api/hub/persistence/status 看上櫃備援有沒有補到）。"""
+    result = _last_run.get("result") or {}
+    failures = result.get("source_failures") or []
+    return {
+        "running": _last_run["running"], "startedAt": _last_run["startedAt"], "finishedAt": _last_run["finishedAt"],
+        "error": _last_run["error"], "mode": result.get("mode"), "insertedBars": result.get("inserted_bars"),
+        "sourceFailureCount": len(failures), "lastSourceFailures": failures[-3:],
+        "yahooOtc": result.get("yahoo_otc"),
+        "progress": download_progress(),
+    }
+
+
 def _loop() -> None:
     while True:
+        _last_run.update({"running": True, "startedAt": _now_text(), "error": None})
         try:
             result = collect_once()
+            _last_run["result"] = result
             logger.info("日K已更新: %s", result)
-        except Exception:  # noqa: BLE001
+        except Exception as error:  # noqa: BLE001
+            _last_run["error"] = f"{type(error).__name__}: {error}"[:300]
             logger.exception("日K背景收集失敗")
+        finally:
+            _last_run.update({"running": False, "finishedAt": _now_text()})
         time.sleep(POLL_SECONDS)
 
 
