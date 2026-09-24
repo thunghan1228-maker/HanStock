@@ -21,6 +21,7 @@ from main_force_store import (
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
 from stock_groups import industry_group_codes
+from brew_launch_history import history as brew_launch_history, scan_status as brew_launch_scan_status, start_brew_launch_scan
 from stock_trading_eligibility import (
     contract_debug,
     peek_trading_eligibility,
@@ -87,6 +88,7 @@ async def _persistent_lifespan(fastapi_app):
             start_after_hours_fixed_price_collector()
             start_otc_gap_backfill()
             start_group_history_backfill()
+            start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -747,6 +749,19 @@ def get_brew_launch_endpoint(codes: str | None = Query(None, description="只回
         wanted = {code.strip().upper() for code in codes.split(",") if code.strip()}
         payload = dict(payload, stocks={code: info for code, info in payload["stocks"].items() if code in wanted})
     return payload
+
+
+@app.get("/api/hub/brew-launch/history")
+def get_brew_launch_history(days: int = Query(10, ge=1, le=60), date: str | None = Query(None)) -> dict[str, Any]:
+    """醞釀／發動每日保存：每個交易日的醞釀名單快照＋盤中第一次發動的紀錄（時間、價格、分數、周轉）。
+    使用者 2026-09-25：訊號要永久保存，不能明天就不見。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return {**brew_launch_history(days=days, date=date), "scan": brew_launch_scan_status()}
 
 
 @app.get("/api/hub/bars1d/{stock_code}")
