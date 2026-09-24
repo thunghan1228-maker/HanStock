@@ -37,9 +37,9 @@ def _today_bars_ready(trade_date: str, status: dict | None = None) -> bool:
 
 
 def _otc_bars_ready(trade_date: str) -> bool:
-    from official_daily_bars import _otc_bars_exist
+    from official_daily_bars import otc_day_complete
 
-    return _otc_bars_exist(date.fromisoformat(trade_date))
+    return otc_day_complete(date.fromisoformat(trade_date))
 
 
 def collect_once(*, now: datetime | None = None) -> dict:
