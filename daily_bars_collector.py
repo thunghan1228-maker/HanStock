@@ -11,7 +11,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from daily_bars_store import daily_bars_storage_status, prune_old_daily_bars
-from official_daily_bars import download_official_daily_bars
+from official_daily_bars import download_official_daily_bars, download_progress
 
 logger = logging.getLogger("hanstock.daily_bars_collector")
 POLL_SECONDS = max(1800, int(os.getenv("HANSTOCK_DAILY_BARS_COLLECTOR_SECONDS", str(60 * 60))))
@@ -66,6 +66,7 @@ def collector_status() -> dict:
         "error": _last_run["error"], "mode": result.get("mode"), "insertedBars": result.get("inserted_bars"),
         "sourceFailureCount": len(failures), "lastSourceFailures": failures[-3:],
         "yahooOtc": result.get("yahoo_otc"),
+        "progress": download_progress(),
     }
 
 

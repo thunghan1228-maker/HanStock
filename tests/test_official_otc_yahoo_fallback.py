@@ -120,6 +120,36 @@ class OtcYahooFallbackTests(unittest.TestCase):
         self.assertTrue(module.otc_day_complete(date(2026, 9, 24)))             # 110／113 ≥ 97%
         self.assertFalse(module.otc_day_complete(date(2026, 9, 25)))            # 一檔都沒有
 
+    def test_collected_days_skip_official_requests(self) -> None:
+        # 9/23 上市、上櫃都收齊了：不打證交所也不打櫃買；9/24 上市收過、上櫃還缺：只走上櫃備援
+        tse_codes = [f"{1000 + n}" for n in range(500)]
+        for day in ("2026-09-23", "2026-09-24"):
+            _save_day([_bar(code, code, "TSE", day, 20.0) for code in tse_codes])
+        otc_codes = [f"{6000 + n}" for n in range(110)]
+        for day in ("2026-09-22", "2026-09-23"):
+            _save_day([_bar(code, code, "OTC", day, 30.0) for code in otc_codes])
+        twse_calls: list[date] = []
+        tpex_calls: list[date] = []
+        captured: list[list[date]] = []
+
+        def twse(d):
+            twse_calls.append(d)
+            return []  # 其他日子都當休市
+
+        def tpex(d):
+            tpex_calls.append(d)
+            raise RuntimeError("HTTP Error 403: Forbidden")
+
+        with patch.object(module, "fetch_twse_day", twse), patch.object(module, "fetch_tpex_day", tpex), \
+                patch.object(module, "_finmind_otc_day", lambda d: ([], "FinMind 失敗")), \
+                patch.object(module, "_yahoo_otc_fill", lambda missing: captured.append(list(missing)) or {"inserted": 0}):
+            module.download_official_daily_bars(days=60, delay=0, end_date=date(2026, 9, 24), run_triangle_scan=False)
+        self.assertNotIn(date(2026, 9, 23), twse_calls)
+        self.assertNotIn(date(2026, 9, 24), twse_calls)
+        self.assertEqual(tpex_calls, [date(2026, 9, 24)])
+        self.assertEqual(captured, [[date(2026, 9, 24)]])
+        self.assertEqual(module.download_progress()["phase"], "done")
+
     def test_same_day_not_refetched_within_three_hours_and_today_waits_until_1430(self) -> None:
         calls: list[str] = []
         early = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=self._fetcher(calls),

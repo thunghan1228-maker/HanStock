@@ -467,6 +467,31 @@ def otc_day_complete(trade_date: date, *, ratio: float = 0.97) -> bool:
     return today >= 100 and today >= previous * ratio
 
 
+TSE_DAY_COMPLETE_MIN = 500  # 這天上市日K已經有 500 檔以上就當收過了（全市場約 1000 多檔）
+_progress: dict[str, Any] = {"phase": None, "date": None, "index": 0, "total": 0, "yahooDone": 0, "yahooTotal": 0}
+
+
+def download_progress() -> dict[str, Any]:
+    return dict(_progress)
+
+
+def _day_done(trade_date: date) -> tuple[bool, bool]:
+    """(上市已收齊, 上櫃已收齊)。查不到（例如測試用的假連線）就當都還沒收，照原本流程全部重抓。"""
+    try:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
+                WHERE s.market = 'TSE' AND substr(b.bar_time, 1, 10) = ?
+                """,
+                (trade_date.isoformat(),),
+            ).fetchone()
+        tse_done = int(row[0] if row else 0) >= TSE_DAY_COMPLETE_MIN
+        return tse_done, tse_done and otc_day_complete(trade_date)
+    except Exception:  # noqa: BLE001
+        return False, False
+
+
 def _yahoo_otc_fill(
     missing_dates: list[date], *, delay: float = 0.3, retry_pause: float = 20.0,
     fetcher: Callable[..., Any] | None = None, now: datetime | None = None,
@@ -532,9 +557,11 @@ def _yahoo_otc_fill(
             inserted += _save_day(rows)
         return True
 
+    _progress.update({"phase": "yahoo", "yahooDone": 0, "yahooTotal": len(codes)})
     for code in codes:
         if not fill(code):
             failed.append(code)
+        _progress["yahooDone"] += 1
         time.sleep(max(0.0, delay))
     if failed:
         time.sleep(max(0.0, retry_pause))  # Yahoo 偶爾 429：停一下，失敗的再試一輪、放慢一點
@@ -565,20 +592,30 @@ def download_official_daily_bars(
     source_failures: list[dict[str, str]] = []
     otc_unsourced: list[date] = []
     tpex_down: str | None = None
+    _progress.update({"phase": "official", "date": None, "index": 0, "total": len(dates), "yahooDone": 0, "yahooTotal": 0})
     for index, trade_date in enumerate(dates, start=1):
-        try:
-            twse_rows = fetch_twse_day(trade_date)
-        except Exception as error:  # noqa: BLE001
-            source_failures.append(
-                {"date": trade_date.isoformat(), "source": "TWSE", "error": str(error)}
-            )
-            print(f"[{index}/{len(dates)}] {trade_date}: 證交所取得失敗，整日暫不寫入", flush=True)
-            time.sleep(max(0.0, delay))
+        _progress.update({"date": trade_date.isoformat(), "index": index})
+        # 每小時一輪、往回 60 天：已經收齊的日子不用再打證交所／櫃買（一直重打會被證交所限流，
+        # 限流時連今天都抓不到，上櫃備援也跟著跳過）
+        tse_done, otc_done = _day_done(trade_date)
+        if tse_done and otc_done:
             continue
-        if not twse_rows:
-            print(f"[{index}/{len(dates)}] {trade_date}: 休市或尚未公布，整日略過", flush=True)
-            time.sleep(max(0.0, delay))
-            continue
+        if tse_done:
+            twse_rows = []  # 上市已經收過了：這天確定有開市，只差上櫃
+        else:
+            try:
+                twse_rows = fetch_twse_day(trade_date)
+            except Exception as error:  # noqa: BLE001
+                source_failures.append(
+                    {"date": trade_date.isoformat(), "source": "TWSE", "error": str(error)}
+                )
+                print(f"[{index}/{len(dates)}] {trade_date}: 證交所取得失敗，整日暫不寫入", flush=True)
+                time.sleep(max(0.0, delay))
+                continue
+            if not twse_rows:
+                print(f"[{index}/{len(dates)}] {trade_date}: 休市或尚未公布，整日略過", flush=True)
+                time.sleep(max(0.0, delay))
+                continue
 
         day_rows = list(twse_rows)
         tpex_rows: list[dict[str, Any]] = []
@@ -620,6 +657,7 @@ def download_official_daily_bars(
         except Exception as error:  # noqa: BLE001
             yahoo_otc = {"error": f"{type(error).__name__}: {error}"}
         print(f"上櫃日K Yahoo 備援：{yahoo_otc}", flush=True)
+    _progress["phase"] = "done"
 
     with get_connection() as connection:
         stock_count = int(
