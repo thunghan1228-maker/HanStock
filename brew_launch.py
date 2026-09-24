@@ -30,6 +30,9 @@ from stock_groups import STOCK_GROUPS
 
 TW_TZ = timezone(timedelta(hours=8))
 EXCLUDED_GROUPS = {"股期標的"}
+# 使用者 2026-09-24：醞釀裡金融股一次佔 14 檔太多，金融股整個不列入醞釀／發動。均線分數照算（盤中333 要用），
+# 只是 brewing 一律 False、標 skipped，前端兩個名單都跳過。
+SKIP_GROUPS = {"金融股"}
 MA_PERIODS = (5, 10, 20, 60, 120, 240)
 BOX_DAYS = 10
 BOX_RANGE_MAX_PCT = 20.0
@@ -49,6 +52,7 @@ RULES = {
     "brewMinScore": BREW_MIN_SCORE, "launchMinScore": LAUNCH_MIN_SCORE,
     "turnoverMinPct": TURNOVER_MIN_PCT, "volumeRatioMin": VOLUME_RATIO_MIN, "avgVolumeDays": AVG_VOLUME_DAYS,
     "maPeriods": list(MA_PERIODS),
+    "skipGroups": sorted(SKIP_GROUPS),
 }
 
 _cache_lock = threading.Lock()
@@ -79,6 +83,17 @@ def group_codes() -> list[str]:
         for name, members in STOCK_GROUPS.items() if name not in EXCLUDED_GROUPS
         for code, _stock_name in members
     })
+
+
+def skipped_codes() -> set[str]:
+    """只屬於 SKIP_GROUPS（金融股）的代號；同時也在別的族群的照常算。"""
+    memberships: dict[str, set[str]] = {}
+    for name, members in STOCK_GROUPS.items():
+        if name in EXCLUDED_GROUPS:
+            continue
+        for code, _stock_name in members:
+            memberships.setdefault(str(code).strip().upper(), set()).add(name)
+    return {code for code, names in memberships.items() if names and names <= SKIP_GROUPS}
 
 
 def _load_bars(codes: list[str], *, session: str) -> dict[str, list[tuple[str, float, float, float, int]]]:
@@ -176,6 +191,7 @@ def analyze_stock(bars: list[tuple[str, float, float, float, int]]) -> dict[str,
 def compute_brew_launch(*, session: str | None = None) -> dict[str, Any]:
     session = session or session_date()
     codes = group_codes()
+    skipped = skipped_codes()
     bars_by_code = _load_bars(codes, session=session)
     market_values = _load_market_values(codes, session=session)
     as_of = max((bars[-1][0] for bars in bars_by_code.values() if bars), default=None)
@@ -201,6 +217,9 @@ def compute_brew_launch(*, session: str | None = None) -> dict[str, Any]:
             if close_that_day > 0:
                 shares_lots = round(mv[1] / close_that_day / 1000, 1)
         info["sharesLots"] = shares_lots
+        if code in skipped:
+            info["brewing"] = False
+            info["skipped"] = True
         stocks[code] = info
     return {
         "status": "ok",
