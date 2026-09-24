@@ -20,6 +20,7 @@ from main_force_store import (
 )
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
+from stock_groups import industry_group_codes
 from stock_trading_eligibility import (
     contract_debug,
     peek_trading_eligibility,
@@ -39,9 +40,6 @@ from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
-from disposition_gap_prediction import build_clause_11_gap_predictions, build_gap_predictions, build_volume_gap_predictions
-from disposition_prediction import check_disposition_trigger, load_clause_log_for_date, official_group_code_names
-from disposition_prediction_collector import collect_once as run_disposition_prediction_once, start_disposition_prediction_collector
 from market_data_hub import get_market_data_hub
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
 from main_force_flip_signals import (
@@ -104,10 +102,6 @@ async def _persistent_lifespan(fastapi_app):
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
             start_disposition_collector()
-            # 處置股「預測」(跟上面start_disposition_collector抓的官方現況公告不同，這個是
-            # 用證交所公布或通知注意交易資訊暨處置作業要點第四條門檻自己算)：收盤後bars_1d
-            # 寫好today's資料後，跑43個官方族群股票的14款判定，一天一次。
-            start_disposition_prediction_collector()
             start_trading_eligibility_warmer(_group_stock_codes)
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但幾百檔股票還是有感時間，丟背景
@@ -467,157 +461,6 @@ def audit_kline_signals_out_of_session(trade_date: str | None = Query(None)) -> 
     }
 
 
-def _validated_trade_date(trade_date: str | None) -> str:
-    if trade_date:
-        try:
-            datetime.strptime(trade_date, "%Y-%m-%d")
-        except ValueError as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
-    return trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-
-
-@app.get("/api/hub/disposition-risk")
-def get_disposition_risk(trade_date: str | None = Query(None)) -> dict[str, Any]:
-    """處置股預測：43個官方族群股票，依證交所公布或通知注意交易資訊暨處置作業要點第四條
-    14款異常標準（目前算得出來一二三四六七九十十一十二十三款，只有五(券商分點資料)、
-    八(限台灣存託憑證)不適用一般管道/追蹤範圍）今天觸發了哪些款，以及依第六條累積規則
-    (連續3天款一／連續5天款一到八／10天內6次／30天內12次，後三條只算我們做得到的六款
-    一二三四六七)是不是已經累積到會被處置。trade_date預設今天；只回今天至少觸發一款、
-    或正在累積中的股票，不是全部524檔都列出來——collectAt是收盤後背景收集器算好存進去
-    的，不是即時重算。處置期間5天/7天已用第十三款(當日沖銷比例)實際資料判斷，durationCaveat
-    只在講一個殘留限制：視窗涵蓋Phase 3上線前的舊日期時，那幾天無法回溯確認。gapPrediction
-    是「差距預測」：連續2個營業日命中第一款(還差1次就觸發路徑一)的股票，反推明天收盤價
-    門檻——用今天已經收盤定案的資料算「明天」的門檻，不是像第三方工具那樣盤中即時重算
-    「今天」；只做第一款(最常見、且不需要基本面等額外資料源就能反推收盤價門檻)。
-    priceExtremeWatch是第十一款(6日收盤價價差、創6日新高或新低)的差距預測，範圍是全部
-    524檔(不像gapPrediction侷限在today已經觸發某款的股票)，因為第十一款單日獨立判定、
-    不算入第六條累積路徑(跟九/十款一樣)，沒觸發過也可能正在接近門檻；反推出來的門檻若
-    超過台股單日漲跌幅限制(±10%)代表明天一天到不了，不列入。第九/十款(成交量類)的差距
-    預測改走專門的/api/hub/disposition-risk/volume-watch端點，因為那個需要比對盤中
-    即時成交量，跟這個端點的600秒快取不合。"""
-    date = _validated_trade_date(trade_date)
-    names = official_group_code_names()
-    clause_log = load_clause_log_for_date(date)
-    gap_by_code = {p.code: p for p in build_gap_predictions(date, set(clause_log.keys()))}
-    results: list[dict[str, Any]] = []
-    for code, clause_results in clause_log.items():
-        fired = [r for r in clause_results if r.fired]
-        accumulation = check_disposition_trigger(code, date)
-        gap = gap_by_code.get(code)
-        if not fired and accumulation.trigger_path is None:
-            continue
-        results.append({
-            "code": code,
-            "name": names.get(code, code),
-            "firedToday": [{"clause": r.clause, "detail": r.detail} for r in fired],
-            "accumulation": {
-                "triggerPath": accumulation.trigger_path,
-                "firedDates": accumulation.fired_dates,
-                "predictedDurationBusinessDays": accumulation.predicted_duration_business_days,
-                "durationCaveat": accumulation.duration_caveat,
-            } if accumulation.trigger_path else None,
-            "gapPrediction": {
-                "clause": gap.clause,
-                "direction": gap.direction,
-                "thresholdClose": gap.threshold_close,
-                "changePctFromToday": gap.change_pct_from_today,
-                "easy": gap.easy,
-                "detail": gap.detail,
-            } if gap else None,
-        })
-    results.sort(key=lambda r: (r["accumulation"] is None, -len(r["firedToday"])))
-    price_extreme_watch = [
-        {
-            "code": p.code,
-            "name": names.get(p.code, p.code),
-            "clause": p.clause,
-            "direction": p.direction,
-            "thresholdClose": p.threshold_close,
-            "changePctFromToday": p.change_pct_from_today,
-            "easy": p.easy,
-            "detail": p.detail,
-        }
-        for p in build_clause_11_gap_predictions(date, set(names.keys()))
-    ]
-    return {
-        "status": "ok", "tradeDate": date, "count": len(results), "results": results,
-        "priceExtremeWatch": price_extreme_watch,
-    }
-
-
-@app.get("/api/hub/disposition-risk/run-today")
-def trigger_disposition_prediction_today() -> dict[str, Any]:
-    """手動觸發：跟背景收集器跑的是同一個函式，今天已經跑過就直接回skipped，不會重算。"""
-    return run_disposition_prediction_once()
-
-
-@app.get("/api/hub/disposition-risk/volume-watch")
-def get_disposition_volume_watch(trade_date: str | None = Query(None)) -> dict[str, Any]:
-    """第九(單日爆量)/十(週轉率)款差距預測的即時觀察版：門檻用trade_date(預設「目前
-    有資料的最新一個交易日」，不是今天——盤中今天還沒收盤，bars_1d還沒有今天這筆，
-    門檻要用「上一個已經收盤定案」的那天資料算，算出來的門檻對「這個尚未收盤的
-    交易日」整天都有效，這是disposition_gap_prediction.py文件開頭講的架構)算一次，
-    是收盤後批次計算，不是每次呼叫都重新反推；但拿去比較的「目前成交量」會盡量用
-    市場數據中樞(即時Shioaji tick餵進來的當日累計成交量)取代trade_date收盤時的量，
-    liveData=true代表這檔目前確實在即時追蹤範圍內。即時追蹤目前最多同時190檔個股
-    (Shioaji訂閱上限)，524檔官方族群範圍裡沒被追蹤到的股票liveData會是false，退回
-    用trade_date收盤量——這是誠實的限制，不是bug，前端要把liveData秀出來讓使用者
-    知道這筆是不是真即時。"""
-    if trade_date:
-        try:
-            datetime.strptime(trade_date, "%Y-%m-%d")
-        except ValueError as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
-        date = trade_date
-    else:
-        tomorrow = (datetime.now(TW_TZ) + timedelta(days=1)).strftime("%Y-%m-%d")
-        date = latest_daily_trade_date_before(tomorrow) or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-
-    names = official_group_code_names()
-    predictions = build_volume_gap_predictions(date, set(names.keys()))
-    live_bars = get_market_data_hub().bars.get_all_latest()
-
-    results: list[dict[str, Any]] = []
-    live_count = 0
-    for p in predictions:
-        live_bar = live_bars.get(p.code)
-        live_data = live_bar is not None
-        current_volume = float(live_bar["total_volume"]) if live_data else p.reference_volume
-        if live_data:
-            live_count += 1
-        gap = p.threshold_volume - current_volume
-        # 明確寫出「觸發注意」而不是只寫「達門檻」：這裡只代表會觸發一次公布注意交易
-        # 資訊(第四條異常標準)，不是處置——第九/十款不算入第六條累積路徑，跟處置
-        # 無關，用字要避免讓人誤以為量補齊就會被處置。千分位逗號方便閱讀大數字。
-        detail = (
-            "已達觸發注意門檻" if gap <= 0
-            else f"觸發注意還差約 {gap:,.0f} 張（門檻 {p.threshold_volume:,.0f} 張）"
-        )
-        results.append({
-            "code": p.code,
-            "name": names.get(p.code, p.code),
-            "clause": p.clause,
-            "thresholdVolume": p.threshold_volume,
-            "currentVolume": current_volume,
-            "liveData": live_data,
-            "detail": detail,
-        })
-    results.sort(key=lambda r: r["thresholdVolume"] - r["currentVolume"])
-    return {
-        "status": "ok",
-        "tradeDate": date,
-        "count": len(results),
-        "liveCount": live_count,
-        "liveSubscriptionCapNote": (
-            "即時成交量最多同時追蹤190檔個股（Shioaji訂閱上限），524檔官方族群範圍內"
-            "沒被追蹤到的股票liveData是false，退回用門檻計算那天收盤時的量估計。"
-        ),
-        "results": results,
-    }
-
-
 @app.get("/api/hub/kline-signals/purge-out-of-session")
 def purge_kline_signals_out_of_session(
     trade_date: str | None = Query(None),
@@ -723,7 +566,7 @@ def get_main_force_ranking(
         date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
     # 只排 43 個一般族群裡的股票：收集器也會追蹤開過圖的 ETF 等族群外的代號，使用者 2026-09-23
     # 要求排行不要出現 ETF；2026-09-24 再要求只看 43 個族群（股期標的清單不算）。
-    codes = official_group_code_names().keys()
+    codes = industry_group_codes()
     ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=codes)
     held_from = None
     if not trade_date and not ranking and _should_hold_previous_ranking(datetime.now(TW_TZ)):

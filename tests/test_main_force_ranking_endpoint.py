@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 import database
 import persistent_app
 from database import initialize_database
-from disposition_prediction import official_group_code_names
+from stock_groups import industry_group_codes
 from main_force_store import save_main_force_bars
 from otc_index import TW_TZ, taipei_trade_date
 
@@ -35,7 +35,7 @@ class MainForceRankingEndpointTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_ranking_excludes_codes_outside_official_groups(self):
-        official = next(iter(official_group_code_names()))
+        official = next(iter(sorted(industry_group_codes())))
         trade_date = taipei_trade_date(BASE_TS)
         for code, buy in ((official, 100), ("00632R", 900), ("00991A", 800)):
             save_main_force_bars(code, "5m", [{
@@ -51,7 +51,7 @@ class MainForceRankingEndpointTests(unittest.TestCase):
 
     def test_holds_previous_trading_day_until_next_open_when_today_has_no_data(self):
         # 使用者 2026-09-24：過午夜三個大戶力分頁的資料不能不見，要留到下一個交易日開盤前 15 分鐘。
-        official = next(iter(official_group_code_names()))
+        official = next(iter(sorted(industry_group_codes())))
         previous_date = taipei_trade_date(BASE_TS)
         save_main_force_bars(official, "5m", [{
             "ts": BASE_TS, "main_buy_volume": 100, "main_sell_volume": 0,
