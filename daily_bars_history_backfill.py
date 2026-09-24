@@ -2,39 +2,43 @@
 
 正式環境 bars_1d 從 2025-09-16 起有資料，但中間缺很多天（官方歷史來源有些日子沒抓到），
 每檔平均只有約 181 根，醞釀／發動、盤中333 的均線分數（要 MA240）一檔都算不出來。
-這裡跟 otc_gap_backfill.py 一樣用 FinMind TaiwanStockPrice「單日全市場」查詢（一天一個請求，
-這個 repo 已經在付費使用的 Sponsor 資料源），把「族群個股覆蓋率不到 9 成」的交易日補齊。
 
-- 只寫 43 個族群裡的個股（醞釀／發動、盤中333、創高黑龍都只看這些；股期標的清單不是族群），
-  而且只寫 stocks 表裡已經有紀錄的代號，股名／市場用原本的值，_save_day 更新 stocks 時不會改錯市場。
+一開始用 FinMind「單日全市場」查詢（跟 otc_gap_backfill 一樣），正式環境 163 天全部回 HTTP 400
+（全市場查詢對較舊的日子不給）；改成「逐檔」查詢：43 個族群裡日K不足 245 根的股票，一檔一個請求抓
+今天往前 400 天（創高黑龍的均線分數 fallback 用的就是這種逐檔查詢，確定可用）。
+
+- 只寫 43 個族群裡、而且 stocks 表已經有紀錄的代號，股名／市場用原本的值，_save_day 更新 stocks 時不會改錯市場。
 - _save_day 是 ON CONFLICT DO NOTHING：已經有的日K不覆蓋，重跑、範圍重疊都安全。
-- 整段沒有失敗才標記完成，之後開機不重跑；有失敗就下次開機再補（已補的日子會被覆蓋率判斷跳過）。
+- 整段沒有失敗才標記完成，之後開機不重跑；有失敗就下次開機再補（已經補夠的股票會被根數判斷跳過）。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import threading
 import time
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from typing import Any, Callable
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from database import get_connection, initialize_database
 from official_daily_bars import _save_day
-from otc_gap_backfill import fetch_finmind_price_day
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 
 logger = logging.getLogger("hanstock.daily_bars_history_backfill")
 UTC = timezone.utc
 LOOKBACK_CALENDAR_DAYS = 400
-MIN_COVERAGE = 0.9
+MIN_BARS = 245  # MA240 要 240 根，多留一點
+FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
+PRICE_DATASET = "TaiwanStockPrice"
+MAX_STORED_FAILURES = 20
 
 _started = False
 _lock = threading.Lock()
-_progress: dict[str, Any] = {"running": False, "doneDays": 0, "totalDays": 0}
+_progress: dict[str, Any] = {"running": False, "doneStocks": 0, "totalStocks": 0}
 
 
 def _enabled() -> bool:
@@ -111,8 +115,8 @@ def _known_stocks(codes: list[str]) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _coverage_by_date(codes: list[str], since: str, until: str) -> dict[str, int]:
-    """{日期: 那天有日K的族群個股數}。"""
+def _bar_counts(codes: list[str], since: str, until: str) -> dict[str, int]:
+    """{代號: since～until 之間已經有的日K根數}。"""
     counts: dict[str, int] = {}
     with get_connection() as connection:
         for start in range(0, len(codes), 400):
@@ -120,23 +124,37 @@ def _coverage_by_date(codes: list[str], since: str, until: str) -> dict[str, int
             placeholders = ",".join("?" for _ in batch)
             rows = connection.execute(
                 f"""
-                SELECT substr(bar_time, 1, 10) AS d, COUNT(DISTINCT stock_code) AS n FROM bars_1d
+                SELECT stock_code, COUNT(*) AS n FROM bars_1d
                 WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) <= ?
-                GROUP BY substr(bar_time, 1, 10)
+                GROUP BY stock_code
                 """,
                 (*batch, since, until),
             ).fetchall()
             for row in rows:
-                counts[str(row["d"])] = counts.get(str(row["d"]), 0) + int(row["n"])
+                counts[str(row["stock_code"]).strip().upper()] = int(row["n"])
     return counts
 
 
-def _weekdays(start: date, end: date):
-    current = start
-    while current <= end:
-        if current.weekday() < 5:
-            yield current
-        current += timedelta(days=1)
+def _default_fetcher(url: str, params: dict[str, str]) -> dict[str, Any]:
+    request = Request(
+        f"{url}?{urlencode(params)}",
+        headers={"Accept": "application/json,text/plain,*/*", "User-Agent": "HanStock/1.0 (+https://hanstock.xyz)"},
+    )
+    with urlopen(request, timeout=45) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_stock_history(code: str, since: str, until: str, *, fetcher: Callable[..., Any] | None = None) -> list[dict[str, Any]]:
+    """一檔股票 since～until 的 FinMind 日K；沒有 token 回 []；呼叫失敗往外拋（算失敗、下次開機重試）。"""
+    token = _token()
+    if not token:
+        return []
+    payload = (fetcher or _default_fetcher)(
+        FINMIND_DATA_URL,
+        {"dataset": PRICE_DATASET, "data_id": code, "start_date": since, "end_date": until, "token": token},
+    )
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    return rows if isinstance(rows, list) else []
 
 
 def _row_to_bar(entry: dict[str, Any], trade_date: date, known: dict[str, tuple[str, str]]) -> dict[str, Any] | None:
@@ -165,42 +183,46 @@ def _row_to_bar(entry: dict[str, Any], trade_date: date, known: dict[str, tuple[
 
 
 def backfill_group_history(
-    *, today: date | None = None, delay: float = 0.3, fetcher: Callable[..., Any] | None = None,
+    *, today: date | None = None, delay: float = 0.2, fetcher: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     initialize_database()
     today = today or date.today()
-    since = today - timedelta(days=LOOKBACK_CALENDAR_DAYS)
-    until = today - timedelta(days=1)
+    since = (today - timedelta(days=LOOKBACK_CALENDAR_DAYS)).isoformat()
+    until = (today - timedelta(days=1)).isoformat()
     codes = group_codes()
     known = _known_stocks(codes)
-    target = max(1, math.ceil(len(known) * MIN_COVERAGE))
-    coverage = _coverage_by_date(sorted(known), since.isoformat(), until.isoformat())
-    days = [d for d in _weekdays(since, until) if coverage.get(d.isoformat(), 0) < target]
-    _progress.update({"running": True, "doneDays": 0, "totalDays": len(days)})
+    counts = _bar_counts(sorted(known), since, until)
+    targets = [code for code in sorted(known) if counts.get(code, 0) < MIN_BARS]
+    _progress.update({"running": True, "doneStocks": 0, "totalStocks": len(targets)})
     inserted = 0
-    days_with_data = 0
+    stocks_with_data = 0
     failures: list[dict[str, str]] = []
     try:
-        for trade_date in days:
+        for code in targets:
             try:
-                raw_rows = fetch_finmind_price_day(trade_date, fetcher=fetcher)
+                rows = fetch_stock_history(code, since, until, fetcher=fetcher)
             except Exception as error:  # noqa: BLE001
-                failures.append({"date": trade_date.isoformat(), "error": str(error)[:200]})
+                failures.append({"code": code, "error": str(error)[:200]})
                 time.sleep(max(0.0, delay))
                 continue
-            bars = [bar for bar in (_row_to_bar(e, trade_date, known) for e in raw_rows if isinstance(e, dict)) if bar]
+            bars = [
+                bar for bar in (
+                    _row_to_bar(entry, date.fromisoformat(str(entry.get("date"))[:10]), known)
+                    for entry in rows if isinstance(entry, dict) and entry.get("date")
+                ) if bar
+            ]
             if bars:
-                days_with_data += 1
+                stocks_with_data += 1
                 inserted += _save_day(bars)
-            _progress["doneDays"] += 1
+            _progress["doneStocks"] += 1
             time.sleep(max(0.0, delay))
     finally:
         _progress["running"] = False
     return {
-        "startDate": since.isoformat(), "endDate": until.isoformat(),
-        "groupCodeCount": len(codes), "knownCodeCount": len(known), "coverageTarget": target,
-        "requestedDays": len(days), "daysWithData": days_with_data, "insertedBars": inserted,
-        "failures": failures,
+        "mode": "per_stock", "startDate": since, "endDate": until,
+        "groupCodeCount": len(codes), "knownCodeCount": len(known), "minBars": MIN_BARS,
+        "requestedStocks": len(targets), "stocksWithData": stocks_with_data, "insertedBars": inserted,
+        "failureCount": len(failures), "failures": failures[:MAX_STORED_FAILURES],
     }
 
 
@@ -215,7 +237,7 @@ def _run_once() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("族群個股日K歷史回補失敗")
         return
-    _mark_state(not result["failures"], result)
+    _mark_state(not result.get("failureCount", len(result.get("failures") or [])), result)
     logger.info("族群個股日K歷史回補: %s", result)
     try:
         from brew_launch import clear_cache
