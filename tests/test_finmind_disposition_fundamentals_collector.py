@@ -47,6 +47,23 @@ class CollectTradeDateTests(unittest.TestCase):
             result = collector.collect_trade_date("2026-09-23", ["2330"])
         self.assertEqual(result["status"], "skipped")
 
+    def test_whole_batch_skipped_when_finmind_rejects_first_request(self):
+        # 付費方案到期（402）／IP 被封（403）：試第一檔就知道，不要整批 391 檔 × 3 個資料集照打
+        import urllib.error
+
+        def expired(code, trade_date):
+            raise urllib.error.HTTPError("https://api.finmindtrade.com", 402, "Payment Required", None, None)
+
+        with (
+            patch.object(collector, "fetch_per_pbr", side_effect=expired) as per_mock,
+            patch.object(collector, "fetch_margin_short") as margin_mock,
+        ):
+            result = collector.collect_trade_date("2026-09-23", ["2330", "2317", "2454"])
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("402", result["reason"])
+        self.assertEqual(per_mock.call_count, 1)
+        margin_mock.assert_not_called()
+
     def test_saves_fundamentals_and_margin_short_for_each_code(self):
         with (
             patch.object(collector, "fetch_per_pbr", return_value={"peRatio": 20.0, "pbr": 3.0, "dividendYield": 1.0}),
