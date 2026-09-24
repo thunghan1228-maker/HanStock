@@ -91,8 +91,8 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(weekend["status"], "skipped")
 
     def test_session_mismatch_does_not_record_launch(self) -> None:
-        # 醞釀資料還是昨天的交易日（例如凌晨快取）就不能拿今天的報價記發動
-        result = self._scan(day=25)
+        # 醞釀資料的交易日跟今天對不上（例如快取還沒換日）就不能拿今天的報價記發動
+        result = self._scan(day=23)
         self.assertEqual(result["status"], "skipped")
         self.assertIn("不是今天", result["reason"])
 
@@ -178,6 +178,22 @@ class HistoryTests(unittest.TestCase):
             self.assertFalse(module._backfill_due(datetime(2026, 9, 24, 18, 0, tzinfo=TW)))   # 當天跑過
             self.assertTrue(module._backfill_due(datetime(2026, 9, 25, 15, 31, tzinfo=TW)))
         module._state["backfillDate"] = None
+
+    def test_holiday_is_outside_scan_window_and_phantom_rows_are_purged(self) -> None:
+        # 中秋節（9/25）、教師節（9/28）休市：不掃發動；休市日曆補上前存到 9/25 名下的醞釀快照要清掉
+        self.assertFalse(module.in_scan_window(datetime(2026, 9, 25, 10, 0, tzinfo=TW)))
+        self.assertFalse(module.in_scan_window(datetime(2026, 9, 28, 10, 0, tzinfo=TW)))
+        self.assertTrue(module.in_scan_window(datetime(2026, 9, 29, 10, 0, tzinfo=TW)))
+        self.assertEqual(module.record_brew_snapshot(dict(self.payload, session="2026-09-25")), 1)
+        self._scan()  # 9/24 正常紀錄要留著
+        self.assertEqual(module.history(days=5)["dates"], ["2026-09-25", "2026-09-24"])
+        self.assertEqual(module.purge_non_trading_days(), ["2026-09-25"])
+        self.assertEqual(module.history(days=5)["dates"], ["2026-09-24"])
+        self.assertEqual(module.purge_non_trading_days(), [])
+        # 回補時也會順便清
+        self.assertEqual(module.record_brew_snapshot(dict(self.payload, session="2026-09-28")), 1)
+        result = self._backfill(session="2026-09-24", now=datetime(2026, 9, 28, 12, 0, tzinfo=TW))
+        self.assertEqual(result["purged"], ["2026-09-28"])
 
     def test_volume_factor_and_window(self) -> None:
         self.assertEqual(module.volume_factor("2026-09-24", "10:00:00", "2026-09-24"), 4.0)

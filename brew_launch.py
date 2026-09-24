@@ -27,6 +27,7 @@ from typing import Any
 from database import get_connection, initialize_database
 from disposition_fundamentals_store import ensure_fundamentals_schema
 from stock_groups import STOCK_GROUPS
+from trading_days import is_trading_day
 
 TW_TZ = timezone(timedelta(hours=8))
 EXCLUDED_GROUPS = {"股期標的"}
@@ -67,11 +68,11 @@ def _latest_bar_date() -> str | None:
 
 
 def session_date(now: datetime | None = None) -> str:
-    """今天要判斷的那個交易日：平日就是今天（盤前看昨天收盤後的醞釀、盤中／收盤後即時價判斷發動）；
-    週末沒開盤，即時報價停在最後一個交易日，箱子也要以那天「之前」的日K為準，才不會把那天自己算進箱子。"""
+    """今天要判斷的那個交易日：交易日就是今天（盤前看昨天收盤後的醞釀、盤中／收盤後即時價判斷發動）；
+    週末、國定假日沒開盤，即時報價停在最後一個交易日，箱子也要以那天「之前」的日K為準，才不會把那天自己算進箱子。"""
     now = now or datetime.now(TW_TZ)
     today = now.strftime("%Y-%m-%d")
-    if now.weekday() < 5:
+    if is_trading_day(now):
         return today
     latest = _latest_bar_date()
     return latest if latest and latest <= today else today

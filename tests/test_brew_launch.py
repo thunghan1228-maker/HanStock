@@ -212,6 +212,12 @@ class SessionDateTests(unittest.TestCase):
         with patch.object(module, "_latest_bar_date", lambda: "2026-09-25"):
             self.assertEqual(module.session_date(now), "2026-09-25")
 
+    def test_holiday_uses_last_trading_day(self) -> None:
+        # 使用者 2026-09-25：「今天 25 號沒有交易」——中秋節休市，比照週末用最後一個交易日
+        now = datetime(2026, 9, 25, 0, 30, tzinfo=module.TW_TZ)
+        with patch.object(module, "_latest_bar_date", lambda: "2026-09-24"):
+            self.assertEqual(module.session_date(now), "2026-09-24")
+
 
 class EndpointTests(unittest.TestCase):
     def test_endpoint_returns_payload(self) -> None:
