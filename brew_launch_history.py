@@ -8,6 +8,9 @@
 發動條件跟前端 brewLiveMetrics 一模一樣；金融股（後端標 skipped）不算。
 前端醞釀／發動分頁的「昨天／前天」看的就是這裡存的資料；今天的發動也會把「盤中曾經發動、
 現在回落」的一起列出來。
+保存功能上線前的日子、或程式那天沒在跑：開機時（以及每天 15:30 後）用日K回推最近幾個交易日——
+醞釀快照照那天盤前的算法補；發動用收盤價判斷（收盤過箱頂、收盤均線分數夠、全天量夠），標 eod＝收盤回推，
+盤中曾發動又回落的補不回來。同一檔同一天只留一筆，已有盤中紀錄的不會被蓋掉。
 """
 
 from __future__ import annotations
@@ -33,11 +36,14 @@ MIS_CHUNK = 80
 MARKET_OPEN_MINUTE = 9 * 60
 MARKET_SCAN_END_MINUTE = 13 * 60 + 35  # 13:30 收盤，最後一盤成交後再掃幾分鐘
 BREW_DETAIL_KEYS = ("prevClose", "boxHigh", "boxLow", "boxRangePct", "maSpreadPct", "score")
-LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing")
+LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing", "eod")
+BACKFILL_DAYS = max(0, int(os.getenv("HANSTOCK_BREW_LAUNCH_BACKFILL_DAYS", "3")))  # 用日K回推最近幾個交易日
+BACKFILL_MINUTE = 15 * 60 + 30  # 每天 15:30 後（當天日K進來了）再回推一次，把當天掃描漏掉的補齊
+DAY_COMPLETE_RATIO = 0.75  # 那天的日K要有這麼多比例的族群股才算完整（上櫃還沒補進來就先不回推）
 
 _started = False
 _lock = threading.Lock()
-_state: dict[str, Any] = {"lastPollAt": None, "lastPollResult": None, "lastError": None}
+_state: dict[str, Any] = {"lastPollAt": None, "lastPollResult": None, "lastError": None, "backfill": None, "backfillDate": None}
 
 
 def _enabled() -> bool:
@@ -144,6 +150,88 @@ def history(*, days: int = 10, date: str | None = None) -> dict[str, Any]:
             "status": "ok", "dates": dates,
             "days": {day: {"brew": _rows(connection, day, "brew"), "launch": _rows(connection, day, "launch")} for day in dates},
         }
+
+
+# ------------------------------------------------------------------ 用日K回推（上線前的日子／當天沒掃到）
+
+def _past_bar_dates(session: str, limit: int, *, include_session: bool) -> list[str]:
+    """日K表裡 session 之前（含 session 當天要 include_session）最近的幾個交易日，新的在前。"""
+    if limit <= 0:
+        return []
+    initialize_database()
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT DISTINCT substr(bar_time, 1, 10) AS d FROM bars_1d WHERE substr(bar_time, 1, 10) {'<=' if include_session else '<'} ? ORDER BY d DESC LIMIT ?",
+            (session, limit),
+        ).fetchall()
+    return [str(row["d"]) for row in rows]
+
+
+def _day_bars(codes: list[str], day: str) -> dict[str, tuple[float, int]]:
+    """{代號: (收盤, 全天量張)}：那天的日K。"""
+    out: dict[str, tuple[float, int]] = {}
+    with get_connection() as connection:
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            rows = connection.execute(
+                f"SELECT stock_code, close, volume FROM bars_1d WHERE substr(bar_time, 1, 10) = ? AND stock_code IN ({','.join('?' for _ in batch)})",
+                (day, *batch),
+            ).fetchall()
+            for row in rows:
+                out[str(row["stock_code"]).strip().upper()] = (float(row["close"]), int(row["volume"] or 0))
+    return out
+
+
+def backfill_past_days(*, session: str | None = None, days: int | None = None, now: datetime | None = None) -> dict[str, Any]:
+    """用日K回推最近幾個交易日的紀錄（保存功能上線前的日子，或那天程式沒在跑）。
+    醞釀快照：那天盤前用「那天之前」的日K算的名單，跟當天看到的一樣（已經有就不動）。
+    發動：那天收盤價過箱頂、收盤均線分數 ≥ 11、全天量夠（周轉或量比），標 eod＝收盤回推；
+    盤中曾發動又回落的補不回來。同一檔同一天只留一筆，已有盤中紀錄的不會被蓋掉。
+    session 當天要 15:30 後（那天的日K進來了）才回推；那天的日K還不完整（上櫃沒補進來）就先跳過。"""
+    from brew_launch import compute_brew_launch, group_codes, session_date
+
+    now = now or datetime.now(TW_TZ)
+    session = session or session_date(now)
+    today = now.strftime("%Y-%m-%d")
+    include_session = today > session or (today == session and now.hour * 60 + now.minute >= BACKFILL_MINUTE)
+    codes = group_codes()
+    summary: dict[str, Any] = {"session": session, "at": now.isoformat(timespec="seconds"), "days": []}
+    for day in _past_bar_dates(session, BACKFILL_DAYS if days is None else days, include_session=include_session):
+        day_bars = _day_bars(codes, day)
+        if len(day_bars) < DAY_COMPLETE_RATIO * len(codes):
+            summary["days"].append({"date": day, "status": "skipped", "reason": f"那天的日K只有 {len(day_bars)}/{len(codes)} 檔，還不完整"})
+            continue
+        payload = compute_brew_launch(session=day)
+        brew_added = record_brew_snapshot(payload)
+        rules = payload["rules"]
+        launched: list[dict[str, Any]] = []
+        for code, info in (payload.get("stocks") or {}).items():
+            bar = day_bars.get(code)
+            if not bar or info.get("skipped"):
+                continue
+            metrics = evaluate_launch(info, {"price": bar[0], "prevClose": info.get("prevClose"), "volume": bar[1]}, 1.0, rules)
+            if metrics:
+                launched.append({"code": code, **metrics, "eod": True})
+        launch_added = record_launches(day, launched, f"{day}T13:30:00+08:00") if launched else 0
+        summary["days"].append({"date": day, "status": "ok", "brewAdded": brew_added, "eodLaunches": len(launched), "launchAdded": launch_added})
+    return summary
+
+
+def _backfill_due(now: datetime) -> bool:
+    """開機先回推一次；之後每天 15:30 後再一次（那天的日K進來後，把當天掃描漏掉的用收盤價補齊）。"""
+    if _state.get("backfillDate") is None:
+        return True
+    return now.hour * 60 + now.minute >= BACKFILL_MINUTE and _state["backfillDate"] != now.strftime("%Y-%m-%d")
+
+
+def _run_backfill(now: datetime) -> None:
+    try:
+        _state["backfill"] = backfill_past_days(now=now)
+    except Exception as error:  # noqa: BLE001
+        _state["backfill"] = {"status": "error", "at": now.isoformat(timespec="seconds"), "error": f"{type(error).__name__}: {error}"[:300]}
+        logger.exception("醞釀／發動日K回推失敗")
+    # 15:30 前跑的（開機）不算當天那次，15:30 後還要再跑一次
+    _state["backfillDate"] = now.strftime("%Y-%m-%d") if now.hour * 60 + now.minute >= BACKFILL_MINUTE else ""
 
 
 # ------------------------------------------------------------------ 發動判斷（跟前端同一套）
@@ -335,11 +423,14 @@ def scan_once(
 
 def scan_status() -> dict[str, Any]:
     return {"enabled": _enabled(), "pollSeconds": POLL_SECONDS, "scanWindow": "週一～五 09:00～13:35",
-            "inWindowNow": in_scan_window(datetime.now(TW_TZ)), **_state}
+            "inWindowNow": in_scan_window(datetime.now(TW_TZ)), "backfillDays": BACKFILL_DAYS, **_state}
 
 
 def _loop() -> None:
     while True:
+        now = datetime.now(TW_TZ)
+        if _backfill_due(now):
+            _run_backfill(now)
         try:
             result = scan_once()
             _state.update({"lastPollAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "lastPollResult": result, "lastError": None})
