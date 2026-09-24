@@ -215,14 +215,32 @@ def compute_brew_launch(*, session: str | None = None) -> dict[str, Any]:
     }
 
 
+def clear_cache() -> None:
+    with _cache_lock:
+        _cache.update({"key": None, "at": 0.0, "value": None})
+
+
+def _history_backfill_status() -> dict[str, Any] | None:
+    try:
+        from daily_bars_history_backfill import backfill_state
+
+        state = backfill_state()
+    except Exception:  # noqa: BLE001
+        return None
+    result = state.get("result") or {}
+    return {"done": state["done"], "progress": state.get("progress"), "updatedAt": state.get("updatedAt"),
+            "insertedBars": result.get("insertedBars"), "failures": len(result.get("failures") or [])}
+
+
 def get_brew_launch() -> dict[str, Any]:
-    """快取半小時：只用到收盤後才會變的日K跟市值；即時價量由前端自己套。"""
+    """快取半小時：只用到收盤後才會變的日K跟市值；即時價量由前端自己套。日K歷史回補的進度每次即時附上
+    （回補還沒完成時多數個股 MA240 算不出來，前端要能說明為什麼清單是空的）。"""
     session = session_date()
     now = time.monotonic()
     with _cache_lock:
-        if _cache["key"] == session and _cache["value"] is not None and now - _cache["at"] < CACHE_SECONDS:
-            return _cache["value"]
-    value = compute_brew_launch(session=session)
-    with _cache_lock:
-        _cache.update({"key": session, "at": now, "value": value})
-    return value
+        cached = _cache["value"] if _cache["key"] == session and _cache["value"] is not None and now - _cache["at"] < CACHE_SECONDS else None
+    if cached is None:
+        cached = compute_brew_launch(session=session)
+        with _cache_lock:
+            _cache.update({"key": session, "at": now, "value": cached})
+    return dict(cached, historyBackfill=_history_backfill_status())
