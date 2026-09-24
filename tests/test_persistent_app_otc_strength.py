@@ -47,6 +47,27 @@ class OtcIndexStrengthEndpointTests(unittest.TestCase):
         self.today = datetime.now(TW).date()
         self.yesterday = self.today - timedelta(days=1)
 
+    def test_holds_previous_session_until_next_open(self) -> None:
+        # 使用者 2026-09-25：過午夜不能變成「資料蒐集中」，上一個交易日收盤時的判斷要留到下一個交易日 08:45。
+        yesterday_bars = [bar_at(i * 5, day=self.yesterday, low=90.0, close=100.0) for i in range(20)]
+        yesterday_bars[2]["low"] = 95.0
+        yesterday_bars[-1]["close"] = 101.0
+        hub = FakeHub(yesterday_bars, quote_close=None)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub), \
+                patch("persistent_app._should_hold_previous_ranking", return_value=True):
+            data = self.client.get("/api/hub/index/otc/strength").json()
+        self.assertTrue(data["ready"])
+        self.assertEqual(data["tradeDate"], self.yesterday.isoformat())
+        self.assertEqual(data["heldFrom"], self.today.isoformat())
+        self.assertEqual(data["price"], 101.0)                       # 那天最後一根 5 分 K 的收盤
+        self.assertEqual(data["refLow"], 95.0)                       # 那天第 3 根的低點
+        self.assertEqual(data["label"], "強多")
+        self.assertEqual(data["priceSource"], "lastBar")
+        with patch("persistent_app.get_otc_index_hub", return_value=hub), \
+                patch("persistent_app._should_hold_previous_ranking", return_value=False):
+            data = self.client.get("/api/hub/index/otc/strength").json()
+        self.assertFalse(data["ready"])                              # 08:45 以後就等今天的資料
+
     def test_ma20_uses_multi_day_bars_when_today_alone_has_fewer_than_20(self) -> None:
         # 使用者回報的核心情境：今天只走了2根5分K，靠歷史(昨天)補齊到20根，
         # 應該要能直接ready，不用等今天自己累積滿20根。
