@@ -209,7 +209,7 @@ class StockFlagsEndpointTests(unittest.TestCase):
         # 端點只讀快取：先像背景更新那樣暖一輪，再打端點。
         with patch.object(eligibility_module, "start_trading_eligibility_warmer", lambda provider: False), \
                 patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False):
-            eligibility_module.warm_trading_eligibility(["8996", "2330"], service=FakeService())
+            eligibility_module.warm_trading_eligibility(["8996", "2317"], service=FakeService())
             resp = self.client.get("/api/hub/stock-flags")
         eligibility_module.clear_trading_eligibility_cache()
         data = resp.json()
@@ -218,9 +218,12 @@ class StockFlagsEndpointTests(unittest.TestCase):
         self.assertEqual(data["stocks"]["8996"]["disposition"], True)
         self.assertEqual(data["stocks"]["8996"]["dispositionUntil"], "2026-10-06")
         self.assertEqual(data["stocks"]["8996"]["shortable"], False)
-        self.assertEqual(data["stocks"]["2330"]["disposition"], False)
-        self.assertTrue(data["stocks"]["2330"]["hasStockFutures"])
-        self.assertIsNone(data["stocks"]["1101"]["marginable"])  # 沒暖到的代號是「還不知道」，不是 false
+        self.assertEqual(data["stocks"]["2317"]["disposition"], False)
+        self.assertTrue(data["stocks"]["2317"]["hasStockFutures"])
+        self.assertIsNone(data["stocks"]["2881"]["marginable"])  # 沒暖到的代號是「還不知道」，不是 false
+        # 只在股期標的清單、不在 43 個族群裡的股票不列（2026-09-24 使用者：只掃 43 個族群）
+        self.assertNotIn("2330", data["stocks"])
+        self.assertNotIn("1101", data["stocks"])
         self.assertEqual(data["eligibilityWarmer"]["resolved"], 2)
         self.assertEqual(data["dispositionCodes"], ["8996"])
         self.assertEqual(data["dispositionLevelCodes"], [])
@@ -241,14 +244,14 @@ class StockFlagsEndpointTests(unittest.TestCase):
         eligibility_module.clear_trading_eligibility_cache()
         with patch.object(eligibility_module, "start_trading_eligibility_warmer", lambda provider: False), \
                 patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False):
-            eligibility_module.warm_trading_eligibility(["3661", "2330"], service=SimpleNamespace(api=SimpleNamespace(contracts=Contracts())))
+            eligibility_module.warm_trading_eligibility(["3661", "2317"], service=SimpleNamespace(api=SimpleNamespace(contracts=Contracts())))
             resp = self.client.get("/api/hub/stock-flags")
         eligibility_module.clear_trading_eligibility_cache()
         data = resp.json()
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(data["stocks"]["3661"]["disposition"])  # 公告清單是空的，靠個股資訊列的處置等級
         self.assertEqual(data["stocks"]["3661"]["dispositionReason"], "永豐合約處置等級 1")
-        self.assertFalse(data["stocks"]["2330"]["disposition"])
+        self.assertFalse(data["stocks"]["2317"]["disposition"])
         self.assertEqual(data["dispositionCodes"], ["3661"])
         self.assertEqual(data["dispositionLevelCodes"], ["3661"])
         self.assertEqual(data["counts"]["disposition"], 1)

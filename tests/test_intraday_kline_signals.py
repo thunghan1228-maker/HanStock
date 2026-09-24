@@ -846,3 +846,24 @@ def test_bars_5m_coverage_complete_used_directly(monkeypatch):
     module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
 
     assert calls == [("2330", "2026-09-18")]
+
+
+def test_group_lookup_skips_stock_futures_list(monkeypatch):
+    # 股期標的是特殊清單不是族群：只在那裡的股票沒有族群（創高黑龍不會觸發）；同時在一般族群的，以一般族群為準
+    # （以前後面的股期標的覆蓋前面，會被標成「股期標的」）。2026-09-24 使用者：只掃 43 個族群。
+    monkeypatch.setattr(module, "_group_lookup_cache", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {
+        "被動元件": [("2327", "國巨")],
+        "股期標的": [("2327", "國巨"), ("2412", "中華電")],
+    })
+    assert module._group_and_name("2327") == ("被動元件", "國巨")
+    assert module._group_and_name("2412") == ("", "2412")
+
+
+def test_industry_group_codes_excludes_futures_only_stocks():
+    from stock_groups import STOCK_GROUPS, industry_group_codes
+
+    codes = industry_group_codes()
+    futures_only = {c for c, _ in STOCK_GROUPS["股期標的"]} - {c for n, m in STOCK_GROUPS.items() if n != "股期標的" for c, _ in m}
+    assert futures_only and not (futures_only & codes)
+    assert "2317" in codes and "2330" not in codes

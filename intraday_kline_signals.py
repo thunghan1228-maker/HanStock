@@ -33,7 +33,7 @@ from stock_bars_5m_store import (
     save_stock_bars_5m,
     save_stock_bars_5m_many,
 )
-from stock_groups import STOCK_GROUPS
+from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 
 logger = logging.getLogger("hanstock.intraday_kline_signals")
 
@@ -52,9 +52,14 @@ def _group_and_name(code: str) -> tuple[str, str]:
     global _group_lookup_cache
     if _group_lookup_cache is None:
         cache: dict[str, tuple[str, str]] = {}
+        # 股期標的是特殊清單不是族群、而且排在最後：以前後面的覆蓋前面，一檔股票會被標成「股期標的」，
+        # 只在股期標的清單裡的股票（達發、中華電…）也因此算「有族群」而觸發創高黑龍。改成跳過股期標的、
+        # 以第一個出現的一般族群為準（跟 main_force_flip_signals 一致）。
         for group_name, stocks in STOCK_GROUPS.items():
+            if group_name in SPECIAL_GROUP_NAMES:
+                continue
             for stock_code, stock_name in stocks:
-                cache[str(stock_code).upper()] = (group_name, stock_name)
+                cache.setdefault(str(stock_code).upper(), (group_name, stock_name))
         _group_lookup_cache = cache
     return _group_lookup_cache.get(code, ("", code))
 
@@ -599,7 +604,12 @@ def backfill_today_kline_signals(
     from stock_history_service import get_stock_history_bars_5m
 
     trade_date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    codes = sorted({str(code).strip().upper() for stocks in STOCK_GROUPS.values() for code, _ in stocks})
+    # 只重算 43 個一般族群的股票（2026-09-24 使用者：不在族群裡的不要掃，浪費 Shioaji 歷史額度）
+    codes = sorted({
+        str(code).strip().upper()
+        for name, stocks in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES
+        for code, _ in stocks
+    })
     monitor = get_intraday_kline_signal_monitor()
     processed = 0
     bars_replayed = 0

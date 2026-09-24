@@ -5,7 +5,7 @@
 這裡跟 otc_gap_backfill.py 一樣用 FinMind TaiwanStockPrice「單日全市場」查詢（一天一個請求，
 這個 repo 已經在付費使用的 Sponsor 資料源），把「族群個股覆蓋率不到 9 成」的交易日補齊。
 
-- 只寫 43 個族群＋股期標的清單裡的個股（醞釀／發動、盤中333、創高黑龍都只看這些），
+- 只寫 43 個族群裡的個股（醞釀／發動、盤中333、創高黑龍都只看這些；股期標的清單不是族群），
   而且只寫 stocks 表裡已經有紀錄的代號，股名／市場用原本的值，_save_day 更新 stocks 時不會改錯市場。
 - _save_day 是 ON CONFLICT DO NOTHING：已經有的日K不覆蓋，重跑、範圍重疊都安全。
 - 整段沒有失敗才標記完成，之後開機不重跑；有失敗就下次開機再補（已補的日子會被覆蓋率判斷跳過）。
@@ -25,7 +25,7 @@ from typing import Any, Callable
 from database import get_connection, initialize_database
 from official_daily_bars import _save_day
 from otc_gap_backfill import fetch_finmind_price_day
-from stock_groups import STOCK_GROUPS
+from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 
 logger = logging.getLogger("hanstock.daily_bars_history_backfill")
 UTC = timezone.utc
@@ -88,7 +88,11 @@ def _mark_state(done: bool, result: dict[str, Any]) -> None:
 
 
 def group_codes() -> list[str]:
-    return sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
+    return sorted({
+        str(code).strip().upper()
+        for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES
+        for code, _name in members
+    })
 
 
 def _known_stocks(codes: list[str]) -> dict[str, tuple[str, str]]:

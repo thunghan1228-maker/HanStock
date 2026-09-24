@@ -217,9 +217,9 @@ def main_force_threshold() -> dict[str, Any]:
 
 
 def _group_stock_codes() -> list[str]:
-    from stock_groups import STOCK_GROUPS
+    from stock_groups import industry_group_codes
 
-    return sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
+    return sorted(industry_group_codes())  # 只標 43 個族群的股票（股期標的清單不是族群）
 
 
 @app.get("/api/hub/stock-flags")
@@ -717,8 +717,8 @@ def get_main_force_ranking(
             raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
     else:
         date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    # 只排 stock_groups 官方族群（含股期標的）裡的股票：收集器也會追蹤開過圖的 ETF 等
-    # 族群外的代號，使用者 2026-09-23 要求排行不要出現 ETF。
+    # 只排 43 個一般族群裡的股票：收集器也會追蹤開過圖的 ETF 等族群外的代號，使用者 2026-09-23
+    # 要求排行不要出現 ETF；2026-09-24 再要求只看 43 個族群（股期標的清單不算）。
     codes = official_group_code_names().keys()
     ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=codes)
     held_from = None
