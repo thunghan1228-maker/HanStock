@@ -29,7 +29,7 @@ from stock_trading_eligibility import (
 from history_sources import OTC_INDEX_CODE, history_sources_status, probe_history_sources, stock_market
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
-from daily_bars_collector import start_daily_bars_collector
+from daily_bars_collector import collector_status as daily_bars_collector_status, start_daily_bars_collector
 from daily_bars_store import daily_bars_storage_status, latest_daily_trade_date_before, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
 from after_hours_fixed_price import load_after_hours_day, load_latest_after_hours_day
@@ -155,6 +155,7 @@ def get_persistence_status() -> dict[str, Any]:
                 "HANSTOCK_DAILY_BARS_COLLECTOR_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
             "dailyBarsHistory": daily_bars_storage_status(),
+            "dailyBarsCollector": daily_bars_collector_status(),
             "otcGapBackfillEnabled": os.getenv(
                 "HANSTOCK_OTC_GAP_BACKFILL_ENABLED", "true"
             ).strip().lower() not in {"0", "false", "no", "off"},
