@@ -22,6 +22,7 @@ from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pendin
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
 from stock_groups import industry_group_codes
 from brew_launch_history import history as brew_launch_history, scan_status as brew_launch_scan_status, start_brew_launch_scan
+from trading_days import is_trading_day
 from stock_trading_eligibility import (
     contract_debug,
     peek_trading_eligibility,
@@ -541,9 +542,8 @@ RANKING_HOLD_UNTIL_MINUTE = 8 * 60 + 45  # 下一個交易日開盤前 15 分鐘
 def _should_hold_previous_ranking(now: datetime) -> bool:
     """今天還沒有主力資料時，要不要繼續給上一個交易日的排行。使用者 2026-09-24：
     盤中大戶力／族群大戶力／族群綜合表的資料過午夜不能不見，要留到下一個交易日開盤前
-    15 分鐘（08:45）。週末整天都留；平日 08:45 起清空等開盤。沒有假日行事曆可查，
-    平日的國定假日會從 08:45 起提早清空，接受這個誤差。"""
-    if now.weekday() >= 5:
+    15 分鐘（08:45）。週末、國定假日（trading_days 的休市日曆）整天都留；交易日 08:45 起清空等開盤。"""
+    if not is_trading_day(now):
         return True
     return now.hour * 60 + now.minute < RANKING_HOLD_UNTIL_MINUTE
 

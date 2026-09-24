@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from database import get_connection, initialize_database
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
+from trading_days import is_trading_day
 
 logger = logging.getLogger("hanstock.brew_launch_history")
 TW_TZ = timezone(timedelta(hours=8))
@@ -182,6 +183,19 @@ def _day_bars(codes: list[str], day: str) -> dict[str, tuple[float, int]]:
     return out
 
 
+def purge_non_trading_days() -> list[str]:
+    """把存到非交易日（週末、國定假日）名下的紀錄清掉：休市日曆補上之前，程式只看星期幾，
+    中秋節那天（2026-09-25）凌晨就存了一份醞釀快照，前端會多出一個「那天沒有股票發動」的假日子。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute("SELECT DISTINCT trade_date FROM brew_launch_daily").fetchall()
+        bad = sorted(str(row["trade_date"]) for row in rows if not is_trading_day(str(row["trade_date"])))
+        for day in bad:
+            connection.execute("DELETE FROM brew_launch_daily WHERE trade_date = ?", (day,))
+    return bad
+
+
 def backfill_past_days(*, session: str | None = None, days: int | None = None, now: datetime | None = None) -> dict[str, Any]:
     """用日K回推最近幾個交易日的紀錄（保存功能上線前的日子，或那天程式沒在跑）。
     醞釀快照：那天盤前用「那天之前」的日K算的名單，跟當天看到的一樣（已經有就不動）。
@@ -195,7 +209,7 @@ def backfill_past_days(*, session: str | None = None, days: int | None = None, n
     today = now.strftime("%Y-%m-%d")
     include_session = today > session or (today == session and now.hour * 60 + now.minute >= BACKFILL_MINUTE)
     codes = group_codes()
-    summary: dict[str, Any] = {"session": session, "at": now.isoformat(timespec="seconds"), "days": []}
+    summary: dict[str, Any] = {"session": session, "at": now.isoformat(timespec="seconds"), "purged": purge_non_trading_days(), "days": []}
     for day in _past_bar_dates(session, BACKFILL_DAYS if days is None else days, include_session=include_session):
         day_bars = _day_bars(codes, day)
         if len(day_bars) < DAY_COMPLETE_RATIO * len(codes):
@@ -250,7 +264,7 @@ def group_and_name(code: str) -> tuple[str, str]:
 
 
 def in_scan_window(now: datetime) -> bool:
-    if now.weekday() >= 5:
+    if not is_trading_day(now):  # 週末、國定假日不開盤
         return False
     minute = now.hour * 60 + now.minute
     return MARKET_OPEN_MINUTE <= minute < MARKET_SCAN_END_MINUTE
