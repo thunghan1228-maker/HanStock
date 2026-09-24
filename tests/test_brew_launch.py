@@ -70,7 +70,7 @@ class AnalyzeStockTests(unittest.TestCase):
 
     def test_wide_box_is_not_brewing(self) -> None:
         closes = _uptrend_then_box()
-        closes[-5] = closes[-5] * 1.25  # 箱子裡一根爆衝，箱頂到箱底超過 15%
+        closes[-5] = closes[-5] * 1.3  # 箱子裡一根爆衝，箱頂到箱底超過 20%
         info = module.analyze_stock(_bars(closes))
         self.assertGreater(info["boxRangePct"], module.BOX_RANGE_MAX_PCT)
         self.assertFalse(info["brewing"])
