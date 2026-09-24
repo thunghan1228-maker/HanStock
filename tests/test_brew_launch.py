@@ -137,6 +137,21 @@ class ComputeTests(unittest.TestCase):
         self.assertEqual(result["brewingCount"], 1)
         self.assertEqual(result["rules"]["launchMinScore"], 11)
 
+    def test_financial_group_is_never_brewing_but_keeps_score(self) -> None:
+        # 使用者 2026-09-24：金融股不列入醞釀／發動；均線分數還是要算（盤中333 用）
+        groups = {"金融股": [("2881", "富邦金")], "電子紙": [("8069", "元太")]}
+        good = _bars(_uptrend_then_box())
+        with patch.object(module, "STOCK_GROUPS", groups), \
+                patch.object(module, "_load_bars", lambda codes, session: {c: good for c in codes}), \
+                patch.object(module, "_load_market_values", lambda codes, session: {}):
+            result = module.compute_brew_launch(session="2026-09-24")
+        self.assertEqual(result["rules"]["skipGroups"], ["金融股"])
+        self.assertTrue(result["stocks"]["8069"]["brewing"])
+        self.assertFalse(result["stocks"]["2881"]["brewing"])
+        self.assertTrue(result["stocks"]["2881"]["skipped"])
+        self.assertEqual(result["stocks"]["2881"]["score"], result["stocks"]["8069"]["score"])  # 分數照算
+        self.assertEqual(result["brewingCount"], 1)
+
     def test_missing_market_value_leaves_shares_none(self) -> None:
         result = self._run({"2330": _bars(_uptrend_then_box())})
         self.assertIsNone(result["stocks"]["2330"]["sharesLots"])
