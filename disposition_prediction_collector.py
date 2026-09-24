@@ -10,7 +10,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from daily_bars_store import daily_bars_storage_status
 from disposition_fundamentals_assembly import build_fundamentals_by_code
@@ -23,6 +23,9 @@ from finmind_disposition_phase3_collector import collect_trade_date as collect_f
 logger = logging.getLogger("hanstock.disposition_prediction_collector")
 TW_TZ = timezone(timedelta(hours=8))
 POLL_SECONDS = max(900, int(os.getenv("HANSTOCK_DISPOSITION_COLLECTOR_SECONDS", str(30 * 60))))
+# 上櫃日K可能比上市晚到（櫃買中心擋 Railway，改用 Yahoo 逐檔補要幾分鐘）；最晚等到 17:00，
+# 過了就不等，用現有的資料跑，免得整天都沒有預測。
+OTC_WAIT_UNTIL = (17, 0)
 _started = False
 _lock = threading.Lock()
 _last_run_date: str | None = None
@@ -33,13 +36,22 @@ def _today_bars_ready(trade_date: str, status: dict | None = None) -> bool:
     return str(status.get("lastTradeDate") or "")[:10] == trade_date
 
 
+def _otc_bars_ready(trade_date: str) -> bool:
+    from official_daily_bars import _otc_bars_exist
+
+    return _otc_bars_exist(date.fromisoformat(trade_date))
+
+
 def collect_once(*, now: datetime | None = None) -> dict:
     global _last_run_date
-    trade_date = (now or datetime.now(TW_TZ)).strftime("%Y-%m-%d")
+    now = now or datetime.now(TW_TZ)
+    trade_date = now.strftime("%Y-%m-%d")
     if trade_date == _last_run_date:
         return {"status": "skipped", "reason": "今天已經跑過", "tradeDate": trade_date}
     if not _today_bars_ready(trade_date):
         return {"status": "waiting", "reason": "今天的bars_1d還沒寫好（等official_daily_bars.py先跑）", "tradeDate": trade_date}
+    if (now.hour, now.minute) < OTC_WAIT_UNTIL and not _otc_bars_ready(trade_date):
+        return {"status": "waiting", "reason": "上櫃日K還沒到齊（櫃買被擋時改用 Yahoo 逐檔補）", "tradeDate": trade_date}
     codes = official_group_codes()
     try:
         industry_by_code = fetch_industry_by_code()

@@ -421,6 +421,97 @@ def _finmind_otc_day(trade_date: date) -> tuple[list[dict[str, Any]], str]:
         return [], f"FinMind 失敗：{type(error).__name__}: {error}"
 
 
+YAHOO_OTC_RETRY_SECONDS = 3 * 60 * 60
+YAHOO_OTC_OVERLAP_DAYS = 14
+YAHOO_OTC_READY_AFTER = (14, 30)  # 台北時間；Yahoo 當天日K要收盤一段時間後才是最終值
+_yahoo_otc_attempted: dict[str, float] = {}
+
+
+def _active_otc_codes(since: str) -> list[str]:
+    """最近還有日K的上櫃代號（stocks 表裡下市的不打）。"""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT b.stock_code AS code FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
+            WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) >= ?
+            """,
+            (since,),
+        ).fetchall()
+    return [str(row["code"]) for row in rows]
+
+
+def _yahoo_otc_fill(
+    missing_dates: list[date], *, delay: float = 0.3, retry_pause: float = 20.0,
+    fetcher: Callable[..., Any] | None = None, now: datetime | None = None,
+) -> dict[str, Any]:
+    """櫃買中心被擋、FinMind 也拿不到（2026-09-23 付費方案到期）的日子：逐檔用 Yahoo 日K補上櫃。
+    每檔一個請求涵蓋所有缺的日子，往前多抓兩週跟已經有的官方日K對收盤價，對不上那檔就不寫；
+    43 個族群的上櫃股先補（中途被部署打斷也是重要的先有），失敗的隔一下再試一輪。
+    同一天 3 小時內不重打（收集器每小時一輪）；今天要 14:30 以後才補（Yahoo 當天日K那時才是最終值）。"""
+    from daily_bars_history_backfill import _existing_closes, _prices_match, fetch_yahoo_daily
+    from otc_gap_backfill import _known_stock_names
+    from stock_groups import industry_group_codes
+
+    tw_now = now or datetime.now(timezone(timedelta(hours=8)))
+    clock = time.monotonic()
+    dates = sorted({
+        day for day in missing_dates
+        if clock - _yahoo_otc_attempted.get(day.isoformat(), float("-inf")) >= YAHOO_OTC_RETRY_SECONDS
+        and not (day == tw_now.date() and (tw_now.hour, tw_now.minute) < YAHOO_OTC_READY_AFTER)
+    })
+    if not dates:
+        return {"skipped": "這幾天 3 小時內已經用 Yahoo 補過，或今天還沒到 14:30"}
+    for day in dates:
+        _yahoo_otc_attempted[day.isoformat()] = clock
+    wanted = {day.isoformat() for day in dates}
+    since = (dates[0] - timedelta(days=YAHOO_OTC_OVERLAP_DAYS)).isoformat()
+    until = dates[-1].isoformat()
+    with get_connection() as connection:
+        names = _known_stock_names(connection)
+    priority = industry_group_codes()
+    codes = sorted(_active_otc_codes(since), key=lambda code: (code not in priority, code))
+    inserted = 0
+    mismatched: list[str] = []
+    failed: list[str] = []
+
+    def fill(code: str) -> bool:
+        nonlocal inserted
+        try:
+            days = fetch_yahoo_daily(code, "OTC", since, until, fetcher=fetcher)
+        except Exception:  # noqa: BLE001
+            return False
+        existing = _existing_closes(code, since, until)
+        if not _prices_match(days, existing):
+            mismatched.append(code)
+            return True
+        rows = [
+            {
+                "stock_code": code, "stock_name": names.get(code) or code, "market": "OTC",
+                "time": datetime.combine(date.fromisoformat(day), datetime_time.min, tzinfo=UTC), **bar,
+            }
+            for day, bar in sorted(days.items()) if day in wanted and day not in existing
+        ]
+        if rows:
+            inserted += _save_day(rows)
+        return True
+
+    for code in codes:
+        if not fill(code):
+            failed.append(code)
+        time.sleep(max(0.0, delay))
+    if failed:
+        time.sleep(max(0.0, retry_pause))  # Yahoo 偶爾 429：停一下，失敗的再試一輪、放慢一點
+        retry, failed = failed, []
+        for code in retry:
+            if not fill(code):
+                failed.append(code)
+            time.sleep(max(0.0, delay * 3))
+    return {
+        "dates": sorted(wanted), "stocks": len(codes), "inserted": inserted,
+        "mismatched": mismatched[:30], "failureCount": len(failed), "failures": failed[:30],
+    }
+
+
 def download_official_daily_bars(
     days: int = 140,
     delay: float = 0.35,
@@ -435,6 +526,7 @@ def download_official_daily_bars(
     dates = list(_calendar_days(start, end))
     inserted = 0
     source_failures: list[dict[str, str]] = []
+    otc_missing: list[date] = []
     for index, trade_date in enumerate(dates, start=1):
         try:
             twse_rows = fetch_twse_day(trade_date)
@@ -461,6 +553,8 @@ def download_official_daily_bars(
             # 櫃買中心從 Railway 出去被擋（2026-09-22 起 403／連線重置）：這天上櫃的日K還沒有，
             # 改用 FinMind 補；只寫資料庫已知是上櫃的代號。
             tpex_rows, finmind_note = _finmind_otc_day(trade_date)
+            if not tpex_rows:
+                otc_missing.append(trade_date)  # 櫃買跟 FinMind 都沒有：迴圈結束後用 Yahoo 逐檔補
             source_failures.append({
                 "date": trade_date.isoformat(), "source": "TPEx", "error": tpex_error or "櫃買回空清單",
                 "finmind": finmind_note,
@@ -475,6 +569,15 @@ def download_official_daily_bars(
             flush=True,
         )
         time.sleep(max(0.0, delay))
+
+    yahoo_otc: dict[str, Any] | None = None
+    if otc_missing:
+        try:
+            yahoo_otc = _yahoo_otc_fill(otc_missing)
+            inserted += int(yahoo_otc.get("inserted") or 0)
+        except Exception as error:  # noqa: BLE001
+            yahoo_otc = {"error": f"{type(error).__name__}: {error}"}
+        print(f"上櫃日K Yahoo 備援：{yahoo_otc}", flush=True)
 
     with get_connection() as connection:
         stock_count = int(
@@ -495,6 +598,7 @@ def download_official_daily_bars(
         "stock_count": stock_count,
         "bar_count": bar_count,
         "source_failures": source_failures,
+        "yahoo_otc": yahoo_otc,
         "triangle_scan": scan_summary,
     }
 
