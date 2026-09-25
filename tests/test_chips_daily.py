@@ -117,6 +117,8 @@ class CollectAndPayloadTests(unittest.TestCase):
                 raise OSError("blocked")   # 正式站主機被櫃買中心擋
             if url.endswith("/3insti-latest.json"):
                 return [tpex_item("1150924", "6207", "雷科", -46913, 0, -2, -46915), tpex_item("1150924", "3016", "嘉晶", 5000, 0, 0, 5000)]
+            if url.endswith("/index.json"):
+                return ["2026-09-24", "2026-09-23"]
             if url.endswith("/3insti-2026-09-23.json"):
                 return [tpex_item("1150923", "6207", "雷科", -1000, 0, 0, -1000)]
             raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
@@ -130,6 +132,7 @@ class CollectAndPayloadTests(unittest.TestCase):
         self.assertEqual([(r["date"], r["rows"], r["source"]) for r in result["tpex"]], [("2026-09-24", 2, "mirror"), ("2026-09-23", 1, "mirror")])
         self.assertEqual(result["errors"], [])
         self.assertTrue(any(url == module.TPEX_OPENAPI_URL for url in calls))   # 先試直接抓
+        self.assertFalse(any(url.endswith("/3insti-2026-09-22.json") for url in calls))   # 鏡像清單沒有的日子不去問
         # 再跑一次：都存過了，不會重抓證交所
         n = len(calls)
         with patch.object(module, "BACKFILL_DAYS", 2):
