@@ -115,11 +115,11 @@ class CollectAndPayloadTests(unittest.TestCase):
                 return {"stat": "很抱歉，沒有符合條件的資料!"}
             if url == module.TPEX_OPENAPI_URL:
                 raise OSError("blocked")   # 正式站主機被櫃買中心擋
-            if url.endswith("/3insti-latest.json"):
+            if "/3insti-latest.json" in url:
                 return [tpex_item("1150924", "6207", "雷科", -46913, 0, -2, -46915), tpex_item("1150924", "3016", "嘉晶", 5000, 0, 0, 5000)]
-            if url.endswith("/index.json"):
+            if "/index.json?v=" in url:   # 會變的檔案要帶時間參數避開快取
                 return ["2026-09-24", "2026-09-23"]
-            if url.endswith("/3insti-2026-09-23.json"):
+            if url.endswith("/3insti-2026-09-23.json"):   # 每天一份的檔案不帶參數
                 return [tpex_item("1150923", "6207", "雷科", -1000, 0, 0, -1000)]
             raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
         return fetch, calls

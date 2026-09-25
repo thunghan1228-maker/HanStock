@@ -211,6 +211,13 @@ def parse_tpex_3insti(payload: Any) -> tuple[str | None, list[dict[str, Any]]]:
     return latest, [r for r in rows if r["date"] == latest]
 
 
+def _mirror_url(name: str, *, volatile: bool) -> str:
+    """鏡像檔案網址。index.json 跟 3insti-latest.json 會一直變，GitHub 的內容快取約 5 分鐘，排程主機推完馬上戳
+    後端時會拿到舊的，所以加時間參數避開快取；每天一份的檔案寫了就不會改，照常快取。"""
+    url = f"{TPEX_MIRROR_BASE}/{name}"
+    return f"{url}?v={int(time.time())}" if volatile else url
+
+
 def fetch_tpex_latest(fetcher: Callable[[str], Any] | None = None) -> tuple[str | None, list[dict[str, Any]], str]:
     """先直接抓櫃買中心，抓不到（正式站主機被擋）就用 tw-groups data 分支的鏡像。回 (日期, rows, 來源)。"""
     call = fetcher or _default_fetcher
@@ -220,7 +227,7 @@ def fetch_tpex_latest(fetcher: Callable[[str], Any] | None = None) -> tuple[str 
             return day, rows, "tpex"
     except Exception as error:  # noqa: BLE001
         logger.info("櫃買中心直接抓不到（%s），改用鏡像", f"{type(error).__name__}: {error}"[:120])
-    day, rows = parse_tpex_3insti(call(f"{TPEX_MIRROR_BASE}/3insti-latest.json"))
+    day, rows = parse_tpex_3insti(call(_mirror_url("3insti-latest.json", volatile=True)))
     return day, rows, "mirror"
 
 
@@ -228,7 +235,7 @@ def fetch_tpex_mirror_index(fetcher: Callable[[str], Any] | None = None) -> list
     """鏡像裡有哪些日子（tpex/index.json）；抓不到就當空的，缺的日子這一輪就不問。"""
     call = fetcher or _default_fetcher
     try:
-        payload = call(f"{TPEX_MIRROR_BASE}/index.json")
+        payload = call(_mirror_url("index.json", volatile=True))
     except Exception:  # noqa: BLE001
         return []
     return [str(d) for d in payload if isinstance(d, str)] if isinstance(payload, list) else []
@@ -238,7 +245,7 @@ def fetch_tpex_mirror_date(trade_date: str, fetcher: Callable[[str], Any] | None
     """鏡像裡某一天的檔案（沒有那天就回空）。"""
     call = fetcher or _default_fetcher
     try:
-        day, rows = parse_tpex_3insti(call(f"{TPEX_MIRROR_BASE}/3insti-{trade_date}.json"))
+        day, rows = parse_tpex_3insti(call(_mirror_url(f"3insti-{trade_date}.json", volatile=False)))
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return []
