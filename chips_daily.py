@@ -224,6 +224,16 @@ def fetch_tpex_latest(fetcher: Callable[[str], Any] | None = None) -> tuple[str 
     return day, rows, "mirror"
 
 
+def fetch_tpex_mirror_index(fetcher: Callable[[str], Any] | None = None) -> list[str]:
+    """鏡像裡有哪些日子（tpex/index.json）；抓不到就當空的，缺的日子這一輪就不問。"""
+    call = fetcher or _default_fetcher
+    try:
+        payload = call(f"{TPEX_MIRROR_BASE}/index.json")
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(d) for d in payload if isinstance(d, str)] if isinstance(payload, list) else []
+
+
 def fetch_tpex_mirror_date(trade_date: str, fetcher: Callable[[str], Any] | None = None) -> list[dict[str, Any]]:
     """鏡像裡某一天的檔案（沒有那天就回空）。"""
     call = fetcher or _default_fetcher
@@ -441,9 +451,11 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
             result["tpex"].append({"date": day, "rows": len(rows), "source": source})
     except Exception as error:  # noqa: BLE001
         result["errors"].append(f"OTC latest: {type(error).__name__}: {error}"[:200])
-    # 上櫃：缺的日子問鏡像
-    for day in wanted:
-        if has_market(day, "OTC"):
+    # 上櫃：缺的日子問鏡像（先看鏡像的日期清單，沒有的日子不用一個個試）
+    missing = [day for day in wanted if not has_market(day, "OTC")]
+    available = set(fetch_tpex_mirror_index(fetcher)) if missing else set()
+    for day in missing:
+        if day not in available:
             continue
         try:
             rows = fetch_tpex_mirror_date(day, fetcher)
