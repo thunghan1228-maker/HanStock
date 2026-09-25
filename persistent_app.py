@@ -23,6 +23,7 @@ from disposition_stocks import disposition_status, get_disposition_map, start_di
 from stock_groups import industry_group_codes
 from brew_launch_history import history as brew_launch_history, scan_status as brew_launch_scan_status, start_brew_launch_scan
 from trading_days import is_trading_day
+from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from stock_trading_eligibility import (
     contract_debug,
     peek_trading_eligibility,
@@ -90,6 +91,7 @@ async def _persistent_lifespan(fastapi_app):
             start_otc_gap_backfill()
             start_group_history_backfill()
             start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
+            start_chips_collector()  # 盤後籌碼：三大法人（上市直抓、上櫃鏡像）＋主力大單每日
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -762,6 +764,30 @@ def get_brew_launch_history(days: int = Query(10, ge=1, le=60), date: str | None
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return {**brew_launch_history(days=days, date=date), "scan": brew_launch_scan_status()}
+
+
+@app.get("/api/hub/chips/daily")
+def get_chips_daily(date: str | None = Query(None)) -> dict[str, Any]:
+    """盤後籌碼排行（第一步）：43 個族群股票那一天的主力大單淨額、三大法人買賣超（張）、連續天數、收盤與漲跌幅。
+    date 沒給就是最新有法人資料的交易日。使用者 2026-09-25：盤後籌碼排行先做。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return chips_daily_payload(date)
+
+
+@app.get("/api/hub/chips/status")
+def get_chips_status() -> dict[str, Any]:
+    return {"status": "ok", **chips_collector_status()}
+
+
+@app.post("/api/hub/chips/collect")
+def post_chips_collect() -> dict[str, Any]:
+    """立刻抓一次（tw-groups 的排程工作流程把上櫃資料推到鏡像後會戳這裡）。"""
+    return {"status": "ok", "result": run_chips_collect()}
 
 
 @app.get("/api/hub/bars1d/{stock_code}")
