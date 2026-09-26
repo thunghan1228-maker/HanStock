@@ -133,3 +133,18 @@ class CollectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_has_new_data_only_when_something_changed():
+    import fundamentals_daily as fd
+
+    before = {"revenueTSE": {"ok": True, "ym": "2026-08"}, "sharesTSE": {"ok": True, "rows": 243}}
+    same = {"peTSE": {"ok": True, "source": "cached", "rows": 0}, "peOTC": {"ok": True, "rows": 0},
+            "revenueTSE": {"ok": True, "ym": "2026-08"}, "sharesTSE": {"ok": True, "rows": 243}, "tdcc": {"ok": True, "added": []}}
+    assert fd._has_new_data(same, before) is False
+    assert fd._has_new_data({**same, "peTSE": {"ok": True, "source": "twse", "rows": 240}}, before) is True
+    assert fd._has_new_data({**same, "tdcc": {"ok": True, "added": ["2026-10-01"]}}, before) is True
+    assert fd._has_new_data({**same, "revenueTSE": {"ok": True, "ym": "2026-09"}}, before) is True
+    assert fd._has_new_data({**same, "sharesTSE": {"ok": True, "rows": 250}}, before) is True
+    assert fd._has_new_data(same, {}) is True      # 剛啟動：之前什麼都沒有，算有新資料
+    assert fd._has_new_data({**same, "peTSE": {"ok": False, "error": "x"}}, before) is False
