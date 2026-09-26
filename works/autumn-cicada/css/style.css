@@ -58,13 +58,15 @@ header .searchForm button:hover i { color: #c82e2e; }
 
 /* ===== article ===== */
 .dl_Container { padding-top: 40px; }
+.dl_Container .dl_Head { max-width: 900px; margin: 0 auto; }
 .dl_Container .dl_Head h3 { color: #585858; font-size: 1.875rem; font-weight: bold; line-height: 2.25rem; }
 .dl_Container .dl_Head .journalNo { display: flex; align-items: flex-start; justify-content: flex-start; flex-wrap: wrap; margin-top: 10px; }
 .dl_Container .dl_Head .journalNo i { color: #c82e2e; padding-right: 8px; }
 .dl_Container .dl_Head .journalNo i, .dl_Container .dl_Head .journalNo p { font-size: 0.9375rem; line-height: 1.125rem; }
 .dl_Container .dl_Head .journalNo p { color: #7a7a7a; }
 .dl_Content { display: flex; align-items: flex-start; justify-content: flex-start; flex-wrap: wrap; margin-top: 30px; }
-.dl_Content .mainContent { max-width: calc(100% - 25%); width: 100%; padding-right: 45px; }
+.dl_Content { justify-content: center; }
+.dl_Content .mainContent { max-width: 900px; width: 100%; padding-right: 0; }
 .dl_Content .asideADSec { max-width: 25%; width: 100%; position: relative; }
 
 .unreset { color: #333; }
@@ -218,3 +220,13 @@ footer .rightSec .designed, footer .rightSec b { color: #fff; opacity: .6; }
 .fa-youtube:before { content: "\f167"; }
 .fa-line:before { content: "\f3c0"; }
 .fa-twitter:before { content: "\f099"; }
+
+/* 簡化版：手機也顯示一般選單列 */
+@media (max-width: 768px) {
+  .mainMenu { position: static; opacity: 1; visibility: visible; background: none; border-bottom: 1px solid #ddd; width: auto; height: auto; }
+  .mainMenu .container { width: 100%; height: auto; transform: none; display: block; padding: 0 20px; background: none; }
+  .mainMenu ul { display: flex; justify-content: center; margin-top: 0; }
+  .mainMenu li, .mainMenu li:last-child { border: 0; }
+  .mainMenu li:before { display: block; }
+  .mainMenu li:first-child:before { display: none; }
+}
