@@ -33,6 +33,7 @@ ETFS = [
 ]
 ETF_META = {code: (name, issuer) for code, name, issuer in ETFS}
 MIRROR_INDEX = "etf-index.json"
+FALLBACK_SOURCE = "zdsetf"     # 排程主機抓不到投信官方介面時的備援整理站
 FETCH_LIMIT = 15            # 一次最多補幾天
 PREV_MAX_GAP_DAYS = 8       # 前一份快照最多隔幾個日曆日，超過就不算「前一天」
 SYNC_MIN_ETFS = 2           # 同步加碼／減碼：至少幾檔一起
@@ -131,11 +132,15 @@ def dates(limit: int = 30) -> list[str]:
 
 
 def stored_codes(date: str) -> set[str]:
+    return set(stored_sources(date))
+
+
+def stored_sources(date: str) -> dict[str, str]:
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        rows = connection.execute("SELECT etf_code FROM etf_snapshots WHERE trade_date = ?", (date,)).fetchall()
-    return {str(r["etf_code"]) for r in rows}
+        rows = connection.execute("SELECT etf_code, source FROM etf_snapshots WHERE trade_date = ?", (date,)).fetchall()
+    return {str(r["etf_code"]): str(r["source"] or "") for r in rows}
 
 
 def snapshot(code: str, date: str) -> dict[str, Any] | None:
@@ -164,17 +169,35 @@ def prev_date(code: str, date: str) -> str | None:
     return str(row["trade_date"]) if row else None
 
 
-def _stock_info(stock: str, fallback_name: str | None) -> tuple[str, str]:
+def _stock_info(stock: str, fallback_name: str | None, names: dict[str, str] | None = None) -> tuple[str, str]:
+    """族群名單裡的用我們的簡稱；不在名單裡的先用其他投信給的標準簡稱（復華的名稱只有四個字，例如「台灣積體」），最後才用這一檔給的。"""
     group, name = group_and_name(stock)
-    if name == stock:      # 不在族群名單裡：用投信給的名稱
-        name = fallback_name or stock
+    if name == stock:
+        name = (names or {}).get(stock) or fallback_name or stock
     return group, name
 
 
-def _row(stock: str, cur: dict[str, Any] | None, prev: dict[str, Any] | None) -> dict[str, Any]:
+def stock_names(date: str) -> dict[str, str]:
+    """那一天所有快照裡的股票簡稱，優先用統一／群益給的（復華的會截成四個字）。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute(
+            """SELECT h.stock_code, h.stock_name, s.source FROM etf_holdings h JOIN etf_snapshots s ON s.etf_code = h.etf_code AND s.trade_date = h.trade_date
+               WHERE h.trade_date = ? AND h.stock_name != ''""", (date,)).fetchall()
+    out: dict[str, str] = {}
+    weak: dict[str, str] = {}
+    for r in rows:
+        (weak if r["source"] == "fhtrust" else out).setdefault(str(r["stock_code"]), str(r["stock_name"]))
+    for code, name in weak.items():
+        out.setdefault(code, name)
+    return out
+
+
+def _row(stock: str, cur: dict[str, Any] | None, prev: dict[str, Any] | None, names: dict[str, str] | None = None) -> dict[str, Any]:
     cur_sh = cur["shares"] if cur else 0
     prev_sh = prev["shares"] if prev else 0
-    group, name = _stock_info(stock, (cur or prev or {}).get("name"))
+    group, name = _stock_info(stock, (cur or prev or {}).get("name"), names)
     return {
         "code": stock, "name": name, "group": group,
         "prevShares": prev_sh, "shares": cur_sh, "deltaShares": cur_sh - prev_sh, "deltaLots": round((cur_sh - prev_sh) / 1000, 1),
@@ -182,7 +205,7 @@ def _row(stock: str, cur: dict[str, Any] | None, prev: dict[str, Any] | None) ->
     }
 
 
-def etf_changes(code: str, date: str) -> dict[str, Any] | None:
+def etf_changes(code: str, date: str, names: dict[str, str] | None = None) -> dict[str, Any] | None:
     """一檔 ETF 在 date 跟前一份的差：新增／加碼／減碼／刪除＋前十大持股。"""
     meta = snapshot(code, date)
     if not meta:
@@ -195,14 +218,14 @@ def etf_changes(code: str, date: str) -> dict[str, Any] | None:
         for stock, c in cur.items():
             p = prev.get(stock)
             if p is None:
-                new.append(_row(stock, c, None))
+                new.append(_row(stock, c, None, names))
             elif c["shares"] > p["shares"]:
-                inc.append(_row(stock, c, p))
+                inc.append(_row(stock, c, p, names))
             elif c["shares"] < p["shares"]:
-                dec.append(_row(stock, c, p))
+                dec.append(_row(stock, c, p, names))
         for stock, p in prev.items():
             if stock not in cur:
-                removed.append(_row(stock, None, p))
+                removed.append(_row(stock, None, p, names))
     key = lambda r: -abs(r["deltaShares"])  # noqa: E731
     for lst in (new, inc, dec, removed):
         lst.sort(key=key)
@@ -215,7 +238,7 @@ def etf_changes(code: str, date: str) -> dict[str, Any] | None:
         "nav": meta.get("nav"), "units": meta.get("units"), "unitsDelta": (meta.get("units") - pmeta.get("units")) if (pmeta and meta.get("units") is not None and pmeta.get("units") is not None) else None,
         "counts": {"new": len(new), "increased": len(inc), "decreased": len(dec), "removed": len(removed), "unchanged": (len(cur) - len(new) - len(inc) - len(dec)) if pdate else None},
         "new": new[:CHANGE_ROWS_MAX], "increased": inc[:CHANGE_ROWS_MAX], "decreased": dec[:CHANGE_ROWS_MAX], "removed": removed[:CHANGE_ROWS_MAX],
-        "top": [{"code": s, "name": _stock_info(s, v["name"])[1], "group": _stock_info(s, v["name"])[0], "shares": v["shares"], "weight": v["weight"]} for s, v in top],
+        "top": [{"code": s, "name": _stock_info(s, v["name"], names)[1], "group": _stock_info(s, v["name"], names)[0], "shares": v["shares"], "weight": v["weight"]} for s, v in top],
     }
 
 
@@ -256,9 +279,10 @@ def report_section(as_of: str | None = None) -> dict[str, Any] | None:
 
 
 def etf_changes_all(date: str) -> list[dict[str, Any]]:
+    names = stock_names(date)
     out = []
     for code, _name, _issuer in ETFS:
-        c = etf_changes(code, date)
+        c = etf_changes(code, date, names)
         if c:
             out.append(c)
     return out
@@ -272,8 +296,9 @@ def collect_once(fetcher: Callable[[str], Any] | None = None, *, limit: int = FE
     index = fetch(_mirror_url(MIRROR_INDEX, volatile=True))
     wanted = sorted({str(d) for d in index if isinstance(d, str) and len(d) == 10}, reverse=True)[:limit] if isinstance(index, list) else []
     for day in wanted:
-        have = stored_codes(day)
-        if len(have) >= len(ETFS):
+        sources = stored_sources(day)
+        have = set(sources)
+        if len(have) >= len(ETFS) and FALLBACK_SOURCE not in sources.values():
             continue
         result["checked"] += 1
         try:
@@ -289,7 +314,8 @@ def collect_once(fetcher: Callable[[str], Any] | None = None, *, limit: int = FE
             result["errors"].append(f"{day}: 檔案日期 {date} 不符")
             continue
         for code, item in etfs.items():
-            if code not in have:
+            # 沒存過的存；備援站抓來的，等投信官方那份進來就換成官方的
+            if code not in have or (sources.get(code) == FALLBACK_SOURCE and item.get("source") != FALLBACK_SOURCE):
                 save_snapshot(day, code, item)
                 result["added"].append(f"{day}:{code}")
     with _lock:

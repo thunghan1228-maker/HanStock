@@ -82,6 +82,33 @@ class HoldingsTests(unittest.TestCase):
         self.assertIsNone(module.report_section("2026-09-01"))
         self.assertIsNone(module.etf_changes("00982A", DAY2))
 
+    def test_names_prefer_official_short_names(self) -> None:
+        d = {"date": DAY2, "etfs": {
+            "00991A": {"source": "fhtrust", "rows": [["3711", "日月光投", 2030000, 1.8], ["9999", "只有復華", 1000, 0.1]]},
+            "00981A": {"source": "ezmoney", "rows": [["3711", "日月光投控", 13966000, 3.36]]}}}
+        date, etfs = module.parse_mirror(d)
+        for code, item in etfs.items():
+            module.save_snapshot(date, code, item)
+        names = module.stock_names(DAY2)
+        self.assertEqual((names["3711"], names["9999"]), ("日月光投控", "只有復華"))
+        section = module.report_section(DAY2)
+        fh = next(e for e in section["etfs"] if e["code"] == "00991A")
+        self.assertEqual([t["name"] for t in fh["top"]], ["日月光投控", "只有復華"])
+
+    def test_fallback_snapshot_replaced_by_official(self) -> None:
+        files = {"etf-index.json": [DAY2], f"etf-{DAY2}.json": mirror(DAY2, {c: [["2330", "台積電", 1000, 1.0]] for c, _n, _i in module.ETFS})}
+        files[f"etf-{DAY2}.json"]["etfs"]["00981A"]["source"] = "zdsetf"
+        fetcher = lambda url: files[url.split("/")[-1].split("?")[0]]  # noqa: E731
+        r = module.collect_once(fetcher)
+        self.assertEqual(len(r["added"]), 5)
+        self.assertEqual(module.snapshot("00981A", DAY2)["source"], "zdsetf")
+        self.assertEqual(module.collect_once(fetcher)["added"], [])          # 還是備援，沒有官方的可換
+        files[f"etf-{DAY2}.json"]["etfs"]["00981A"]["source"] = "ezmoney"
+        files[f"etf-{DAY2}.json"]["etfs"]["00981A"]["nav"] = 123.0
+        self.assertEqual(module.collect_once(fetcher)["added"], [f"{DAY2}:00981A"])   # 官方的進來就換掉
+        self.assertEqual((module.snapshot("00981A", DAY2)["source"], module.snapshot("00981A", DAY2)["nav"]), ("ezmoney", 123.0))
+        self.assertEqual(module.collect_once(fetcher)["added"], [])          # 五檔都是官方的，不再重抓
+
     def test_prev_gap_limit(self) -> None:
         self._seed()
         far = mirror("2026-10-20", {"00981A": [["2330", "台積電", 1, 1.0]]})
