@@ -22,7 +22,8 @@ from brew_launch_history import group_and_name
 from chips_daily import _institutional_by_date, _streak, main_force_daily, main_force_dates, stored_dates
 from database import get_connection, initialize_database
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
-from trading_days import is_trading_day
+from fundamentals_daily import latest_pe, latest_revenue, shares_map, tdcc_summary
+from trading_days import is_trading_day, next_trading_day, previous_trading_day
 
 logger = logging.getLogger(__name__)
 TW_TZ = timezone(timedelta(hours=8))
@@ -40,6 +41,9 @@ CHIPS_MIN_STREAK = 3           # 籌碼面：法人連買 ≥3 天
 CHIPS_MIN_MF_STREAK = 2        # 籌碼面：或主力連買 ≥2 天
 CHIPS_MIN_INST5_PCT = 1.0      # 籌碼面：或法人 5 日買超 ≥ 股本 1%
 HOT_GROUP_RANK = 10            # 熱門族：族群當天漲幅前 10
+WEEK_BIG_MIN_PCT = 2.0         # 籌碼面：集保 400 張以上大戶張數週增 ≥2% 也算候選
+PE_SANE_MAX = 500              # 本益比超過這個當異常值，不算族群均值
+WATCH_DAYS = 5                 # 觀察名單：出獄 ≤5 個交易日
 POLL_SECONDS = 15 * 60
 REFRESH_START_MINUTE = 15 * 60 + 5    # 交易日 15:05 起重算今天的
 REFRESH_END_MINUTE = 18 * 60
@@ -55,6 +59,70 @@ def _schema(connection) -> None:
             payload TEXT NOT NULL
         )"""
     )
+
+
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS disposition_log (
+            stock_code TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT, name TEXT, reason TEXT, source TEXT,
+            updated_at TEXT NOT NULL, PRIMARY KEY (stock_code, start_date)
+        )"""
+    )
+
+
+def log_dispositions(entries: list[dict[str, Any]]) -> int:
+    """把處置公告（處置中＋明日起）記下來；過期的才留得住「出獄第幾天」。"""
+    rows = [(str(e.get("code") or "").upper(), str(e.get("start") or "")[:10], (str(e.get("end") or "")[:10] or None), e.get("name"), e.get("reason"), e.get("source"),
+             datetime.now(TW_TZ).isoformat(timespec="seconds")) for e in entries if e.get("code") and e.get("start")]
+    if not rows:
+        return 0
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        connection.executemany("INSERT OR REPLACE INTO disposition_log (stock_code, start_date, end_date, name, reason, source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    return len(rows)
+
+
+def _logged_dispositions(since: str) -> list[dict[str, Any]]:
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute("SELECT stock_code, start_date, end_date, name, reason, source FROM disposition_log WHERE start_date >= ? ORDER BY start_date", (since,)).fetchall()
+    return [{"code": str(r["stock_code"]), "start": str(r["start_date"]), "end": r["end_date"], "name": r["name"], "reason": r["reason"], "source": r["source"]} for r in rows]
+
+
+def disposition_sections(as_of: str, codes: set[str]) -> dict[str, Any]:
+    """處置動態：明日起處置、明日出獄、處置中、觀察名單（出獄 ≤5 個交易日）。以基準日為「今天」。"""
+    next_td = next_trading_day(as_of).isoformat()
+    since = (datetime.strptime(as_of, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
+    upcoming: list[dict[str, Any]] = []
+    releasing: list[dict[str, Any]] = []
+    active: list[dict[str, Any]] = []
+    watch: list[dict[str, Any]] = []
+    for e in _logged_dispositions(since):
+        if e["code"] not in codes:
+            continue
+        group, name = group_and_name(e["code"])
+        item = {**e, "name": e.get("name") or name, "group": group}
+        end = e.get("end")
+        release = next_trading_day(end).isoformat() if end else None
+        item["releaseDay"] = release
+        if e["start"] > as_of:
+            if e["start"] <= next_td:
+                upcoming.append(item)
+            continue
+        if end and end < as_of:
+            # 已出獄：出獄日起算第幾個交易日
+            day, n = datetime.strptime(as_of, "%Y-%m-%d").date(), 1
+            while day.isoformat() > release and n <= WATCH_DAYS:
+                day = previous_trading_day(day)
+                n += 1
+            if day.isoformat() == release and n <= WATCH_DAYS:
+                watch.append({**item, "daysOut": n})
+            continue
+        if end and release == next_td:
+            releasing.append(item)
+        active.append(item)
+    return {"nextTradingDay": next_td, "upcoming": upcoming, "releasing": releasing, "active": active, "watch": watch}
 
 
 def save_report(payload: dict[str, Any]) -> None:
@@ -161,6 +229,12 @@ def _risks(t: dict[str, Any], chips: dict[str, Any], disposed: bool) -> list[str
     out: list[str] = []
     if disposed:
         out.append("處置中")
+    pe, pe_avg = chips.get("pe"), chips.get("peGroupAvg")
+    if pe is not None and pe_avg and pe > pe_avg:
+        out.append(f"本益比 {pe:.0f} 高於族群均值 {pe_avg:.0f}")
+    yoy = chips.get("revenueYoy")
+    if yoy is not None and yoy < 0:
+        out.append(f"營收年增 {yoy:.0f}% 為負")
     if t.get("ma60OverHead") and t.get("ma60"):
         out.append(f"季線 {t['ma60']:.2f} 在頭上")
     dev5 = t.get("dev5Pct")
@@ -184,6 +258,8 @@ def _card(code: str, t: dict[str, Any], chips: dict[str, Any], group: str, hot: 
         "defense": {"ma20": t["ma20"], "threeDayLow": t["threeDayLow"]},
         "risks": _risks(t, chips, disposed),
         "health": chips.get("health"), "healthChecks": chips.get("healthChecks"),
+        "pe": chips.get("pe"), "peGroupAvg": chips.get("peGroupAvg"), "revenueYoy": chips.get("revenueYoy"), "revenueYm": chips.get("revenueYm"),
+        "weekPct": chips.get("weekPct"), "weekPp": chips.get("weekPp"), "weeks": chips.get("weeks"), "bigPct": chips.get("bigPct"), "tdccDate": chips.get("tdccDate"),
     }
 
 
@@ -224,6 +300,10 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         return {"status": "empty", "date": None, "reason": "還沒有日K資料"}
     bars_by_code = _load_bars(codes, session=_next_day(as_of))
     market_values = _load_market_values(codes, session=_next_day(as_of))
+    pe_map = latest_pe(codes)
+    rev_map = latest_revenue(codes)
+    shares = shares_map(codes)
+    tdcc = tdcc_summary(codes)
     tech: dict[str, dict[str, Any]] = {}
     stale = 0
     for code, bars in bars_by_code.items():
@@ -250,15 +330,23 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             entry["instToday"] = _lots(today) if today is not None else None
             t = tech.get(code)
             mv = market_values.get(code)
-            if t and mv and t["close"] > 0:
-                shares_lots = mv[1] / t["close"] / 1000
-                if shares_lots > 0:
-                    entry["inst5Pct"] = round(sum(known) / 1000 / shares_lots * 100, 2)
+            shares_lots = shares[code] / 1000 if shares.get(code) else (mv[1] / t["close"] / 1000 if t and mv and t["close"] > 0 else 0)
+            if shares_lots > 0:
+                entry["inst5Pct"] = round(sum(known) / 1000 / shares_lots * 100, 2)
         nets = [(mf_by_date.get(d, {}).get(code) or {}).get("net") for d in mf_dates]
         known_mf = [v for v in nets if v is not None]
         if known_mf:
             entry["mf5"] = int(sum(known_mf))
             entry["mfStreak"] = _streak(nets)
+        pe_row, rev_row, td = pe_map.get(code), rev_map.get(code), tdcc.get(code)
+        entry["pe"] = pe_row["pe"] if pe_row and pe_row.get("pe") is not None and 0 < pe_row["pe"] < PE_SANE_MAX else None
+        entry["revenueYoy"] = rev_row["yoy"] if rev_row else None
+        entry["revenueYm"] = rev_row["ym"] if rev_row else None
+        entry["weekPct"] = td["bigChangePct"] if td else None
+        entry["weekPp"] = td["bigChangePp"] if td else None
+        entry["weeks"] = td["weeks"] if td else None
+        entry["bigPct"] = td["bigPct"] if td else None
+        entry["tdccDate"] = td["date"] if td else None
         t = tech.get(code)
         if t:
             entry["health"], entry["healthChecks"] = _health(t, entry)
@@ -276,11 +364,17 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         above = sum(1 for c in fresh if tech[c]["aboveMa20"])
         inst5 = sum((chips[c]["inst5"] or 0) for c in fresh if c in chips)
         scores = [tech[c]["score"] for c in fresh if tech[c]["score"] is not None]
+        pes = [chips[c]["pe"] for c in fresh if c in chips and chips[c].get("pe") is not None]
+        yoys = sorted(chips[c]["revenueYoy"] for c in fresh if c in chips and chips[c].get("revenueYoy") is not None)
+        weeks = [chips[c]["weekPct"] for c in fresh if c in chips and chips[c].get("weekPct") is not None]
         groups.append({
             "name": name, "members": len(fresh), "aboveMa20": above, "aboveRatio": round(above / len(fresh), 2),
             "inst5": round(inst5, 1), "avgChange": round(_mean([tech[c]["changePct"] for c in fresh]), 2),
             "avgScore": round(_mean(scores), 1) if scores else None,
             "crossed": sum(1 for c in fresh if tech[c]["crossedMa20"]),
+            "peAvg": round(_mean(pes), 1) if pes else None,
+            "revenueYoyMedian": round(yoys[len(yoys) // 2] if len(yoys) % 2 else (yoys[len(yoys) // 2 - 1] + yoys[len(yoys) // 2]) / 2, 1) if yoys else None,
+            "weekPct": round(_mean(weeks), 2) if weeks else None,
         })
     groups.sort(key=lambda g: g["avgChange"], reverse=True)
     for i, g in enumerate(groups):
@@ -288,12 +382,16 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         g["hot"] = i < HOT_GROUP_RANK
         g["judge"] = _judge_group(g["aboveRatio"], g["inst5"], has_inst)
     group_rank = {g["name"]: g["rank"] for g in groups}
+    group_pe = {g["name"]: g["peAvg"] for g in groups}
     group_of = {}
     for name, members in STOCK_GROUPS.items():
         if name in SPECIAL_GROUP_NAMES:
             continue
         for c, _n in members:
             group_of.setdefault(str(c).strip().upper(), name)
+
+    for code, entry in chips.items():
+        entry["peGroupAvg"] = group_pe.get(group_of.get(code, ""))
 
     def card(code: str, tag: str) -> dict[str, Any]:
         g = group_of.get(code, "")
@@ -306,13 +404,28 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         ch = chips.get(c) or {}
         if (ch.get("inst5") or 0) <= 0:
             continue
-        if ch["instStreak"] >= CHIPS_MIN_STREAK or ch["mfStreak"] >= CHIPS_MIN_MF_STREAK or (ch.get("inst5Pct") or 0) >= CHIPS_MIN_INST5_PCT:
+        if (ch["instStreak"] >= CHIPS_MIN_STREAK or ch["mfStreak"] >= CHIPS_MIN_MF_STREAK or (ch.get("inst5Pct") or 0) >= CHIPS_MIN_INST5_PCT
+                or (ch.get("weekPct") or 0) >= WEEK_BIG_MIN_PCT):
             chips_all.append(c)
-    chips_all.sort(key=lambda c: ((chips[c].get("inst5Pct") or 0), chips[c]["inst5"] or 0), reverse=True)
-    chips_picks = [card(c, (f"法人連買 {chips[c]['instStreak']} 天" if chips[c]["instStreak"] >= CHIPS_MIN_STREAK else f"主力連買 {chips[c]['mfStreak']} 天" if chips[c]["mfStreak"] >= CHIPS_MIN_MF_STREAK else "法人 5 日大買")) for c in chips_all[:PICK_LIMIT]]
+    # 籌碼分數＝集保大戶週增 % ＋ 法人 5 日佔股本 %（沒有集保資料就只看法人）
+    chips_score = lambda c: (chips[c].get("weekPct") or 0) + (chips[c].get("inst5Pct") or 0)  # noqa: E731
+    chips_all.sort(key=lambda c: (chips_score(c), chips[c]["inst5"] or 0), reverse=True)
+
+    def chips_tag(c: str) -> str:
+        ch = chips[c]
+        if (ch.get("weeks") or 0) >= 1 and (ch.get("weekPct") or 0) > 0:
+            return f"大戶連 {ch['weeks']} 週增"
+        if ch["instStreak"] >= CHIPS_MIN_STREAK:
+            return f"法人連買 {ch['instStreak']} 天"
+        if ch["mfStreak"] >= CHIPS_MIN_MF_STREAK:
+            return f"主力連買 {ch['mfStreak']} 天"
+        return "法人 5 日大買"
+    chips_picks = [card(c, chips_tag(c)) for c in chips_all[:PICK_LIMIT]]
     # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數
     crossed = [c for c in eligible if tech[c]["crossedMa20"]]
-    tech_all = [c for c in crossed if tech[c]["aboveMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
+    tech_qualified = [c for c in crossed if tech[c]["aboveMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
+    tech_skipped = [c for c in tech_qualified if (chips.get(c, {}).get("revenueYoy") or 0) < 0]   # 營收年增為負：略過
+    tech_all = [c for c in tech_qualified if c not in tech_skipped]
     tech_all.sort(key=lambda c: tech[c]["aboveMa20Pct"], reverse=True)
     tech_picks = [card(c, f"站上 +{tech[c]['aboveMa20Pct']:.1f}%") for c in tech_all[:PICK_LIMIT]]
     # 均線轉強：均線分數比前一交易日跳升 ≥3 且 ≥8 分；跳得多、體質好的在前
@@ -357,6 +470,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         summary.append("法人先進、型態未翻：" + "、".join(g["name"] for g in brewing_groups[:2]) + " —— 低檔醞釀，等站上月線再進")
     summary.append("籌碼面首選 " + (names(chips_picks[:2]) or "無") + "；技術面首選 " + (names(tech_picks[:3]) or "無"))
     summary.append("均線轉強 " + (names(ma_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:3]) or "無"))
+    dispo = disposition_sections(as_of, set(codes))
     risk_lines = [f"{x['name']} {r}" for x in chips_picks + tech_picks + ma_picks for r in x["risks"]]
     summary.append("風險提示：" + ("；".join(risk_lines[:4]) if risk_lines else "精選名單沒有特別的風險提示"))
     return {
@@ -364,9 +478,15 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "date": as_of,
         "generatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
         "basis": {"instDates": inst_dates, "mfDates": mf_dates, "hasInst": has_inst, "stocks": len(tech), "stale": stale,
-                  "withScore": sum(1 for t in tech.values() if t["score"] is not None)},
+                  "withScore": sum(1 for t in tech.values() if t["score"] is not None),
+                  "peDate": max((r["date"] for r in pe_map.values()), default=None), "peCount": sum(1 for c in chips.values() if c.get("pe") is not None),
+                  "revenueYm": max((r["ym"] for r in rev_map.values()), default=None), "revenueCount": len(rev_map),
+                  "tdccDate": max((t["date"] for t in tdcc.values()), default=None), "tdccCount": len(tdcc), "sharesCount": len(shares)},
         "tiles": {"crossed": len(crossed), "crossedQualified": len(tech_all), "maJump": len(ma_all), "chips": len(chips_all),
-                  "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full)},
+                  "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full),
+                  "upcoming": len(dispo["upcoming"]), "releasing": len(dispo["releasing"])},
+        "disposition": dispo,
+        "techSkipped": [{"code": c, "name": group_and_name(c)[1], "why": "營收年增為負"} for c in tech_skipped],
         "summary": summary,
         "groups": groups,
         "picks": {"chips": chips_picks, "tech": tech_picks, "ma": ma_picks, "full": full_picks},
@@ -377,7 +497,9 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
             "ma": f"均線分數比前一交易日跳升 ≥{MA_JUMP_MIN} 且 ≥{MA_STRONG_MIN} 分；體質＝站上月線、均線分數≥10、法人 5 日買超、主力 5 日買超、法人連買≥2 天、量≥5 日均量、今天收漲，七項各 1 分",
             "full": "均線分數滿分 15；當天收盤新達 15 分（前一交易日 <15）。續強確認＝前一份報告的精選今天仍在月線上且均線分數 ≥10",
-            "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、法人今天轉賣超、處置中",
+            "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、法人今天轉賣超、本益比高於族群均值、營收年增為負、處置中",
+            "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；技術面略過營收年增為負的",
+            "disposition": "明日起處置＝公告起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易；觀察名單＝出獄 5 個交易日內",
         },
     }
 
@@ -386,9 +508,14 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
 
 def _disposition_codes() -> set[str]:
     try:
-        from disposition_stocks import get_disposition_map
+        from disposition_stocks import get_disposition_map, get_upcoming_map
 
-        return {str(c).strip().upper() for c in get_disposition_map().keys()}
+        active = get_disposition_map()
+        try:
+            log_dispositions(list(active.values()) + list(get_upcoming_map().values()))
+        except Exception:  # noqa: BLE001
+            logger.exception("disposition log failed")
+        return {str(c).strip().upper() for c in active.keys()}
     except Exception:  # noqa: BLE001
         return set()
 
