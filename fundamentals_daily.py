@@ -473,21 +473,48 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
     return result
 
 
-def run_collect() -> dict[str, Any]:
-    result = collect_once()
+def _has_new_data(result: dict[str, Any], before: dict[str, Any]) -> bool:
+    """收到新東西才值得重算波段日報：新的一天本益比、新的一週集保、月營收換月、已發行股數的檔數變了。"""
+    for key in ("peTSE", "peOTC"):
+        r = result.get(key) or {}
+        if r.get("ok") and r.get("rows"):
+            return True
+    if (result.get("tdcc") or {}).get("added"):
+        return True
+    for key in ("revenueTSE", "revenueOTC"):
+        r, b = result.get(key) or {}, before.get(key) or {}
+        if r.get("ok") and r.get("ym") != b.get("ym"):
+            return True
+    for key in ("sharesTSE", "sharesOTC"):
+        r, b = result.get(key) or {}, before.get(key) or {}
+        if r.get("ok") and r.get("rows") != b.get("rows"):
+            return True
+    return False
+
+
+def run_collect(now: datetime | None = None, *, only_if_new: bool = False) -> dict[str, Any]:
+    """抓一輪，然後重算波段日報（only_if_new＝有抓到新資料才重算；排程用，手動戳的一定重算）。"""
+    with _lock:
+        before = {k: dict(v) for k, v in _state["sources"].items()}
+    result = collect_once(now)
+    if only_if_new and not _has_new_data(result, before):
+        result["swingRefreshed"] = False
+        return result
     try:
         from swing_report import run_once as run_swing_report
 
         run_swing_report()
+        result["swingRefreshed"] = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("swing report refresh after fundamentals failed: %s", exc)
+        result["swingRefreshed"] = False
     return result
 
 
 def _loop() -> None:
     time.sleep(120)
     try:
-        collect_once()
+        run_collect(only_if_new=True)
     except Exception:  # noqa: BLE001
         logger.exception("fundamentals collect failed")
     while True:
@@ -496,7 +523,7 @@ def _loop() -> None:
         minute = now.hour * 60 + now.minute
         if is_trading_day(now) and WINDOW_START <= minute <= WINDOW_END:
             try:
-                collect_once(now)
+                run_collect(now, only_if_new=True)
             except Exception:  # noqa: BLE001
                 logger.exception("fundamentals collect failed")
 
