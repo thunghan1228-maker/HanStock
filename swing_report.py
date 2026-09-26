@@ -44,6 +44,7 @@ HOT_GROUP_RANK = 10            # 熱門族：族群當天漲幅前 10
 WEEK_BIG_MIN_PCT = 2.0         # 籌碼面：集保 400 張以上大戶張數週增 ≥2% 也算候選
 PE_SANE_MAX = 500              # 本益比超過這個當異常值，不算族群均值
 WATCH_DAYS = 5                 # 觀察名單：出獄 ≤5 個交易日
+LAST_WEEK_BACK = 5             # 上一週那一組：往前 5 個交易日那份報告的籌碼面精選
 POLL_SECONDS = 15 * 60
 REFRESH_START_MINUTE = 15 * 60 + 5    # 交易日 15:05 起重算今天的
 REFRESH_END_MINUTE = 18 * 60
@@ -472,6 +473,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     summary.append("籌碼面首選 " + (names(chips_picks[:2]) or "無") + "；技術面首選 " + (names(tech_picks[:3]) or "無"))
     summary.append("均線轉強 " + (names(ma_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:3]) or "無"))
     dispo = disposition_sections(as_of, set(codes))
+    last_week = _last_week_followup(as_of, _week_ago_report(as_of), bars_by_code, tech, inst_dates, inst_by_date)
     risk_lines = [f"{x['name']} {r}" for x in chips_picks + tech_picks + ma_picks for r in x["risks"]]
     summary.append("風險提示：" + ("；".join(risk_lines[:4]) if risk_lines else "精選名單沒有特別的風險提示"))
     return {
@@ -488,6 +490,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                   "upcoming": len(dispo["upcoming"]), "releasing": len(dispo["releasing"])},
         "disposition": dispo,
         "techSkipped": [{"code": c, "name": group_and_name(c)[1], "why": "營收年增為負"} for c in tech_skipped],
+        "lastWeek": last_week,
         "summary": summary,
         "groups": groups,
         "picks": {"chips": chips_picks, "tech": tech_picks, "ma": ma_picks, "full": full_picks},
@@ -501,6 +504,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、法人今天轉賣超、本益比高於族群均值、營收年增為負、處置中",
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；技術面略過營收年增為負的",
             "disposition": "明日起處置＝公告起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易；觀察名單＝出獄 5 個交易日內",
+            "lastWeek": f"往前 {LAST_WEEK_BACK} 個交易日那份報告的籌碼面精選，看這一週的表現：一週漲跌＝入榜那天收盤到基準日收盤；期間最高／最低收＝入榜後這幾天的收盤；法人這週＝入榜之後三大法人合計；跌破月線就是型態走弱",
         },
     }
 
@@ -527,6 +531,72 @@ def _previous_report(as_of: str) -> dict[str, Any] | None:
         if d < as_of:
             return load_report(d)
     return None
+
+
+def _week_ago_report(as_of: str) -> dict[str, Any] | None:
+    """往前 5 個交易日那份報告（沒有就取再往前最近的一份，最多再往前 3 個交易日）。"""
+    target = datetime.strptime(as_of, "%Y-%m-%d").date()
+    for _ in range(LAST_WEEK_BACK):
+        target = previous_trading_day(target)
+    floor = target
+    for _ in range(3):
+        floor = previous_trading_day(floor)
+    for d in report_dates(LOOKBACK_DATES + 10):
+        if floor.isoformat() <= d <= target.isoformat():
+            return load_report(d)
+    return None
+
+
+def _last_week_followup(as_of: str, week: dict[str, Any] | None, bars_by_code: dict[str, list], tech: dict[str, dict[str, Any]],
+                        inst_dates: list[str], inst_by_date: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any] | None:
+    """上一週籌碼那一組：那份的籌碼面精選這一週表現如何（一週漲跌、期間最高／最低收、法人這週、還在不在月線上）。"""
+    if not week or not week.get("date"):
+        return None
+    pick_date = str(week["date"])
+    out: list[dict[str, Any]] = []
+    for p in (week.get("picks") or {}).get("chips") or []:
+        code = str(p.get("code") or "").upper()
+        bars = bars_by_code.get(code) or []
+        after = [b for b in bars if pick_date < b[0] <= as_of]
+        t = tech.get(code)
+        pick_close = p.get("close")
+        if pick_close is None:
+            at = [b for b in bars if b[0] == pick_date]
+            pick_close = at[0][3] if at else None
+        if not after or not t or not pick_close:
+            out.append({"code": code, "name": p.get("name"), "group": p.get("group"), "tag": p.get("tag"), "pickClose": pick_close,
+                        "close": None, "changePct": None, "verdict": "這一週沒有日K，無法對照"})
+            continue
+        closes = [b[3] for b in after]
+        now = t["close"]
+        change = (now - pick_close) / pick_close * 100
+        max_close, min_close = max(closes), min(closes)
+        since = [(inst_by_date.get(d, {}).get(code) or {}).get("total") for d in inst_dates if d > pick_date]
+        known = [v for v in since if v is not None]
+        above = bool(t.get("aboveMa20"))
+        if not above:
+            verdict = "跌破月線，型態走弱"
+        elif change >= 10:
+            verdict = "一週漲逾一成，續強"
+        elif change > 0:
+            verdict = "續強，守住月線"
+        else:
+            verdict = "回測中，月線還在"
+        out.append({
+            "code": code, "name": p.get("name") or t.get("name"), "group": p.get("group"), "tag": p.get("tag"),
+            "pickClose": pick_close, "close": now, "changePct": round(change, 2),
+            "maxClose": max_close, "maxGainPct": round((max_close - pick_close) / pick_close * 100, 2),
+            "minClose": min_close, "minGainPct": round((min_close - pick_close) / pick_close * 100, 2),
+            "aboveMa20": above, "aboveMa20Pct": t.get("aboveMa20Pct"), "ma20": t.get("ma20"), "score": t.get("score"),
+            "instSince": _lots(sum(known)) if known else None, "instDays": len(known), "days": len(after), "verdict": verdict,
+        })
+    changes = [x["changePct"] for x in out if x.get("changePct") is not None]
+    return {
+        "date": pick_date, "count": len(out), "withData": len(changes),
+        "avgChangePct": round(_mean(changes), 2) if changes else None,
+        "aboveMa20": sum(1 for x in out if x.get("aboveMa20")),
+        "picks": out,
+    }
 
 
 def refresh_report(as_of: str | None = None) -> dict[str, Any]:

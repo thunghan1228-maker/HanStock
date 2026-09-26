@@ -143,6 +143,32 @@ class ReportTests(unittest.TestCase):
             r = module.build_report("2026-09-24")
             self.assertEqual(r["notes"]["sustained"], [])   # 雷科在月線下、沒分數，不算續強
 
+    def test_last_week_followup(self) -> None:
+        with patch.object(module, "_disposition_codes", return_value=set()):
+            r = module.build_report("2026-09-24")
+            self.assertIsNone(r["lastWeek"])   # 一週前沒有報告
+            week_ago = trading_dates("2026-09-24", 6)[0]   # 往前 5 個交易日
+            self.assertEqual(week_ago, "2026-09-17")
+            module.save_report({"date": week_ago, "generatedAt": "x", "picks": {"chips": [
+                {"code": "6182", "name": "合晶", "group": "矽晶圓", "tag": "法人連買 3 天", "close": 100.0},
+                {"code": "6207", "name": "雷科", "group": "設備股", "tag": "主力連買 2 天", "close": 101.0},
+            ], "tech": []}})
+            r = module.build_report("2026-09-24")
+            lw = r["lastWeek"]
+            self.assertEqual((lw["date"], lw["count"], lw["withData"], lw["aboveMa20"]), ("2026-09-17", 2, 2, 1))
+            a, b = lw["picks"]
+            # 合晶：入榜 100 → 104（+4%），期間最高收 104、最低收 100，法人這週 5 天共 5000 張，守住月線
+            self.assertEqual((a["code"], a["pickClose"], a["close"], a["changePct"], a["maxClose"], a["maxGainPct"], a["minClose"]), ("6182", 100.0, 104.0, 4.0, 104.0, 4.0, 100.0))
+            self.assertEqual((a["instSince"], a["instDays"], a["days"], a["aboveMa20"], a["verdict"]), (5000.0, 5, 5, True, "續強，守住月線"))
+            # 雷科：緩跌、在月線下 → 跌破月線
+            self.assertEqual((b["code"], b["aboveMa20"], b["verdict"], b["instSince"]), ("6207", False, "跌破月線，型態走弱", -250.0))
+            self.assertLess(b["changePct"], 0)
+            self.assertAlmostEqual(lw["avgChangePct"], (a["changePct"] + b["changePct"]) / 2, places=2)
+            self.assertIn("lastWeek", r["rules"])
+            # 那份存下來後再讀：上一週那一組也在裡面
+            module.save_report(r)
+            self.assertEqual(module.load_report("2026-09-24")["lastWeek"]["date"], "2026-09-17")
+
     def test_save_load_and_lookup(self) -> None:
         with patch.object(module, "_disposition_codes", return_value=set()):
             latest = module.swing_report(None)
