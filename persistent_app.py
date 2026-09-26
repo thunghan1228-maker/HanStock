@@ -25,6 +25,7 @@ from brew_launch_history import history as brew_launch_history, scan_status as b
 from trading_days import is_trading_day
 from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
+from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
     contract_debug,
     peek_trading_eligibility,
@@ -93,6 +94,7 @@ async def _persistent_lifespan(fastapi_app):
             start_group_history_backfill()
             start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
             start_chips_collector()  # 盤後籌碼：三大法人（上市直抓、上櫃鏡像）＋主力大單每日
+            start_fundamentals_collector()  # 本益比、月營收、股本、集保週籌碼（波段日報第二階段）
             start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
@@ -809,6 +811,17 @@ def get_swing_report(date: str | None = Query(None)) -> dict[str, Any]:
 def post_swing_report_refresh() -> dict[str, Any]:
     """立刻重算最新一天（並補齊近幾天沒存的）。"""
     return {"status": "ok", "result": run_swing_report()}
+
+
+@app.get("/api/hub/fundamentals/status")
+def get_fundamentals_status() -> dict[str, Any]:
+    return {"status": "ok", **fundamentals_status()}
+
+
+@app.post("/api/hub/fundamentals/collect")
+def post_fundamentals_collect() -> dict[str, Any]:
+    """立刻抓一次本益比、月營收、股本、集保週資料（排程主機推完鏡像會戳這裡），抓完重算波段日報。"""
+    return {"status": "ok", "result": run_fundamentals_collect()}
 
 
 @app.get("/api/hub/bars1d/{stock_code}")

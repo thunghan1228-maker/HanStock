@@ -35,6 +35,7 @@ Fetcher = Callable[[str], Any]
 
 _lock = threading.Lock()
 _map: dict[str, dict[str, Any]] = {}
+_upcoming: dict[str, dict[str, Any]] = {}   # 已公告、還沒開始的處置（波段日報「明日起處置」用）
 _status: dict[str, Any] = {"fetchedAt": None, "sources": {}, "count": 0}
 _started = False
 _CODE_RE = re.compile(r"^[0-9A-Z]{4,6}$")
@@ -225,12 +226,43 @@ def extract_rows(rows: Any, *, source: str, today: date) -> dict[str, dict[str, 
     return result
 
 
+UPCOMING_MAX_DAYS = 14
+
+
+def extract_upcoming(rows: Any, *, source: str, today: date) -> dict[str, dict[str, Any]]:
+    """公告裡起始日在今天之後（14 天內）的處置：還沒開始，不算處置中，但波段日報要列「明日起處置」。"""
+    result: dict[str, dict[str, Any]] = {}
+    if isinstance(rows, dict):
+        rows = rows.get("data") or rows.get("aaData") or []
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(_pick(row, "SecuritiesCompanyCode", "Code", "代號", "股票代碼") or "").strip().upper()
+        if not _CODE_RE.match(code):
+            continue
+        start, end = parse_period(_pick(row, "Period", "期間", "起迄"))
+        if start is None:
+            start = parse_date(_pick(row, "StartDate", "Start", "起始", "開始"))
+        if end is None:
+            end = parse_date(_pick(row, "EndDate", "End", "迄", "結束"))
+        if not start or start <= today or (start - today).days > UPCOMING_MAX_DAYS:
+            continue
+        name = str(_pick(row, "CompanyName", "Name", "名稱") or "").strip()
+        reason = str(_pick(row, "Reason", "原因", "處置內容", "Content") or "").strip()[:80]
+        _remember(result, {"code": code, "name": name, "start": start.isoformat(), "end": end.isoformat() if end else None,
+                           "reason": reason, "source": source, "upcoming": True})
+    return result
+
+
 def refresh(
     *, fetcher: Optional[Fetcher] = None, today: Optional[date] = None, punish_fetcher: Optional[Callable[[], Any]] = None,
 ) -> dict[str, Any]:
     """三個來源各抓一次；任何一邊失敗就保留那一邊上次的結果。"""
-    global _map
+    global _map, _upcoming
     call = fetcher or _default_fetcher
+    upcoming: dict[str, dict[str, Any]] = {}
     punish_call = punish_fetcher or _default_punish_fetcher
     today = today or datetime.now(TW_TZ).date()
     merged: dict[str, dict[str, Any]] = {}
@@ -280,6 +312,7 @@ def refresh(
         try:
             payload = call(url)
             rows = extract_rows(payload, source=source, today=today)
+            upcoming.update(extract_upcoming(payload, source=source, today=today))
             sample = payload[0] if isinstance(payload, list) and payload and isinstance(payload[0], dict) else None
             sources[source] = {
                 "ok": True, "active": len(rows), "rows": len(payload) if isinstance(payload, list) else None,
@@ -292,6 +325,7 @@ def refresh(
             _keep_previous(source, f"{type(exc).__name__}: {exc}")
     with _lock:
         _map = merged
+        _upcoming = upcoming
         _status.update({
             "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "sources": sources, "count": len(merged),
             "codes": sorted(merged),
@@ -302,6 +336,12 @@ def refresh(
 def get_disposition_map() -> dict[str, dict[str, Any]]:
     with _lock:
         return dict(_map)
+
+
+def get_upcoming_map() -> dict[str, dict[str, Any]]:
+    """已公告、還沒開始的處置（{代號: {code, name, start, end, reason, source, upcoming: True}}）。"""
+    with _lock:
+        return dict(_upcoming)
 
 
 def is_disposition(code: str) -> bool:
