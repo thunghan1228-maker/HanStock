@@ -87,7 +87,8 @@ def _logged_dispositions(since: str) -> list[dict[str, Any]]:
     with get_connection() as connection:
         _schema(connection)
         rows = connection.execute("SELECT stock_code, start_date, end_date, name, reason, source FROM disposition_log WHERE start_date >= ? ORDER BY start_date", (since,)).fetchall()
-    return [{"code": str(r["stock_code"]), "start": str(r["start_date"]), "end": r["end_date"], "name": r["name"], "reason": r["reason"], "source": r["source"]} for r in rows]
+    return [{"code": str(r["stock_code"]), "start": str(r["start_date"]), "end": r["end_date"], "name": r["name"],
+             "reason": " ".join(str(r["reason"] or "").split()) or None, "source": r["source"]} for r in rows]
 
 
 def disposition_sections(as_of: str, codes: set[str]) -> dict[str, Any]:
@@ -340,7 +341,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             entry["mfStreak"] = _streak(nets)
         pe_row, rev_row, td = pe_map.get(code), rev_map.get(code), tdcc.get(code)
         entry["pe"] = pe_row["pe"] if pe_row and pe_row.get("pe") is not None and 0 < pe_row["pe"] < PE_SANE_MAX else None
-        entry["revenueYoy"] = rev_row["yoy"] if rev_row else None
+        entry["revenueYoy"] = round(rev_row["yoy"], 1) if rev_row and rev_row.get("yoy") is not None else None
         entry["revenueYm"] = rev_row["ym"] if rev_row else None
         entry["weekPct"] = td["bigChangePct"] if td else None
         entry["weekPp"] = td["bigChangePp"] if td else None
@@ -493,7 +494,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "notes": {"jumpTop": jump_top, "sustained": sustained, "prevDate": prev_payload.get("date") if prev_payload else None},
         "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "ma": len(ma_all), "full": len(new_full)},
         "rules": {
-            "chips": f"法人 5 日買超，且法人連買≥{CHIPS_MIN_STREAK} 天、主力連買≥{CHIPS_MIN_MF_STREAK} 天或 5 日買超≥股本 {CHIPS_MIN_INST5_PCT:g}%；法人 5 日佔股本比例高的在前",
+            "chips": f"法人 5 日買超，且集保大戶週增≥{WEEK_BIG_MIN_PCT:g}%、法人連買≥{CHIPS_MIN_STREAK} 天、主力連買≥{CHIPS_MIN_MF_STREAK} 天或 5 日買超≥股本 {CHIPS_MIN_INST5_PCT:g}%；籌碼分數（大戶週增 % ＋ 法人 5 日佔股本 %）高的在前",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
             "ma": f"均線分數比前一交易日跳升 ≥{MA_JUMP_MIN} 且 ≥{MA_STRONG_MIN} 分；體質＝站上月線、均線分數≥10、法人 5 日買超、主力 5 日買超、法人連買≥2 天、量≥5 日均量、今天收漲，七項各 1 分",
             "full": "均線分數滿分 15；當天收盤新達 15 分（前一交易日 <15）。續強確認＝前一份報告的精選今天仍在月線上且均線分數 ≥10",
