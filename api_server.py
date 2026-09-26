@@ -19,7 +19,6 @@ from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 
 from config import SHIOAJI_QUOTE_ENABLED
 from market_data_hub import get_market_data_hub
@@ -188,12 +187,6 @@ app.add_middleware(
 @app.get("/", include_in_schema=False)
 def website_redirect() -> RedirectResponse:
     return RedirectResponse(url="/hub-dashboard", status_code=307)
-
-# 翰閣室內設計作品報導：純靜態網頁，掛在 /hango 之下
-# 例如 /hango/ 是報導列表，/hango/works/autumn-cicada/ 是《秋蟬》報導
-_HANGO_SITE_DIR = Path(__file__).parent / "web" / "hango"
-if _HANGO_SITE_DIR.is_dir():
-    app.mount("/hango", StaticFiles(directory=_HANGO_SITE_DIR, html=True), name="hango")
 
 
 @app.get("/hub-dashboard", response_class=HTMLResponse, include_in_schema=False)
