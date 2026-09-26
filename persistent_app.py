@@ -24,6 +24,7 @@ from stock_groups import industry_group_codes
 from brew_launch_history import history as brew_launch_history, scan_status as brew_launch_scan_status, start_brew_launch_scan
 from trading_days import is_trading_day
 from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
+from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from stock_trading_eligibility import (
     contract_debug,
     peek_trading_eligibility,
@@ -92,6 +93,7 @@ async def _persistent_lifespan(fastapi_app):
             start_group_history_backfill()
             start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
             start_chips_collector()  # 盤後籌碼：三大法人（上市直抓、上櫃鏡像）＋主力大單每日
+            start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -788,6 +790,25 @@ def get_chips_status() -> dict[str, Any]:
 def post_chips_collect() -> dict[str, Any]:
     """立刻抓一次（tw-groups 的排程工作流程把上櫃資料推到鏡像後會戳這裡）。"""
     return {"status": "ok", "result": run_chips_collect()}
+
+
+@app.get("/api/hub/swing-report")
+def get_swing_report(date: str | None = Query(None)) -> dict[str, Any]:
+    """波段日報（第一階段）：今日摘要、產業觀察、籌碼面／技術面／均線轉強精選，每檔附防守價與風險；
+    date 沒給就是最新一份，可回看近 10 個交易日（2026-09-26 使用者：照波段精選日報做）。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return swing_report_payload(date)
+
+
+@app.post("/api/hub/swing-report/refresh")
+def post_swing_report_refresh() -> dict[str, Any]:
+    """立刻重算最新一天（並補齊近幾天沒存的）。"""
+    return {"status": "ok", "result": run_swing_report()}
 
 
 @app.get("/api/hub/bars1d/{stock_code}")
