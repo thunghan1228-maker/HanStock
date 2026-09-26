@@ -271,13 +271,14 @@ def collect_once(fetcher: Callable[[str], Any] | None = None, *, limit: int = FE
     result: dict[str, Any] = {"added": [], "checked": 0, "errors": []}
     index = fetch(_mirror_url(MIRROR_INDEX, volatile=True))
     wanted = sorted({str(d) for d in index if isinstance(d, str) and len(d) == 10}, reverse=True)[:limit] if isinstance(index, list) else []
-    for i, day in enumerate(wanted):
+    for day in wanted:
         have = stored_codes(day)
         if len(have) >= len(ETFS):
             continue
         result["checked"] += 1
         try:
-            date, etfs = parse_mirror(fetch(_mirror_url(f"etf-{day}.json", volatile=i < 2)))
+            # 只會來看還沒滿五檔的日子，這種檔案可能剛被排程主機補過，一律加時間參數避開快取
+            date, etfs = parse_mirror(fetch(_mirror_url(f"etf-{day}.json", volatile=True)))
         except urllib.error.HTTPError as exc:
             result["errors"].append(f"{day}: HTTP {exc.code}")
             continue
