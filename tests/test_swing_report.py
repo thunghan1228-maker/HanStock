@@ -126,7 +126,22 @@ class ReportTests(unittest.TestCase):
         self.assertIn("籌碼面首選 合晶；技術面首選 合晶", r["summary"][1])
         self.assertIn("均線新滿分 合晶", r["summary"][2])
         self.assertTrue(r["summary"][-1].startswith("風險提示"))
-        self.assertEqual(r["counts"], {"chips": 1, "tech": 1, "techNear": 0, "ma": 1})
+        self.assertEqual(r["counts"], {"chips": 1, "tech": 1, "techNear": 0, "ma": 1, "full": 1})
+        self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["0→15"])
+        self.assertEqual(r["notes"]["jumpTop"], [{"code": "6182", "name": "合晶", "from": 0, "to": 15}])
+        self.assertEqual((r["notes"]["sustained"], r["notes"]["prevDate"]), ([], None))   # 還沒有前一份報告
+
+    def test_sustained_uses_previous_report(self) -> None:
+        with patch.object(module, "_disposition_codes", return_value=set()):
+            module.refresh_report("2026-09-23")
+            r = module.build_report("2026-09-24")
+            self.assertEqual(r["notes"]["prevDate"], "2026-09-23")
+            # 09/23 那份：合晶法人連買 4 天已在籌碼面精選；今天仍在月線上、均線 15 → 續強確認
+            self.assertEqual(r["notes"]["sustained"], [{"code": "6182", "name": "合晶", "score": 15}])
+            fake = {"date": "2026-09-23", "generatedAt": "x", "picks": {"tech": [{"code": "6207"}]}}
+            module.save_report(fake)
+            r = module.build_report("2026-09-24")
+            self.assertEqual(r["notes"]["sustained"], [])   # 雷科在月線下、沒分數，不算續強
 
     def test_save_load_and_lookup(self) -> None:
         with patch.object(module, "_disposition_codes", return_value=set()):

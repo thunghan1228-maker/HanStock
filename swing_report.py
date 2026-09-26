@@ -320,7 +320,28 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
               and tech[c]["score"] - tech[c]["prevScore"] >= MA_JUMP_MIN and tech[c]["score"] >= MA_STRONG_MIN]
     ma_all.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], chips.get(c, {}).get("health") or 0, tech[c]["score"]), reverse=True)
     ma_picks = [card(c, f"均線 {tech[c]['prevScore']}→{tech[c]['score']}") for c in ma_all[:PICK_LIMIT]]
+    # 均線結構轉強：今天新達 15 分（前一交易日 <15）；跳得多、法人 5 日佔股本高的在前
     new_full = [c for c in eligible if tech[c]["score"] == 15 and tech[c]["prevScore"] is not None and tech[c]["prevScore"] < 15]
+    new_full.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], chips.get(c, {}).get("inst5Pct") or 0), reverse=True)
+    full_picks = [card(c, f"{tech[c]['prevScore']}→15") for c in new_full[:PICK_LIMIT]]
+    # 跳升最多：均線分數比前一交易日跳升最多的前 5 檔（不限分數）
+    jumped = [c for c in eligible if tech[c]["score"] is not None and tech[c]["prevScore"] is not None and tech[c]["score"] > tech[c]["prevScore"]]
+    jumped.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], tech[c]["score"]), reverse=True)
+    jump_top = [{"code": c, "name": group_and_name(c)[1], "from": tech[c]["prevScore"], "to": tech[c]["score"]} for c in jumped[:5]]
+    # 續強確認：前一份報告的精選（籌碼面／技術面／體質／新滿分）今天仍在月線上且均線分數 ≥10
+    sustained: list[dict[str, Any]] = []
+    prev_payload = _previous_report(as_of)
+    if prev_payload:
+        seen: set[str] = set()
+        for key in ("chips", "tech", "ma", "full"):
+            for x in (prev_payload.get("picks") or {}).get(key) or []:
+                c = str(x.get("code") or "").upper()
+                if c in seen or c not in tech:
+                    continue
+                seen.add(c)
+                t = tech[c]
+                if t["aboveMa20"] and (t["score"] or 0) >= 10:
+                    sustained.append({"code": c, "name": group_and_name(c)[1], "score": t["score"]})
     # 今日摘要
     main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] > 0]
     main_groups.sort(key=lambda g: g["inst5"], reverse=True)
@@ -348,12 +369,14 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                   "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full)},
         "summary": summary,
         "groups": groups,
-        "picks": {"chips": chips_picks, "tech": tech_picks, "ma": ma_picks},
-        "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "ma": len(ma_all)},
+        "picks": {"chips": chips_picks, "tech": tech_picks, "ma": ma_picks, "full": full_picks},
+        "notes": {"jumpTop": jump_top, "sustained": sustained, "prevDate": prev_payload.get("date") if prev_payload else None},
+        "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "ma": len(ma_all), "full": len(new_full)},
         "rules": {
             "chips": f"法人 5 日買超，且法人連買≥{CHIPS_MIN_STREAK} 天、主力連買≥{CHIPS_MIN_MF_STREAK} 天或 5 日買超≥股本 {CHIPS_MIN_INST5_PCT:g}%；法人 5 日佔股本比例高的在前",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
             "ma": f"均線分數比前一交易日跳升 ≥{MA_JUMP_MIN} 且 ≥{MA_STRONG_MIN} 分；體質＝站上月線、均線分數≥10、法人 5 日買超、主力 5 日買超、法人連買≥2 天、量≥5 日均量、今天收漲，七項各 1 分",
+            "full": "均線分數滿分 15；當天收盤新達 15 分（前一交易日 <15）。續強確認＝前一份報告的精選今天仍在月線上且均線分數 ≥10",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、法人今天轉賣超、處置中",
         },
     }
@@ -368,6 +391,14 @@ def _disposition_codes() -> set[str]:
         return {str(c).strip().upper() for c in get_disposition_map().keys()}
     except Exception:  # noqa: BLE001
         return set()
+
+
+def _previous_report(as_of: str) -> dict[str, Any] | None:
+    """基準日之前最近一份存好的報告（續強確認用）。"""
+    for d in report_dates(LOOKBACK_DATES + 5):
+        if d < as_of:
+            return load_report(d)
+    return None
 
 
 def refresh_report(as_of: str | None = None) -> dict[str, Any]:
@@ -417,12 +448,12 @@ def run_once(now: datetime | None = None) -> dict[str, Any]:
     if not latest:
         return result
     try:
-        refresh_report(latest)
         have = set(report_dates(LOOKBACK_DATES + 5))
-        for d in bar_dates(LOOKBACK_DATES):
+        for d in sorted(bar_dates(LOOKBACK_DATES)):   # 舊的先補，最新那份才看得到前一份（續強確認）
             if d not in have and d != latest:
                 refresh_report(d)
                 result["backfilled"].append(d)
+        refresh_report(latest)
         with _lock:
             _state.update({"lastRunAt": now.isoformat(timespec="seconds"), "lastDate": latest, "lastError": None,
                            "backfilled": _state["backfilled"] + len(result["backfilled"])})
