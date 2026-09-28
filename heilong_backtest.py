@@ -1,0 +1,579 @@
+"""下午報・黑龍回測：每天收盤後照「均線分數高＋當天收黑」（創高黑龍）挑名單存起來，
+隔天用 D+1 開高低收算各種出場方式（收盤出、停利出、破黑低出、停利＋破黑低、隔天開盤出、
+開高走・開低抱、D+2 收盤）的績效，以及爆發力（之後 1／2／3 個交易日的盤中最高）。
+
+2026-09-28 使用者：照學員專區那套「創高黑龍・績效分析」做在下午報裡，參數可以在頁面上調。
+
+表 heilong_daily：族群表內（不含金融股）每一檔、每一個交易日的開高低收量、漲跌幅、均線分數、
+近 20 日漲逾 8% 次數、5 日均成交值、族群與族群平均分、當時看得到的集保大戶週增％、當天是否處置中。
+留近 60 個交易日；每次重算只補沒有的日子，最新 3 天一定重算（日K修補、集保週資料晚到）。
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime, timedelta, timezone
+from statistics import median
+from typing import Any
+
+from brew_launch import MA_PERIODS, _latest_bar_date, group_codes, ma_alignment_score, skipped_codes
+from brew_launch_history import group_and_name
+from database import get_connection, initialize_database
+from fundamentals_daily import BIG_HOLDER_LEVELS, _schema as _fundamentals_schema
+from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
+from swing_report import _logged_dispositions
+
+logger = logging.getLogger(__name__)
+
+TW_TZ = timezone(timedelta(hours=8))
+HISTORY_DAYS = 60                # 表裡留幾個交易日
+RECOMPUTE_TAIL = 3               # 每次一定重算最新幾天
+LOOKBACK_CALENDAR_DAYS = 420     # 算 240 日均線要往前抓的日K
+HITS_DAYS = 20                   # 近 20 日
+HITS_MIN_PCT = 8.0               # 單日漲幅 >8% 才算「有人在拉」
+VALUE_DAYS = 5                   # 5 日均成交值
+GAP_PCT = 35.0                   # 價格斷層：D+1 跟進場價差超過這個就留空
+DISPOSITION_LOOKBACK_DAYS = 90
+MAX_DAYS_PARAM = HISTORY_DAYS
+
+K_KINDS = ("black", "red", "any")
+MINE_KINDS = ("close", "tp", "sl", "both")
+SORT_KEYS = ("score", "week", "gavg", "hits", "drop", "val")
+METHODS = ("close", "tp", "sl", "both", "open", "ohl", "d2")
+METHOD_LABELS = {"close": "收盤出場", "tp": "停利出場", "sl": "破黑低出場", "both": "停利＋破黑低",
+                 "open": "隔天開盤出", "ohl": "開高走・開低抱", "d2": "D+2 收盤"}
+CURVE_METHODS = ("close", "tp", "sl", "both")
+
+DEFAULT_PARAMS: dict[str, Any] = {
+    "score": 10, "k": "black", "min": -10.0, "max": 3.0,
+    "week": None, "gavg": None, "hits": None, "val": None,
+    "exdispo": True, "cap": 0, "sort": "score", "tp": 3.0, "mine": "both", "days": 10, "amt": 50.0,
+}
+
+RULES = [
+    "進場＝符合條件那天的收盤價；D+1＝下一個有日K的交易日。均線分數用本站同一套（5／10／20／60／120／240 日均線兩兩比較，滿分 15），日K不足 240 根算不出分數、不會入選。",
+    "黑K＝收盤＜開盤、紅K＝收盤＞開盤；漲跌幅跟前一天收盤比。",
+    "週籌碼＝那天當時看得到的集保週（結算日早於那天的最近一週）400 張以上大戶張數比前一週的增減％；沒有資料的股，勾了這條件就不算符合。",
+    "族群平均分＝該股所屬族群全部成員當天均線分數的平均。5 日均成交值＝近 5 天「收盤價×成交量」的平均（億），是估算值。",
+    "停利出場＝D+1 開盤 ≥ 目標就開盤賣；盤中最高碰到目標 → 用目標價賣；都沒有 → 收盤賣。破黑低出場＝D+1 開盤就低於黑K最低 → 開盤賣；盤中最低跌破黑K最低 → 用黑K最低價賣；沒破 → 收盤賣。",
+    "停利＋破黑低＝兩個一起掛；開盤就到目標先算停利、開盤就破低先算停損，否則同一天兩個都碰到（日K分不出先後）保守算停損。",
+    "開高走・開低抱＝開盤高於進場價就開盤賣，否則抱到收盤。D+2 收盤＝抱兩天，資金會跟隔天那批重疊，總損益參考就好。",
+    "爆發力＝之後 1／2／3 個交易日的盤中最高；最高是盤中價、實際賣不到，看的是「停利目標到得到嗎」。",
+    "處置＝用本站處置紀錄（2026-09-26 起）判斷那天是否處置中；更早的日子沒有紀錄，一律當沒處置。",
+    "價格斷層（D+1 開盤或收盤跟進場價差超過 35%，例如分割、減資）留空不算；價格未還原除權息。",
+    "每檔 N 萬只是把％換成金額看總損益，不考慮零股與資金重疊。範圍只有族群表內的股（不含金融股）。",
+    "樣本短，參數調到某段特別好看，要用其他區間驗證再用。",
+]
+
+Bar = tuple[str, float, float, float, float, int]   # (日期, 開, 高, 低, 收, 量張)
+
+
+# ------------------------------------------------------------------ 資料表
+
+def _schema(connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS heilong_daily (
+            trade_date TEXT NOT NULL, stock_code TEXT NOT NULL,
+            open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume INTEGER NOT NULL,
+            prev_close REAL, change_pct REAL, score INTEGER, hits20 INTEGER, val5 REAL,
+            group_name TEXT, group_avg REAL, week_pct REAL, week_date TEXT, disposed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (trade_date, stock_code)
+        )"""
+    )
+
+
+def _r2(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _bar_dates(limit: int) -> list[str]:
+    """有日K的交易日，新到舊。"""
+    initialize_database()
+    with get_connection() as connection:
+        rows = connection.execute("SELECT DISTINCT substr(bar_time, 1, 10) AS d FROM bars_1d ORDER BY d DESC LIMIT ?", (limit,)).fetchall()
+    return [str(r["d"]) for r in rows]
+
+
+def _load_bars(codes: list[str], *, since: str, until: str) -> dict[str, list[Bar]]:
+    """{代號: [(日期, 開, 高, 低, 收, 量張), ...舊到新]}，since ≤ 日期 ≤ until。"""
+    initialize_database()
+    out: dict[str, list[Bar]] = {}
+    with get_connection() as connection:
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            placeholders = ",".join("?" for _ in batch)
+            rows = connection.execute(
+                f"""
+                SELECT stock_code, substr(bar_time, 1, 10) AS d, open, high, low, close, volume FROM bars_1d
+                WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) <= ?
+                """,
+                (*batch, since, until),
+            ).fetchall()
+            for row in rows:
+                out.setdefault(str(row["stock_code"]).strip().upper(), []).append(
+                    (str(row["d"]), float(row["open"] or 0), float(row["high"]), float(row["low"]), float(row["close"]), int(row["volume"] or 0))
+                )
+    for bars in out.values():
+        bars.sort(key=lambda bar: bar[0])
+    return out
+
+
+def _tdcc_weeks(codes: list[str]) -> dict[str, list[tuple[str, float]]]:
+    """{代號: [(集保結算日 新到舊, 400 張以上大戶合計股數)]}。"""
+    initialize_database()
+    out: dict[str, list[tuple[str, float]]] = {}
+    levels = ",".join(str(x) for x in BIG_HOLDER_LEVELS)
+    with get_connection() as connection:
+        _fundamentals_schema(connection)
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            rows = connection.execute(
+                f"""SELECT data_date, stock_code, SUM(shares) AS shares FROM tdcc_weekly
+                    WHERE stock_code IN ({','.join('?' for _ in batch)}) AND level IN ({levels})
+                    GROUP BY data_date, stock_code""",
+                tuple(batch),
+            ).fetchall()
+            for r in rows:
+                out.setdefault(str(r["stock_code"]).upper(), []).append((str(r["data_date"]), float(r["shares"] or 0)))
+    for weeks in out.values():
+        weeks.sort(reverse=True)
+    return out
+
+
+def _week_pct(weeks: list[tuple[str, float]], trade_date: str) -> tuple[float | None, str | None]:
+    """那天當時看得到的集保週（結算日早於那天）：大戶張數比前一週增減％。"""
+    visible = [(d, shares) for d, shares in weeks if d < trade_date]
+    if not visible:
+        return None, None
+    if len(visible) < 2 or visible[1][1] <= 0:
+        return None, visible[0][0]
+    return round((visible[0][1] / visible[1][1] - 1) * 100, 2), visible[0][0]
+
+
+def _disposition_spans(since: str) -> dict[str, list[tuple[str, str]]]:
+    spans: dict[str, list[tuple[str, str]]] = {}
+    for e in _logged_dispositions(since):
+        spans.setdefault(e["code"], []).append((e["start"], e.get("end") or "9999-12-31"))
+    return spans
+
+
+def _disposed(spans: dict[str, list[tuple[str, str]]], code: str, trade_date: str) -> bool:
+    return any(start <= trade_date <= end for start, end in spans.get(code, ()))
+
+
+# ------------------------------------------------------------------ 特徵
+
+def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, Any]]:
+    """bars 舊到新；回 {日期: 特徵}，只算 wanted 裡的日期。均線分數要 240 根（含當天）才有。"""
+    out: dict[str, dict[str, Any]] = {}
+    if not bars:
+        return out
+    closes = [b[4] for b in bars]
+    prefix = [0.0]
+    for c in closes:
+        prefix.append(prefix[-1] + c)
+    changes: list[float | None] = [None]
+    for i in range(1, len(closes)):
+        changes.append((closes[i] / closes[i - 1] - 1) * 100 if closes[i - 1] > 0 else None)
+    longest = max(MA_PERIODS)
+    for i, (d, o, h, l, c, v) in enumerate(bars):
+        if d not in wanted:
+            continue
+        n = i + 1
+        score = None
+        if n >= longest:
+            score = ma_alignment_score({p: (prefix[n] - prefix[n - p]) / p for p in MA_PERIODS})
+        hits = sum(1 for j in range(max(1, i - HITS_DAYS + 1), i + 1) if changes[j] is not None and changes[j] > HITS_MIN_PCT)
+        values = [bars[j][4] * bars[j][5] * 1000 / 1e8 for j in range(max(0, i - VALUE_DAYS + 1), i + 1)]
+        out[d] = {
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+            "prevClose": closes[i - 1] if i else None,
+            "changePct": _r2(changes[i]),
+            "score": score,
+            "hits20": hits,
+            "val5": _r2(_mean(values)),
+        }
+    return out
+
+
+def _group_members() -> dict[str, list[str]]:
+    return {name: [str(c).strip().upper() for c, _n in members] for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES}
+
+
+# ------------------------------------------------------------------ 建表
+
+_state: dict[str, Any] = {"builtAt": None, "lastDate": None, "dates": 0, "rows": 0, "lastRebuilt": [], "lastError": None}
+_lock = threading.Lock()
+_build_lock = threading.Lock()
+
+
+def collector_status() -> dict[str, Any]:
+    with _lock:
+        return dict(_state)
+
+
+def rebuild(*, force: bool = False) -> dict[str, Any]:
+    """補齊近 60 個交易日的表；最新 3 天一定重算。force＝全部重算。"""
+    with _build_lock:
+        try:
+            result = _rebuild(force=force)
+            with _lock:
+                _state.update({"builtAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "lastDate": result.get("date"),
+                               "dates": result.get("dates", 0), "rows": result.get("rows", 0), "lastRebuilt": result.get("rebuilt", []), "lastError": None})
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("heilong rebuild failed")
+            with _lock:
+                _state["lastError"] = str(exc)
+            raise
+
+
+def _rebuild(*, force: bool) -> dict[str, Any]:
+    initialize_database()
+    latest = _latest_bar_date()
+    if not latest:
+        return {"date": None, "rebuilt": [], "dates": 0, "rows": 0}
+    target = sorted(_bar_dates(HISTORY_DAYS))
+    with get_connection() as connection:
+        _schema(connection)
+        have = {str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM heilong_daily").fetchall()}
+    tail = set(target[-RECOMPUTE_TAIL:])
+    todo = [d for d in target if force or d not in have or d in tail]
+    result: dict[str, Any] = {"date": latest, "rebuilt": todo, "dates": len(target)}
+    if not todo:
+        with get_connection() as connection:
+            result["rows"] = connection.execute("SELECT COUNT(*) FROM heilong_daily").fetchone()[0]
+        return result
+    skipped = skipped_codes()
+    codes = [c for c in group_codes() if c not in skipped]
+    since = (datetime.strptime(todo[0], "%Y-%m-%d") - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+    bars_by_code = _load_bars(codes, since=since, until=todo[-1])
+    weeks = _tdcc_weeks(codes)
+    spans = _disposition_spans((datetime.strptime(todo[0], "%Y-%m-%d") - timedelta(days=DISPOSITION_LOOKBACK_DAYS)).strftime("%Y-%m-%d"))
+    wanted = set(todo)
+    rows_by_date: dict[str, dict[str, dict[str, Any]]] = {d: {} for d in todo}
+    for code, bars in bars_by_code.items():
+        group, _name = group_and_name(code)
+        for d, f in compute_features(bars, wanted).items():
+            f["group"] = group
+            f["weekPct"], f["weekDate"] = _week_pct(weeks.get(code, []), d)
+            f["disposed"] = _disposed(spans, code, d)
+            rows_by_date[d][code] = f
+    members = _group_members()
+    for d, rows in rows_by_date.items():
+        avg_by_group: dict[str, float | None] = {}
+        for name, member_codes in members.items():
+            scores = [rows[c]["score"] for c in member_codes if c in rows and rows[c]["score"] is not None]
+            avg_by_group[name] = round(_mean(scores), 1) if scores else None
+        for f in rows.values():
+            f["groupAvg"] = avg_by_group.get(f["group"])
+    total = 0
+    with get_connection() as connection:
+        _schema(connection)
+        for d, rows in rows_by_date.items():
+            connection.execute("DELETE FROM heilong_daily WHERE trade_date = ?", (d,))
+            connection.executemany(
+                """INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, prev_close, change_pct, score, hits20, val5,
+                   group_name, group_avg, week_pct, week_date, disposed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(d, code, f["open"], f["high"], f["low"], f["close"], f["volume"], f["prevClose"], f["changePct"], f["score"], f["hits20"], f["val5"],
+                  f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0) for code, f in rows.items()],
+            )
+            total += len(rows)
+        if target:
+            connection.execute("DELETE FROM heilong_daily WHERE trade_date < ?", (target[0],))
+        result["rows"] = connection.execute("SELECT COUNT(*) FROM heilong_daily").fetchone()[0]
+    result["written"] = total
+    return result
+
+
+def load_rows() -> tuple[list[str], dict[str, dict[str, dict[str, Any]]]]:
+    """(交易日 舊到新, {交易日: {代號: 列}})。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute("SELECT * FROM heilong_daily").fetchall()
+    table: dict[str, dict[str, dict[str, Any]]] = {}
+    for r in rows:
+        code = str(r["stock_code"])
+        table.setdefault(str(r["trade_date"]), {})[code] = {
+            "code": code, "date": str(r["trade_date"]),
+            "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"]), "volume": int(r["volume"]),
+            "prevClose": r["prev_close"], "changePct": r["change_pct"], "score": r["score"], "hits20": r["hits20"], "val5": r["val5"],
+            "group": r["group_name"] or "", "groupAvg": r["group_avg"], "weekPct": r["week_pct"], "weekDate": r["week_date"],
+            "disposed": bool(r["disposed"]),
+        }
+    return sorted(table), table
+
+
+# ------------------------------------------------------------------ 參數
+
+def _num(value: Any, name: str, *, integer: bool = False) -> float | int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value) if integer else float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 必須是數字") from exc
+
+
+def normalize_params(raw: dict[str, Any] | None) -> dict[str, Any]:
+    raw = raw or {}
+    p = dict(DEFAULT_PARAMS)
+    for key in ("score", "cap", "days", "hits"):
+        if key in raw and raw[key] is not None:
+            p[key] = _num(raw[key], key, integer=True)
+    for key in ("min", "max", "week", "gavg", "val", "tp", "amt"):
+        if key in raw and raw[key] is not None:
+            p[key] = _num(raw[key], key)
+    if "k" in raw and raw["k"]:
+        p["k"] = str(raw["k"])
+    if "sort" in raw and raw["sort"]:
+        p["sort"] = str(raw["sort"])
+    if "mine" in raw and raw["mine"]:
+        p["mine"] = str(raw["mine"])
+    if "exdispo" in raw and raw["exdispo"] is not None:
+        p["exdispo"] = str(raw["exdispo"]).lower() not in ("0", "false", "no", "")
+    if p["score"] is None or not 0 <= p["score"] <= 15:
+        raise ValueError("score 必須在 0～15")
+    if p["k"] not in K_KINDS:
+        raise ValueError("k 必須是 black／red／any")
+    if p["min"] is None or p["max"] is None or p["min"] > p["max"]:
+        raise ValueError("漲跌幅範圍 min 不能大於 max")
+    if p["sort"] not in SORT_KEYS:
+        raise ValueError("sort 必須是 " + "／".join(SORT_KEYS))
+    if p["mine"] not in MINE_KINDS:
+        raise ValueError("mine 必須是 close／tp／sl／both")
+    if p["tp"] is None or p["tp"] <= 0 or p["tp"] > 50:
+        raise ValueError("tp 必須在 0～50")
+    if p["cap"] is None or p["cap"] < 0:
+        raise ValueError("cap 不能是負數")
+    if p["days"] is None or p["days"] < 0:
+        raise ValueError("days 不能是負數")
+    if p["days"] > MAX_DAYS_PARAM:
+        p["days"] = 0
+    if p["amt"] is None or p["amt"] <= 0:
+        raise ValueError("amt 必須大於 0")
+    if p["hits"] is not None and p["hits"] < 0:
+        raise ValueError("hits 不能是負數")
+    return p
+
+
+# ------------------------------------------------------------------ 選股與出場
+
+def _sort_value(row: dict[str, Any], key: str) -> float:
+    if key == "drop":
+        return row["changePct"] if row["changePct"] is not None else float("inf")
+    field = {"score": "score", "week": "weekPct", "gavg": "groupAvg", "hits": "hits20", "val": "val5"}[key]
+    value = row.get(field)
+    return float("-inf") if value is None else -float(value)
+
+
+def select_rows(rows: dict[str, dict[str, Any]], p: dict[str, Any]) -> list[dict[str, Any]]:
+    """一天裡符合參數的股，依排序取前 cap 檔（0＝不限）。"""
+    picked: list[dict[str, Any]] = []
+    for r in rows.values():
+        if r["score"] is None or r["score"] < p["score"]:
+            continue
+        if p["k"] == "black" and not (r["open"] > 0 and r["close"] < r["open"]):
+            continue
+        if p["k"] == "red" and not (r["open"] > 0 and r["close"] > r["open"]):
+            continue
+        cp = r["changePct"]
+        if cp is None or cp < p["min"] or cp > p["max"]:
+            continue
+        if p["week"] is not None and (r["weekPct"] is None or r["weekPct"] < p["week"]):
+            continue
+        if p["gavg"] is not None and (r["groupAvg"] is None or r["groupAvg"] < p["gavg"]):
+            continue
+        if p["hits"] is not None and (r["hits20"] is None or r["hits20"] < p["hits"]):
+            continue
+        if p["val"] is not None and (r["val5"] is None or r["val5"] < p["val"]):
+            continue
+        if p["exdispo"] and r["disposed"]:
+            continue
+        picked.append(r)
+    picked.sort(key=lambda r: (_sort_value(r, p["sort"]), -(r["score"] or 0), r["code"]))
+    if p["cap"] > 0:
+        picked = picked[:p["cap"]]
+    return picked
+
+
+def _pct(entry: float, price: float) -> float:
+    return round((price / entry - 1) * 100, 2)
+
+
+def exits(entry: float, low_k: float, nxt: tuple[float, float, float, float], tp: float | None) -> dict[str, Any]:
+    """D+1（開、高、低、收）各種出場方式的報酬％，以及盤中有沒有碰到停利／跌破黑K低。"""
+    o, h, l, c = nxt
+    close_x = _pct(entry, c)
+    target = entry * (1 + tp / 100) if tp else None
+    hit_tp = (h >= target) if target is not None else None
+    hit_sl = l < low_k
+    if target is None:
+        tp_x = close_x
+    elif o >= target:
+        tp_x = _pct(entry, o)
+    elif h >= target:
+        tp_x = _pct(entry, target)
+    else:
+        tp_x = close_x
+    if o < low_k:
+        sl_x = _pct(entry, o)
+    elif l < low_k:
+        sl_x = _pct(entry, low_k)
+    else:
+        sl_x = close_x
+    if target is None:
+        both_x = sl_x
+    elif o >= target:
+        both_x = _pct(entry, o)
+    elif o < low_k:
+        both_x = _pct(entry, o)
+    elif l < low_k:
+        both_x = _pct(entry, low_k)      # 同一天兩個都碰到（或只破低）保守算停損
+    elif h >= target:
+        both_x = _pct(entry, target)
+    else:
+        both_x = close_x
+    open_x = _pct(entry, o)
+    ohl_x = open_x if o > entry else close_x
+    return {"close": close_x, "tp": tp_x, "sl": sl_x, "both": both_x, "open": open_x, "ohl": ohl_x, "hitTp": hit_tp, "hitSl": hit_sl}
+
+
+def _gap(entry: float, row: dict[str, Any] | None) -> bool:
+    if row is None or entry <= 0:
+        return False
+    return abs(row["open"] / entry - 1) * 100 > GAP_PCT or abs(row["close"] / entry - 1) * 100 > GAP_PCT
+
+
+def _row_at(table: dict[str, dict[str, dict[str, Any]]], dates: list[str], j: int, code: str) -> dict[str, Any] | None:
+    if j < 0 or j >= len(dates):
+        return None
+    return table.get(dates[j], {}).get(code)
+
+
+def evaluate(row: dict[str, Any], dates: list[str], index: dict[str, int], table: dict[str, dict[str, dict[str, Any]]], tp: float) -> dict[str, Any]:
+    """一筆進場的完整紀錄：參數欄位、進場價、黑K低、停利價、D+1 開高低收、各種出場、爆發力。"""
+    code = row["code"]
+    entry, low_k = row["close"], row["low"]
+    group, name = group_and_name(code)
+    out: dict[str, Any] = {
+        "code": code, "name": name, "group": row["group"] or group, "date": row["date"],
+        "score": row["score"], "groupAvg": row["groupAvg"], "weekPct": row["weekPct"], "weekDate": row["weekDate"],
+        "changePct": row["changePct"], "hits20": row["hits20"], "val5": row["val5"], "disposed": row["disposed"],
+        "entry": entry, "lowK": low_k, "target": _r2(entry * (1 + tp / 100)),
+        "next": None, "gap": False, "hitTp": None, "hitSl": None, "exits": None, "burst": None,
+    }
+    i = index[row["date"]]
+    nxt = _row_at(table, dates, i + 1, code)
+    if nxt is None or entry <= 0:
+        return out
+    if _gap(entry, nxt):
+        out["gap"] = True
+        return out
+    out["next"] = {"date": nxt["date"], "open": nxt["open"], "high": nxt["high"], "low": nxt["low"], "close": nxt["close"]}
+    x = exits(entry, low_k, (nxt["open"], nxt["high"], nxt["low"], nxt["close"]), tp)
+    out["hitTp"], out["hitSl"] = x.pop("hitTp"), x.pop("hitSl")
+    d2 = _row_at(table, dates, i + 2, code)
+    d2 = None if _gap(entry, d2) else d2
+    d3 = _row_at(table, dates, i + 3, code) if d2 else None
+    d3 = None if _gap(entry, d3) else d3
+    x["d2"] = _pct(entry, d2["close"]) if d2 else None
+    out["exits"] = x
+    high2 = max(nxt["high"], d2["high"]) if d2 else None
+    high3 = max(high2, d3["high"]) if d2 and d3 else None
+    out["burst"] = {
+        "max1": _pct(entry, nxt["high"]), "max2": _pct(entry, high2) if high2 else None, "max3": _pct(entry, high3) if high3 else None,
+        "open1": _pct(entry, nxt["open"]), "close1": _pct(entry, nxt["close"]),
+        "close2": _pct(entry, d2["close"]) if d2 else None, "close3": _pct(entry, d3["close"]) if d3 else None,
+    }
+    return out
+
+
+# ------------------------------------------------------------------ 統計
+
+def stats(values: list[float], amount: float) -> dict[str, Any]:
+    """筆數、平均、中位數、勝率（>0）、總損益（每檔 amount 萬）、最差／最佳單筆。"""
+    if not values:
+        return {"count": 0, "avg": None, "median": None, "win": None, "wins": 0, "total": None, "worst": None, "best": None}
+    wins = sum(1 for v in values if v > 0)
+    return {"count": len(values), "avg": _r2(_mean(values)), "median": _r2(median(values)), "win": round(wins / len(values) * 100), "wins": wins,
+            "total": round(sum(values) / 100 * amount, 1), "worst": min(values), "best": max(values)}
+
+
+def _burst_stats(trades: list[dict[str, Any]], n: int) -> dict[str, Any]:
+    key = f"max{n}"
+    values = [t["burst"][key] for t in trades if t["burst"] and t["burst"].get(key) is not None]
+    closes = [t["burst"][f"close{n}"] for t in trades if t["burst"] and t["burst"].get(f"close{n}") is not None]
+    opens = [t["burst"]["open1"] for t in trades if t["burst"]] if n == 1 else []
+    if not values:
+        return {"samples": 0, "avg": None, "win": None, "ge5": None, "ge10": None, "best": None, "worst": None, "closeAvg": None, "openAvg": None}
+    count = len(values)
+    return {"samples": count, "avg": _r2(_mean(values)), "win": round(sum(1 for v in values if v > 0) / count * 100),
+            "ge5": round(sum(1 for v in values if v >= 5) / count * 100), "ge10": round(sum(1 for v in values if v >= 10) / count * 100),
+            "best": max(values), "worst": min(values), "closeAvg": _r2(_mean(closes)) if closes else None,
+            "openAvg": _r2(_mean(opens)) if opens else None}
+
+
+def backtest(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """前端要的整包：參數、出場方式績效、累積曲線、爆發力、今日名單、每日明細。"""
+    p = normalize_params(params)
+    dates, table = load_rows()
+    if not dates:
+        return {"status": "empty", "reason": "還沒有黑龍名單（收盤後會自動建）", "params": p, "rules": RULES, "collector": collector_status()}
+    latest = dates[-1]
+    index = {d: i for i, d in enumerate(dates)}
+    window = dates[-p["days"]:] if p["days"] > 0 else list(dates)
+    trades: list[dict[str, Any]] = []
+    daily: list[dict[str, Any]] = []
+    curve: list[dict[str, Any]] = []
+    cum = {m: 0.0 for m in CURVE_METHODS}
+    today: dict[str, Any] = {"date": latest, "count": 0, "rows": []}
+    for d in window:
+        rows = [evaluate(r, dates, index, table, p["tp"]) for r in select_rows(table.get(d, {}), p)]
+        with_next = [x for x in rows if x["next"]]
+        avg = {m: _r2(_mean([x["exits"][m] for x in with_next])) if with_next else None for m in CURVE_METHODS}
+        daily.append({"date": d, "count": len(rows), "withNext": len(with_next), "avg": avg, "rows": rows})
+        if d == latest:
+            today = {"date": d, "count": len(rows), "rows": rows}
+        if with_next:
+            for m in CURVE_METHODS:
+                cum[m] += avg[m] or 0.0
+            point: dict[str, Any] = {"date": d, "count": len(with_next), **avg, "cum": {m: _r2(cum[m]) for m in CURVE_METHODS}}
+            for n in (1, 2, 3):
+                values = [x["burst"][f"max{n}"] for x in with_next if x["burst"] and x["burst"].get(f"max{n}") is not None]
+                point[f"max{n}"] = _r2(_mean(values)) if values else None
+                point[f"n{n}"] = len(values)
+            curve.append(point)
+            trades.extend(with_next)
+    daily.reverse()
+    methods = []
+    for key in METHODS:
+        values = [x["exits"][key] for x in trades if x["exits"] and x["exits"].get(key) is not None]
+        label = METHOD_LABELS[key] + (f"（+{p['tp']:g}%）" if key in ("tp", "both") else "")
+        methods.append({"key": key, "label": label, **stats(values, p["amt"])})
+    hit_tp = [x for x in trades if x["hitTp"]]
+    hit_sl = [x for x in trades if x["hitSl"]]
+    back_days = len(curve)
+    result = {
+        "status": "ok", "date": latest, "dates": dates, "params": p,
+        "window": {"days": p["days"], "from": window[0], "to": latest, "backtestDays": back_days},
+        "stats": {
+            "days": back_days, "trades": len(trades), "perDay": _r2(len(trades) / back_days) if back_days else None,
+            "hitTp": round(len(hit_tp) / len(trades) * 100) if trades else None,
+            "hitSl": round(len(hit_sl) / len(trades) * 100) if trades else None,
+            "mine": p["mine"], "methods": methods,
+        },
+        "burst": {f"d{n}": _burst_stats(trades, n) for n in (1, 2, 3)},
+        "curve": curve,
+        "today": today,
+        "daily": daily,
+        "rules": RULES,
+        "collector": collector_status(),
+    }
+    return result

@@ -26,6 +26,7 @@ from trading_days import is_trading_day
 from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
+from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
     contract_debug,
@@ -835,6 +836,37 @@ def get_etf_status() -> dict[str, Any]:
 def post_etf_collect() -> dict[str, Any]:
     """立刻從鏡像拉主動式 ETF 五檔的持股（排程主機晚上推完會戳這裡），有新的就重算下午報。"""
     return {"status": "ok", "result": run_etf_collect()}
+
+
+@app.get("/api/hub/heilong")
+def get_heilong(
+    score: int = Query(10), k: str = Query("black"), lo: float = Query(-10.0, alias="min"), hi: float = Query(3.0, alias="max"),
+    week: float | None = Query(None), gavg: float | None = Query(None), hits: int | None = Query(None), val: float | None = Query(None),
+    exdispo: int = Query(1), cap: int = Query(0), sort: str = Query("score"), tp: float = Query(3.0), mine: str = Query("both"),
+    days: int = Query(10), amt: float = Query(50.0),
+) -> dict[str, Any]:
+    """下午報・黑龍回測：照參數（均線分數、K棒、漲跌幅、週籌碼、族群平均分、近 20 日漲逾 8% 次數、5 日均成交值、排除處置、每天最多幾檔）
+    挑每天的名單，用 D+1 開高低收算各種出場方式的績效、累積曲線、爆發力，附今日名單與每日明細（2026-09-28 使用者：照創高黑龍績效分析做）。"""
+    from fastapi import HTTPException
+
+    try:
+        return heilong_backtest_payload({
+            "score": score, "k": k, "min": lo, "max": hi, "week": week, "gavg": gavg, "hits": hits, "val": val,
+            "exdispo": exdispo, "cap": cap, "sort": sort, "tp": tp, "mine": mine, "days": days, "amt": amt,
+        })
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/heilong/status")
+def get_heilong_status() -> dict[str, Any]:
+    return {"status": "ok", **heilong_status()}
+
+
+@app.post("/api/hub/heilong/rebuild")
+def post_heilong_rebuild(force: int = Query(0)) -> dict[str, Any]:
+    """立刻補齊／重算黑龍表（force=1 全部重算）。"""
+    return {"status": "ok", "result": rebuild_heilong(force=bool(force))}
 
 
 @app.get("/api/hub/bars1d/{stock_code}")

@@ -668,6 +668,13 @@ def run_once(now: datetime | None = None) -> dict[str, Any]:
         with _lock:
             _state.update({"lastRunAt": now.isoformat(timespec="seconds"), "lastDate": latest, "lastError": None,
                            "backfilled": _state["backfilled"] + len(result["backfilled"])})
+        try:
+            from heilong_backtest import rebuild as rebuild_heilong   # 黑龍回測表跟著日報一起補（2026-09-28）
+
+            result["heilong"] = rebuild_heilong()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("heilong rebuild failed")
+            result["heilongError"] = str(exc)
     except Exception as exc:  # noqa: BLE001
         logger.exception("swing report failed")
         with _lock:
