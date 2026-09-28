@@ -43,7 +43,7 @@ class AnalyzeBarsTests(unittest.TestCase):
         self.assertTrue(t["crossedMa20"] and t["aboveMa20"])
         self.assertEqual(t["ma20"], 100.2)
         self.assertAlmostEqual(t["aboveMa20Pct"], 3.79, places=2)
-        self.assertEqual((t["score"], t["prevScore"]), (15, 0))    # 最後一天拉高：短均線全部在長均線上面
+        self.assertEqual((t["score"], t["prevScore"]), (15, 6))    # 最後一天拉高；前一天完全平盤，內定算法仍算「創新高」6 分（近期最高＝平盤本身）
         self.assertEqual(t["threeDayLow"], 99.0)
         self.assertEqual(t["changePct"], 4.0)
         self.assertFalse(t["ma60OverHead"])
@@ -101,7 +101,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((r["basis"]["stocks"], r["basis"]["withScore"], r["basis"]["hasInst"]), (3, 2, True))
         self.assertEqual(r["basis"]["instDates"][0], "2026-09-24")
         self.assertEqual(r["tiles"]["crossed"], 1)
-        self.assertEqual(r["tiles"]["maJump"], 1)
+        self.assertEqual((r["tiles"]["bodyJump"], r["tiles"]["strong"]), (1, 1))
         self.assertEqual(r["tiles"]["newFull"], 1)
         self.assertEqual(r["tiles"]["disposition"], 1)
         tech = r["picks"]["tech"]
@@ -114,9 +114,10 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((chips[0]["inst5"], chips[0]["instStreak"], chips[0]["instToday"], chips[0]["tag"]), (5000.0, 5, 1000.0, "法人連買 5 天"))
         self.assertEqual((chips[0]["mf5"], chips[0]["mfStreak"]), (800, 2))
         self.assertEqual(chips[0]["risks"], [])
-        ma = r["picks"]["ma"]
-        self.assertEqual([x["code"] for x in ma], ["6182"])
-        self.assertEqual((ma[0]["tag"], ma[0]["health"]), ("均線 0→15", 7))
+        body = r["picks"]["body"]
+        self.assertEqual([x["code"] for x in body], ["6182"])
+        # 前一天完全平盤，內定算法算 6 分（創新高條件同值也算）；問診七科：均線／族群／法人各 2 分，總分 6
+        self.assertEqual((body[0]["tag"], body[0]["seven"], body[0]["sevenCls"]), ("問診 6 分", 6, "強勢"))
         groups = {g["name"]: g for g in r["groups"]}
         self.assertEqual([g["name"] for g in r["groups"]], ["矽晶圓", "半導體", "設備股"])   # 依當天平均漲跌幅排
         self.assertEqual((groups["矽晶圓"]["aboveMa20"], groups["矽晶圓"]["members"], groups["矽晶圓"]["inst5"], groups["矽晶圓"]["rank"]), (1, 1, 5000.0, 1))
@@ -125,23 +126,12 @@ class ReportTests(unittest.TestCase):
         self.assertIn("資金主軸在已站上月線的族群：矽晶圓", r["summary"][0])
         self.assertIn("籌碼面首選 合晶；技術面首選 合晶", r["summary"][1])
         self.assertIn("均線新滿分 合晶", r["summary"][2])
+        self.assertIn("體質轉強 合晶", r["summary"][2])
         self.assertTrue(r["summary"][-1].startswith("風險提示"))
-        self.assertEqual(r["counts"], {"chips": 1, "tech": 1, "techNear": 0, "ma": 1, "full": 1})
-        self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["0→15"])
-        self.assertEqual(r["notes"]["jumpTop"], [{"code": "6182", "name": "合晶", "from": 0, "to": 15}])
-        self.assertEqual((r["notes"]["sustained"], r["notes"]["prevDate"]), ([], None))   # 還沒有前一份報告
-
-    def test_sustained_uses_previous_report(self) -> None:
-        with patch.object(module, "_disposition_codes", return_value=set()):
-            module.refresh_report("2026-09-23")
-            r = module.build_report("2026-09-24")
-            self.assertEqual(r["notes"]["prevDate"], "2026-09-23")
-            # 09/23 那份：合晶法人連買 4 天已在籌碼面精選；今天仍在月線上、均線 15 → 續強確認
-            self.assertEqual(r["notes"]["sustained"], [{"code": "6182", "name": "合晶", "score": 15}])
-            fake = {"date": "2026-09-23", "generatedAt": "x", "picks": {"tech": [{"code": "6207"}]}}
-            module.save_report(fake)
-            r = module.build_report("2026-09-24")
-            self.assertEqual(r["notes"]["sustained"], [])   # 雷科在月線下、沒分數，不算續強
+        self.assertEqual(r["counts"], {"chips": 1, "tech": 1, "techNear": 0, "body": 1, "strong": 1, "full": 1})
+        self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["6→15"])
+        self.assertEqual(r["notes"]["jumpTop"], [{"code": "6182", "name": "合晶", "from": 6, "to": 15}])
+        self.assertEqual(r["notes"]["sustained"], [])   # 合晶是跳升進來的，不算續強（見下面 SustainedTests 另外測沒跳升的續強情形）
 
     def test_last_week_followup(self) -> None:
         with patch.object(module, "_disposition_codes", return_value=set()):
@@ -197,6 +187,58 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(module._in_refresh_window(datetime(2026, 9, 24, 15, 10, tzinfo=TW)))
         self.assertFalse(module._in_refresh_window(datetime(2026, 9, 24, 14, 0, tzinfo=TW)))
         self.assertFalse(module._in_refresh_window(datetime(2026, 9, 25, 16, 0, tzinfo=TW)))   # 中秋節
+
+
+class SustainedTests(unittest.TestCase):
+    """體質轉強（問診七科判強勢＋均線跳升）跟續強確認（昨日已強、今日維持）是兩條不相交的名單，
+    用跟 ReportTests 不同的小族群獨立測，避免跟那邊的共用 fixture 糾在一起。"""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+        main_force_store._table_ready_path = None
+        main_force_store._ensure_table()
+        groups = {"面板": [("2409", "友達")], "矽晶圓2": [("6183", "合晶乙")]}
+        self.patches = [patch.object(m, "STOCK_GROUPS", groups) for m in (module, brew_launch, brew_launch_history)]
+        for p in self.patches:
+            p.start()
+        brew_launch_history._group_by_code.clear()
+        dates = trading_dates("2026-09-24", 241)
+        rows = []
+        # 友達：241 天線性緩漲，前一天、今天均線分數都是 15，沒有跳升 → 應該落在「續強確認」，不進「體質轉強」名單
+        rising = [100 + i * 0.5 for i in range(241)]
+        rows += [("2409", d + "T00:00:00", c - 0.3, c + 0.5, c - 0.5, c, 500) for d, c in zip(dates, rising)]
+        # 合晶乙：跟 ReportTests 的合晶同款「平盤 240 天、最後一天拉 4%」，均線 6→15 有跳升 → 進「體質轉強」，不算續強
+        rows += [("6183", d + "T00:00:00", 100, 101, 99, 100, 500) for d in dates[:-1]] + [("6183", dates[-1] + "T00:00:00", 100, 105, 103, 104, 1000)]
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        for d in dates[-5:]:
+            chips_daily.save_institutional(d, "OTC", [
+                {"code": "2409", "name": "友達", "foreign": 500_000, "trust": 0, "dealer": 0, "total": 500_000},
+                {"code": "6183", "name": "合晶乙", "foreign": 500_000, "trust": 0, "dealer": 0, "total": 500_000},
+            ], "test")
+
+    def tearDown(self) -> None:
+        brew_launch_history._group_by_code.clear()
+        for p in self.patches:
+            p.stop()
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+        main_force_store._table_ready_path = None
+
+    def test_sustained_vs_jumped(self) -> None:
+        with patch.object(module, "_disposition_codes", return_value=set()):
+            r = module.build_report("2026-09-24")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual([x["code"] for x in r["picks"]["body"]], ["6183"])          # 有跳升的那檔進體質轉強名單
+        self.assertEqual([x["code"] for x in r["notes"]["sustained"]], ["2409"])     # 沒跳升、昨天就已經強的那檔算續強確認
+        # 兩檔問診七科總分都是 6（均線／族群／法人各 2 分，其餘沒資料不計入）
+        self.assertEqual(r["picks"]["body"][0]["tag"], "問診 6 分")
+        self.assertEqual(r["notes"]["sustained"][0], {"code": "2409", "name": "友達", "score": 15, "total": 6})
+        self.assertEqual((r["tiles"]["bodyJump"], r["tiles"]["strong"]), (1, 2))
+        self.assertEqual((r["counts"]["body"], r["counts"]["strong"]), (1, 2))
 
 
 if __name__ == "__main__":
