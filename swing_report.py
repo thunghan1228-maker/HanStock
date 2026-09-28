@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from brew_launch import MA_PERIODS, _latest_bar_date, _load_bars, _load_market_values, group_codes, ma_alignment_score, skipped_codes
+from brew_launch import MA_PERIODS, _latest_bar_date, _load_bars, _load_market_values, group_codes, skipped_codes
 from brew_launch_history import group_and_name
 from chips_daily import _institutional_by_date, _streak, main_force_daily, main_force_dates, stored_dates
 from database import get_connection, initialize_database
@@ -31,6 +31,7 @@ TW_TZ = timezone(timedelta(hours=8))
 
 KEEP_DAYS = 40                 # 表裡最多留幾天
 LOOKBACK_DATES = 10            # 前端可回看的天數
+SUSTAIN_MIN_PREV = 10          # 續強確認：今天問診判強勢，而且昨天均線分數就已 ≥ 這個數（不是今天才跳上來）
 PICK_LIMIT = 5                 # 每個精選名單最多幾檔
 INST_DAYS = 5                  # 法人／主力「5 日」
 TECH_MIN_ABOVE_PCT = 3.0       # 真穿月線：收盤站上月線 ≥3%
@@ -193,8 +194,12 @@ def analyze_bars(bars: list[tuple[str, float, float, float, int]]) -> dict[str, 
     close, prev = closes[-1], closes[-2]
     ma = {p: _mean(closes[-p:]) for p in (5, 10, 20, 60) if n >= p}
     prev_ma20 = _mean(closes[-21:-1])
-    score = ma_alignment_score({p: _mean(closes[-p:]) for p in MA_PERIODS}) if n >= max(MA_PERIODS) else None
-    prev_score = ma_alignment_score({p: _mean(closes[-p - 1:-1]) for p in MA_PERIODS}) if n >= max(MA_PERIODS) + 1 else None
+    # 均線分數＝內定算法（2026-09-28 使用者：本站算法拿掉、全站統一）：站上 6 條均線＋創 6 個天期新高＋多頭排列 3，滿分 15。
+    # 延遲匯入：heilong_backtest 會 import 這個模組（處置紀錄），放在最上面會循環。
+    from heilong_backtest import official_score
+
+    score = official_score(closes) if n >= max(MA_PERIODS) else None
+    prev_score = official_score(closes[:-1]) if n >= max(MA_PERIODS) + 1 else None
     ma20 = ma[20]
     change_pct = (close / prev - 1) * 100 if prev > 0 else 0.0
     above_ma20_pct = (close / ma20 - 1) * 100 if ma20 > 0 else 0.0
@@ -396,9 +401,34 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     for code, entry in chips.items():
         entry["peGroupAvg"] = group_pe.get(group_of.get(code, ""))
 
+    # 問診七科（跟個股研究／健診同一套口徑；2026-09-28 使用者：體質轉強改用七科）
+    # 延遲匯入：stock_checkup → heilong_backtest → 這個模組，放最上面會循環。
+    from stock_checkup import subjects as seven_subjects
+
+    group_avg_score = {g["name"]: g["avgScore"] for g in groups}
+    group_size = {g["name"]: g["members"] for g in groups}
+    pos_rank: dict[str, int] = {}   # 族內名次＝當天漲跌幅在族內的排名（跟 stock_checkup 一樣，第一個族群為準）
+    for name, members in STOCK_GROUPS.items():
+        if name in SPECIAL_GROUP_NAMES:
+            continue
+        fresh = [str(c).strip().upper() for c, _n in members if str(c).strip().upper() in tech]
+        fresh.sort(key=lambda c: tech[c]["changePct"], reverse=True)
+        for i, c in enumerate(fresh):
+            pos_rank.setdefault(c, i + 1)
+    seven: dict[str, dict[str, Any]] = {}
+    for code, t in tech.items():
+        g = group_of.get(code, "")
+        ch = chips.get(code, {})
+        seven[code] = seven_subjects(t["score"], group_avg_score.get(g), pos_rank.get(code), group_size.get(g),
+                                     ch.get("weekPct"), ch.get("pe"), ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
+
     def card(code: str, tag: str) -> dict[str, Any]:
         g = group_of.get(code, "")
-        return _card(code, tech[code], chips.get(code, {}), g, group_rank.get(g, 99) <= HOT_GROUP_RANK, code in disposed, tag)
+        out = _card(code, tech[code], chips.get(code, {}), g, group_rank.get(g, 99) <= HOT_GROUP_RANK, code in disposed, tag)
+        sv = seven.get(code) or {}
+        out["seven"] = sv.get("total")
+        out["sevenCls"] = sv.get("cls")
+        return out
 
     eligible = [c for c in tech if c not in skipped]
     # 籌碼面精選：法人 5 日買超，且法人連買≥3 天或主力連買≥2 天或 5 日買超≥股本 1%；法人 5 日佔股本比例高的在前
@@ -431,11 +461,12 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     tech_all = [c for c in tech_qualified if c not in tech_skipped]
     tech_all.sort(key=lambda c: tech[c]["aboveMa20Pct"], reverse=True)
     tech_picks = [card(c, f"站上 +{tech[c]['aboveMa20Pct']:.1f}%") for c in tech_all[:PICK_LIMIT]]
-    # 均線轉強：均線分數比前一交易日跳升 ≥3 且 ≥8 分；跳得多、體質好的在前
-    ma_all = [c for c in eligible if tech[c]["score"] is not None and tech[c]["prevScore"] is not None
-              and tech[c]["score"] - tech[c]["prevScore"] >= MA_JUMP_MIN and tech[c]["score"] >= MA_STRONG_MIN]
-    ma_all.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], chips.get(c, {}).get("health") or 0, tech[c]["score"]), reverse=True)
-    ma_picks = [card(c, f"均線 {tech[c]['prevScore']}→{tech[c]['score']}") for c in ma_all[:PICK_LIMIT]]
+    # 體質轉強：問診七科判強勢，再取均線分數比前一交易日跳升 ≥3 者；七科總分高、跳得多的在前（跟學員專區日報同口徑）
+    jump = lambda c: (tech[c]["score"] - tech[c]["prevScore"]) if tech[c]["score"] is not None and tech[c]["prevScore"] is not None else None  # noqa: E731
+    strong_all = [c for c in eligible if seven[c]["cls"] == "強勢"]
+    body_all = [c for c in strong_all if (jump(c) or 0) >= MA_JUMP_MIN]
+    body_all.sort(key=lambda c: (seven[c]["total"], jump(c), tech[c]["score"]), reverse=True)
+    body_picks = [card(c, f"問診 {seven[c]['total']} 分") for c in body_all[:PICK_LIMIT]]
     # 均線結構轉強：今天新達 15 分（前一交易日 <15）；跳得多、法人 5 日佔股本高的在前
     new_full = [c for c in eligible if tech[c]["score"] == 15 and tech[c]["prevScore"] is not None and tech[c]["prevScore"] < 15]
     new_full.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], chips.get(c, {}).get("inst5Pct") or 0), reverse=True)
@@ -444,20 +475,11 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     jumped = [c for c in eligible if tech[c]["score"] is not None and tech[c]["prevScore"] is not None and tech[c]["score"] > tech[c]["prevScore"]]
     jumped.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], tech[c]["score"]), reverse=True)
     jump_top = [{"code": c, "name": group_and_name(c)[1], "from": tech[c]["prevScore"], "to": tech[c]["score"]} for c in jumped[:5]]
-    # 續強確認：前一份報告的精選（籌碼面／技術面／體質／新滿分）今天仍在月線上且均線分數 ≥10
-    sustained: list[dict[str, Any]] = []
-    prev_payload = _previous_report(as_of)
-    if prev_payload:
-        seen: set[str] = set()
-        for key in ("chips", "tech", "ma", "full"):
-            for x in (prev_payload.get("picks") or {}).get(key) or []:
-                c = str(x.get("code") or "").upper()
-                if c in seen or c not in tech:
-                    continue
-                seen.add(c)
-                t = tech[c]
-                if t["aboveMa20"] and (t["score"] or 0) >= 10:
-                    sustained.append({"code": c, "name": group_and_name(c)[1], "score": t["score"]})
+    # 續強確認（昨日已強、今日維持）：今天問診判強勢、但不是今天才跳升的——昨天均線分數就已 ≥10
+    sustained = [{"code": c, "name": group_and_name(c)[1], "score": tech[c]["score"], "total": seven[c]["total"]}
+                 for c in strong_all if c not in body_all and (tech[c]["prevScore"] or 0) >= SUSTAIN_MIN_PREV]
+    sustained.sort(key=lambda x: (x["total"], x["score"] or 0), reverse=True)
+    sustained = sustained[:8]
     # 今日摘要
     main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] > 0]
     main_groups.sort(key=lambda g: g["inst5"], reverse=True)
@@ -472,7 +494,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     if brewing_groups:
         summary.append("法人先進、型態未翻：" + "、".join(g["name"] for g in brewing_groups[:2]) + " —— 低檔醞釀，等站上月線再進")
     summary.append("籌碼面首選 " + (names(chips_picks[:2]) or "無") + "；技術面首選 " + (names(tech_picks[:3]) or "無"))
-    summary.append("均線轉強 " + (names(ma_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:3]) or "無"))
+    summary.append("體質轉強 " + (names(body_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:3]) or "無"))
     dispo = disposition_sections(as_of, set(codes))
     last_week = _last_week_followup(as_of, _week_ago_report(as_of), bars_by_code, tech, inst_dates, inst_by_date)
     try:
@@ -484,7 +506,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         buys = "、".join(x["name"] for x in active_etf["sync"]["buy"][:3]) or "無"
         sells = "、".join(x["name"] for x in active_etf["sync"]["sell"][:3]) or "無"
         summary.append(f"主動式基金（{active_etf['date'][5:].replace('-', '/')}）同步加碼 {buys}；同步減碼 {sells}")
-    risk_lines = [f"{x['name']} {r}" for x in chips_picks + tech_picks + ma_picks for r in x["risks"]]
+    risk_lines = [f"{x['name']} {r}" for x in chips_picks + tech_picks + body_picks for r in x["risks"]]
     summary.append("風險提示：" + ("；".join(risk_lines[:4]) if risk_lines else "精選名單沒有特別的風險提示"))
     return {
         "status": "ok",
@@ -495,7 +517,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                   "peDate": max((r["date"] for r in pe_map.values()), default=None), "peCount": sum(1 for c in chips.values() if c.get("pe") is not None),
                   "revenueYm": max((r["ym"] for r in rev_map.values()), default=None), "revenueCount": len(rev_map),
                   "tdccDate": max((t["date"] for t in tdcc.values()), default=None), "tdccCount": len(tdcc), "sharesCount": len(shares)},
-        "tiles": {"crossed": len(crossed), "crossedQualified": len(tech_all), "maJump": len(ma_all), "chips": len(chips_all),
+        "tiles": {"crossed": len(crossed), "crossedQualified": len(tech_all), "bodyJump": len(body_all), "strong": len(strong_all), "chips": len(chips_all),
                   "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full),
                   "upcoming": len(dispo["upcoming"]), "releasing": len(dispo["releasing"]),
                   "etfSyncBuy": len(active_etf["sync"]["buy"]) if active_etf else 0, "etfSyncSell": len(active_etf["sync"]["sell"]) if active_etf else 0},
@@ -505,14 +527,14 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "activeEtf": active_etf,
         "summary": summary,
         "groups": groups,
-        "picks": {"chips": chips_picks, "tech": tech_picks, "ma": ma_picks, "full": full_picks},
-        "notes": {"jumpTop": jump_top, "sustained": sustained, "prevDate": prev_payload.get("date") if prev_payload else None},
-        "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "ma": len(ma_all), "full": len(new_full)},
+        "picks": {"chips": chips_picks, "tech": tech_picks, "body": body_picks, "full": full_picks},
+        "notes": {"jumpTop": jump_top, "sustained": sustained},
+        "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
             "chips": f"法人 5 日買超，且集保大戶週增≥{WEEK_BIG_MIN_PCT:g}%、法人連買≥{CHIPS_MIN_STREAK} 天、主力連買≥{CHIPS_MIN_MF_STREAK} 天或 5 日買超≥股本 {CHIPS_MIN_INST5_PCT:g}%；籌碼分數（大戶週增 % ＋ 法人 5 日佔股本 %）高的在前",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
-            "ma": f"均線分數比前一交易日跳升 ≥{MA_JUMP_MIN} 且 ≥{MA_STRONG_MIN} 分；體質＝站上月線、均線分數≥10、法人 5 日買超、主力 5 日買超、法人連買≥2 天、量≥5 日均量、今天收漲，七項各 1 分",
-            "full": "均線分數滿分 15；當天收盤新達 15 分（前一交易日 <15）。續強確認＝前一份報告的精選今天仍在月線上且均線分數 ≥10",
+            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
+            "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、法人今天轉賣超、本益比高於族群均值、營收年增為負、處置中",
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；技術面略過營收年增為負的",
             "disposition": "明日起處置＝公告起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易；觀察名單＝出獄 5 個交易日內",
@@ -536,14 +558,6 @@ def _disposition_codes() -> set[str]:
         return {str(c).strip().upper() for c in active.keys()}
     except Exception:  # noqa: BLE001
         return set()
-
-
-def _previous_report(as_of: str) -> dict[str, Any] | None:
-    """基準日之前最近一份存好的報告（續強確認用）。"""
-    for d in report_dates(LOOKBACK_DATES + 5):
-        if d < as_of:
-            return load_report(d)
-    return None
 
 
 def _week_ago_report(as_of: str) -> dict[str, Any] | None:
