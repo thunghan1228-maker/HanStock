@@ -41,7 +41,7 @@ OFFICIAL_HI_PERIODS = (5, 10, 20, 60, 120, 360)   # 官網式「創 6 個天期�
 OFFICIAL_RECENT_DAYS = 3                            # 近 n 日最高收盤落在最近 3 個交易日內就算創新高
 OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 240))   # 官網式「多頭排列加分」三項
 ALGOS = ("site", "official")
-ALGO_LABELS = {"site": "本站", "official": "官網式"}
+ALGO_LABELS = {"site": "本站", "official": "內定"}   # 2026-09-28 使用者：前端只用內定這套
 
 K_KINDS = ("black", "red", "any")
 MINE_KINDS = ("close", "tp", "sl", "both")
@@ -59,7 +59,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
 
 RULES = [
     "進場＝符合條件那天的收盤價；D+1＝下一個有日K的交易日。日K不足 240 根算不出均線分數、不會入選。",
-    "均線分數有兩套可選：「本站」＝5／10／20／60／120／240 日均線兩兩比較、短的在長的上面就得 1 分（滿分 15）；「官網式」＝照學員專區均線分數排行的算法：收盤站上 6 條均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（那個天期的最高收盤落在最近 3 個交易日內）＋多頭排列加分 3 分（20 日＞60 日、60 日＞120 日、120 日＞240 日各 1 分），滿分 15；本站用未還原價，跟對方以還原價算的會有零星差異，360 日新高在日K不足時用現有長度算。",
+    "均線分數（內定算法，滿分 15）＝收盤站上 5／10／20／60／120／240 日均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（那個天期的最高收盤落在最近 3 個交易日內）＋多頭排列加分 3 分（20 日線在 60 日線上、60 在 120 上、120 在 240 上各 1 分）。",
     "黑K＝收盤＜開盤、紅K＝收盤＞開盤；漲跌幅跟前一天收盤比。",
     "週籌碼＝那天當時看得到的集保週（結算日早於那天的最近一週）400 張以上大戶張數比前一週的增減％；沒有資料的股，勾了這條件就不算符合。",
     "族群平均分＝該股所屬族群全部成員當天均線分數的平均。5 日均成交值＝近 5 天「收盤價×成交量」的平均（億），是估算值。",
@@ -394,7 +394,7 @@ def normalize_params(raw: dict[str, Any] | None) -> dict[str, Any]:
     if p["mine"] not in MINE_KINDS:
         raise ValueError("mine 必須是 close／tp／sl／both")
     if p["algo"] not in ALGOS:
-        raise ValueError("algo 必須是 site（本站）或 official（官網式）")
+        raise ValueError("algo 必須是 site（本站）或 official（內定）")
     if p["tp"] is None or p["tp"] <= 0 or p["tp"] > 50:
         raise ValueError("tp 必須在 0～50")
     if p["cap"] is None or p["cap"] < 0:
