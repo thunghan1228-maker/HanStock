@@ -39,6 +39,18 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(day, "2026-09-24")
         self.assertEqual(rows, [("6182", 15, 30, 120000000, 25.5), ("6182", 17, 1000, 470000000, 100.0)])
 
+    def test_bar_codes_widen_the_universe(self) -> None:
+        # 有 21 根以上日K的全市場股票也在收集範圍內（持股健診要用）
+        from daily_bars_store import bar_codes
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(database, "DATABASE_PATH", Path(temp_dir) / "t.db"):
+            database.initialize_database()
+            with database.get_connection() as c:
+                c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, 1, 1, 1, 1, 1)",
+                              [("1101", f"2026-08-{i:02d}T00:00:00", ) for i in range(1, 25)] + [("9999", "2026-08-01T00:00:00",)])
+            self.assertEqual(bar_codes(21), ["1101"])
+            self.assertEqual(bar_codes(1), ["1101", "9999"])
+
     def test_pe_candidate_dates(self) -> None:
         self.assertEqual(module._pe_candidate_dates(datetime(2026, 9, 24, 15, 0, tzinfo=TW), 2), ["2026-09-23", "2026-09-22"])   # 16:30 前不算今天
         self.assertEqual(module._pe_candidate_dates(datetime(2026, 9, 24, 17, 0, tzinfo=TW), 2), ["2026-09-24", "2026-09-23"])
@@ -83,7 +95,7 @@ class CollectTests(unittest.TestCase):
                 return [{"公司代號": "6182", "已發行普通股數或TDR原股發行股數": "470000000"}]
             if "/tdcc-index.json?v=" in url:
                 return ["2026-09-24", "2026-09-19", "2026-09-12"]
-            if url.endswith("/tdcc-2026-09-24.json"):
+            if "/tdcc-2026-09-24.json" in url:   # 最新一週每次重讀，帶 ?v= 破快取
                 return {"date": "2026-09-24", "rows": [["6182", 12, 20, 10000000, 2.1], ["6182", 15, 30, 120000000, 25.5], ["6182", 1, 5000, 3000000, 0.6], ["2330", 15, 100, 20000000000, 77.0]]}
             if url.endswith("/tdcc-2026-09-19.json"):
                 return {"date": "2026-09-19", "rows": [["6182", 12, 19, 9000000, 1.9], ["6182", 15, 29, 111000000, 23.6], ["2330", 15, 100, 20100000000, 77.4]]}

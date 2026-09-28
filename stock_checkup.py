@@ -21,6 +21,7 @@ from typing import Any
 from brew_launch import MA_PERIODS, _latest_bar_date, ma_alignment_score
 from brew_launch_history import group_and_name
 from chips_daily import _institutional_by_date, _streak, main_force_daily, main_force_dates, stored_dates
+from daily_bars_store import bar_codes
 from database import get_connection, initialize_database
 from fundamentals_daily import latest_pe, latest_revenue, tdcc_summary
 from heilong_backtest import Bar, _load_bars, _tdcc_weeks, official_score
@@ -83,10 +84,7 @@ def _pct(a: float, b: float) -> float | None:
 
 def _universe_codes() -> list[str]:
     """有 21 根以上日K的代號（族群表內加盤中訊號追蹤的全市場股票）。"""
-    initialize_database()
-    with get_connection() as connection:
-        rows = connection.execute("SELECT stock_code, COUNT(*) AS n FROM bars_1d GROUP BY stock_code HAVING n >= 21").fetchall()
-    return sorted({str(r["stock_code"]).strip().upper() for r in rows})
+    return bar_codes(21)
 
 
 def _stock_names(codes: list[str]) -> dict[str, str]:

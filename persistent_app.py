@@ -823,9 +823,9 @@ def get_fundamentals_status() -> dict[str, Any]:
 
 
 @app.post("/api/hub/fundamentals/collect")
-def post_fundamentals_collect() -> dict[str, Any]:
-    """立刻抓一次本益比、月營收、股本、集保週資料（排程主機推完鏡像會戳這裡），抓完重算波段日報。"""
-    return {"status": "ok", "result": run_fundamentals_collect()}
+def post_fundamentals_collect(force: int = Query(0)) -> dict[str, Any]:
+    """立刻抓一次本益比、月營收、股本、集保週資料（排程主機推完鏡像會戳這裡），抓完重算波段日報；force=1 本益比與集保都重抓。"""
+    return {"status": "ok", "result": run_fundamentals_collect(force=bool(force))}
 
 
 @app.get("/api/hub/etf/status")

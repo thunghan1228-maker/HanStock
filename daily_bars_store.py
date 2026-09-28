@@ -35,6 +35,14 @@ def load_daily_bars(stock_code: str, limit: int = 260) -> list[dict[str, Any]]:
     } for row in rows]
 
 
+def bar_codes(min_bars: int = 21) -> list[str]:
+    """有 min_bars 根以上日K的代號（族群表內加盤中訊號追蹤的全市場股票）；基本面收集與持股健診的範圍。"""
+    initialize_database()
+    with get_connection() as connection:
+        rows = connection.execute("SELECT stock_code, COUNT(*) AS n FROM bars_1d GROUP BY stock_code HAVING n >= ?", (max(1, int(min_bars)),)).fetchall()
+    return sorted({str(r["stock_code"]).strip().upper() for r in rows})
+
+
 def latest_daily_trade_date_before(trade_date: str) -> str | None:
     """全市場日K裡、早於 trade_date 的最新交易日（YYYY-MM-DD）。個股的「昨日」日K比這個日期舊，
     就代表那檔的日K沒跟上（例如上櫃來源被擋），不能拿來當昨高／昨收。"""

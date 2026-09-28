@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from brew_launch import group_codes
+from daily_bars_store import bar_codes
 from chips_daily import _default_fetcher, _mirror_url
 from database import get_connection, initialize_database
 from trading_days import is_trading_day, previous_trading_day
@@ -396,10 +397,11 @@ def _pe_candidate_dates(now: datetime, count: int = 3) -> list[str]:
     return out
 
 
-def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | None = None, *, force: bool = False) -> dict[str, Any]:
+    """抓一輪。範圍＝族群表內加有日K的全市場股票（持股健診要用，2026-09-28）；force＝本益比已經有當天的也重抓（範圍變大時補齊）。"""
     now = now or datetime.now(TW_TZ)
     fetch = fetcher or _default_fetcher
-    codes = set(group_codes())
+    codes = set(group_codes()) | set(bar_codes(21))
     result: dict[str, Any] = {}
 
     def record(key: str, **info: Any) -> None:
@@ -409,7 +411,7 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
 
     # 上市本益比：最近一個交易日；已經有就不重抓
     try:
-        have = set(pe_dates("TSE", 5))
+        have = set() if force else set(pe_dates("TSE", 5))
         saved = None
         for day in _pe_candidate_dates(now):
             if day in have:
@@ -427,7 +429,7 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
     try:
         date_iso, rows = parse_tpex_pe(fetch(_mirror_url(MIRROR_PE, volatile=True)))
         rows = [r for r in rows if r["code"] in codes]
-        if date_iso and rows and date_iso not in set(pe_dates("OTC", 5)):
+        if date_iso and rows and (force or date_iso not in set(pe_dates("OTC", 5))):
             record("peOTC", ok=True, source="mirror", date=date_iso, rows=save_pe(date_iso, "OTC", rows, "mirror"))
         else:
             record("peOTC", ok=bool(date_iso), source="mirror", date=date_iso, rows=0, note="沒有新的一天" if date_iso else "鏡像沒有資料")
@@ -453,17 +455,19 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
         wanted = [str(d) for d in index if isinstance(d, str)] if isinstance(index, list) else []
         have = set(tdcc_dates(TDCC_KEEP_WEEKS))
         added = []
-        for day in sorted(wanted, reverse=True)[:TDCC_KEEP_WEEKS]:
-            if day in have:
+        for i, day in enumerate(sorted(wanted, reverse=True)[:TDCC_KEEP_WEEKS]):
+            newest = i == 0
+            if day in have and not newest and not force:
                 continue
             try:
-                date_iso, rows = parse_tdcc_mirror(fetch(_mirror_url(f"tdcc-{day}.json", volatile=False)))
+                date_iso, rows = parse_tdcc_mirror(fetch(_mirror_url(f"tdcc-{day}.json", volatile=newest or force)))
             except urllib.error.HTTPError:
                 continue
             rows = [r for r in rows if r[0] in codes]
             if date_iso and rows:
                 save_tdcc(date_iso, rows)
-                added.append(date_iso)
+                if day not in have:
+                    added.append(date_iso)
         record("tdcc", ok=True, added=added, latest=(tdcc_dates(1) or [None])[0])
     except Exception as exc:  # noqa: BLE001
         record("tdcc", ok=False, error=f"{type(exc).__name__}: {exc}"[:200])
@@ -492,11 +496,11 @@ def _has_new_data(result: dict[str, Any], before: dict[str, Any]) -> bool:
     return False
 
 
-def run_collect(now: datetime | None = None, *, only_if_new: bool = False) -> dict[str, Any]:
-    """抓一輪，然後重算波段日報（only_if_new＝有抓到新資料才重算；排程用，手動戳的一定重算）。"""
+def run_collect(now: datetime | None = None, *, only_if_new: bool = False, force: bool = False) -> dict[str, Any]:
+    """抓一輪，然後重算波段日報（only_if_new＝有抓到新資料才重算；排程用，手動戳的一定重算；force＝本益比與集保都重抓）。"""
     with _lock:
         before = {k: dict(v) for k, v in _state["sources"].items()}
-    result = collect_once(now)
+    result = collect_once(now, force=force)
     if only_if_new and not _has_new_data(result, before):
         result["swingRefreshed"] = False
         return result
