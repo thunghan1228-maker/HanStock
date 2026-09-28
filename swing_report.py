@@ -675,6 +675,13 @@ def run_once(now: datetime | None = None) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             logger.exception("heilong rebuild failed")
             result["heilongError"] = str(exc)
+        try:
+            from stock_checkup import rebuild as rebuild_checkup   # 每日持股健診表也跟著補（2026-09-28）
+
+            result["checkup"] = rebuild_checkup()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("checkup rebuild failed")
+            result["checkupError"] = str(exc)
     except Exception as exc:  # noqa: BLE001
         logger.exception("swing report failed")
         with _lock:
