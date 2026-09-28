@@ -843,7 +843,7 @@ def get_heilong(
     score: int = Query(10), k: str = Query("black"), lo: float = Query(-10.0, alias="min"), hi: float = Query(3.0, alias="max"),
     week: float | None = Query(None), gavg: float | None = Query(None), hits: int | None = Query(None), val: float | None = Query(None),
     exdispo: int = Query(1), cap: int = Query(0), sort: str = Query("score"), tp: float = Query(3.0), mine: str = Query("both"),
-    days: int = Query(10), amt: float = Query(50.0),
+    days: int = Query(10), amt: float = Query(50.0), algo: str = Query("site"),
 ) -> dict[str, Any]:
     """下午報・黑龍回測：照參數（均線分數、K棒、漲跌幅、週籌碼、族群平均分、近 20 日漲逾 8% 次數、5 日均成交值、排除處置、每天最多幾檔）
     挑每天的名單，用 D+1 開高低收算各種出場方式的績效、累積曲線、爆發力，附今日名單與每日明細（2026-09-28 使用者：照創高黑龍績效分析做）。"""
@@ -852,7 +852,7 @@ def get_heilong(
     try:
         return heilong_backtest_payload({
             "score": score, "k": k, "min": lo, "max": hi, "week": week, "gavg": gavg, "hits": hits, "val": val,
-            "exdispo": exdispo, "cap": cap, "sort": sort, "tp": tp, "mine": mine, "days": days, "amt": amt,
+            "exdispo": exdispo, "cap": cap, "sort": sort, "tp": tp, "mine": mine, "days": days, "amt": amt, "algo": algo,
         })
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

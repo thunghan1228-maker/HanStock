@@ -74,6 +74,31 @@ class FeatureTests(unittest.TestCase):
         self.assertFalse(module._disposed(spans, "6207", "2026-09-24"))
 
 
+class OfficialScoreTests(unittest.TestCase):
+    def test_official_score(self) -> None:
+        self.assertIsNone(module.official_score([100.0] * 239))
+        self.assertEqual(module.official_score([100.0] * 240), 6)            # 平盤：站上 0、創新高 6（同值算最近）、排列 0
+        rising = [100 + i * 0.5 for i in range(300)]
+        self.assertEqual(module.official_score(rising), 15)                   # 一路漲：6＋6＋3
+        self.assertEqual(module.official_score([300 - i * 0.5 for i in range(300)]), 0)
+        pullback = rising[:-4] + [rising[-5] - 1] * 4                          # 高點後拉回 4 天：新高 0、跌破 5 日線、排列仍在
+        self.assertEqual(module.official_score(pullback), 8)
+        self.assertEqual(module.official_score(rising, {p: sum(rising[-p:]) / p for p in module.MA_PERIODS}), 15)
+
+    def test_select_rows_by_algo(self) -> None:
+        base = {"date": "2026-09-24", "open": 100, "high": 101, "low": 98, "close": 99, "volume": 1000, "prevClose": 100, "changePct": -1.0,
+                "hits20": 1, "val5": 5.0, "group": "矽晶圓", "weekPct": None, "weekDate": None, "disposed": False}
+        rows = {"A": {**base, "code": "A", "score": 8, "score2": 12, "groupAvg": 7.0, "groupAvg2": 11.0},
+                "B": {**base, "code": "B", "score": 12, "score2": 8, "groupAvg": 11.0, "groupAvg2": 7.0}}
+        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({}))], ["B"])
+        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"algo": "official"}))], ["A"])
+        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"score": 0, "sort": "gavg", "algo": "official"}))], ["A", "B"])
+        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"score": 0, "sort": "gavg"}))], ["B", "A"])
+        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"score": 0, "gavg": 10, "algo": "official"}))], ["A"])
+        with self.assertRaises(ValueError):
+            module.normalize_params({"algo": "x"})
+
+
 class ExitTests(unittest.TestCase):
     def test_exits(self) -> None:
         x = module.exits(100, 97, (101, 104, 100, 102), 3)
@@ -171,6 +196,8 @@ class RebuildTests(unittest.TestCase):
         row = table[d[240]]["6182"]
         self.assertEqual((row["score"], row["changePct"], row["hits20"], row["group"], row["groupAvg"], row["weekPct"], row["weekDate"], row["disposed"]),
                          (15, 2.0, 0, "矽晶圓", 15.0, 10.0, "2026-09-18", False))
+        self.assertEqual((row["score2"], row["groupAvg2"]), (15, 15.0))          # 官網式：站上 6＋新高 6＋排列 3
+        self.assertEqual((table[d[239]]["6182"]["score"], table[d[239]]["6182"]["score2"]), (0, 6))   # 平盤那天
         self.assertIsNone(table[d[240]]["6488"]["score"])
         self.assertTrue(table[d[241]]["2330"]["disposed"])     # 9/23 起處置
         self.assertFalse(table[d[240]]["2330"]["disposed"])
@@ -207,6 +234,9 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((day["date"], day["count"], day["withNext"], day["avg"]["close"]), (d[240], 1, 1, 1.96))
         pick = day["rows"][0]
         self.assertEqual((pick["code"], pick["name"], pick["group"], pick["entry"], pick["lowK"], pick["target"]), ("6182", "合晶", "矽晶圓", 102.0, 101.0, 105.06))
+        self.assertEqual((pick["score"], pick["score2"], pick["groupAvg"], pick["groupAvg2"]), (15, 15, 15.0, 15.0))
+        r3 = module.backtest({"days": 10, "algo": "official"})
+        self.assertEqual((r3["params"]["algo"], r3["stats"]["trades"]), ("official", 1))
         self.assertEqual(pick["next"], {"date": d[241], "open": 103.0, "high": 106.0, "low": 100.0, "close": 104.0})
         self.assertEqual((pick["hitTp"], pick["hitSl"], pick["gap"]), (True, True, False))
         self.assertEqual(pick["exits"], {"close": 1.96, "tp": 3.0, "sl": -0.98, "both": -0.98, "open": 0.98, "ohl": 0.98, "d2": 4.9})
@@ -238,10 +268,21 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((body["status"], body["params"]["min"], body["params"]["max"], body["stats"]["trades"]), ("ok", -10.0, 3.0, 1))
         self.assertEqual(client.get("/api/hub/heilong", params={"k": "foo"}).status_code, 422)
         self.assertEqual(client.get("/api/hub/heilong", params={"week": "abc"}).status_code, 422)
+        self.assertEqual(client.get("/api/hub/heilong", params={"algo": "foo"}).status_code, 422)
+        self.assertEqual(client.get("/api/hub/heilong", params={"algo": "official"}).json()["params"]["algo"], "official")
         s = client.get("/api/hub/heilong/status").json()
         self.assertEqual((s["status"], s["lastDate"]), ("ok", self.dates[-1]))
         rb = client.post("/api/hub/heilong/rebuild", params={"force": 1}).json()
         self.assertEqual(len(rb["result"]["rebuilt"]), module.HISTORY_DAYS)
+
+    def test_old_table_gets_score2_backfilled(self) -> None:
+        module.rebuild()
+        with database.get_connection() as c:
+            c.execute("UPDATE heilong_daily SET score2 = NULL, group_avg2 = NULL")
+        again = module.rebuild()
+        self.assertEqual(len(again["rebuilt"]), module.HISTORY_DAYS)          # 缺官網式分數 → 整張重算
+        dates, table = module.load_rows()
+        self.assertEqual(table[self.dates[240]]["6182"]["score2"], 15)
 
     def test_empty_table(self) -> None:
         r = module.backtest({})

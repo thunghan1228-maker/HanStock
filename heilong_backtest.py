@@ -37,6 +37,12 @@ GAP_PCT = 35.0                   # 價格斷層：D+1 跟進場價差超過這�
 DISPOSITION_LOOKBACK_DAYS = 90
 MAX_DAYS_PARAM = HISTORY_DAYS
 
+OFFICIAL_HI_PERIODS = (5, 10, 20, 60, 120, 360)   # 官網式「創 6 個天期新高」
+OFFICIAL_RECENT_DAYS = 3                            # 近 n 日最高收盤落在最近 3 個交易日內就算創新高
+OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 240))   # 官網式「多頭排列加分」三項
+ALGOS = ("site", "official")
+ALGO_LABELS = {"site": "本站", "official": "官網式"}
+
 K_KINDS = ("black", "red", "any")
 MINE_KINDS = ("close", "tp", "sl", "both")
 SORT_KEYS = ("score", "week", "gavg", "hits", "drop", "val")
@@ -48,11 +54,12 @@ CURVE_METHODS = ("close", "tp", "sl", "both")
 DEFAULT_PARAMS: dict[str, Any] = {
     "score": 10, "k": "black", "min": -10.0, "max": 3.0,
     "week": None, "gavg": None, "hits": None, "val": None,
-    "exdispo": True, "cap": 0, "sort": "score", "tp": 3.0, "mine": "both", "days": 10, "amt": 50.0,
+    "exdispo": True, "cap": 0, "sort": "score", "tp": 3.0, "mine": "both", "days": 10, "amt": 50.0, "algo": "site",
 }
 
 RULES = [
-    "進場＝符合條件那天的收盤價；D+1＝下一個有日K的交易日。均線分數用本站同一套（5／10／20／60／120／240 日均線兩兩比較，滿分 15），日K不足 240 根算不出分數、不會入選。",
+    "進場＝符合條件那天的收盤價；D+1＝下一個有日K的交易日。日K不足 240 根算不出均線分數、不會入選。",
+    "均線分數有兩套可選：「本站」＝5／10／20／60／120／240 日均線兩兩比較、短的在長的上面就得 1 分（滿分 15）；「官網式」＝照學員專區均線分數排行的算法：收盤站上 6 條均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（那個天期的最高收盤落在最近 3 個交易日內）＋多頭排列加分 3 分（20 日＞60 日、60 日＞120 日、120 日＞240 日各 1 分），滿分 15；本站用未還原價，跟對方以還原價算的會有零星差異，360 日新高在日K不足時用現有長度算。",
     "黑K＝收盤＜開盤、紅K＝收盤＞開盤；漲跌幅跟前一天收盤比。",
     "週籌碼＝那天當時看得到的集保週（結算日早於那天的最近一週）400 張以上大戶張數比前一週的增減％；沒有資料的股，勾了這條件就不算符合。",
     "族群平均分＝該股所屬族群全部成員當天均線分數的平均。5 日均成交值＝近 5 天「收盤價×成交量」的平均（億），是估算值。",
@@ -78,9 +85,14 @@ def _schema(connection) -> None:
             open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume INTEGER NOT NULL,
             prev_close REAL, change_pct REAL, score INTEGER, hits20 INTEGER, val5 REAL,
             group_name TEXT, group_avg REAL, week_pct REAL, week_date TEXT, disposed INTEGER NOT NULL DEFAULT 0,
+            score2 INTEGER, group_avg2 REAL,
             PRIMARY KEY (trade_date, stock_code)
         )"""
     )
+    columns = {str(r["name"]) for r in connection.execute("PRAGMA table_info(heilong_daily)").fetchall()}
+    for column, kind in (("score2", "INTEGER"), ("group_avg2", "REAL")):
+        if column not in columns:
+            connection.execute(f"ALTER TABLE heilong_daily ADD COLUMN {column} {kind}")
 
 
 def _r2(value: float | None) -> float | None:
@@ -168,6 +180,25 @@ def _disposed(spans: dict[str, list[tuple[str, str]]], code: str, trade_date: st
 
 # ------------------------------------------------------------------ 特徵
 
+def official_score(closes: list[float], mas: dict[int, float] | None = None) -> int | None:
+    """官網式均線分數（滿分 15）：收盤站上 5／10／20／60／120／240 日均線各 1 分；近 5／10／20／60／120／360 日的最高收盤
+    落在最近 3 個交易日內各 1 分（創新高）；20 日＞60 日、60 日＞120 日、120 日＞240 日各 1 分（多頭排列）。
+    closes 舊到新、最後一筆是當天；不足 240 根回 None（360 日新高用現有長度算）。"""
+    n = len(closes)
+    if n < max(MA_PERIODS):
+        return None
+    if mas is None:
+        mas = {p: sum(closes[-p:]) / p for p in MA_PERIODS}
+    close = closes[-1]
+    score = sum(1 for p in MA_PERIODS if close > mas[p])
+    for p in OFFICIAL_HI_PERIODS:
+        window = closes[-p:]
+        if max(window) in window[-OFFICIAL_RECENT_DAYS:]:
+            score += 1
+    score += sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
+    return score
+
+
 def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, Any]]:
     """bars 舊到新；回 {日期: 特徵}，只算 wanted 裡的日期。均線分數要 240 根（含當天）才有。"""
     out: dict[str, dict[str, Any]] = {}
@@ -185,9 +216,11 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
         if d not in wanted:
             continue
         n = i + 1
-        score = None
+        score = score2 = None
         if n >= longest:
-            score = ma_alignment_score({p: (prefix[n] - prefix[n - p]) / p for p in MA_PERIODS})
+            mas = {p: (prefix[n] - prefix[n - p]) / p for p in MA_PERIODS}
+            score = ma_alignment_score(mas)
+            score2 = official_score(closes[:n], mas)
         hits = sum(1 for j in range(max(1, i - HITS_DAYS + 1), i + 1) if changes[j] is not None and changes[j] > HITS_MIN_PCT)
         values = [bars[j][4] * bars[j][5] * 1000 / 1e8 for j in range(max(0, i - VALUE_DAYS + 1), i + 1)]
         out[d] = {
@@ -195,6 +228,7 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             "prevClose": closes[i - 1] if i else None,
             "changePct": _r2(changes[i]),
             "score": score,
+            "score2": score2,
             "hits20": hits,
             "val5": _r2(_mean(values)),
         }
@@ -242,6 +276,10 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     with get_connection() as connection:
         _schema(connection)
         have = {str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM heilong_daily").fetchall()}
+    with get_connection() as connection:
+        missing = connection.execute("SELECT COUNT(*) FROM heilong_daily WHERE score IS NOT NULL AND score2 IS NULL").fetchone()[0]
+    if missing:
+        force = True    # 剛加上官網式分數的欄位：整張表補算
     tail = set(target[-RECOMPUTE_TAIL:])
     todo = [d for d in target if force or d not in have or d in tail]
     result: dict[str, Any] = {"date": latest, "rebuilt": todo, "dates": len(target)}
@@ -267,11 +305,15 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     members = _group_members()
     for d, rows in rows_by_date.items():
         avg_by_group: dict[str, float | None] = {}
+        avg_by_group2: dict[str, float | None] = {}
         for name, member_codes in members.items():
             scores = [rows[c]["score"] for c in member_codes if c in rows and rows[c]["score"] is not None]
+            scores2 = [rows[c]["score2"] for c in member_codes if c in rows and rows[c]["score2"] is not None]
             avg_by_group[name] = round(_mean(scores), 1) if scores else None
+            avg_by_group2[name] = round(_mean(scores2), 1) if scores2 else None
         for f in rows.values():
             f["groupAvg"] = avg_by_group.get(f["group"])
+            f["groupAvg2"] = avg_by_group2.get(f["group"])
     total = 0
     with get_connection() as connection:
         _schema(connection)
@@ -279,9 +321,9 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
             connection.execute("DELETE FROM heilong_daily WHERE trade_date = ?", (d,))
             connection.executemany(
                 """INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, prev_close, change_pct, score, hits20, val5,
-                   group_name, group_avg, week_pct, week_date, disposed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   group_name, group_avg, week_pct, week_date, disposed, score2, group_avg2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [(d, code, f["open"], f["high"], f["low"], f["close"], f["volume"], f["prevClose"], f["changePct"], f["score"], f["hits20"], f["val5"],
-                  f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0) for code, f in rows.items()],
+                  f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0, f["score2"], f["groupAvg2"]) for code, f in rows.items()],
             )
             total += len(rows)
         if target:
@@ -306,6 +348,7 @@ def load_rows() -> tuple[list[str], dict[str, dict[str, dict[str, Any]]]]:
             "prevClose": r["prev_close"], "changePct": r["change_pct"], "score": r["score"], "hits20": r["hits20"], "val5": r["val5"],
             "group": r["group_name"] or "", "groupAvg": r["group_avg"], "weekPct": r["week_pct"], "weekDate": r["week_date"],
             "disposed": bool(r["disposed"]),
+            "score2": r["score2"], "groupAvg2": r["group_avg2"],
         }
     return sorted(table), table
 
@@ -336,6 +379,8 @@ def normalize_params(raw: dict[str, Any] | None) -> dict[str, Any]:
         p["sort"] = str(raw["sort"])
     if "mine" in raw and raw["mine"]:
         p["mine"] = str(raw["mine"])
+    if "algo" in raw and raw["algo"]:
+        p["algo"] = str(raw["algo"])
     if "exdispo" in raw and raw["exdispo"] is not None:
         p["exdispo"] = str(raw["exdispo"]).lower() not in ("0", "false", "no", "")
     if p["score"] is None or not 0 <= p["score"] <= 15:
@@ -348,6 +393,8 @@ def normalize_params(raw: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("sort 必須是 " + "／".join(SORT_KEYS))
     if p["mine"] not in MINE_KINDS:
         raise ValueError("mine 必須是 close／tp／sl／both")
+    if p["algo"] not in ALGOS:
+        raise ValueError("algo 必須是 site（本站）或 official（官網式）")
     if p["tp"] is None or p["tp"] <= 0 or p["tp"] > 50:
         raise ValueError("tp 必須在 0～50")
     if p["cap"] is None or p["cap"] < 0:
@@ -365,10 +412,16 @@ def normalize_params(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ 選股與出場
 
-def _sort_value(row: dict[str, Any], key: str) -> float:
+def score_keys(algo: str) -> tuple[str, str]:
+    """(個股分數欄, 族群平均欄)：本站 score／groupAvg，官網式 score2／groupAvg2。"""
+    return ("score2", "groupAvg2") if algo == "official" else ("score", "groupAvg")
+
+
+def _sort_value(row: dict[str, Any], key: str, algo: str = "site") -> float:
     if key == "drop":
         return row["changePct"] if row["changePct"] is not None else float("inf")
-    field = {"score": "score", "week": "weekPct", "gavg": "groupAvg", "hits": "hits20", "val": "val5"}[key]
+    score_key, gavg_key = score_keys(algo)
+    field = {"score": score_key, "week": "weekPct", "gavg": gavg_key, "hits": "hits20", "val": "val5"}[key]
     value = row.get(field)
     return float("-inf") if value is None else -float(value)
 
@@ -376,8 +429,9 @@ def _sort_value(row: dict[str, Any], key: str) -> float:
 def select_rows(rows: dict[str, dict[str, Any]], p: dict[str, Any]) -> list[dict[str, Any]]:
     """一天裡符合參數的股，依排序取前 cap 檔（0＝不限）。"""
     picked: list[dict[str, Any]] = []
+    score_key, gavg_key = score_keys(p["algo"])
     for r in rows.values():
-        if r["score"] is None or r["score"] < p["score"]:
+        if r.get(score_key) is None or r[score_key] < p["score"]:
             continue
         if p["k"] == "black" and not (r["open"] > 0 and r["close"] < r["open"]):
             continue
@@ -388,7 +442,7 @@ def select_rows(rows: dict[str, dict[str, Any]], p: dict[str, Any]) -> list[dict
             continue
         if p["week"] is not None and (r["weekPct"] is None or r["weekPct"] < p["week"]):
             continue
-        if p["gavg"] is not None and (r["groupAvg"] is None or r["groupAvg"] < p["gavg"]):
+        if p["gavg"] is not None and (r.get(gavg_key) is None or r[gavg_key] < p["gavg"]):
             continue
         if p["hits"] is not None and (r["hits20"] is None or r["hits20"] < p["hits"]):
             continue
@@ -397,7 +451,7 @@ def select_rows(rows: dict[str, dict[str, Any]], p: dict[str, Any]) -> list[dict
         if p["exdispo"] and r["disposed"]:
             continue
         picked.append(r)
-    picked.sort(key=lambda r: (_sort_value(r, p["sort"]), -(r["score"] or 0), r["code"]))
+    picked.sort(key=lambda r: (_sort_value(r, p["sort"], p["algo"]), -(r.get(score_key) or 0), r["code"]))
     if p["cap"] > 0:
         picked = picked[:p["cap"]]
     return picked
@@ -464,7 +518,8 @@ def evaluate(row: dict[str, Any], dates: list[str], index: dict[str, int], table
     group, name = group_and_name(code)
     out: dict[str, Any] = {
         "code": code, "name": name, "group": row["group"] or group, "date": row["date"],
-        "score": row["score"], "groupAvg": row["groupAvg"], "weekPct": row["weekPct"], "weekDate": row["weekDate"],
+        "score": row["score"], "groupAvg": row["groupAvg"], "score2": row.get("score2"), "groupAvg2": row.get("groupAvg2"),
+        "weekPct": row["weekPct"], "weekDate": row["weekDate"],
         "changePct": row["changePct"], "hits20": row["hits20"], "val5": row["val5"], "disposed": row["disposed"],
         "entry": entry, "lowK": low_k, "target": _r2(entry * (1 + tp / 100)),
         "next": None, "gap": False, "hitTp": None, "hitSl": None, "exits": None, "burst": None,
