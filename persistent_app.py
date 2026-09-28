@@ -27,7 +27,7 @@ from chips_daily import chips_daily as chips_daily_payload, collector_status as 
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
-from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, rebuild as rebuild_checkup
+from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
     contract_debug,
@@ -875,6 +875,12 @@ def get_checkup(codes: str = Query("")) -> dict[str, Any]:
     """每日持股健診（2026-09-28 使用者）：codes＝『2481/2408,2344』這樣的股號清單，回每檔的三面向分數、綜合、防守線、
     七科小體檢；資料是收盤後跟下午報一起算好存的。"""
     return checkup_payload(codes)
+
+
+@app.get("/api/hub/diag")
+def get_diag(code: str = Query("")) -> dict[str, Any]:
+    """個股問診（2026-09-28 使用者）：一檔的三面向分數、七科、防守線、近 120 根日K、同族對照、族群強度榜與今日名單、穿惡名單。"""
+    return diag_payload(code)
 
 
 @app.get("/api/hub/checkup/status")

@@ -40,6 +40,16 @@ HALF_RANGE_MIN_PCT = 10.0      # 紅半：近三日振幅（最高／最低 −1
 HALF_ABOVE_MID_PCT = 1.0       # 紅半：收盤要站在中點之上 1% 以上
 NEAR_MA_PCT = 10.0             # 即將穿惡：收盤在月線下但距月線 10% 以內
 MAX_CODES = 120
+CROSS_MIN_ABOVE_PCT = 2.0      # 穿惡：今收站上今日月線至少 2%
+CROSS_MIN_VOLUME = 500         # 穿惡：成交量至少 500 張
+TOP_GROUPS = 10                # 族群強度榜前 10 族
+TOP_K = 3                      # 族群強度＝七科總分最高的前 3 檔平均
+MIN_SUBJECTS = 3               # 至少三科有資料才分強勢／中等／弱勢
+PE_HIST_DAYS = 8
+REV_HIST_MONTHS = 4
+DIAG_BARS = 120                # 問診日線圖給近 120 根
+TOP_KEY = "__top__"
+CROSS_KEY = "__cross__"
 DEFAULT_WEIGHTS = {"fund": 34, "chip": 33, "tech": 33}
 OVERALL_LABELS = ((80, "強"), (60, "中上"), (45, "普通"), (30, "偏弱"), (0, "弱"))
 
@@ -50,7 +60,9 @@ RULES = [
     "籌碼面＝50 分起算：集保 400 張以上大戶張數週增％ ×4（上限 ±25）、連續增加每週 +3（上限 +9）；三大法人近 5 日買賣超佔近 5 日成交量的比例（上限 ±15）；主力近 5 日淨買賣佔近 5 日成交量的比例（上限 ±10）。三種資料都沒有的不評分。",
     "綜合＝你勾選的面向加權平均（預設基本面 34％、籌碼面 33％、技術面 33％）；沒資料的面向預設不算進去，不會被當 0 分。≥80 強、≥60 中上、≥45 普通、≥30 偏弱、其餘弱。",
     "防守線：三日低＝不含當天的前三個交易日最低（明日值＝含今天的近三日最低）；月線＝20 日收盤均；紅半＝近三個交易日最高與最低的中間值，只在三日振幅 ≥10% 而且收盤站在中點之上 1% 以上時才列（漲多時多一個防守點）。收盤跌破任一條 → 減碼；月線與三日低雙破 → 出場；即將穿惡＝收盤在月線下但距月線 10% 以內，一根漲停就能站回。價格未還原除權息。",
-    "七科小體檢各 0～2 分：均線分數（官網式 ≥12 得 2、≥8 得 1）、族群平均分（≥10 得 2、≥7 得 1）、族內名次（依當天漲跌幅，前三分之一得 2、中段得 1）、籌碼（大戶週增 ≥3% 得 2、≥0 得 1）、本益比（<20 得 2、<35 得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
+    "七科小體檢各 0～2 分：均線分數（官網式 ≥12 得 2、≥8 得 1）、族群平均分（≥10 得 2、≥7 得 1）、族內名次（依當天漲跌幅，前三分之一得 2、中段得 1）、籌碼（大戶週增 ≥3% 得 2、≥0 得 1）、本益比（<20 得 2、<35 得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
+    "族群強度榜：每族取七科總分最高的前 3 檔平均當族群強度，排名前 10 族；今日名單＝這十族裡判定為強勢／中等的股，依族群強度再依七科總分排。收盤排名＝下午報當天族群平均漲跌幅的名次。",
+    "今日穿惡＝族群表內、昨收在昨日月線之下、今收站上今日月線 2% 以上、成交量 ≥500 張的股票；站上不到 2% 或量太小的不列。",
     "分數是體質快照，不是買賣訊號。範圍是本站有日K的股票（族群表內加盤中訊號追蹤的全市場股票）。",
 ]
 
@@ -103,6 +115,48 @@ def _stock_names(codes: list[str]) -> dict[str, str]:
         if name and name != code:
             names[code] = name
     return names
+
+
+def _pe_history(codes: list[str], limit: int = PE_HIST_DAYS) -> dict[str, list[list[Any]]]:
+    """{代號: [[日期, 本益比] 舊到新]}，最近 limit 天。"""
+    initialize_database()
+    out: dict[str, list[list[Any]]] = {}
+    with get_connection() as connection:
+        exists = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'stock_pe_daily'").fetchone()
+        if not exists:
+            return out
+        dates = [str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM stock_pe_daily ORDER BY trade_date DESC LIMIT ?", (limit,)).fetchall()]
+        if not dates:
+            return out
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            rows = connection.execute(
+                f"SELECT trade_date, stock_code, pe FROM stock_pe_daily WHERE trade_date IN ({','.join('?' for _ in dates)}) AND stock_code IN ({','.join('?' for _ in batch)}) ORDER BY trade_date",
+                (*dates, *batch),
+            ).fetchall()
+            for r in rows:
+                pe = r["pe"]
+                out.setdefault(str(r["stock_code"]).upper(), []).append([str(r["trade_date"]), _r1(pe) if pe is not None and 0 < float(pe) < 500 else None])
+    return out
+
+
+def _revenue_history(codes: list[str], limit: int = REV_HIST_MONTHS) -> dict[str, list[list[Any]]]:
+    """{代號: [[年月, 年增％] 舊到新]}，最近 limit 個月。"""
+    initialize_database()
+    out: dict[str, list[list[Any]]] = {}
+    with get_connection() as connection:
+        exists = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'stock_revenue_monthly'").fetchone()
+        if not exists:
+            return out
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            rows = connection.execute(
+                f"SELECT stock_code, ym, yoy_pct FROM stock_revenue_monthly WHERE stock_code IN ({','.join('?' for _ in batch)}) ORDER BY ym",
+                batch,
+            ).fetchall()
+            for r in rows:
+                out.setdefault(str(r["stock_code"]).upper(), []).append([str(r["ym"]), _r1(r["yoy_pct"])])
+    return {code: rows[-limit:] for code, rows in out.items()}
 
 
 def _group_members() -> dict[str, list[str]]:
@@ -245,7 +299,7 @@ def subjects(official: int | None, group_avg: float | None, group_rank: int | No
     green = sum(1 for k, v in scored.items() if v == 0 and k != "pe")
     total = sum(scored.values())
     possible = 2 * len(scored)
-    cls = None if not scored else "強勢" if total >= 0.7 * possible else "中等" if total >= 0.4 * possible else "弱勢"
+    cls = None if len(scored) < MIN_SUBJECTS else "強勢" if total >= 0.7 * possible else "中等" if total >= 0.4 * possible else "弱勢"
     return {"sc": sc, "red": red, "green": green, "total": total, "possible": possible, "cls": cls}
 
 
@@ -307,6 +361,12 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
         chip_hist.append([cur[0], round((cur[1] / before[1] - 1) * 100, 2) if before[1] > 0 else None])
     chip_hist.reverse()
     week_pct = td.get("bigChangePct")
+    defense = defense_lines(bars)
+    cross = None
+    if defense and prev is not None:
+        prev_below = prev < defense["ma20Y"]
+        cross = {"prevBelow": prev_below, "dist": _pct(close, defense["ma20T"]),
+                 "up": prev_below and close >= defense["ma20T"] * (1 + CROSS_MIN_ABOVE_PCT / 100) and bars[-1][5] >= CROSS_MIN_VOLUME}
     fund = fund_score(rev_row.get("yoy"), rev_row.get("mom"), pe)
     chip = chip_score(week_pct, td.get("weeks"), inst5, mf5, avg_vol5)
     tech = tech_score(score2)
@@ -325,8 +385,10 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
         "chip": {"weekPct": week_pct, "weeks": td.get("weeks"), "bigPct": td.get("bigPct"), "tdccDate": td.get("date"),
                  "inst5": inst5, "inst10": inst10, "instToday": inst_today, "instStreak": inst_streak, "f3": f3,
                  "mf5": mf5, "mfStreak": mf_streak, "avgVol5": _r1(avg_vol5)},
-        "def": defense_lines(bars),
-        "hist": {"score10": hist_scores, "inst10": inst_hist, "chip8": chip_hist},
+        "def": defense,
+        "cross": cross,
+        "hist": {"score10": hist_scores, "inst10": inst_hist, "chip8": chip_hist,
+                 "pe8": ctx.get("peHist", {}).get(code, []), "rev4": ctx.get("revHist", {}).get(code, [])},
         "groupAvg2": None, "groupRank": None, "groupN": None,
         "subjects": None,
         "disposed": code in ctx["disposed"],
@@ -367,7 +429,7 @@ def _rebuild() -> dict[str, Any]:
     ctx = {
         "names": _stock_names(codes),
         "pe": latest_pe(codes), "rev": latest_revenue(codes), "tdcc": tdcc_summary(codes, weeks=CHIP_HIST_WEEKS + 1),
-        "weeks": _tdcc_weeks(codes),
+        "weeks": _tdcc_weeks(codes), "peHist": _pe_history(codes), "revHist": _revenue_history(codes),
         "instDates": inst_dates, "inst": _institutional_by_date(inst_dates, codes) if inst_dates else {},
         "mfDates": mf_dates, "mf": {d: main_force_daily(d, codes) for d in mf_dates},
         "disposed": disposed,
@@ -389,16 +451,88 @@ def _rebuild() -> dict[str, Any]:
     for r in rows.values():
         r["subjects"] = subjects(r["score2"], r["groupAvg2"], r["groupRank"], r["groupN"], r["chip"]["weekPct"], r["fund"]["pe"], r["fund"]["yoy"],
                                  r["chip"]["inst5"], r["chip"]["instToday"])
+    top = build_top(rows, latest)
+    for r in rows.values():
+        g = top["byGroup"].get(r["group"])
+        r["groupSrank"], r["groupStrength"], r["groupCloseRank"] = (g["srank"], g["strength"], g.get("rank")) if g else (None, None, None)
+    cross = build_cross(rows, latest)
     with get_connection() as connection:
         _schema(connection)
         connection.execute("DELETE FROM checkup_daily WHERE trade_date = ?", (latest,))
         connection.executemany("INSERT INTO checkup_daily (trade_date, stock_code, payload) VALUES (?, ?, ?)",
-                               [(latest, code, json.dumps(r, ensure_ascii=False, separators=(",", ":"))) for code, r in rows.items()])
+                               [(latest, code, json.dumps(r, ensure_ascii=False, separators=(",", ":"))) for code, r in rows.items()] +
+                               [(latest, TOP_KEY, json.dumps({k: v for k, v in top.items() if k != "byGroup"}, ensure_ascii=False, separators=(",", ":"))),
+                                (latest, CROSS_KEY, json.dumps(cross, ensure_ascii=False, separators=(",", ":")))])
         connection.execute(
             "DELETE FROM checkup_daily WHERE trade_date NOT IN (SELECT DISTINCT trade_date FROM checkup_daily ORDER BY trade_date DESC LIMIT ?)",
             (KEEP_DATES,),
         )
-    return {"date": latest, "rows": len(rows), "stocks": len(codes), "instDates": inst_dates, "mfDates": mf_dates}
+    return {"date": latest, "rows": len(rows), "stocks": len(codes), "instDates": inst_dates, "mfDates": mf_dates,
+            "topGroups": len(top["groups"]), "todayList": len(top["list"]), "cross": cross["n"]}
+
+
+def compact(r: dict[str, Any]) -> dict[str, Any]:
+    """名單用的精簡列（同族對照、今日名單、穿惡）。"""
+    sub = r.get("subjects") or {}
+    d = r.get("def") or {}
+    return {
+        "code": r["code"], "name": r["name"], "group": r["group"], "cls": sub.get("cls"), "total": sub.get("total"), "red": sub.get("red"), "green": sub.get("green"),
+        "chgPct": r["chgPct"], "close": r["close"], "prev": r.get("prev"), "volume": r.get("volume"), "score2": r["score2"], "weekPct": r["chip"]["weekPct"],
+        "pe": r["fund"]["pe"], "yoy": r["fund"]["yoy"], "inst5": r["chip"]["inst5"], "scores": r["scores"],
+        "def": {k: d.get(k) for k in ("low3T", "ma20T", "halfT", "brkMa", "brkL3", "brkHalf", "nearMa", "label")} if d else None,
+        "cross": r.get("cross"), "groupSrank": r.get("groupSrank"), "disposed": r.get("disposed"),
+    }
+
+
+def build_top(rows: dict[str, dict[str, Any]], latest: str) -> dict[str, Any]:
+    """族群強度榜（每族七科總分前 3 檔平均）與今日名單（前 10 族的強勢／中等）。"""
+    close_rank: dict[str, int] = {}
+    try:
+        from swing_report import load_report
+
+        report = load_report(latest) or {}
+        close_rank = {g["name"]: g["rank"] for g in report.get("groups", []) if g.get("name") and g.get("rank")}
+    except Exception:  # noqa: BLE001
+        close_rank = {}
+    groups: list[dict[str, Any]] = []
+    for name, member_codes in _group_members().items():
+        fresh = [rows[c] for c in member_codes if c in rows and not rows[c]["stale"] and rows[c].get("subjects") and rows[c]["subjects"].get("cls")]
+        if not fresh:
+            continue
+        ranked = sorted(fresh, key=lambda r: (-r["subjects"]["total"], -(r["chgPct"] or 0)))
+        k = min(TOP_K, len(ranked))
+        totals = [r["subjects"]["total"] for r in ranked]
+        cnt = {"強勢": 0, "中等": 0, "弱勢": 0}
+        for r in fresh:
+            cnt[r["subjects"]["cls"]] = cnt.get(r["subjects"]["cls"], 0) + 1
+        groups.append({"g": name, "n": len(fresh), "k": k, "strength": round(_mean(totals[:k]), 2), "avgAll": round(_mean(totals), 2),
+                       "top": [[r["code"], r["name"], r["subjects"]["total"], r["subjects"]["cls"]] for r in ranked[:k]], "cnt": cnt, "rank": close_rank.get(name)})
+    groups.sort(key=lambda g: (-g["strength"], -g["avgAll"], g["g"]))
+    for i, g in enumerate(groups):
+        g["srank"] = i + 1
+    by_group = {g["g"]: g for g in groups}
+    listing: list[dict[str, Any]] = []
+    members = _group_members()
+    for g in groups[:TOP_GROUPS]:
+        picks = [rows[c] for c in members[g["g"]] if c in rows and not rows[c]["stale"] and rows[c].get("subjects") and rows[c]["subjects"].get("cls") in ("強勢", "中等")]
+        picks.sort(key=lambda r: (-r["subjects"]["total"], -(r["chgPct"] or 0)))
+        for r in picks:
+            item = compact(r)
+            item["srank"], item["gstr"] = g["srank"], g["strength"]
+            listing.append(item)
+    return {"date": latest, "groups": groups, "list": listing, "byGroup": by_group}
+
+
+def build_cross(rows: dict[str, dict[str, Any]], latest: str) -> dict[str, Any]:
+    """今日穿惡：族群表內、昨收在月線下、今收站上月線 2% 以上且量夠。"""
+    picks = [r for r in rows.values() if r["group"] and not r["stale"] and r.get("cross") and r["cross"]["up"]]
+    picks.sort(key=lambda r: -(r["chgPct"] or 0))
+    near = sum(1 for r in rows.values() if r["group"] and not r["stale"] and r.get("def") and r["def"]["brkMa"] and r["def"]["nearMa"])
+    groups = {"強勢": [], "中等": [], "弱勢": []}
+    for r in picks:
+        cls = (r.get("subjects") or {}).get("cls") or "弱勢"
+        groups.setdefault(cls, []).append(compact(r))
+    return {"date": latest, "n": len(picks), "nearLeft": near, "groups": groups}
 
 
 # ------------------------------------------------------------------ 查詢
@@ -427,8 +561,47 @@ def load_rows(trade_date: str, codes: list[str] | None = None) -> dict[str, dict
                     (trade_date, *batch),
                 ).fetchall()
     for r in rows:
-        out[str(r["stock_code"])] = json.loads(r["payload"])
+        code = str(r["stock_code"])
+        if code in (TOP_KEY, CROSS_KEY):
+            continue
+        out[code] = json.loads(r["payload"])
     return out
+
+
+def load_special(trade_date: str, key: str) -> dict[str, Any] | None:
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        row = connection.execute("SELECT payload FROM checkup_daily WHERE trade_date = ? AND stock_code = ?", (trade_date, key)).fetchone()
+    return json.loads(row["payload"]) if row else None
+
+
+def diag(code: str) -> dict[str, Any]:
+    """個股問診：那檔的完整資料＋近 120 根日K＋同族對照＋族群強度榜／今日名單＋穿惡名單。"""
+    code = str(code or "").strip().upper()
+    date = latest_date()
+    if not date:
+        return {"status": "empty", "reason": "還沒有健診資料（收盤後會自動建）", "code": code, "rules": RULES, "collector": collector_status()}
+    if not code:
+        return {"status": "empty", "reason": "請輸入股號", "code": code, "date": date, "rules": RULES, "collector": collector_status()}
+    stock = load_rows(date, [code]).get(code)
+    if not stock:
+        return {"status": "missing", "reason": "本站沒有這檔的日K", "code": code, "date": date, "rules": RULES, "collector": collector_status()}
+    since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=DIAG_BARS * 2)).strftime("%Y-%m-%d")
+    bars = _load_bars([code], since=since, until=date).get(code, [])[-DIAG_BARS:]
+    siblings: list[dict[str, Any]] = []
+    if stock["group"]:
+        member_codes = _group_members().get(stock["group"], [])
+        member_rows = load_rows(date, member_codes)
+        siblings = [compact(r) for r in member_rows.values()]
+        siblings.sort(key=lambda r: (-(r["total"] or -1), -(r["chgPct"] or 0)))
+    top = load_special(date, TOP_KEY) or {"groups": [], "list": []}
+    group_info = next((g for g in top.get("groups", []) if g["g"] == stock["group"]), None)
+    return {
+        "status": "ok", "date": date, "code": code, "stock": stock, "bars": [list(b) for b in bars], "siblings": siblings, "groupInfo": group_info,
+        "top": top, "cross": load_special(date, CROSS_KEY) or {"n": 0, "groups": {}},
+        "rules": RULES, "collector": collector_status(),
+    }
 
 
 def normalize_codes(raw: str | list[str] | None) -> list[str]:

@@ -96,6 +96,8 @@ class ScoreTests(unittest.TestCase):
         s3 = module.subjects(3, 5.0, 9, 9, -2.0, 60.0, -10.0, -50.0, -5.0)
         self.assertEqual((s3["red"], s3["green"], s3["cls"]), (0, 6, "弱勢"))
         self.assertEqual(module.subjects(None, None, None, None, None, None, None, None, None)["cls"], None)
+        self.assertEqual(module.subjects(None, 12.0, 1, 5, None, None, None, None, None)["cls"], None)      # 只有兩科有資料不分級
+        self.assertEqual(module.subjects(None, 12.0, 1, 5, 5.0, None, None, None, None)["cls"], "強勢")
 
     def test_normalize_codes(self) -> None:
         self.assertEqual(module.normalize_codes("2481/2408, 2344 2330\n2409，6182、2481"), ["2481", "2408", "2344", "2330", "2409", "6182"])
@@ -179,10 +181,40 @@ class RebuildTests(unittest.TestCase):
         self.assertTrue(rows["5483"]["stale"])
         self.assertEqual(rows["5483"]["date"], d[-2])
         self.assertIsNone(rows["5483"]["groupRank"])
-        self.assertEqual((rows["2330"]["group"], rows["2330"]["score2"], rows["2330"]["subjects"]["cls"]), ("半導體", 6, "弱勢"))   # 平盤：官網式 6（同值算新高）
+        self.assertEqual((rows["2330"]["group"], rows["2330"]["score2"], rows["2330"]["subjects"]["cls"]), ("半導體", 6, None))   # 平盤：官網式 6（同值算新高）；只有兩科有資料不分級
         self.assertEqual(module.collector_status()["lastDate"], d[-1])
+        self.assertEqual((hj["cross"]["prevBelow"], hj["cross"]["up"]), (False, False))       # 昨收 113 在月線上，不算穿惡
+        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 13.0))                  # 矽晶圓：合晶 13 分（環球晶沒有七科）
+        self.assertIsNone(rows["2330"]["groupSrank"])                                       # 半導體沒有分級的成員，不進強度榜
+        self.assertEqual((result["topGroups"], result["todayList"], result["cross"]), (1, 1, 0))
         again = module.rebuild()
         self.assertEqual(again["rows"], 4)
+
+    def test_cross_up_and_diag(self) -> None:
+        d = self.dates
+        # 環球晶改成：昨收在月線下、今天站上月線 3% 且量夠 → 穿惡
+        with database.get_connection() as c:
+            c.execute("DELETE FROM bars_1d WHERE stock_code = '6488'")
+            rows = [("6488", x + "T00:00:00", 500, 505, 495, 500, 300) for x in d[-30:-2]]
+            rows += [("6488", d[-2] + "T00:00:00", 480, 482, 470, 475, 300), ("6488", d[-1] + "T00:00:00", 480, 520, 478, 516, 900)]
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        result = module.rebuild()
+        self.assertEqual(result["cross"], 1)
+        r = module.diag("6488")
+        self.assertEqual((r["status"], r["code"], r["stock"]["name"], r["stock"]["cross"]["up"], r["stock"]["cross"]["prevBelow"]), ("ok", "6488", "環球晶", True, True))
+        self.assertGreater(r["stock"]["cross"]["dist"], 2.0)
+        self.assertEqual(len(r["bars"]), 30)
+        self.assertEqual(r["bars"][-1][:5], [d[-1], 480.0, 520.0, 478.0, 516.0])
+        self.assertEqual([x["code"] for x in r["siblings"]], ["6182", "6488", "5483"])       # 同族依七科總分排；中美晶資料舊的沒有七科排最後
+        self.assertEqual(r["groupInfo"]["g"], "矽晶圓")
+        self.assertEqual([g["g"] for g in r["top"]["groups"]], ["矽晶圓"])
+        self.assertEqual([x["code"] for x in r["top"]["list"]], ["6182"])                     # 只有強勢／中等進今日名單
+        cross = r["cross"]
+        self.assertEqual((cross["n"], [x["code"] for x in cross["groups"]["中等"]] + [x["code"] for x in cross["groups"]["弱勢"]]), (1, ["6488"]))
+        self.assertEqual(module.diag("9999")["status"], "missing")
+        self.assertEqual(module.diag("")["status"], "empty")
+        client = TestClient(persistent_app.app)
+        self.assertEqual(client.get("/api/hub/diag", params={"code": "6182"}).json()["stock"]["code"], "6182")
 
     def test_endpoints(self) -> None:
         module.rebuild()
