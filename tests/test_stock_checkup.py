@@ -184,7 +184,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((rows["2330"]["group"], rows["2330"]["score2"], rows["2330"]["subjects"]["cls"]), ("半導體", 6, None))   # 平盤：官網式 6（同值算新高）；只有兩科有資料不分級
         self.assertEqual(module.collector_status()["lastDate"], d[-1])
         self.assertEqual((hj["cross"]["prevBelow"], hj["cross"]["up"]), (False, False))       # 昨收 113 在月線上，不算穿惡
-        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 13.0))                  # 矽晶圓：合晶 13 分（環球晶沒有七科）
+        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 12.0))                  # 矽晶圓：合晶 12 分（2+2+1+2+1+2+2；環球晶沒有七科）
         self.assertIsNone(rows["2330"]["groupSrank"])                                       # 半導體沒有分級的成員，不進強度榜
         self.assertEqual((result["topGroups"], result["todayList"], result["cross"]), (1, 1, 0))
         again = module.rebuild()
