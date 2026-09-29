@@ -40,6 +40,8 @@ class HistoryTests(unittest.TestCase):
         self.groups_patch = patch.object(module, "STOCK_GROUPS", {"玻璃基板": [("6207", "雷科")], "矽晶圓": [("3016", "嘉晶")], "金融股": [("2881", "富邦金")]})
         self.groups_patch.start()
         module._group_by_code.clear()
+        module._currently_live = set()
+        module._currently_live_date = None
         self.payload = {"session": "2026-09-24", "rules": RULES, "stocks": {
             "6207": _info(boxHigh=124.0, maSums=_sums(BULL, 125.0)),
             "3016": _info(boxHigh=170.0, maSums=_sums(BULL, 160.0), brewing=False),
@@ -53,6 +55,8 @@ class HistoryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         module._group_by_code.clear()
+        module._currently_live = set()
+        module._currently_live_date = None
         self.groups_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
@@ -80,7 +84,34 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(launch["score"], 15)
         self.assertTrue(launch["brewing"])
         self.assertTrue(launch["recordedAt"].startswith("2026-09-24T10:00"))
+        self.assertTrue(launch["latestRecordedAt"].startswith("2026-09-24T10:00"))   # 第一次發動＝目前這次
         self.assertAlmostEqual(launch["projTurnoverPct"], 10.0)         # 500 張 × 4 ÷ 20000 張
+
+    def test_relaunch_updates_latest_but_keeps_first_recorded_at(self) -> None:
+        # 2026-09-29 使用者：同一檔股票今天可以分好幾次發動（發動→回落→再發動），時間要跟著最新那次更新，
+        # 但第一次發動的時間也要永久留著（回查用），不能被蓋掉。
+        others = {"3016": self.quotes["3016"], "2881": self.quotes["2881"]}
+        launch_quote = {"price": 125.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"}
+        fallen_quote = {"price": 120.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:30:00"}
+        relaunch_quote = {"price": 126.0, "prevClose": 114.0, "volume": 600, "quoteDate": "2026-09-24", "quoteTime": "11:00:00"}
+        first = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes={"6207": launch_quote, **others})
+        self.assertEqual(first["codes"], ["6207"])
+        self.assertEqual(first["currentlyLive"], 1)
+        fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 30, tzinfo=TW), payload=self.payload, quotes={"6207": fallen_quote, **others})
+        self.assertEqual(fallen["codes"], [])            # 回落這一輪沒有新發動
+        self.assertEqual(fallen["currentlyLive"], 0)
+        self.assertEqual(fallen["launchedToday"], 1)     # 今天累計還是算發動過一次
+        relaunch = module.scan_once(now=datetime(2026, 9, 24, 11, 0, tzinfo=TW), payload=self.payload, quotes={"6207": relaunch_quote, **others})
+        self.assertEqual(relaunch["codes"], ["6207"])    # 重新發動＝新的一輪
+        self.assertEqual(relaunch["currentlyLive"], 1)
+        self.assertEqual(relaunch["launchedToday"], 1)   # 還是同一檔，累計數不重複
+        launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
+        self.assertEqual(len(launch), 1)                 # 同一檔同一天只有一列
+        row = launch[0]
+        self.assertEqual(row["code"], "6207")
+        self.assertTrue(row["recordedAt"].startswith("2026-09-24T10:00"))         # 第一次發動時間永久保留
+        self.assertTrue(row["latestRecordedAt"].startswith("2026-09-24T11:00"))   # 顯示最新這次發動的時間
+        self.assertEqual(row["price"], 126.0)             # 細節也換成最新這一次的
 
     def test_outside_window_stores_snapshot_but_not_launches(self) -> None:
         result = self._scan(14, 0)
