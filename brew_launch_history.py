@@ -59,26 +59,41 @@ def _enabled() -> bool:
 def _schema(connection) -> None:
     connection.execute(
         """CREATE TABLE IF NOT EXISTS brew_launch_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             trade_date TEXT NOT NULL,
             stock_code TEXT NOT NULL,
             kind TEXT NOT NULL,
             recorded_at TEXT NOT NULL,
-            latest_recorded_at TEXT,
             price REAL,
             score INTEGER,
-            detail_json TEXT,
-            PRIMARY KEY (trade_date, stock_code, kind)
+            detail_json TEXT
         )"""
     )
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_brew_launch_daily_date_kind ON brew_launch_daily(trade_date, kind)")
     columns = {str(r["name"]) for r in connection.execute("PRAGMA table_info(brew_launch_daily)").fetchall()}
-    if "latest_recorded_at" not in columns:
-        connection.execute("ALTER TABLE brew_launch_daily ADD COLUMN latest_recorded_at TEXT")
-        connection.execute("UPDATE brew_launch_daily SET latest_recorded_at = recorded_at WHERE latest_recorded_at IS NULL")
+    if "id" not in columns:
+        # 舊表結構是 (trade_date, stock_code, kind) 當主鍵，同一檔同一天只能有一筆；
+        # 2026-09-29 使用者：同一檔股票今天可以分好幾次發動，每一次都要各自留一筆、不能互相蓋掉——
+        # 改成允許同一檔同一天多筆，舊資料原封不動搬過去（不管舊表有沒有 latest_recorded_at 欄位都只取共同欄位）。
+        connection.execute("ALTER TABLE brew_launch_daily RENAME TO brew_launch_daily_old")
+        connection.execute(
+            """CREATE TABLE brew_launch_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL, stock_code TEXT NOT NULL, kind TEXT NOT NULL,
+                recorded_at TEXT NOT NULL, price REAL, score INTEGER, detail_json TEXT
+            )"""
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_brew_launch_daily_date_kind ON brew_launch_daily(trade_date, kind)")
+        connection.execute(
+            "INSERT INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, price, score, detail_json) "
+            "SELECT trade_date, stock_code, kind, recorded_at, price, score, detail_json FROM brew_launch_daily_old"
+        )
+        connection.execute("DROP TABLE brew_launch_daily_old")
 
 
 def _rows(connection, trade_date: str, kind: str) -> list[dict[str, Any]]:
     rows = connection.execute(
-        "SELECT stock_code, recorded_at, latest_recorded_at, price, score, detail_json FROM brew_launch_daily WHERE trade_date = ? AND kind = ? ORDER BY recorded_at, stock_code",
+        "SELECT stock_code, recorded_at, price, score, detail_json FROM brew_launch_daily WHERE trade_date = ? AND kind = ? ORDER BY recorded_at, stock_code",
         (trade_date, kind),
     ).fetchall()
     out = []
@@ -86,7 +101,6 @@ def _rows(connection, trade_date: str, kind: str) -> list[dict[str, Any]]:
         group, name = group_and_name(str(row["stock_code"]))
         out.append({
             "code": str(row["stock_code"]), "name": name, "group": group, "recordedAt": row["recorded_at"],
-            "latestRecordedAt": row["latest_recorded_at"] or row["recorded_at"],
             "price": row["price"], "score": row["score"], **(json.loads(row["detail_json"]) if row["detail_json"] else {}),
         })
     return out
@@ -120,42 +134,40 @@ def record_brew_snapshot(payload: dict[str, Any]) -> int:
 
 
 def record_launches(trade_date: str, rows: list[dict[str, Any]], recorded_at: str) -> int:
-    """第一次發動就記一筆，已經有紀錄的（不管盤中還是收盤回推）不動——收盤回推（backfill）用這個，
-    不能讓收盤價回推蓋掉盤中已經記到的那一筆。"""
+    """收盤價回推（backfill）專用：只幫「今天完全沒有任何發動紀錄」的股票補一筆；已經有盤中紀錄
+    （不管幾筆）的股票不動，不能讓收盤價回推蓋掉或摻進盤中已經記到的紀錄。"""
     with get_connection() as connection:
         _schema(connection)
-        before = connection.total_changes
+        existing = {str(r["stock_code"]) for r in connection.execute(
+            "SELECT DISTINCT stock_code FROM brew_launch_daily WHERE trade_date = ? AND kind = 'launch'", (trade_date,)
+        ).fetchall()}
+        fresh = [row for row in rows if row["code"] not in existing]
         connection.executemany(
-            "INSERT OR IGNORE INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, latest_recorded_at, price, score, detail_json) VALUES (?, ?, 'launch', ?, ?, ?, ?, ?)",
+            "INSERT INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, price, score, detail_json) VALUES (?, ?, 'launch', ?, ?, ?, ?)",
             [
-                (trade_date, row["code"], recorded_at, recorded_at, row["price"], row["score"],
+                (trade_date, row["code"], recorded_at, row["price"], row["score"],
                  json.dumps({k: row.get(k) for k in LAUNCH_DETAIL_KEYS}, ensure_ascii=False))
-                for row in rows
+                for row in fresh
             ],
         )
-        return connection.total_changes - before
+        return len(fresh)
 
 
 def record_launch_episode(trade_date: str, rows: list[dict[str, Any]], recorded_at: str) -> int:
-    """盤中即時掃描專用：這些股票這一輪「從沒發動變發動」。第一次發動的 recorded_at 永久保留
-    （已存在就不動）；latest_recorded_at 跟 price/score/detail 一律換成這一次的，讓還在發動中的
-    股票查得到「這一次」是幾點開始的，不會停在很久以前的第一次。"""
+    """盤中即時掃描專用：這些股票這一輪「從沒發動變發動」，各自新增一筆（不是覆蓋）。
+    2026-09-29 使用者：同一檔股票今天可以分好幾次發動（發動→回落→再發動），每一次都要留下自己的紀錄，
+    不能把稍早的（尤其是第一次）蓋掉——所以這裡永遠是新增，不會動到任何一筆舊紀錄。"""
     with get_connection() as connection:
         _schema(connection)
-        before = connection.total_changes
         connection.executemany(
-            """INSERT INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, latest_recorded_at, price, score, detail_json)
-               VALUES (?, ?, 'launch', ?, ?, ?, ?, ?)
-               ON CONFLICT (trade_date, stock_code, kind) DO UPDATE SET
-                 latest_recorded_at = excluded.latest_recorded_at,
-                 price = excluded.price, score = excluded.score, detail_json = excluded.detail_json""",
+            "INSERT INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, price, score, detail_json) VALUES (?, ?, 'launch', ?, ?, ?, ?)",
             [
-                (trade_date, row["code"], recorded_at, recorded_at, row["price"], row["score"],
+                (trade_date, row["code"], recorded_at, row["price"], row["score"],
                  json.dumps({k: row.get(k) for k in LAUNCH_DETAIL_KEYS}, ensure_ascii=False))
                 for row in rows
             ],
         )
-        return connection.total_changes - before
+        return len(rows)
 
 
 def launched_codes(trade_date: str) -> set[str]:
@@ -428,17 +440,20 @@ def _markets(codes: list[str]) -> dict[str, str]:
 
 _currently_live: set[str] = set()  # 這一天目前還在發動中的代號（不是「今天發動過」，是「現在還在發動」）
 _currently_live_date: str | None = None
+_currently_live_seeded = False  # 程式剛啟動／換日後的第一輪只用來建立基準，不能把「本來就在發動」的股票誤判成剛剛才發動
 
 
 def scan_once(
     *, now: datetime | None = None, payload: dict[str, Any] | None = None,
     quotes_fetcher: Callable[[str], Any] | None = None, quotes: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """掃一輪：存醞釀快照（一天一次），盤中判斷發動。同一檔股票今天可以分好幾次發動——
-    每一輪都重新判斷全部股票現在是不是發動中（不是只查還沒發動過的），跟上一輪比對：
-    從「沒發動」變「發動」才算一次新的開始（record_launch_episode 更新 latest_recorded_at，
-    第一次的 recorded_at 永久保留）；持續發動中的不重複記。"""
-    global _currently_live, _currently_live_date
+    """掃一輪：存醞釀快照（一天一次），盤中判斷發動。同一檔股票今天可以分好幾次發動（發動→回落→再發動）——
+    每一輪都重新判斷全部股票現在是不是發動中（不是只查還沒發動過的），跟上一輪比對，從「沒發動」變「發動」
+    才算一次新的開始，各自新增一筆紀錄（record_launch_episode，不覆蓋任何一筆舊的，包括第一次那筆）。
+    2026-09-29 使用者：程式重開機（部署新版）記憶體會歸零，如果直接把這一輪全部currently-live股票都當
+    「剛剛才發動」會灌一堆假紀錄進去；所以換日或程式剛啟動後的第一輪只拿來建立「現在有誰在發動中」的基準，
+    只有「今天完全沒被記過」的股票才補一筆（代表真的錯過了它今天的第一次），已經有紀錄的不會被當成新發動。"""
+    global _currently_live, _currently_live_date, _currently_live_seeded
     now = now or datetime.now(TW_TZ)
     if payload is None:
         from brew_launch import get_brew_launch
@@ -451,7 +466,7 @@ def scan_once(
     if str(payload.get("session") or today) != today:
         return {"status": "skipped", "reason": f"醞釀資料的交易日 {payload.get('session')} 不是今天", "brewSnapshot": snapshot}
     if _currently_live_date != today:
-        _currently_live, _currently_live_date = set(), today
+        _currently_live, _currently_live_date, _currently_live_seeded = set(), today, False
     rules = payload["rules"]
     stocks = {code: info for code, info in (payload.get("stocks") or {}).items() if not info.get("skipped")}
     codes = sorted(stocks)
@@ -473,6 +488,10 @@ def scan_once(
         live_now.add(code)
         if code not in _currently_live:
             newly_live.append({"code": code, **metrics})
+    if not _currently_live_seeded:
+        already_recorded = launched_codes(today)
+        newly_live = [row for row in newly_live if row["code"] not in already_recorded]
+        _currently_live_seeded = True
     if newly_live:
         record_launch_episode(today, newly_live, now.isoformat(timespec="seconds"))
     _currently_live = live_now
