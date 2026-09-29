@@ -42,6 +42,7 @@ class HistoryTests(unittest.TestCase):
         module._group_by_code.clear()
         module._currently_live = set()
         module._currently_live_date = None
+        module._currently_live_seeded = False
         self.payload = {"session": "2026-09-24", "rules": RULES, "stocks": {
             "6207": _info(boxHigh=124.0, maSums=_sums(BULL, 125.0)),
             "3016": _info(boxHigh=170.0, maSums=_sums(BULL, 160.0), brewing=False),
@@ -57,6 +58,7 @@ class HistoryTests(unittest.TestCase):
         module._group_by_code.clear()
         module._currently_live = set()
         module._currently_live_date = None
+        module._currently_live_seeded = False
         self.groups_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
@@ -84,12 +86,11 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(launch["score"], 15)
         self.assertTrue(launch["brewing"])
         self.assertTrue(launch["recordedAt"].startswith("2026-09-24T10:00"))
-        self.assertTrue(launch["latestRecordedAt"].startswith("2026-09-24T10:00"))   # 第一次發動＝目前這次
         self.assertAlmostEqual(launch["projTurnoverPct"], 10.0)         # 500 張 × 4 ÷ 20000 張
 
-    def test_relaunch_updates_latest_but_keeps_first_recorded_at(self) -> None:
-        # 2026-09-29 使用者：同一檔股票今天可以分好幾次發動（發動→回落→再發動），時間要跟著最新那次更新，
-        # 但第一次發動的時間也要永久留著（回查用），不能被蓋掉。
+    def test_relaunch_adds_new_row_without_touching_first_one(self) -> None:
+        # 2026-09-29 使用者：同一檔股票今天可以分好幾次發動（發動→回落→再發動），第一次發動的時間要
+        # 永久保留、不能被蓋掉；又發動的話要另外留一筆紀錄，陸續列出來，不是覆蓋掉舊的那筆。
         others = {"3016": self.quotes["3016"], "2881": self.quotes["2881"]}
         launch_quote = {"price": 125.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"}
         fallen_quote = {"price": 120.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:30:00"}
@@ -100,18 +101,55 @@ class HistoryTests(unittest.TestCase):
         fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 30, tzinfo=TW), payload=self.payload, quotes={"6207": fallen_quote, **others})
         self.assertEqual(fallen["codes"], [])            # 回落這一輪沒有新發動
         self.assertEqual(fallen["currentlyLive"], 0)
-        self.assertEqual(fallen["launchedToday"], 1)     # 今天累計還是算發動過一次
+        self.assertEqual(fallen["launchedToday"], 1)     # 今天累計還是算發動過一次（不管幾筆都算同一檔）
         relaunch = module.scan_once(now=datetime(2026, 9, 24, 11, 0, tzinfo=TW), payload=self.payload, quotes={"6207": relaunch_quote, **others})
         self.assertEqual(relaunch["codes"], ["6207"])    # 重新發動＝新的一輪
         self.assertEqual(relaunch["currentlyLive"], 1)
         self.assertEqual(relaunch["launchedToday"], 1)   # 還是同一檔，累計數不重複
         launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
-        self.assertEqual(len(launch), 1)                 # 同一檔同一天只有一列
-        row = launch[0]
-        self.assertEqual(row["code"], "6207")
-        self.assertTrue(row["recordedAt"].startswith("2026-09-24T10:00"))         # 第一次發動時間永久保留
-        self.assertTrue(row["latestRecordedAt"].startswith("2026-09-24T11:00"))   # 顯示最新這次發動的時間
-        self.assertEqual(row["price"], 126.0)             # 細節也換成最新這一次的
+        codes6207 = [r for r in launch if r["code"] == "6207"]
+        self.assertEqual(len(codes6207), 2)              # 兩次發動＝兩筆，不是互相覆蓋
+        first_row, second_row = sorted(codes6207, key=lambda r: r["recordedAt"])
+        self.assertTrue(first_row["recordedAt"].startswith("2026-09-24T10:00"))    # 第一次時間原封不動
+        self.assertEqual(first_row["price"], 125.0)                                # 第一筆的細節也沒被蓋掉
+        self.assertTrue(second_row["recordedAt"].startswith("2026-09-24T11:00"))   # 第二次另外留一筆
+        self.assertEqual(second_row["price"], 126.0)
+
+    def test_restart_does_not_fabricate_relaunch_for_already_recorded_stock(self) -> None:
+        # 2026-09-29 使用者發現：程式重新部署後，記憶體裡「現在有誰在發動中」的基準會歸零，
+        # 如果直接把這一輪還在發動中的股票都當成「剛剛才發動」，會把一堆早就發動、根本沒回落過的股票
+        # 全部灌一筆假的新紀錄，時間全部變成同一個重開機的時間點。第一輪掃描（模擬重開機後的第一次）
+        # 只能拿來建立基準，已經有紀錄的不能被當成新發動。
+        first = self._scan(10, 0)
+        self.assertEqual(first["codes"], ["6207"])
+        # 模擬程式重新部署：記憶體歸零，但資料庫裡 6207 10:00 那筆還在
+        module._currently_live = set()
+        module._currently_live_seeded = False
+        restart = self._scan(10, 30)   # 6207 報價沒變，還是持續在發動中，不是真的重新發動
+        self.assertEqual(restart["codes"], [])            # 不能把它當成新發動
+        self.assertEqual(restart["currentlyLive"], 1)     # 但基準要正確反映它現在確實還在發動中
+        launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
+        codes6207 = [r for r in launch if r["code"] == "6207"]
+        self.assertEqual(len(codes6207), 1)               # 沒有多出一筆重開機時間的假紀錄
+        self.assertTrue(codes6207[0]["recordedAt"].startswith("2026-09-24T10:00"))
+
+    def test_restart_still_records_stock_missed_before_restart(self) -> None:
+        # 重開機那一刻，如果有一檔股票已經在發動中、但今天完全沒被記過（真的錯過了它的第一次），
+        # 第一輪基準掃描還是要幫它補一筆，不能因為「怕誤判成重新發動」而整個漏掉。
+        self._scan(10, 0)   # 6207 10:00 正常記錄；3016 這時候還沒過箱頂，不算發動
+        self.assertEqual(module.launched_codes("2026-09-24"), {"6207"})
+        module._currently_live = set()
+        module._currently_live_seeded = False
+        # 3016 的 maSums 是照收盤價 160 校準的（均線分數在這個價位是滿分 15），箱頂改低於 160 讓它「過箱頂」，
+        # 量放大到通過周轉率門檻，這樣它才會被判定為發動中（不是真的沒過條件）。
+        missed_payload = dict(self.payload, stocks=dict(self.payload["stocks"], **{
+            "3016": dict(self.payload["stocks"]["3016"], boxHigh=150.0),
+        }))
+        missed_quote = {"price": 160.0, "prevClose": 145.5, "volume": 2000, "quoteDate": "2026-09-24", "quoteTime": "12:00:00"}
+        result = module.scan_once(now=datetime(2026, 9, 24, 12, 0, tzinfo=TW), payload=missed_payload,
+                                   quotes={"6207": self.quotes["6207"], "3016": missed_quote, "2881": self.quotes["2881"]})
+        self.assertEqual(result["codes"], ["3016"])   # 6207 已經記過不補；3016 今天沒紀錄過，這次要補上
+        self.assertEqual(module.launched_codes("2026-09-24"), {"6207", "3016"})
 
     def test_outside_window_stores_snapshot_but_not_launches(self) -> None:
         result = self._scan(14, 0)
