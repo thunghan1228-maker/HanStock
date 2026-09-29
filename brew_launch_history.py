@@ -3,8 +3,11 @@
 醞釀是「上一個交易日收盤」算出來的名單，每個交易日都不一樣；發動是盤中即時判斷的，
 收盤後價格一停就沒有「現在正在發動」這回事。所以這裡把兩種都存進 SQLite：
   - 醞釀快照：每個交易日第一次算出醞釀名單就存（一天一份，重算不覆蓋）
-  - 發動紀錄：盤中每 30 秒用證交所 MIS 即時報價（跟首頁同一個來源）掃 43 個族群，
-    一檔股票一天第一次符合發動就記一筆（時間、價格、漲幅、均線分數、預估周轉、量比）
+  - 發動紀錄：盤中每 30 秒用證交所 MIS 即時報價（跟首頁同一個來源）掃 43 個族群全部股票，
+    一檔股票一天第一次符合發動就記一筆（時間、價格、漲幅、均線分數、預估周轉、量比）；
+    同一檔今天可以分好幾次發動（發動→回落→再發動，2026-09-29 使用者：時間要跟著最新那次更新）——
+    第一次的 recorded_at 永久保留不會被蓋掉（回查用），每次「從沒發動變發動」另外更新
+    latest_recorded_at 跟當次的價格／分數／細節（讓還在發動中的股票看得到「這一次」是幾點開始的）。
 發動條件跟前端 brewLiveMetrics 一模一樣；金融股（後端標 skipped）不算。
 前端醞釀／發動分頁的「昨天／前天」看的就是這裡存的資料；今天的發動也會把「盤中曾經發動、
 現在回落」的一起列出來。
@@ -60,17 +63,22 @@ def _schema(connection) -> None:
             stock_code TEXT NOT NULL,
             kind TEXT NOT NULL,
             recorded_at TEXT NOT NULL,
+            latest_recorded_at TEXT,
             price REAL,
             score INTEGER,
             detail_json TEXT,
             PRIMARY KEY (trade_date, stock_code, kind)
         )"""
     )
+    columns = {str(r["name"]) for r in connection.execute("PRAGMA table_info(brew_launch_daily)").fetchall()}
+    if "latest_recorded_at" not in columns:
+        connection.execute("ALTER TABLE brew_launch_daily ADD COLUMN latest_recorded_at TEXT")
+        connection.execute("UPDATE brew_launch_daily SET latest_recorded_at = recorded_at WHERE latest_recorded_at IS NULL")
 
 
 def _rows(connection, trade_date: str, kind: str) -> list[dict[str, Any]]:
     rows = connection.execute(
-        "SELECT stock_code, recorded_at, price, score, detail_json FROM brew_launch_daily WHERE trade_date = ? AND kind = ? ORDER BY recorded_at, stock_code",
+        "SELECT stock_code, recorded_at, latest_recorded_at, price, score, detail_json FROM brew_launch_daily WHERE trade_date = ? AND kind = ? ORDER BY recorded_at, stock_code",
         (trade_date, kind),
     ).fetchall()
     out = []
@@ -78,6 +86,7 @@ def _rows(connection, trade_date: str, kind: str) -> list[dict[str, Any]]:
         group, name = group_and_name(str(row["stock_code"]))
         out.append({
             "code": str(row["stock_code"]), "name": name, "group": group, "recordedAt": row["recorded_at"],
+            "latestRecordedAt": row["latest_recorded_at"] or row["recorded_at"],
             "price": row["price"], "score": row["score"], **(json.loads(row["detail_json"]) if row["detail_json"] else {}),
         })
     return out
@@ -111,13 +120,37 @@ def record_brew_snapshot(payload: dict[str, Any]) -> int:
 
 
 def record_launches(trade_date: str, rows: list[dict[str, Any]], recorded_at: str) -> int:
+    """第一次發動就記一筆，已經有紀錄的（不管盤中還是收盤回推）不動——收盤回推（backfill）用這個，
+    不能讓收盤價回推蓋掉盤中已經記到的那一筆。"""
     with get_connection() as connection:
         _schema(connection)
         before = connection.total_changes
         connection.executemany(
-            "INSERT OR IGNORE INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, price, score, detail_json) VALUES (?, ?, 'launch', ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, latest_recorded_at, price, score, detail_json) VALUES (?, ?, 'launch', ?, ?, ?, ?, ?)",
             [
-                (trade_date, row["code"], recorded_at, row["price"], row["score"],
+                (trade_date, row["code"], recorded_at, recorded_at, row["price"], row["score"],
+                 json.dumps({k: row.get(k) for k in LAUNCH_DETAIL_KEYS}, ensure_ascii=False))
+                for row in rows
+            ],
+        )
+        return connection.total_changes - before
+
+
+def record_launch_episode(trade_date: str, rows: list[dict[str, Any]], recorded_at: str) -> int:
+    """盤中即時掃描專用：這些股票這一輪「從沒發動變發動」。第一次發動的 recorded_at 永久保留
+    （已存在就不動）；latest_recorded_at 跟 price/score/detail 一律換成這一次的，讓還在發動中的
+    股票查得到「這一次」是幾點開始的，不會停在很久以前的第一次。"""
+    with get_connection() as connection:
+        _schema(connection)
+        before = connection.total_changes
+        connection.executemany(
+            """INSERT INTO brew_launch_daily (trade_date, stock_code, kind, recorded_at, latest_recorded_at, price, score, detail_json)
+               VALUES (?, ?, 'launch', ?, ?, ?, ?, ?)
+               ON CONFLICT (trade_date, stock_code, kind) DO UPDATE SET
+                 latest_recorded_at = excluded.latest_recorded_at,
+                 price = excluded.price, score = excluded.score, detail_json = excluded.detail_json""",
+            [
+                (trade_date, row["code"], recorded_at, recorded_at, row["price"], row["score"],
                  json.dumps({k: row.get(k) for k in LAUNCH_DETAIL_KEYS}, ensure_ascii=False))
                 for row in rows
             ],
@@ -393,11 +426,19 @@ def _markets(codes: list[str]) -> dict[str, str]:
 
 # ------------------------------------------------------------------ 主流程
 
+_currently_live: set[str] = set()  # 這一天目前還在發動中的代號（不是「今天發動過」，是「現在還在發動」）
+_currently_live_date: str | None = None
+
+
 def scan_once(
     *, now: datetime | None = None, payload: dict[str, Any] | None = None,
     quotes_fetcher: Callable[[str], Any] | None = None, quotes: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """掃一輪：存醞釀快照（一天一次），盤中判斷發動並記錄第一次發動。"""
+    """掃一輪：存醞釀快照（一天一次），盤中判斷發動。同一檔股票今天可以分好幾次發動——
+    每一輪都重新判斷全部股票現在是不是發動中（不是只查還沒發動過的），跟上一輪比對：
+    從「沒發動」變「發動」才算一次新的開始（record_launch_episode 更新 latest_recorded_at，
+    第一次的 recorded_at 永久保留）；持續發動中的不重複記。"""
+    global _currently_live, _currently_live_date
     now = now or datetime.now(TW_TZ)
     if payload is None:
         from brew_launch import get_brew_launch
@@ -409,29 +450,35 @@ def scan_once(
     today = now.strftime("%Y-%m-%d")
     if str(payload.get("session") or today) != today:
         return {"status": "skipped", "reason": f"醞釀資料的交易日 {payload.get('session')} 不是今天", "brewSnapshot": snapshot}
+    if _currently_live_date != today:
+        _currently_live, _currently_live_date = set(), today
     rules = payload["rules"]
     stocks = {code: info for code, info in (payload.get("stocks") or {}).items() if not info.get("skipped")}
-    already = launched_codes(today)
-    candidates = sorted(code for code in stocks if code not in already)
-    if not candidates:
-        return {"status": "ok", "checked": 0, "launched": 0, "launchedToday": len(already), "brewSnapshot": snapshot}
+    codes = sorted(stocks)
+    if not codes:
+        return {"status": "ok", "checked": 0, "launched": 0, "launchedToday": len(launched_codes(today)), "brewSnapshot": snapshot}
     if quotes is None:
-        quotes = fetch_mis_quotes(candidates, _markets(candidates), fetcher=quotes_fetcher)
+        quotes = fetch_mis_quotes(codes, _markets(codes), fetcher=quotes_fetcher)
     latest = max(((q.get("quoteDate") or ""), (q.get("quoteTime") or "")) for q in quotes.values()) if quotes else ("", "")
     factor = volume_factor(latest[0] or None, latest[1] or None, today)
-    launched: list[dict[str, Any]] = []
-    for code in candidates:
+    live_now: set[str] = set()
+    newly_live: list[dict[str, Any]] = []
+    for code in codes:
         quote = quotes.get(code)
         if not quote:
             continue
         metrics = evaluate_launch(stocks[code], quote, factor, rules)
-        if metrics:
-            launched.append({"code": code, **metrics})
-    if launched:
-        record_launches(today, launched, now.isoformat(timespec="seconds"))
+        if not metrics:
+            continue
+        live_now.add(code)
+        if code not in _currently_live:
+            newly_live.append({"code": code, **metrics})
+    if newly_live:
+        record_launch_episode(today, newly_live, now.isoformat(timespec="seconds"))
+    _currently_live = live_now
     return {
-        "status": "ok", "checked": len(candidates), "launched": len(launched), "codes": [row["code"] for row in launched],
-        "factor": round(factor, 2), "launchedToday": len(already) + len(launched), "brewSnapshot": snapshot,
+        "status": "ok", "checked": len(codes), "launched": len(newly_live), "codes": [row["code"] for row in newly_live],
+        "factor": round(factor, 2), "launchedToday": len(launched_codes(today)), "currentlyLive": len(live_now), "brewSnapshot": snapshot,
     }
 
 
