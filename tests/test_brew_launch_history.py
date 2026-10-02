@@ -271,6 +271,48 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue(module.in_scan_window(datetime(2026, 9, 24, 13, 34, tzinfo=TW)))
         self.assertFalse(module.in_scan_window(datetime(2026, 9, 24, 13, 35, tzinfo=TW)))
 
+    def test_launch_record_keeps_limit_up_down_flag(self) -> None:
+        # 2026-10-02 使用者：永久保存的發動紀錄（今天曾發動／昨天／前天）漲跌幅欄要能顯示紅底白字，
+        # 跟即時的發動列表一樣；quote裡有limitUp/limitDown就要原封不動存進detail_json、history()讀得回來。
+        quotes = dict(self.quotes, **{"6207": dict(self.quotes["6207"], limitUp=True, limitDown=False)})
+        result = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes=quotes)
+        self.assertEqual(result["codes"], ["6207"])
+        day = module.history(date="2026-09-24")["days"]["2026-09-24"]
+        row = next(r for r in day["launch"] if r["code"] == "6207")
+        self.assertTrue(row["limitUp"])
+        self.assertFalse(row["limitDown"])
+
+    def test_launch_record_defaults_limit_flags_false_when_quote_lacks_them(self) -> None:
+        # EOD收盤回推那條路徑的quote只有price/prevClose/volume，沒有limitUp/limitDown欄位；
+        # 不能噴錯，要安全退回False（當作沒有漲跌停），不是None（前端判斷r.limitUp時NoneIsFalsy但後端
+        # 明確存False比較不會讓人誤會是漏存）。
+        result = self._scan()
+        self.assertEqual(result["codes"], ["6207"])
+        day = module.history(date="2026-09-24")["days"]["2026-09-24"]
+        row = next(r for r in day["launch"] if r["code"] == "6207")
+        self.assertIs(row["limitUp"], False)
+        self.assertIs(row["limitDown"], False)
+
+
+class FetchMisQuotesLimitPriceTests(unittest.TestCase):
+    def _fetch(self, msg_array):
+        return module.fetch_mis_quotes(["2330"], {"2330": "TSE"}, fetcher=lambda url: {"msgArray": msg_array})
+
+    def test_price_at_limit_up_price_is_flagged(self) -> None:
+        quotes = self._fetch([{"c": "2330", "z": "110.0", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261002", "t": "13:30:00", "v": "100"}])
+        self.assertTrue(quotes["2330"]["limitUp"])
+        self.assertFalse(quotes["2330"]["limitDown"])
+
+    def test_price_at_limit_down_price_is_flagged(self) -> None:
+        quotes = self._fetch([{"c": "2330", "z": "90.0", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261002", "t": "13:30:00", "v": "100"}])
+        self.assertFalse(quotes["2330"]["limitUp"])
+        self.assertTrue(quotes["2330"]["limitDown"])
+
+    def test_price_between_limits_is_not_flagged(self) -> None:
+        quotes = self._fetch([{"c": "2330", "z": "105.0", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261002", "t": "13:30:00", "v": "100"}])
+        self.assertFalse(quotes["2330"]["limitUp"])
+        self.assertFalse(quotes["2330"]["limitDown"])
+
 
 if __name__ == "__main__":
     unittest.main()
