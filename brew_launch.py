@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,7 @@ from disposition_fundamentals_store import ensure_fundamentals_schema
 from stock_groups import STOCK_GROUPS
 from trading_days import is_trading_day
 
+logger = logging.getLogger("hanstock.brew_launch")
 TW_TZ = timezone(timedelta(hours=8))
 EXCLUDED_GROUPS = {"股期標的"}
 # 使用者 2026-09-24：醞釀裡金融股一次佔 14 檔太多，金融股整個不列入醞釀／發動。均線分數照算（盤中333 要用），
@@ -257,13 +259,31 @@ def _history_backfill_status() -> dict[str, Any] | None:
 
 def get_brew_launch() -> dict[str, Any]:
     """快取半小時：只用到收盤後才會變的日K跟市值；即時價量由前端自己套。日K歷史回補的進度每次即時附上
-    （回補還沒完成時多數個股 MA240 算不出來，前端要能說明為什麼清單是空的）。"""
+    （回補還沒完成時多數個股 MA240 算不出來，前端要能說明為什麼清單是空的）。
+
+    2026-10-02 使用者回報：早上還有50檔醞釀、後來整個分頁變成0/0，隔了一段時間才又正常——懷疑是某次
+    重算（_load_bars／_load_market_values）剛好撞上資料庫正在寫（例如日K回補、盤後寫入），讀到不完整
+    的暫時性結果，技術上沒有出錯、但stockCount異常偏少；因為快取半小時，一旦採用這種壞結果就會卡住
+    最多半小時才會自動修正。這裡加一層保護：同一個session裡，新算出來的stockCount如果比上一份健康的
+    結果少太多（掉到三成以下，且上一份本來有算出一定數量），當作這次算壞了、不要覆蓋快取，直接回舊的、
+    下次請求馬上重算（不要等滿半小時）。"""
     session = session_date()
     now = time.monotonic()
     with _cache_lock:
-        cached = _cache["value"] if _cache["key"] == session and _cache["value"] is not None and now - _cache["at"] < CACHE_SECONDS else None
+        prior = _cache["value"] if _cache["key"] == session else None
+        cached = prior if prior is not None and now - _cache["at"] < CACHE_SECONDS else None
     if cached is None:
-        cached = compute_brew_launch(session=session)
-        with _cache_lock:
-            _cache.update({"key": session, "at": now, "value": cached})
+        fresh = compute_brew_launch(session=session)
+        prior_count = len(prior["stocks"]) if prior else 0
+        fresh_count = len(fresh["stocks"])
+        if prior and prior_count >= 50 and fresh_count < prior_count * 0.3:
+            logger.warning(
+                "醞釀／發動重算結果股票數異常偏少（%d，上一份 %d），疑似讀到不完整資料，沿用上一份並下次請求立即重試",
+                fresh_count, prior_count,
+            )
+            cached = prior
+        else:
+            cached = fresh
+            with _cache_lock:
+                _cache.update({"key": session, "at": now, "value": cached})
     return dict(cached, historyBackfill=_history_backfill_status())
