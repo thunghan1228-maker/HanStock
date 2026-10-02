@@ -40,7 +40,7 @@ MIS_CHUNK = 80
 MARKET_OPEN_MINUTE = 9 * 60
 MARKET_SCAN_END_MINUTE = 13 * 60 + 35  # 13:30 收盤，最後一盤成交後再掃幾分鐘
 BREW_DETAIL_KEYS = ("prevClose", "boxHigh", "boxLow", "boxRangePct", "maSpreadPct", "score")
-LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing", "eod")
+LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing", "eod", "limitUp", "limitDown")
 BACKFILL_DAYS = max(0, int(os.getenv("HANSTOCK_BREW_LAUNCH_BACKFILL_DAYS", "3")))  # 用日K回推最近幾個交易日
 BACKFILL_MINUTE = 15 * 60 + 30  # 每天 15:30 後（當天日K進來了）再回推一次，把當天掃描漏掉的補齊
 DAY_COMPLETE_RATIO = 0.75  # 那天的日K要有這麼多比例的族群股才算完整（上櫃還沒補進來就先不回推）
@@ -362,6 +362,10 @@ def evaluate_launch(info: dict[str, Any], quote: dict[str, Any], factor: float, 
         "projTurnoverPct": round(proj_turnover, 2) if proj_turnover is not None else None,
         "volRatio": round(vol_ratio, 2) if vol_ratio is not None else None,
         "brewing": bool(info.get("brewing")),
+        # 2026-10-02 使用者：永久紀錄的發動列表漲跌幅欄也要能顯示紅底白字（跟即時的發動列表一樣）；
+        # EOD收盤回推那條路徑（quote只有price/prevClose/volume）沒有這兩個欄位，quote.get會安全拿到None。
+        "limitUp": bool(quote.get("limitUp")),
+        "limitDown": bool(quote.get("limitDown")),
     }
 
 
@@ -414,10 +418,16 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
             if price is None:
                 continue
             day = str(item.get("d") or "")
+            # u／w＝當天漲停價／跌停價（跟tw-groups首頁那份報價同一套算法）：發動永久紀錄的漲跌幅欄
+            # 要能判斷漲停，不能只看當下這一盤有沒有成交在那個價位。
+            limit_up_price = _num(item.get("u"))
+            limit_down_price = _num(item.get("w"))
             out[code] = {
                 "price": price, "prevClose": prev_close, "volume": int(_num(item.get("v")) or 0),
                 "quoteDate": f"{day[:4]}-{day[4:6]}-{day[6:8]}" if len(day) == 8 else None,
                 "quoteTime": str(item.get("t") or "") or None,
+                "limitUp": limit_up_price is not None and price >= limit_up_price - 1e-6,
+                "limitDown": limit_down_price is not None and price <= limit_down_price + 1e-6,
             }
     return out
 
