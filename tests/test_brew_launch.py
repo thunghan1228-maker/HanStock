@@ -157,6 +157,71 @@ class ComputeTests(unittest.TestCase):
         self.assertIsNone(result["stocks"]["2330"]["sharesLots"])
 
 
+class GetBrewLaunchCacheGuardTests(unittest.TestCase):
+    """2026-10-02 使用者回報：早上還有50檔醞釀、後來整個分頁變成0/0，隔了一段時間才又正常。
+    驗證 get_brew_launch() 的保護機制：重算結果如果比上一份健康結果少太多，不要覆蓋快取、
+    下次請求要立刻重試（不等滿 30 分鐘），但正常範圍的變化（包含合理變小）要照常接受。"""
+
+    def setUp(self) -> None:
+        module._cache.update({"key": None, "at": 0.0, "value": None})
+
+    @staticmethod
+    def _fake(n: int) -> dict[str, Any]:
+        return {"stocks": {f"{i:04d}": {} for i in range(n)}}
+
+    def test_healthy_result_is_cached_and_reused_within_ttl(self) -> None:
+        fresh = self._fake(100)
+        with patch.object(module, "session_date", return_value="2026-10-02"), \
+                patch.object(module, "_history_backfill_status", return_value=None), \
+                patch.object(module, "compute_brew_launch", return_value=fresh) as compute, \
+                patch.object(module.time, "monotonic", return_value=1000.0):
+            result1 = module.get_brew_launch()
+            result2 = module.get_brew_launch()
+        self.assertEqual(compute.call_count, 1)  # 第二次在TTL內，直接吃快取不重算
+        self.assertEqual(len(result1["stocks"]), 100)
+        self.assertEqual(len(result2["stocks"]), 100)
+
+    def test_drastic_drop_after_ttl_is_rejected_and_retried_immediately(self) -> None:
+        healthy, degraded, recovered = self._fake(100), self._fake(5), self._fake(90)
+        with patch.object(module, "session_date", return_value="2026-10-02"), \
+                patch.object(module, "_history_backfill_status", return_value=None), \
+                patch.object(module, "compute_brew_launch", side_effect=[healthy, degraded, recovered]) as compute, \
+                patch.object(module.time, "monotonic", side_effect=[1000.0, 1000.0 + module.CACHE_SECONDS + 1, 1000.0 + module.CACHE_SECONDS + 1]):
+            first = module.get_brew_launch()  # 第一次：算出健康的100檔，存入快取
+            second = module.get_brew_launch()  # TTL過期後重算，掉到5檔（<100*0.3）：視為壞結果，沿用舊的100檔
+            # 壞結果沒有更新快取時間戳（還停在第一次的1000.0），下次請求才會立刻重試、不必等滿30分鐘
+            self.assertEqual(module._cache["at"], 1000.0)
+            third = module.get_brew_launch()  # 緊接著再要一次：正常重算、恢復正常
+        self.assertEqual(compute.call_count, 3)  # 第二、三次都有觸發重算（不是卡住不重試）
+        self.assertEqual(len(first["stocks"]), 100)
+        self.assertEqual(len(second["stocks"]), 100)  # 壞結果（5檔）被擋下來，繼續吃上一份健康的
+        self.assertEqual(len(third["stocks"]), 90)  # 恢復正常（90檔，跌幅不到七成）後正常接受新結果
+        self.assertEqual(module._cache["at"], 1000.0 + module.CACHE_SECONDS + 1)  # 這次正常更新了時間戳
+
+    def test_small_prior_count_skips_guard(self) -> None:
+        # 上一份本來就很小（<50檔）時，不當作「異常萎縮」，正常接受新的（更小的）結果
+        small_prior, smaller_fresh = self._fake(10), self._fake(1)
+        with patch.object(module, "session_date", return_value="2026-10-02"), \
+                patch.object(module, "_history_backfill_status", return_value=None), \
+                patch.object(module, "compute_brew_launch", side_effect=[small_prior, smaller_fresh]), \
+                patch.object(module.time, "monotonic", side_effect=[1000.0, 1000.0 + module.CACHE_SECONDS + 1]):
+            module.get_brew_launch()
+            second = module.get_brew_launch()
+        self.assertEqual(len(second["stocks"]), 1)
+
+    def test_moderate_drop_is_accepted_normally(self) -> None:
+        # 掉到七成以上（還沒到三成門檻）時是正常變化，照常接受、更新快取
+        healthy, moderate = self._fake(100), self._fake(50)
+        with patch.object(module, "session_date", return_value="2026-10-02"), \
+                patch.object(module, "_history_backfill_status", return_value=None), \
+                patch.object(module, "compute_brew_launch", side_effect=[healthy, moderate]), \
+                patch.object(module.time, "monotonic", side_effect=[1000.0, 1000.0 + module.CACHE_SECONDS + 1]):
+            module.get_brew_launch()
+            second = module.get_brew_launch()
+        self.assertEqual(len(second["stocks"]), 50)
+        self.assertEqual(module._cache["at"], 1000.0 + module.CACHE_SECONDS + 1)
+
+
 class DatabaseIntegrationTests(unittest.TestCase):
     """實際走 SQLite：bars_1d 跟 stock_fundamentals_daily 的查詢（日期字串比較、IN 批次）。"""
 
