@@ -330,6 +330,122 @@ class HistoryTests(unittest.TestCase):
         self.assertIs(row["limitDown"], False)
 
 
+class BackfillHolderForceTests(unittest.TestCase):
+    """2026-10-03 使用者：「今天曾發動」整排盤中大戶力都是「—」。根因：補這個欄位的改法是
+    那天收盤後才上線，上線前盤中記下來的發動永久紀錄 detail_json 裡根本沒有 strengthPct，
+    不會因為程式後來上線就自動補上。backfill_holder_force() 要能用當時的 trade_date 補回去。"""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+        self.groups_patch = patch.object(module, "STOCK_GROUPS", {"玻璃基板": [("6207", "雷科"), ("3016", "嘉晶")]})
+        self.groups_patch.start()
+        module._group_by_code.clear()
+
+    def tearDown(self) -> None:
+        module._group_by_code.clear()
+        self.groups_patch.stop()
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _seed_old_row(self, trade_date, code, **detail_over):
+        # 模擬「補strengthPct這個改法上線前」存的舊紀錄：detail_json裡完全沒有strengthPct這些key。
+        detail = {"changePct": 5.0, "boxHigh": 100.0, "projTurnoverPct": 8.0, "volRatio": 1.8, "brewing": False, "eod": False}
+        detail.update(detail_over)
+        row = {"code": code, "price": 100.0, "score": 14, **detail}
+        module.record_launch_episode(trade_date, [row], f"{trade_date}T09:30:00+08:00")
+
+    def test_backfills_missing_strength_pct_from_main_force_ranking(self) -> None:
+        self._seed_old_row("2026-10-02", "6207")
+        fake_ranking = [{"code": "6207", "strengthPct": 29.2, "netAmount": 569000000, "holderLabel": "盤中大戶強力買進"}]
+        with patch("main_force_store.load_main_force_ranking", return_value=fake_ranking) as mocked:
+            summary = module.backfill_holder_force(["2026-10-02"])
+        mocked.assert_called_once_with("2026-10-02", codes=["6207"])
+        self.assertEqual(summary["days"], [{"date": "2026-10-02", "rows": 1, "candidates": 1, "updated": 1}])
+        row = module.history(date="2026-10-02")["days"]["2026-10-02"]["launch"][0]
+        self.assertEqual(row["strengthPct"], 29.2)
+        self.assertEqual(row["netAmount"], 569000000)
+        self.assertEqual(row["holderLabel"], "盤中大戶強力買進")
+        # 原本其他欄位(漲跌幅、箱頂等)要原封不動，不能因為回填被動到
+        self.assertEqual(row["changePct"], 5.0)
+        self.assertEqual(row["boxHigh"], 100.0)
+
+    def test_skips_rows_that_already_have_strength_pct(self) -> None:
+        # 已經有資料(包括已經查過但確定是None的新資料)的列不會重查，省掉不必要的查詢。
+        self._seed_old_row("2026-10-02", "6207", strengthPct=18.5, netAmount=1000, holderLabel="盤中大戶偏買")
+        with patch("main_force_store.load_main_force_ranking") as mocked:
+            summary = module.backfill_holder_force(["2026-10-02"])
+        mocked.assert_not_called()
+        self.assertEqual(summary["days"], [{"date": "2026-10-02", "rows": 1, "candidates": 0, "updated": 0}])
+        row = module.history(date="2026-10-02")["days"]["2026-10-02"]["launch"][0]
+        self.assertEqual(row["strengthPct"], 18.5)  # 沒被覆蓋
+
+    def test_leaves_strength_pct_none_when_ranking_still_has_no_data(self) -> None:
+        self._seed_old_row("2026-10-02", "6207")
+        with patch("main_force_store.load_main_force_ranking", return_value=[]):
+            summary = module.backfill_holder_force(["2026-10-02"])
+        self.assertEqual(summary["days"], [{"date": "2026-10-02", "rows": 1, "candidates": 1, "updated": 0}])
+        row = module.history(date="2026-10-02")["days"]["2026-10-02"]["launch"][0]
+        self.assertIsNone(row["strengthPct"])
+
+    def test_multiple_episodes_same_code_same_day_both_get_backfilled(self) -> None:
+        # 同一檔同一天發動多次(發動→回落→再發動)會各存一筆，兩筆都要補到。
+        self._seed_old_row("2026-10-02", "6207")
+        self._seed_old_row("2026-10-02", "6207")
+        fake_ranking = [{"code": "6207", "strengthPct": 22.6, "netAmount": 172100000, "holderLabel": "盤中大戶偏買"}]
+        with patch("main_force_store.load_main_force_ranking", return_value=fake_ranking):
+            summary = module.backfill_holder_force(["2026-10-02"])
+        self.assertEqual(summary["days"], [{"date": "2026-10-02", "rows": 2, "candidates": 2, "updated": 2}])
+        rows = module.history(date="2026-10-02")["days"]["2026-10-02"]["launch"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["strengthPct"] == 22.6 for r in rows))
+
+    def test_ranking_lookup_failure_does_not_crash_and_is_reported(self) -> None:
+        self._seed_old_row("2026-10-02", "6207")
+        with patch("main_force_store.load_main_force_ranking", side_effect=RuntimeError("db down")):
+            summary = module.backfill_holder_force(["2026-10-02"])
+        day_result = summary["days"][0]
+        self.assertEqual(day_result["date"], "2026-10-02")
+        self.assertEqual(day_result["updated"], 0)
+        self.assertIn("RuntimeError", day_result["error"])
+        row = module.history(date="2026-10-02")["days"]["2026-10-02"]["launch"][0]
+        self.assertIsNone(row["strengthPct"])
+
+    def test_without_explicit_dates_covers_every_recent_date_with_launch_rows(self) -> None:
+        self._seed_old_row("2026-10-01", "6207")
+        self._seed_old_row("2026-10-02", "3016")
+        fake_ranking = [{"code": "6207", "strengthPct": 10.0, "netAmount": 1, "holderLabel": "x"},
+                        {"code": "3016", "strengthPct": 20.0, "netAmount": 2, "holderLabel": "y"}]
+        with patch("main_force_store.load_main_force_ranking", return_value=fake_ranking):
+            summary = module.backfill_holder_force()
+        dates_seen = sorted(d["date"] for d in summary["days"])
+        self.assertEqual(dates_seen, ["2026-10-01", "2026-10-02"])
+        self.assertTrue(all(d["updated"] == 1 for d in summary["days"]))
+
+    def test_backfill_endpoint_with_date_param_only_touches_that_day(self) -> None:
+        self._seed_old_row("2026-10-01", "6207")
+        self._seed_old_row("2026-10-02", "3016")
+        fake_ranking = [{"code": "3016", "strengthPct": 20.0, "netAmount": 2, "holderLabel": "y"}]
+        client = TestClient(persistent_app.app)
+        with patch("main_force_store.load_main_force_ranking", return_value=fake_ranking) as mocked:
+            resp = client.post("/api/hub/brew-launch/backfill-holder-force?date=2026-10-02")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["days"], [{"date": "2026-10-02", "rows": 1, "candidates": 1, "updated": 1}])
+        mocked.assert_called_once_with("2026-10-02", codes=["3016"])
+        # 2026-10-01那筆沒被摸到，還是None
+        row_1001 = module.history(date="2026-10-01")["days"]["2026-10-01"]["launch"][0]
+        self.assertIsNone(row_1001["strengthPct"])
+
+    def test_backfill_endpoint_rejects_bad_date(self) -> None:
+        client = TestClient(persistent_app.app)
+        resp = client.post("/api/hub/brew-launch/backfill-holder-force?date=bad")
+        self.assertEqual(resp.status_code, 422)
+
+
 class FetchMisQuotesLimitPriceTests(unittest.TestCase):
     def _fetch(self, msg_array):
         return module.fetch_mis_quotes(["2330"], {"2330": "TSE"}, fetcher=lambda url: {"msgArray": msg_array})

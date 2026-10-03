@@ -181,6 +181,63 @@ def launched_codes(trade_date: str) -> set[str]:
     return {str(row["stock_code"]) for row in rows}
 
 
+def backfill_holder_force(dates: list[str] | None = None, *, limit_dates: int = 10) -> dict[str, Any]:
+    """2026-10-03 使用者：「今天曾發動」列表的盤中大戶力整排都是「—」。根因：補這個欄位的
+    scan_once() 改法（2026-10-03 上線）是在那天收盤後才上線的，上線前盤中就記下來的發動永久紀錄
+    detail_json 裡根本沒有 strengthPct 這些欄位，不會因為後來上線就自動補上——這裡用當時存的
+    trade_date 重新查一次主力排行（整個交易日累計，跟後來「今天／昨天／前天」大戶力分頁看到的
+    是同一份資料）補回去。冪等：strengthPct 已經有值（不是 None）的列不會重查；查不到資料的
+    還是 None，之後主力資料更完整了可以再跑一次。"""
+    from main_force_store import load_main_force_ranking
+
+    initialize_database()
+    summary: dict[str, Any] = {"at": datetime.now(TW_TZ).isoformat(timespec="seconds"), "days": []}
+    with get_connection() as connection:
+        _schema(connection)
+        target_dates = dates
+        if target_dates is None:
+            rows = connection.execute(
+                "SELECT DISTINCT trade_date FROM brew_launch_daily WHERE kind = 'launch' ORDER BY trade_date DESC LIMIT ?",
+                (max(1, int(limit_dates)),),
+            ).fetchall()
+            target_dates = [str(row["trade_date"]) for row in rows]
+        for day in target_dates:
+            day_rows = connection.execute(
+                "SELECT id, stock_code, detail_json FROM brew_launch_daily WHERE trade_date = ? AND kind = 'launch'", (day,)
+            ).fetchall()
+            details_by_id = {row["id"]: (json.loads(row["detail_json"]) if row["detail_json"] else {}) for row in day_rows}
+            candidates = [row for row in day_rows if details_by_id[row["id"]].get("strengthPct") is None]
+            if not candidates:
+                summary["days"].append({"date": day, "rows": len(day_rows), "candidates": 0, "updated": 0})
+                continue
+            codes = sorted({str(row["stock_code"]) for row in candidates})
+            try:
+                ranking = load_main_force_ranking(day, codes=codes)
+            except Exception as error:  # noqa: BLE001
+                summary["days"].append({
+                    "date": day, "rows": len(day_rows), "candidates": len(candidates), "updated": 0,
+                    "error": f"{type(error).__name__}: {error}"[:200],
+                })
+                continue
+            holder_by_code = {row["code"]: row for row in ranking}
+            updated = 0
+            for row in candidates:
+                holder = holder_by_code.get(str(row["stock_code"]))
+                if not holder:
+                    continue
+                detail = details_by_id[row["id"]]
+                detail["strengthPct"] = holder.get("strengthPct")
+                detail["netAmount"] = holder.get("netAmount")
+                detail["holderLabel"] = holder.get("holderLabel")
+                connection.execute(
+                    "UPDATE brew_launch_daily SET detail_json = ? WHERE id = ?",
+                    (json.dumps(detail, ensure_ascii=False), row["id"]),
+                )
+                updated += 1
+            summary["days"].append({"date": day, "rows": len(day_rows), "candidates": len(candidates), "updated": updated})
+    return summary
+
+
 def history(*, days: int = 10, date: str | None = None) -> dict[str, Any]:
     """{dates: [最近的在前], days: {date: {brew: [...], launch: [...]}}}；指定 date 就只回那天。"""
     initialize_database()
