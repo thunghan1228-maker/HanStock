@@ -40,7 +40,8 @@ MIS_CHUNK = 80
 MARKET_OPEN_MINUTE = 9 * 60
 MARKET_SCAN_END_MINUTE = 13 * 60 + 35  # 13:30 收盤，最後一盤成交後再掃幾分鐘
 BREW_DETAIL_KEYS = ("prevClose", "boxHigh", "boxLow", "boxRangePct", "maSpreadPct", "score")
-LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing", "eod", "limitUp", "limitDown")
+LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing", "eod", "limitUp", "limitDown",
+                      "strengthPct", "netAmount", "holderLabel")
 BACKFILL_DAYS = max(0, int(os.getenv("HANSTOCK_BREW_LAUNCH_BACKFILL_DAYS", "3")))  # 用日K回推最近幾個交易日
 BACKFILL_MINUTE = 15 * 60 + 30  # 每天 15:30 後（當天日K進來了）再回推一次，把當天掃描漏掉的補齊
 DAY_COMPLETE_RATIO = 0.75  # 那天的日K要有這麼多比例的族群股才算完整（上櫃還沒補進來就先不回推）
@@ -503,6 +504,20 @@ def scan_once(
         newly_live = [row for row in newly_live if row["code"] not in already_recorded]
         _currently_live_seeded = True
     if newly_live:
+        # 2026-10-03 使用者：發動永久紀錄（今天曾發動／昨天／前天）也要能顯示盤中大戶力，跟即時
+        # 列表、所有族群綜合表同一套；只查這一輪新發動的那幾檔（通常個位數），不是整個排行，
+        # 查詢成本很小——跟融資融券/股期那些交易資訊（get_trading_eligibility）同一個做法。
+        from main_force_store import load_main_force_ranking
+
+        try:
+            holder_by_code = {r["code"]: r for r in load_main_force_ranking(today, codes=[row["code"] for row in newly_live])}
+        except Exception:  # noqa: BLE001
+            holder_by_code = {}
+        for row in newly_live:
+            holder = holder_by_code.get(row["code"])
+            row["strengthPct"] = holder["strengthPct"] if holder else None
+            row["netAmount"] = holder["netAmount"] if holder else None
+            row["holderLabel"] = holder["holderLabel"] if holder else None
         record_launch_episode(today, newly_live, now.isoformat(timespec="seconds"))
     _currently_live = live_now
     return {
