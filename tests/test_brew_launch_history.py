@@ -282,6 +282,42 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue(row["limitUp"])
         self.assertFalse(row["limitDown"])
 
+    def test_launch_record_keeps_holder_force_from_main_force_ranking(self) -> None:
+        # 2026-10-03 使用者：「今天曾發動」那張回落後列表前面也要加「盤中大戶力」欄；資料來自
+        # main_force_store.load_main_force_ranking()，只查這一輪新發動的那幾檔。
+        fake_ranking = [{"code": "6207", "strengthPct": 22.6, "netAmount": 172100000, "holderLabel": "盤中大戶偏買"}]
+        with patch("main_force_store.load_main_force_ranking", return_value=fake_ranking) as mocked:
+            result = self._scan()
+        self.assertEqual(result["codes"], ["6207"])
+        mocked.assert_called_once_with("2026-09-24", codes=["6207"])
+        day = module.history(date="2026-09-24")["days"]["2026-09-24"]
+        row = next(r for r in day["launch"] if r["code"] == "6207")
+        self.assertEqual(row["strengthPct"], 22.6)
+        self.assertEqual(row["netAmount"], 172100000)
+        self.assertEqual(row["holderLabel"], "盤中大戶偏買")
+
+    def test_launch_record_defaults_holder_force_none_when_not_in_ranking(self) -> None:
+        # 大戶力資料還在累積中、或這檔根本沒有主力副圖資料時，排行裡查不到這一檔——安全退回None
+        # （不是0%，資料跟「沒有大戶力」是兩回事）。
+        with patch("main_force_store.load_main_force_ranking", return_value=[]):
+            result = self._scan()
+        self.assertEqual(result["codes"], ["6207"])
+        day = module.history(date="2026-09-24")["days"]["2026-09-24"]
+        row = next(r for r in day["launch"] if r["code"] == "6207")
+        self.assertIsNone(row["strengthPct"])
+        self.assertIsNone(row["netAmount"])
+        self.assertIsNone(row["holderLabel"])
+
+    def test_launch_still_recorded_when_holder_ranking_lookup_fails(self) -> None:
+        # 大戶力排行查詢本身失敗（DB問題等）不能擋到發動紀錄本身——這是次要資訊，不是發動判定的
+        # 必要條件（跟get_trading_eligibility失敗時的處理方式一致）。
+        with patch("main_force_store.load_main_force_ranking", side_effect=RuntimeError("db down")):
+            result = self._scan()
+        self.assertEqual(result["codes"], ["6207"])
+        day = module.history(date="2026-09-24")["days"]["2026-09-24"]
+        row = next(r for r in day["launch"] if r["code"] == "6207")
+        self.assertIsNone(row["strengthPct"])
+
     def test_launch_record_defaults_limit_flags_false_when_quote_lacks_them(self) -> None:
         # EOD收盤回推那條路徑的quote只有price/prevClose/volume，沒有limitUp/limitDown欄位；
         # 不能噴錯，要安全退回False（當作沒有漲跌停），不是None（前端判斷r.limitUp時NoneIsFalsy但後端
