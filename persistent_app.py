@@ -21,7 +21,12 @@ from main_force_store import (
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
 from stock_groups import industry_group_codes
-from brew_launch_history import history as brew_launch_history, scan_status as brew_launch_scan_status, start_brew_launch_scan
+from brew_launch_history import (
+    backfill_holder_force as brew_launch_backfill_holder_force,
+    history as brew_launch_history,
+    scan_status as brew_launch_scan_status,
+    start_brew_launch_scan,
+)
 from trading_days import is_trading_day
 from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
@@ -772,6 +777,23 @@ def get_brew_launch_history(days: int = Query(10, ge=1, le=60), date: str | None
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return {**brew_launch_history(days=days, date=date), "scan": brew_launch_scan_status()}
+
+
+@app.post("/api/hub/brew-launch/backfill-holder-force")
+def post_brew_launch_backfill_holder_force(
+    date: str | None = Query(None),
+    days: int = Query(10, ge=1, le=60),
+) -> dict[str, Any]:
+    """手動觸發：幫發動永久紀錄裡還沒有盤中大戶力（strengthPct 等欄位是 None）的舊列，
+    用當時存的 trade_date 重新查一次主力排行補回去。給 date 就只補那天，不給就補最近
+    days 天內有發動紀錄的日子。冪等，可以重複觸發。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return {"status": "ok", **brew_launch_backfill_holder_force([date] if date else None, limit_dates=days)}
 
 
 @app.get("/api/hub/chips/daily")
