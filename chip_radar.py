@@ -18,9 +18,10 @@
 - 個股查詢：九週軌跡（前十名附名次）、同族群當週排名、三大法人（每週加總、近 5 日，佔成交量 %）。
 每列最後的數字＝均線分數（官網那套 15 分，heilong_daily.score2，最近一個交易日）。
 
-股本變動：那週總股數變了（增資、減資、轉換公司債），大戶持股會跟著機械式地變，不是真的在收或在賣。
-變動 ≥1% 名單上標「股本 ±x%」（莊爸照列，例如環球晶 10/02 增資 10.5% 算出 +9.53）；≥15% 不進任何排行
-（例如桂田文創 10/02 減資 30% 算出 −40.15，莊爸的賣超榜也沒有它），個股軌跡照列並註明。
+股本變動：那週總股數變了（增資、減資、轉換公司債），變動 ≥1% 名單上標「股本 ±x%」。
+增資照算（跟莊爸一樣：環球晶 10/02 增資 10.5% 算出 +9.53、佳大 9/24 私募 48.7% 算出 +16.81 都照列）；
+總股數「減少」≥5%（減資、股份轉換）大戶股數會跟著機械式縮水，不進任何排行（例如桂田文創 10/02 減資 30% 算出 −40.15、
+益航股份轉換），個股軌跡照列並註明。
 """
 
 from __future__ import annotations
@@ -58,7 +59,8 @@ INST_DAYS = 5
 CACHE_SECONDS = 60.0
 MAX_WEEK_GAP_DAYS = 10            # 兩個集保結算日最多差幾天還算「上一週」（遇到連假會差 6～8 天）
 CAPITAL_TAG = 1.0                 # 這週總股數變動 ≥1%（增資、減資、轉換公司債）：名單上標「股本 ±x%」
-CAPITAL_EXCLUDE = 15.0            # 變動 ≥15%（大額減資、增資）：籌碼% 是股本變動造成的假象，不進排行（軌跡照列並註明）
+CAPITAL_CUT_EXCLUDE = 5.0         # 總股數「減少」≥5%（減資、股份轉換）：大戶股數跟著機械式縮水，不進排行（軌跡照列並註明）；
+                                  # 增資照算（莊爸也照列：佳大 9/24 私募 +48.7% 算出 +16.81，進了他的累積榜和六週平均）
 
 
 def chip_value(big_now: float, big_prev: float, total_now: float) -> tuple[float, float] | None:
@@ -92,11 +94,12 @@ def _load_tdcc(weeks: int) -> tuple[list[str], dict[str, dict[str, list[int]]]]:
         return [], {}
     initialize_database()
     out: dict[str, dict[str, list[int]]] = {}
+    pct: dict[tuple[str, str], float] = {}
     levels = ",".join(str(x) for x in (*BIG_LEVELS, TOTAL_LEVEL))
     with get_connection() as connection:
         _fundamentals_schema(connection)
         rows = connection.execute(
-            f"""SELECT data_date, stock_code, level, shares FROM tdcc_weekly
+            f"""SELECT data_date, stock_code, level, shares, pct FROM tdcc_weekly
                 WHERE data_date IN ({','.join('?' for _ in dates)}) AND level IN ({levels})""",
             tuple(dates),
         ).fetchall()
@@ -104,11 +107,18 @@ def _load_tdcc(weeks: int) -> tuple[list[str], dict[str, dict[str, list[int]]]]:
         code = str(r["stock_code"]).strip().upper()
         if not _eligible(code):
             continue
-        entry = out.setdefault(code, {}).setdefault(str(r["data_date"]), [0, 0])
+        day = str(r["data_date"])
+        entry = out.setdefault(code, {}).setdefault(day, [0, 0])
         if int(r["level"]) == TOTAL_LEVEL:
             entry[1] = int(r["shares"])
         else:
             entry[0] += int(r["shares"])
+            pct[(code, day)] = pct.get((code, day), 0.0) + float(r["pct"] or 0)
+    # 舊鏡像只給族群股票留合計（第 17 級）：沒有的用大戶股數 ÷ 大戶持股比例回推（比例兩位小數，誤差約千分之一）
+    for (code, day), p in pct.items():
+        entry = out[code][day]
+        if not entry[1] and p >= 1.0 and entry[0] > 0:
+            entry[1] = round(entry[0] / (p / 100))
     return dates, out
 
 
@@ -177,7 +187,7 @@ class Radar:
                 change = round((now[1] / prev[1] - 1) * 100, 1) if prev[1] else 0.0
                 if abs(change) >= CAPITAL_TAG:
                     self.capital.setdefault(code, {})[raw_dates[i]] = change
-                if abs(change) >= CAPITAL_EXCLUDE:
+                if change <= -CAPITAL_CUT_EXCLUDE:
                     self.distorted.setdefault(code, {})[raw_dates[i]] = value[1]
                     continue
                 self.xs.setdefault(code, {})[raw_dates[i]] = value[0]
@@ -337,7 +347,7 @@ def load_radar(force: bool = False) -> Radar:
 def rules() -> dict[str, Any]:
     return {
         "buyMin": BUY_MIN, "sellMax": SELL_MAX, "topN": TOP_N, "groupTop": GROUP_TOP, "groupShow": GROUP_SHOW,
-        "capitalTag": CAPITAL_TAG, "capitalExclude": CAPITAL_EXCLUDE,
+        "capitalTag": CAPITAL_TAG, "capitalCutExclude": CAPITAL_CUT_EXCLUDE,
         "streakLong": list(STREAK_LONG), "streakShort": STREAK_SHORT, "streakTop": STREAK_TOP,
         "windows": list(WINDOWS), "cardWeeks": CARD_WEEKS, "listWeeks": LIST_WEEKS,
         "formula": "x＝（這週 400 張以上大戶持股股數 − 上週）÷ 這週總股數 × 100；籌碼%＝3×√x（大戶增加）或 x（大戶減少）",
@@ -390,6 +400,7 @@ def stock(code: str) -> dict[str, Any]:
         "week": day,
         "chip": per.get(day, (radar.distorted.get(code) or {}).get(day)),
         "capital": (radar.capital.get(code) or {}).get(day),
+        "excluded": day in (radar.distorted.get(code) or {}),
         "rank": radar.rank(code, day),
         "trail": radar.trail(code),
         "groupWeek": day,
