@@ -4,7 +4,7 @@
 收盤後價格一停就沒有「現在正在發動」這回事。所以這裡把兩種都存進 SQLite：
   - 醞釀快照：每個交易日第一次算出醞釀名單就存（一天一份，重算不覆蓋）
   - 發動紀錄：盤中每 30 秒用證交所 MIS 即時報價（跟首頁同一個來源）掃 43 個族群全部股票，
-    一檔股票一天第一次符合發動就記一筆（時間、價格、漲幅、均線分數、預估周轉、量比）；
+    一檔股票一天第一次符合發動就記一筆（時間、價格、漲幅、均線分數、周轉率、量比）；
     同一檔今天可以分好幾次發動（發動→回落→再發動，2026-09-29 使用者：時間要跟著最新那次更新）——
     第一次的 recorded_at 永久保留不會被蓋掉（回查用），每次「從沒發動變發動」另外更新
     latest_recorded_at 跟當次的價格／分數／細節（讓還在發動中的股票看得到「這一次」是幾點開始的）。
@@ -326,7 +326,7 @@ def backfill_past_days(*, session: str | None = None, days: int | None = None, n
             bar = day_bars.get(code)
             if not bar or info.get("skipped"):
                 continue
-            metrics = evaluate_launch(info, {"price": bar[0], "prevClose": info.get("prevClose"), "volume": bar[1]}, 1.0, rules)
+            metrics = evaluate_launch(info, {"price": bar[0], "prevClose": info.get("prevClose"), "volume": bar[1]}, rules)
             if metrics:
                 launched.append({"code": code, **metrics, "eod": True})
         launch_added = record_launches(day, launched, f"{day}T13:30:00+08:00") if launched else 0
@@ -373,28 +373,13 @@ def in_scan_window(now: datetime) -> bool:
     return MARKET_OPEN_MINUTE <= minute < MARKET_SCAN_END_MINUTE
 
 
-def volume_factor(quote_date: str | None, quote_time: str | None, today: str) -> float:
-    """盤中累積量 → 全天預估量的放大倍數（跟前端 brewVolumeFactor 一樣）：09:00～13:30 共 270 分鐘，
-    依已經過的時間等比放大，最多 4 倍；報價不是今天盤中的就不放大。"""
-    if not quote_date or quote_date != today or not quote_time:
-        return 1.0
-    try:
-        hour, minute = int(quote_time[:2]), int(quote_time[3:5])
-    except ValueError:
-        return 1.0
-    elapsed = hour * 60 + minute - MARKET_OPEN_MINUTE
-    if elapsed <= 0 or elapsed >= 270:
-        return 1.0
-    return min(270 / elapsed, 4.0)
-
-
 def live_score(ma_sums: dict[str, Any], price: float, periods: list[int]) -> int:
     mas = {p: (float(ma_sums[str(p)]) + price) / p for p in periods}
     ordered = sorted(mas)
     return sum(1 for i in range(len(ordered)) for j in range(i + 1, len(ordered)) if mas[ordered[i]] > mas[ordered[j]])
 
 
-def evaluate_launch(info: dict[str, Any], quote: dict[str, Any], factor: float, rules: dict[str, Any]) -> dict[str, Any] | None:
+def evaluate_launch(info: dict[str, Any], quote: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any] | None:
     price = quote.get("price")
     if not price or price <= 0 or info.get("skipped"):
         return None
@@ -404,11 +389,13 @@ def evaluate_launch(info: dict[str, Any], quote: dict[str, Any], factor: float, 
     score = live_score(info["maSums"], price, list(rules["maPeriods"]))
     if score < int(rules["launchMinScore"]):
         return None
-    proj_volume = float(quote.get("volume") or 0) * factor
+    # 2026-10-04 使用者：周轉率／量比直接用盤中實際累積量，不再依已過時間換算成全天預估量（前端同步關掉）；
+    # 永久紀錄的 projTurnoverPct 這個 key 沿用，內容是實際累積周轉率。
+    volume = float(quote.get("volume") or 0)
     shares = float(info.get("sharesLots") or 0)
     avg5 = float(info.get("avgVol5") or 0)
-    proj_turnover = proj_volume / shares * 100 if shares > 0 else None
-    vol_ratio = proj_volume / avg5 if avg5 > 0 else None
+    proj_turnover = volume / shares * 100 if shares > 0 else None
+    vol_ratio = volume / avg5 if avg5 > 0 else None
     volume_ok = (proj_turnover is not None and proj_turnover >= float(rules["turnoverMinPct"])) or \
         (vol_ratio is not None and vol_ratio >= float(rules["volumeRatioMin"]))
     if not volume_ok:
@@ -542,15 +529,13 @@ def scan_once(
         return {"status": "ok", "checked": 0, "launched": 0, "launchedToday": len(launched_codes(today)), "brewSnapshot": snapshot}
     if quotes is None:
         quotes = fetch_mis_quotes(codes, _markets(codes), fetcher=quotes_fetcher)
-    latest = max(((q.get("quoteDate") or ""), (q.get("quoteTime") or "")) for q in quotes.values()) if quotes else ("", "")
-    factor = volume_factor(latest[0] or None, latest[1] or None, today)
     live_now: set[str] = set()
     newly_live: list[dict[str, Any]] = []
     for code in codes:
         quote = quotes.get(code)
         if not quote:
             continue
-        metrics = evaluate_launch(stocks[code], quote, factor, rules)
+        metrics = evaluate_launch(stocks[code], quote, rules)
         if not metrics:
             continue
         live_now.add(code)
@@ -579,7 +564,7 @@ def scan_once(
     _currently_live = live_now
     return {
         "status": "ok", "checked": len(codes), "launched": len(newly_live), "codes": [row["code"] for row in newly_live],
-        "factor": round(factor, 2), "launchedToday": len(launched_codes(today)), "currentlyLive": len(live_now), "brewSnapshot": snapshot,
+        "launchedToday": len(launched_codes(today)), "currentlyLive": len(live_now), "brewSnapshot": snapshot,
     }
 
 

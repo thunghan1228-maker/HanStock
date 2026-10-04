@@ -49,7 +49,7 @@ class HistoryTests(unittest.TestCase):
             "2881": _info(boxHigh=1.0, skipped=True),  # 金融股：不進醞釀快照、不算發動
         }}
         self.quotes = {
-            "6207": {"price": 125.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"},
+            "6207": {"price": 125.0, "prevClose": 114.0, "volume": 2000, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"},
             "3016": {"price": 160.0, "prevClose": 145.5, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"},
             "2881": {"price": 100.0, "prevClose": 90.0, "volume": 99999, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"},
         }
@@ -86,15 +86,15 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(launch["score"], 15)
         self.assertTrue(launch["brewing"])
         self.assertTrue(launch["recordedAt"].startswith("2026-09-24T10:00"))
-        self.assertAlmostEqual(launch["projTurnoverPct"], 10.0)         # 500 張 × 4 ÷ 20000 張
+        self.assertAlmostEqual(launch["projTurnoverPct"], 10.0)         # 2000 張 ÷ 20000 張（實際累積量，不再換算全天）
 
     def test_relaunch_adds_new_row_without_touching_first_one(self) -> None:
         # 2026-09-29 使用者：同一檔股票今天可以分好幾次發動（發動→回落→再發動），第一次發動的時間要
         # 永久保留、不能被蓋掉；又發動的話要另外留一筆紀錄，陸續列出來，不是覆蓋掉舊的那筆。
         others = {"3016": self.quotes["3016"], "2881": self.quotes["2881"]}
-        launch_quote = {"price": 125.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"}
-        fallen_quote = {"price": 120.0, "prevClose": 114.0, "volume": 500, "quoteDate": "2026-09-24", "quoteTime": "10:30:00"}
-        relaunch_quote = {"price": 126.0, "prevClose": 114.0, "volume": 600, "quoteDate": "2026-09-24", "quoteTime": "11:00:00"}
+        launch_quote = {"price": 125.0, "prevClose": 114.0, "volume": 2000, "quoteDate": "2026-09-24", "quoteTime": "10:00:00"}
+        fallen_quote = {"price": 120.0, "prevClose": 114.0, "volume": 2000, "quoteDate": "2026-09-24", "quoteTime": "10:30:00"}
+        relaunch_quote = {"price": 126.0, "prevClose": 114.0, "volume": 2400, "quoteDate": "2026-09-24", "quoteTime": "11:00:00"}
         first = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes={"6207": launch_quote, **others})
         self.assertEqual(first["codes"], ["6207"])
         self.assertEqual(first["currentlyLive"], 1)
@@ -264,12 +264,24 @@ class HistoryTests(unittest.TestCase):
         result = self._backfill(session="2026-09-24", now=datetime(2026, 9, 28, 12, 0, tzinfo=TW))
         self.assertEqual(result["purged"], ["2026-09-28"])
 
-    def test_volume_factor_and_window(self) -> None:
-        self.assertEqual(module.volume_factor("2026-09-24", "10:00:00", "2026-09-24"), 4.0)
-        self.assertAlmostEqual(module.volume_factor("2026-09-24", "12:00:00", "2026-09-24"), 1.5)
-        self.assertEqual(module.volume_factor("2026-09-23", "10:00:00", "2026-09-24"), 1.0)
+    def test_scan_window(self) -> None:
         self.assertTrue(module.in_scan_window(datetime(2026, 9, 24, 13, 34, tzinfo=TW)))
         self.assertFalse(module.in_scan_window(datetime(2026, 9, 24, 13, 35, tzinfo=TW)))
+
+    def test_no_intraday_volume_projection(self) -> None:
+        # 2026-10-04 使用者：關掉「盤中累積量 × 已過時間比例換算全天預估量」——10:00 累積 500 張（5 日均量 1000、
+        # 發行 20000 張）以前會被放大 4 倍算成發動，現在量比 0.5、周轉 2.5% 都沒過門檻，不算發動；
+        # 真的累積到 1500 張（量比 1.5）才算。
+        early = dict(self.quotes, **{"6207": dict(self.quotes["6207"], volume=500)})
+        result = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes=early)
+        self.assertEqual(result["codes"], [])
+        self.assertNotIn("factor", result)
+        enough = dict(self.quotes, **{"6207": dict(self.quotes["6207"], volume=1500, quoteTime="10:05:00")})
+        result = module.scan_once(now=datetime(2026, 9, 24, 10, 5, tzinfo=TW), payload=self.payload, quotes=enough)
+        self.assertEqual(result["codes"], ["6207"])
+        row = next(r for r in module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"] if r["code"] == "6207")
+        self.assertAlmostEqual(row["volRatio"], 1.5)
+        self.assertAlmostEqual(row["projTurnoverPct"], 7.5)   # 1500 ÷ 20000，沒有放大
 
     def test_launch_record_keeps_limit_up_down_flag(self) -> None:
         # 2026-10-02 使用者：永久保存的發動紀錄（今天曾發動／昨天／前天）漲跌幅欄要能顯示紅底白字，
