@@ -72,6 +72,12 @@ def chip_value(big_now: float, big_prev: float, total_now: float) -> tuple[float
     return x, chip
 
 
+def chip_one_decimal(x: float) -> float:
+    """榜單上一位小數的籌碼%：用還沒取兩位的 3√x 直接取一位（莊爸的眾達 x＝4.20 → 6.148 → 6.1；
+    先取兩位 6.15 再取一位會變 6.2）。"""
+    return round(3 * math.sqrt(x), 1) if x > 0 else round(x, 1)
+
+
 def _eligible(code: str) -> bool:
     """一般股票：四碼數字、不是 0 開頭（ETF）。"""
     return len(code) == 4 and code.isdigit() and not code.startswith("0")
@@ -229,8 +235,8 @@ class Radar:
         prev_buy_set, prev_sell_set = set(prev_buy), set(prev_sell)
 
         def rows(codes: list[str], prev_set: set[str]) -> list[dict[str, Any]]:
-            return [{**self.info(c), "chip": self.chips[c][day], "rank": i + 1, "star": c in prev_set,
-                     "capital": (self.capital.get(c) or {}).get(day)} for i, c in enumerate(codes)]
+            return [{**self.info(c), "chip": self.chips[c][day], "chip1": chip_one_decimal(self.xs[c][day]), "rank": i + 1,
+                     "star": c in prev_set, "capital": (self.capital.get(c) or {}).get(day)} for i, c in enumerate(codes)]
 
         return {"date": day, "label": _short(day), "buy": rows(buy, prev_buy_set), "sell": rows(sell, prev_sell_set)}
 
