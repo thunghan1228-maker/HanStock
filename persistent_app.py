@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import Query
+from fastapi import Query, Request
 
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
@@ -32,6 +32,8 @@ from chips_daily import chips_daily as chips_daily_payload, collector_status as 
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
+from heilong_picker import payload as picker_payload
+from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock
 from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
@@ -49,6 +51,8 @@ from after_hours_fixed_price_collector import start_after_hours_fixed_price_coll
 from after_hours_fixed_price import load_after_hours_day, load_latest_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from daily_bars_history_backfill import start_group_history_backfill, backfill_state as group_history_backfill_state
+from bars_history import coverage as bars_history_coverage, run_in_background as run_bars_history, start_bars_history_collector, status as bars_history_status
+from price_adjust import list_events as list_price_adjust_events
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
@@ -105,6 +109,7 @@ async def _persistent_lifespan(fastapi_app):
             start_fundamentals_collector()  # 本益比、月營收、股本、集保週籌碼（波段日報第二階段）
             start_etf_collector()  # 主動式 ETF 五檔每日持股（下午報第三階段）
             start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
+            start_bars_history_collector()  # 日K補到三年＋分割減資還原事件（創高黑選股，2026-10-04 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -173,6 +178,7 @@ def get_persistence_status() -> dict[str, Any]:
             ).strip().lower() not in {"0", "false", "no", "off"},
             "otcGapBackfill": otc_gap_backfill_state(),
             "groupHistoryBackfill": group_history_backfill_state(),
+            "barsHistory": bars_history_status(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
             "mainForceBackfillPausedReason": backfill_pause_reason(),
@@ -895,6 +901,66 @@ def get_heilong(
         })
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/bars-history/status")
+def get_bars_history_status() -> dict[str, Any]:
+    """日K補到三年的進度（上市逐日、上櫃鏡像、還原事件）與目前涵蓋範圍。"""
+    return {"status": "ok", **bars_history_status(), "coverage": bars_history_coverage()}
+
+
+@app.post("/api/hub/bars-history/run")
+def post_bars_history_run() -> dict[str, Any]:
+    """立刻補一輪（背景跑，馬上回狀態）；tw-groups 的上櫃日K鏡像推完會戳這裡。"""
+    return run_bars_history()
+
+
+@app.get("/api/hub/price-adjust/events")
+def get_price_adjust_events(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
+    """分割減資還原事件（最新的在前）：來源 twse／tpex 官方表、tpex-quote 櫃買行情反推、inferred 日K推測。"""
+    return {"status": "ok", "events": list_price_adjust_events(limit)}
+
+
+@app.get("/api/hub/picker")
+def get_picker(request: Request) -> dict[str, Any]:
+    """創高黑選股（2026-10-04 使用者：照莊爸 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、
+    每日新進、條件池）／perf（實績：各種出場方式）／rules；其餘查詢參數是模組參數（見 heilong_picker.DEFAULTS），
+    date＝看哪一天、week＝每週名單看第幾週、lists＝使用者改過的名單『週一:代號,代號;…』、stars＝設成優先的代號。"""
+    from fastapi import HTTPException
+
+    query = dict(request.query_params)
+    view = query.pop("view", "today")
+    day = query.pop("date", None)
+    week = query.pop("week", None)
+    lists = query.pop("lists", None)
+    stars = query.pop("stars", None)
+    try:
+        return picker_payload(view, query, day=day, week=int(week) if week not in (None, "") else None, lists=lists, stars=stars)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/chip-radar")
+def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
+    """籌碼暴增雷達（2026-10-04 使用者：照莊爸 zhuang.tw/radar 做）：集保週資料的大戶增減，本週買超／賣超榜（最近 8 週）、
+    上榜累積榜、族群排名、連續增排行、熱門股。week＝看哪一週（集保結算日 YYYY-MM-DD），不給＝最新一週。"""
+    from fastapi import HTTPException
+
+    try:
+        return chip_radar_payload(week or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/chip-radar/stock")
+def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
+    """籌碼暴增雷達的個股查詢：九週籌碼軌跡、同族群當週排名、三大法人（每週加總、近 5 日）。"""
+    from fastapi import HTTPException
+
+    try:
+        return chip_radar_stock(code)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/hub/heilong/status")
