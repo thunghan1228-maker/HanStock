@@ -26,6 +26,10 @@ class FormulaTests(unittest.TestCase):
         # 聯一光電 3441 9/11：只多 0.01% → 3√0.01 ＝ 0.3
         self.assertEqual(module.chip_value(100_000 + 4_004, 100_000, 40_039_920)[1], 0.3)
         self.assertIsNone(module.chip_value(1, 1, 0))
+        # 榜單一位小數：眾達-KY 10/02 x＝4.20，3√4.20＝6.148 → 6.1（莊爸也是 6.1；先取兩位 6.15 再取一位會變 6.2）
+        self.assertEqual(module.chip_value(4_200_000, 0, 100_000_000), (4.2, 6.15))
+        self.assertEqual(module.chip_one_decimal(4.2), 6.1)
+        self.assertEqual(module.chip_one_decimal(-1.55), -1.6)
 
 
 def big_for(xs: list[float]) -> list[int]:
@@ -108,6 +112,7 @@ class RadarTests(unittest.TestCase):
         self.assertEqual([(r["code"], r["chip"]) for r in week["buy"]],
                          [("2033", 17.32), ("2484", 8.19), ("3013", 6.13), ("6127", 5.36), ("3236", 5.06), ("3042", 4.68)])
         self.assertEqual([r["rank"] for r in week["buy"]], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([r["chip1"] for r in week["buy"]], [17.3, 8.2, 6.1, 5.4, 5.1, 4.7])
         self.assertEqual(week["buy"][0]["capital"], 50.0)
         yh = module.stock("2601")
         self.assertEqual((yh["capital"], yh["excluded"]), (-16.0, True))
