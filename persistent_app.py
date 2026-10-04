@@ -752,6 +752,16 @@ def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[
     return get_group_daily_changes(days)
 
 
+@app.get("/api/hub/session-close")
+def get_session_close_endpoint() -> dict[str, Any]:
+    """休市日（週末、假日）與交易日 08:45 前，tw-groups 首頁／盤中333 等即時行情改顯示上一個交易日收盤用：
+    回現在該不該暫留（held）、要顯示的那個交易日（session），以及族群成員那天的日K收盤／漲跌／成交量／
+    漲跌停旗標。使用者 2026-10-04：週末 TWSE 測試盤會回假價，不能再拿即時報價。快取 5 分鐘。"""
+    from session_close import get_session_close
+
+    return get_session_close()
+
+
 @app.get("/api/hub/brew-launch")
 def get_brew_launch_endpoint(codes: str | None = Query(None, description="只回這些代號（逗號分隔），查特定個股用")) -> dict[str, Any]:
     """醞釀／發動選股（43 個族群成員）：每檔的近 10 日箱頂／箱底、六條均線與均線分數、給前端用即時價
