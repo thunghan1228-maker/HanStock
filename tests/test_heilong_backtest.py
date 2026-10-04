@@ -149,6 +149,67 @@ class ExitTests(unittest.TestCase):
         self.assertEqual(module.normalize_params({"days": 999})["days"], 0)
 
 
+class NewFilterTests(unittest.TestCase):
+    def test_bias(self) -> None:
+        d = trading_dates("2026-09-24", 61)
+        bars = [bar(x, 100, 101, 99, 100, 500) for x in d[:60]] + [bar(d[60], 100, 111, 100, 110, 800)]
+        f = module.compute_features(bars, set(d))
+        self.assertIsNone(f[d[58]]["bias"])              # 不足 60 根
+        self.assertEqual(f[d[59]]["bias"], 0.0)          # 剛好 60 根、全平盤
+        self.assertEqual(f[d[60]]["bias"], 9.63)         # 110 ÷ ((100.5＋100.167)/2) − 1
+
+    def test_out_days(self) -> None:
+        td = trading_dates("2026-09-24", 20)
+        spans = {"A": [(td[2], td[5])], "B": [(td[0], "9999-12-31")]}
+        self.assertEqual(module._out_days(spans, "A", td[6], td), 1)
+        self.assertEqual(module._out_days(spans, "A", td[8], td), 3)
+        self.assertIsNone(module._out_days(spans, "A", td[5], td))    # 處置最後一天
+        self.assertIsNone(module._out_days(spans, "A", td[1], td))    # 處置前
+        self.assertIsNone(module._out_days(spans, "B", td[10], td))   # 還沒結束
+        self.assertIsNone(module._out_days(spans, "C", td[10], td))
+
+    def test_select_rows_new_filters(self) -> None:
+        def row(code, **kw):
+            base = {"code": code, "date": "2026-09-24", "open": 100, "high": 101, "low": 98, "close": 99, "volume": 1000, "prevClose": 100, "changePct": -1.0,
+                    "score": 12, "hits20": 1, "val5": 5.0, "group": "矽晶圓", "groupAvg": 11.0, "weekPct": 6.0, "weekDate": "2026-09-19", "disposed": False,
+                    "bias": 5.0, "outDays": None, "attention": False, "inGroup": True}
+            base.update(kw)
+            return base
+        rows = {
+            "A": row("A"), "B": row("B", bias=35.0), "C": row("C", bias=None), "D": row("D", attention=True),
+            "E": row("E", outDays=3), "F": row("F", outDays=6), "G": row("G", inGroup=False), "H": row("H", open=301, high=302, low=298, close=300.0), "I": row("I", volume=200),
+        }
+        pick = lambda **kw: sorted(r["code"] for r in module.select_rows(rows, module.normalize_params(kw)))   # noqa: E731
+        self.assertEqual(pick(), ["A", "B", "C", "D", "E", "F", "H", "I"])        # 預設：族群表內，G 不算
+        self.assertEqual(pick(scope="market"), ["A", "B", "C", "D", "E", "F", "G", "H", "I"])
+        self.assertEqual(pick(bmax=30), ["A", "D", "E", "F", "H", "I"])           # B 太高、C 沒數字
+        self.assertEqual(pick(bmin=10), ["B"])
+        self.assertEqual(pick(exattn=1), ["A", "B", "C", "E", "F", "H", "I"])
+        self.assertEqual(pick(exout=5), ["A", "B", "C", "D", "F", "H", "I"])      # E 出關第 3 天 ≤5；F 第 6 天留
+        self.assertEqual(pick(pmin=100), ["H"])
+        self.assertEqual(pick(pmax=100), ["A", "B", "C", "D", "E", "F", "I"])
+        self.assertEqual(pick(vmin=500), ["A", "B", "C", "D", "E", "F", "H"])
+        with patch.object(module, "_has_futures", side_effect=lambda c: c == "A"):
+            self.assertEqual(pick(fut=1), ["A"])
+
+    def test_normalize_new_params(self) -> None:
+        p = module.normalize_params({"bmin": "-5", "bmax": "30", "exattn": "1", "exout": "5", "pmin": "20", "pmax": "500", "vmin": "1000", "fut": "true", "scope": "market", "fee": "0.6"})
+        self.assertEqual((p["bmin"], p["bmax"], p["exattn"], p["exout"], p["pmin"], p["pmax"], p["vmin"], p["fut"], p["scope"], p["fee"]),
+                         (-5.0, 30.0, True, 5, 20.0, 500.0, 1000, True, "market", 0.6))
+        q = module.normalize_params({})
+        self.assertEqual((q["bmin"], q["bmax"], q["exattn"], q["exout"], q["pmin"], q["pmax"], q["vmin"], q["fut"], q["scope"], q["fee"]),
+                         (None, None, False, 0, None, None, None, False, "groups", 0.0))
+        for bad in ({"bmin": 10, "bmax": 5}, {"pmin": 100, "pmax": 50}, {"scope": "foo"}, {"fee": 2}, {"exout": -1}, {"vmin": -5}):
+            with self.assertRaises(ValueError):
+                module.normalize_params(bad)
+
+    def test_trade_cost(self) -> None:
+        self.assertEqual(module.trade_cost_pct(0), 0.0)
+        self.assertEqual(module.trade_cost_pct(None), 0.0)
+        self.assertEqual(module.trade_cost_pct(1.0), 0.585)
+        self.assertEqual(module.trade_cost_pct(0.6), 0.471)
+
+
 class RebuildTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -274,6 +335,69 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((s["status"], s["lastDate"]), ("ok", self.dates[-1]))
         rb = client.post("/api/hub/heilong/rebuild", params={"force": 1}).json()
         self.assertEqual(len(rb["result"]["rebuilt"]), module.HISTORY_DAYS)
+
+    def test_market_scope_attention_out_days_and_fee(self) -> None:
+        # 2026-10-04：不在族群表的 4 位數代號也建列（in_group=0），只有 scope=market 才入選；ETF 不算全市場；
+        # 注意股紀錄 → exattn 排除；剛出關 ≤N 天 → exout 排除；費用扣在各出場％。
+        d = self.dates
+        rows = [("4567", x + "T00:00:00", 100, 101, 99, 100, 500) for x in d[:240]]
+        rows += [("4567", d[240] + "T00:00:00", 104, 105, 101, 102, 1000), ("4567", d[241] + "T00:00:00", 103, 106, 100, 104, 1200),
+                 ("4567", d[242] + "T00:00:00", 104, 108, 103, 107, 900)]
+        rows += [("0050", x + "T00:00:00", 100, 101, 99, 100, 500) for x in d]
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        module.rebuild()
+        dates, table = module.load_rows()
+        self.assertFalse(table[d[240]]["4567"]["inGroup"])
+        self.assertTrue(table[d[240]]["6182"]["inGroup"])
+        self.assertNotIn("0050", table[d[240]])
+        self.assertEqual(table[d[240]]["6182"]["bias"], 1.93)       # 102 ÷ ((100.1＋100.033)/2) − 1
+        self.assertEqual(table[d[239]]["6182"]["bias"], 0.0)
+        self.assertEqual(table[d[-1]]["6488"]["bias"], 0.0)           # 環球晶剛好 60 根：最後一天算得出（平盤 → 0）
+        self.assertIsNone(table[d[-2]]["6488"]["bias"])               # 前一天只有 59 根 → 沒數字
+        self.assertEqual(module.backtest({"days": 10})["stats"]["trades"], 1)                       # 族群表內只有合晶
+        self.assertEqual(module.backtest({"days": 10, "scope": "market"})["stats"]["trades"], 2)    # 全市場多了 4567
+        # 注意股
+        with database.get_connection() as c:
+            c.execute("INSERT INTO heilong_attention_log (trade_date, stock_code) VALUES (?, ?)", (d[240], "6182"))
+        module.rebuild(force=True)
+        _, table = module.load_rows()
+        self.assertTrue(table[d[240]]["6182"]["attention"])
+        self.assertFalse(table[d[239]]["6182"]["attention"])
+        r = module.backtest({"days": 10, "exattn": 1})
+        self.assertEqual((r["stats"]["trades"], r["attentionSince"]), (0, d[240]))
+        self.assertEqual(module.backtest({"days": 10, "exattn": 0})["stats"]["trades"], 1)
+        # 費用：全額手續費 → 每筆扣 0.1425%×2＋0.3% = 0.585%
+        r = module.backtest({"days": 10, "fee": 1})
+        methods = {m["key"]: m for m in r["stats"]["methods"]}
+        self.assertEqual(r["cost"], 0.585)
+        self.assertAlmostEqual(methods["close"]["avg"], 1.96 - 0.585, delta=0.011)
+        self.assertAlmostEqual(methods["tp"]["avg"], 3.0 - 0.585, delta=0.011)
+        self.assertEqual(module.backtest({"days": 10})["cost"], 0.0)
+        # 剛出關：合晶 d[230]～d[235] 處置 → d[236] 出關第 1 天、d[240] 第 5 天
+        swing_report.log_dispositions([{"code": "6182", "start": d[230], "end": d[235], "name": "合晶", "reason": "測試", "source": "test"}])
+        module.rebuild(force=True)
+        _, table = module.load_rows()
+        self.assertEqual(table[d[240]]["6182"]["outDays"], 5)
+        self.assertEqual(table[d[236]]["6182"]["outDays"], 1)
+        self.assertIsNone(table[d[233]]["6182"]["outDays"])          # 還在處置中
+        self.assertTrue(table[d[233]]["6182"]["disposed"])
+        self.assertIsNone(table[d[240]]["2330"]["outDays"])          # 台積電還沒出關
+        self.assertEqual(module.backtest({"days": 10, "exout": 5})["stats"]["trades"], 0)
+        self.assertEqual(module.backtest({"days": 10, "exout": 4})["stats"]["trades"], 1)
+        # 端點
+        client = TestClient(persistent_app.app)
+        body = client.get("/api/hub/heilong", params={"days": 10, "scope": "market", "fee": 0.6, "exout": 5, "fut": 0, "bmin": -5, "bmax": 30, "pmin": 10, "vmin": 100}).json()
+        self.assertEqual((body["params"]["scope"], body["params"]["fee"], body["params"]["exout"], body["params"]["bmin"], body["params"]["bmax"], body["params"]["pmin"], body["params"]["vmin"], body["cost"]),
+                         ("market", 0.6, 5, -5.0, 30.0, 10.0, 100, 0.471))
+        self.assertEqual(client.get("/api/hub/heilong", params={"scope": "foo"}).status_code, 422)
+        self.assertEqual(client.get("/api/hub/heilong", params={"fee": 2}).status_code, 422)
+
+    def test_log_attention(self) -> None:
+        with patch("stock_trading_eligibility.peek_trading_eligibility", side_effect=lambda c: {"attention": c == "6182"}):
+            self.assertEqual(module._log_attention("2026-09-24", ["6182", "2330"]), 1)
+        self.assertEqual(module._attention_pairs(["2026-09-24"]), {("2026-09-24", "6182")})
+        self.assertEqual(module.attention_log_since(), "2026-09-24")
 
     def test_old_table_gets_score2_backfilled(self) -> None:
         module.rebuild()
