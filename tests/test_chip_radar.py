@@ -61,6 +61,8 @@ class RadarTests(unittest.TestCase):
             "0050": [9.0, 9.0, 9.0, 9.0, 9.0, 9.0],           # ETF 不算
             "4806": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],           # 桂田文創：10/02 減資 30%（下面改股數）
             "3013": [0.0, 0.0, 0.0, 0.0, 0.0, 4.18],          # 晟銘電：10/02 股本 +4%
+            "2033": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],           # 佳大：10/02 私募增資 +50%（下面改股數）
+            "2601": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],           # 益航：10/02 股份轉換、總股數 −16%；上週只有 12～15 級（舊鏡像沒合計）
         }
         rows_by_week: dict[str, list[tuple]] = {d: [] for d in WEEKS}
         for code, xs in series.items():
@@ -74,6 +76,13 @@ class RadarTests(unittest.TestCase):
             return out + [(code, 12, 1, b // 4, 0.0), (code, 15, 1, b - b // 4, 0.0), (code, 17, 1000, total, 100.0)]
         rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "4806", 70_000_000, 30_000_000 - 28_000_000)
         rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "3013", 104_000_000, 30_000_000 + 4_347_200)
+        # 佳大：私募 5000 萬股都給大戶 → 總股數 1.5 億、大戶 8000 萬 → x＝33.33 → 3√x＝17.32，照算（莊爸也照列）
+        rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "2033", 150_000_000, 80_000_000)
+        # 益航：上週只有大戶股數＋比例（30%，回推總股數 1 億），這週總股數 8400 萬、大戶變 8000 萬 → 減少 16% 不進排行
+        rows_by_week["2026-09-24"] = [r for r in rows_by_week["2026-09-24"] if not (r[0] == "2601" and r[1] == 17)]
+        rows_by_week["2026-09-24"] = [(c, lv, h, sh, 7.5 if c == "2601" and lv == 12 else (22.5 if c == "2601" and lv == 15 else pct))
+                                      for c, lv, h, sh, pct in rows_by_week["2026-09-24"]]
+        rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "2601", 84_000_000, 80_000_000)
         for d, rows in rows_by_week.items():
             fundamentals_daily.save_tdcc(d, rows)
         with database.get_connection() as c:
@@ -94,19 +103,24 @@ class RadarTests(unittest.TestCase):
         self.assertEqual(out["dates"], list(reversed(WEEKS[1:])))
         week = out["lists"][0]
         self.assertEqual(week["date"], "2026-10-02")
-        # 買超榜：籌碼% ≥ 4 → 希華 8.19、晟銘電（股本 +4%，x＝4.18）6.13、九豪 3√3.19＝5.36、千如 3√2.85＝5.06、晶技 3√2.43＝4.68；ETF 不在
-        self.assertEqual([(r["code"], r["chip"]) for r in week["buy"]], [("2484", 8.19), ("3013", 6.13), ("6127", 5.36), ("3236", 5.06), ("3042", 4.68)])
-        self.assertEqual([r["rank"] for r in week["buy"]], [1, 2, 3, 4, 5])
+        # 買超榜：籌碼% ≥ 4 → 佳大（私募 +50%）17.32、希華 8.19、晟銘電（股本 +4%，x＝4.18）6.13、九豪 3√3.19＝5.36、千如 3√2.85＝5.06、
+        # 晶技 3√2.43＝4.68；ETF 不在；益航（股份轉換、總股數 −16%）不進榜
+        self.assertEqual([(r["code"], r["chip"]) for r in week["buy"]],
+                         [("2033", 17.32), ("2484", 8.19), ("3013", 6.13), ("6127", 5.36), ("3236", 5.06), ("3042", 4.68)])
+        self.assertEqual([r["rank"] for r in week["buy"]], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(week["buy"][0]["capital"], 50.0)
+        yh = module.stock("2601")
+        self.assertEqual((yh["capital"], yh["excluded"]), (-16.0, True))
         star = {r["code"]: r["star"] for r in week["buy"]}
         self.assertTrue(star["6127"])                 # 9/24 也在買超榜（3√2.0＝4.24）
         self.assertFalse(star["2484"])                # 9/24 3√1.5＝3.67 不到 4
         self.assertEqual([(r["code"], r["chip"], r["star"]) for r in week["sell"]], [("1727", -7.28, True)])   # 桂田文創減資那週不進榜
-        self.assertIsNone(week["buy"][0]["capital"])
+        self.assertIsNone(week["buy"][1]["capital"])
         cap = next(r for r in week["buy"] if r["code"] == "3013")
         self.assertEqual((cap["chip"], cap["capital"]), (6.13, 4.0))     # 股本 +4%：照列、標出來
         trail = module.stock("4806")["trail"]
         self.assertEqual((trail[0]["chip"], trail[0]["capital"], trail[0].get("excluded")), (-40.0, -30.0, True))
-        self.assertEqual(week["buy"][0]["group"], "石英")
+        self.assertEqual(week["buy"][1]["group"], "石英")
         self.assertEqual(len(out["lists"]), 6)        # 最多 8 週，這裡只有 6 週可比
 
         # 族群：石英前 5 檔（8.19、4.68、3√1.11＝3.16、3√0.45＝2.01、−0.73）平均 3.46，跟莊爸的石英 +3.46% 一樣算法
@@ -133,9 +147,9 @@ class RadarTests(unittest.TestCase):
 
         # 熱門股：前十名＋前五大族群第一名
         hot = out["hot"]
-        self.assertEqual([c["code"] for c in hot["cards"]][:5], ["2484", "3013", "6127", "3236", "3042"])
+        self.assertEqual([c["code"] for c in hot["cards"]][:6], ["2033", "2484", "3013", "6127", "3236", "3042"])
         self.assertEqual(hot["leaders"][0]["group"], "被動元件")
-        self.assertEqual(hot["cards"][0]["trail"][0], {"date": "2026-10-02", "chip": 8.19, "rank": 1})
+        self.assertEqual(hot["cards"][1]["trail"][0], {"date": "2026-10-02", "chip": 8.19, "rank": 2})
 
         # 切舊的一週
         old = module.payload("2026-09-24")
@@ -158,7 +172,7 @@ class RadarTests(unittest.TestCase):
                           [("2026-09-24T00:00:00+00:00", 37009), ("2026-09-29T00:00:00+00:00", 30000), ("2026-09-30T00:00:00+00:00", 24000),
                            ("2026-10-01T00:00:00+00:00", 40000), ("2026-10-02T00:00:00+00:00", 45845)])
         out = module.stock("2484")
-        self.assertEqual((out["code"], out["name"], out["group"], out["chip"], out["rank"]), ("2484", "希華", "石英", 8.19, 1))
+        self.assertEqual((out["code"], out["name"], out["group"], out["chip"], out["rank"]), ("2484", "希華", "石英", 8.19, 2))
         self.assertEqual(len(out["trail"]), 6)
         self.assertEqual(out["groupAvg"], 3.46)
         inst = out["inst"]
