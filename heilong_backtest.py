@@ -13,12 +13,19 @@
 （學員專區的「排除嫌疑犯」是處置預測，本站已拿掉；改用交易所公布的注意股，收盤後整表時把永豐
 個股資訊列標注意的代號記進 heilong_attention_log，有紀錄的日子才排除得到）。全市場＝日K裡所有
 4 位數代號的股票（不在族群表的沒有族群平均分、日K不足 240 根算不出分數就不會入選）。
+
+2026-10-04 創高黑選股：日K補到三年（bars_history），表留 HISTORY_DAYS（預設 250）個交易日，給選股的實績回測與模擬帳戶用；
+價格改用分割減資還原後的日K（price_adjust，原始日K不動；還原事件有變就整張重算），另外記「創高天數」
+（今天收盤是近幾天最高收盤）。特徵改成一次掃過整串日K（滑動視窗），算 250 天也不慢；整表時分批寫入、最後一次換上，
+讀的人不會看到寫一半的表。黑龍回測頁面最多看近 60 天（MAX_DAYS_PARAM），只載入需要的那幾天。
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from bisect import bisect_right
 from statistics import median
@@ -28,21 +35,23 @@ from brew_launch import MA_PERIODS, _latest_bar_date, group_codes, ma_alignment_
 from brew_launch_history import group_and_name
 from database import get_connection, initialize_database
 from fundamentals_daily import BIG_HOLDER_LEVELS, _schema as _fundamentals_schema
+from price_adjust import adjust_bars, events_version, load_events
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 from swing_report import _logged_dispositions
 
 logger = logging.getLogger(__name__)
 
 TW_TZ = timezone(timedelta(hours=8))
-HISTORY_DAYS = 60                # 表裡留幾個交易日
+HISTORY_DAYS = max(60, int(os.getenv("HANSTOCK_HEILONG_HISTORY_DAYS", "250")))   # 表裡留幾個交易日（創高黑選股要長一點）
 RECOMPUTE_TAIL = 3               # 每次一定重算最新幾天
-LOOKBACK_CALENDAR_DAYS = 420     # 算 240 日均線要往前抓的日K
+LOOKBACK_CALENDAR_DAYS = 560     # 算 240 日均線、360 日新高要往前抓的日K（約 380 個交易日）
+CODE_BATCH = 150                 # 整表時一次算幾檔（記憶體不要一次全載）
 HITS_DAYS = 20                   # 近 20 日
 HITS_MIN_PCT = 8.0               # 單日漲幅 >8% 才算「有人在拉」
 VALUE_DAYS = 5                   # 5 日均成交值
 GAP_PCT = 35.0                   # 價格斷層：D+1 跟進場價差超過這個就留空
 DISPOSITION_LOOKBACK_DAYS = 90
-MAX_DAYS_PARAM = HISTORY_DAYS
+MAX_DAYS_PARAM = 60             # 黑龍回測頁面最多看近 60 天（0＝全部＝近 60 天）
 BIAS_SHORT, BIAS_LONG = 20, 60   # 月季乖離：收盤價離「月線與季線的中點」幾％
 FEE_PCT = 0.1425                 # 手續費％（買賣各一次），乘上折數
 TAX_PCT = 0.3                    # 證交稅％（賣出一次）
@@ -110,9 +119,10 @@ def _schema(connection) -> None:
     )
     columns = {str(r["name"]) for r in connection.execute("PRAGMA table_info(heilong_daily)").fetchall()}
     for column, kind in (("score2", "INTEGER"), ("group_avg2", "REAL"), ("bias", "REAL"), ("out_days", "INTEGER"),
-                         ("attention", "INTEGER NOT NULL DEFAULT 0"), ("in_group", "INTEGER NOT NULL DEFAULT 1")):
+                         ("attention", "INTEGER NOT NULL DEFAULT 0"), ("in_group", "INTEGER NOT NULL DEFAULT 1"), ("hi_len", "INTEGER")):
         if column not in columns:
             connection.execute(f"ALTER TABLE heilong_daily ADD COLUMN {column} {kind}")
+    connection.execute("CREATE TABLE IF NOT EXISTS heilong_meta (key TEXT PRIMARY KEY, value TEXT)")
     connection.execute(
         """CREATE TABLE IF NOT EXISTS heilong_attention_log (
             trade_date TEXT NOT NULL, stock_code TEXT NOT NULL, PRIMARY KEY (trade_date, stock_code)
@@ -136,8 +146,8 @@ def _bar_dates(limit: int) -> list[str]:
     return [str(r["d"]) for r in rows]
 
 
-def _load_bars(codes: list[str], *, since: str, until: str) -> dict[str, list[Bar]]:
-    """{代號: [(日期, 開, 高, 低, 收, 量張), ...舊到新]}，since ≤ 日期 ≤ until。"""
+def _load_bars(codes: list[str], *, since: str, until: str, adjusted: bool = False) -> dict[str, list[Bar]]:
+    """{代號: [(日期, 開, 高, 低, 收, 量張), ...舊到新]}，since ≤ 日期 ≤ until。adjusted＝套用分割減資還原（price_adjust）。"""
     initialize_database()
     out: dict[str, list[Bar]] = {}
     with get_connection() as connection:
@@ -157,6 +167,11 @@ def _load_bars(codes: list[str], *, since: str, until: str) -> dict[str, list[Ba
                 )
     for bars in out.values():
         bars.sort(key=lambda bar: bar[0])
+    if adjusted:
+        events = load_events(out.keys())
+        for code, bars in out.items():
+            if code in events:
+                out[code] = adjust_bars(bars, events[code])
     return out
 
 
@@ -290,8 +305,36 @@ def official_score(closes: list[float], mas: dict[int, float] | None = None) -> 
     return score
 
 
+def _sliding_max(values: list[float], width: int) -> list[float]:
+    """每個位置 i：values[max(0, i−width+1) .. i] 的最大值（單調佇列，一次掃完）。"""
+    out = [0.0] * len(values)
+    window: deque[int] = deque()
+    for i, v in enumerate(values):
+        while window and values[window[-1]] <= v:
+            window.pop()
+        window.append(i)
+        if window[0] <= i - width:
+            window.popleft()
+        out[i] = values[window[0]]
+    return out
+
+
+def hi_lengths(closes: list[float]) -> list[int]:
+    """創高天數：今天收盤是近幾天（含今天）的最高收盤，平手也算＝往前數到第一根收盤比今天高的那天之前有幾天；
+    前面都沒有比較高的＝手上日K的根數。「創 N 日新高」就是創高天數 ≥ N。"""
+    out = [0] * len(closes)
+    stack: list[int] = []
+    for i, c in enumerate(closes):
+        while stack and closes[stack[-1]] <= c:
+            stack.pop()
+        out[i] = i - stack[-1] if stack else i + 1
+        stack.append(i)
+    return out
+
+
 def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, Any]]:
-    """bars 舊到新；回 {日期: 特徵}，只算 wanted 裡的日期。均線分數要 240 根（含當天）才有。"""
+    """bars 舊到新；回 {日期: 特徵}，只算 wanted 裡的日期。均線分數要 240 根（含當天）才有。
+    跟逐日呼叫 official_score 的結果一樣，只是新高那幾項用滑動視窗一次算完。"""
     out: dict[str, dict[str, Any]] = {}
     if not bars:
         return out
@@ -302,7 +345,13 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
     changes: list[float | None] = [None]
     for i in range(1, len(closes)):
         changes.append((closes[i] / closes[i - 1] - 1) * 100 if closes[i - 1] > 0 else None)
+    big = [0]
+    for ch in changes:
+        big.append(big[-1] + (1 if ch is not None and ch > HITS_MIN_PCT else 0))
     longest = max(MA_PERIODS)
+    window_max = {p: _sliding_max(closes, p) for p in OFFICIAL_HI_PERIODS}
+    recent_max = _sliding_max(closes, OFFICIAL_RECENT_DAYS)
+    hi_len = hi_lengths(closes)
     for i, (d, o, h, l, c, v) in enumerate(bars):
         if d not in wanted:
             continue
@@ -311,8 +360,10 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
         if n >= longest:
             mas = {p: (prefix[n] - prefix[n - p]) / p for p in MA_PERIODS}
             score = ma_alignment_score(mas)
-            score2 = official_score(closes[:n], mas)
-        hits = sum(1 for j in range(max(1, i - HITS_DAYS + 1), i + 1) if changes[j] is not None and changes[j] > HITS_MIN_PCT)
+            score2 = sum(1 for p in MA_PERIODS if c > mas[p])
+            score2 += sum(1 for p in OFFICIAL_HI_PERIODS if recent_max[i] >= window_max[p][i])
+            score2 += sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
+        hits = big[i + 1] - big[max(1, i - HITS_DAYS + 1)]
         values = [bars[j][4] * bars[j][5] * 1000 / 1e8 for j in range(max(0, i - VALUE_DAYS + 1), i + 1)]
         bias = None
         if n >= BIAS_LONG:
@@ -327,6 +378,7 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             "hits20": hits,
             "val5": _r2(_mean(values)),
             "bias": bias,
+            "hiLen": hi_len[i],
         }
     return out
 
@@ -363,22 +415,47 @@ def rebuild(*, force: bool = False) -> dict[str, Any]:
             raise
 
 
+def _meta_get(connection, key: str) -> str | None:
+    row = connection.execute("SELECT value FROM heilong_meta WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row and row["value"] is not None else None
+
+
+def _meta_set(connection, key: str, value: str) -> None:
+    connection.execute("INSERT INTO heilong_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+INSERT_COLUMNS = ("trade_date, stock_code, open, high, low, close, volume, prev_close, change_pct, score, hits20, val5, group_name, group_avg, "
+                  "week_pct, week_date, disposed, score2, group_avg2, bias, out_days, attention, in_group, hi_len")
+
+
+def _row_tuple(d: str, code: str, f: dict[str, Any]) -> tuple:
+    return (d, code, f["open"], f["high"], f["low"], f["close"], f["volume"], f["prevClose"], f["changePct"], f["score"], f["hits20"], f["val5"],
+            f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0, f["score2"], f["groupAvg2"],
+            f["bias"], f["outDays"], 1 if f["attention"] else 0, 1 if f["inGroup"] else 0, f.get("hiLen"))
+
+
 def _rebuild(*, force: bool) -> dict[str, Any]:
     initialize_database()
     latest = _latest_bar_date()
     if not latest:
         return {"date": None, "rebuilt": [], "dates": 0, "rows": 0}
     target = sorted(_bar_dates(HISTORY_DAYS))
+    version = events_version()
     with get_connection() as connection:
         _schema(connection)
         have = {str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM heilong_daily").fetchall()}
-    with get_connection() as connection:
-        missing = connection.execute("SELECT COUNT(*) FROM heilong_daily WHERE score IS NOT NULL AND (score2 IS NULL OR bias IS NULL)").fetchone()[0]
+        missing = connection.execute(
+            "SELECT COUNT(*) FROM heilong_daily WHERE score IS NOT NULL AND (score2 IS NULL OR bias IS NULL OR hi_len IS NULL)"
+        ).fetchone()[0]
+        old_version = _meta_get(connection, "adjust_version")
+    reason = "force" if force else None
     if missing:
-        force = True    # 剛加上官網式分數／月季乖離（2026-10-04 連同全市場列）的欄位：整張表補算一次
+        force, reason = True, "新欄位補算"     # 官網式分數／月季乖離／創高天數剛加上：整張表補算一次
+    if old_version != version:
+        force, reason = True, "還原事件有變"   # 分割減資還原的事件變了：以前的價格都要重算
     tail = set(target[-RECOMPUTE_TAIL:])
     todo = [d for d in target if force or d not in have or d in tail]
-    result: dict[str, Any] = {"date": latest, "rebuilt": todo, "dates": len(target)}
+    result: dict[str, Any] = {"date": latest, "rebuilt": todo, "rebuiltCount": len(todo), "dates": len(target), "reason": reason}
     if not todo:
         with get_connection() as connection:
             result["rows"] = connection.execute("SELECT COUNT(*) FROM heilong_daily").fetchone()[0]
@@ -388,8 +465,6 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     since = (datetime.strptime(todo[0], "%Y-%m-%d") - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
     # 全市場：族群表內之外的 4 位數代號也建列（in_group=0），日K不足的自然算不出分數
     codes = sorted(group_set | set(_market_codes(todo[0])))
-    bars_by_code = _load_bars(codes, since=since, until=todo[-1])
-    weeks = _tdcc_weeks(codes)
     spans = _disposition_spans((datetime.strptime(todo[0], "%Y-%m-%d") - timedelta(days=DISPOSITION_LOOKBACK_DAYS)).strftime("%Y-%m-%d"))
     trading_dates = sorted(_bar_dates(HISTORY_DAYS + 70))   # 出關天數要往前多看一點
     today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
@@ -397,56 +472,82 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
         _log_attention(latest, codes)   # 今天收盤後整表：順便記下今天的注意股
     attention = _attention_pairs(todo)
     wanted = set(todo)
-    rows_by_date: dict[str, dict[str, dict[str, Any]]] = {d: {} for d in todo}
-    for code, bars in bars_by_code.items():
-        group, _name = group_and_name(code)
-        for d, f in compute_features(bars, wanted).items():
-            f["group"] = group
-            f["weekPct"], f["weekDate"] = _week_pct(weeks.get(code, []), d)
-            f["disposed"] = _disposed(spans, code, d)
-            f["outDays"] = None if f["disposed"] else _out_days(spans, code, d, trading_dates)
-            f["attention"] = (d, code) in attention
-            f["inGroup"] = code in group_set
-            rows_by_date[d][code] = f
     members = _group_members()
-    for d, rows in rows_by_date.items():
-        avg_by_group: dict[str, float | None] = {}
-        avg_by_group2: dict[str, float | None] = {}
-        for name, member_codes in members.items():
-            scores = [rows[c]["score"] for c in member_codes if c in rows and rows[c]["score"] is not None]
-            scores2 = [rows[c]["score2"] for c in member_codes if c in rows and rows[c]["score2"] is not None]
-            avg_by_group[name] = round(_mean(scores), 1) if scores else None
-            avg_by_group2[name] = round(_mean(scores2), 1) if scores2 else None
-        for f in rows.values():
-            f["groupAvg"] = avg_by_group.get(f["group"])
-            f["groupAvg2"] = avg_by_group2.get(f["group"])
+
+    # 第一輪：只算族群成員的分數，先把每天各族群的平均分算好
+    member_codes = sorted({c for ms in members.values() for c in ms} & set(codes))
+    scores: dict[str, dict[str, tuple[Any, Any]]] = {}
+    for i in range(0, len(member_codes), CODE_BATCH):
+        batch = member_codes[i:i + CODE_BATCH]
+        for code, bars in _load_bars(batch, since=since, until=todo[-1], adjusted=True).items():
+            scores[code] = {d: (f["score"], f["score2"]) for d, f in compute_features(bars, wanted).items()}
+    group_avg: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    for name, member_list in members.items():
+        for d in todo:
+            s1 = [scores[c][d][0] for c in member_list if c in scores and d in scores[c] and scores[c][d][0] is not None]
+            s2 = [scores[c][d][1] for c in member_list if c in scores and d in scores[c] and scores[c][d][1] is not None]
+            group_avg[(name, d)] = (round(_mean(s1), 1) if s1 else None, round(_mean(s2), 1) if s2 else None)
+    scores.clear()
+
+    # 第二輪：全部股票分批算完整特徵，寫進暫存表；最後一次換上（讀的人不會看到寫一半的表）
+    weeks = _tdcc_weeks(codes)
     total = 0
     with get_connection() as connection:
         _schema(connection)
-        for d, rows in rows_by_date.items():
-            connection.execute("DELETE FROM heilong_daily WHERE trade_date = ?", (d,))
-            connection.executemany(
-                """INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, prev_close, change_pct, score, hits20, val5,
-                   group_name, group_avg, week_pct, week_date, disposed, score2, group_avg2, bias, out_days, attention, in_group)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [(d, code, f["open"], f["high"], f["low"], f["close"], f["volume"], f["prevClose"], f["changePct"], f["score"], f["hits20"], f["val5"],
-                  f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0, f["score2"], f["groupAvg2"],
-                  f["bias"], f["outDays"], 1 if f["attention"] else 0, 1 if f["inGroup"] else 0) for code, f in rows.items()],
-            )
-            total += len(rows)
+        connection.execute("DROP TABLE IF EXISTS heilong_daily_new")
+        connection.execute("CREATE TABLE heilong_daily_new AS SELECT * FROM heilong_daily WHERE 0")
+    for i in range(0, len(codes), CODE_BATCH):
+        batch = codes[i:i + CODE_BATCH]
+        rows: list[tuple] = []
+        for code, bars in _load_bars(batch, since=since, until=todo[-1], adjusted=True).items():
+            group, _name = group_and_name(code)
+            for d, f in compute_features(bars, wanted).items():
+                f["group"] = group
+                f["weekPct"], f["weekDate"] = _week_pct(weeks.get(code, []), d)
+                f["disposed"] = _disposed(spans, code, d)
+                f["outDays"] = None if f["disposed"] else _out_days(spans, code, d, trading_dates)
+                f["attention"] = (d, code) in attention
+                f["inGroup"] = code in group_set
+                f["groupAvg"], f["groupAvg2"] = group_avg.get((group, d), (None, None))
+                rows.append(_row_tuple(d, code, f))
+        with get_connection() as connection:
+            connection.executemany(f"INSERT INTO heilong_daily_new ({INSERT_COLUMNS}) VALUES ({','.join('?' for _ in range(24))})", rows)
+        total += len(rows)
+    with get_connection() as connection:
+        connection.execute("BEGIN")
+        for k in range(0, len(todo), 500):
+            chunk = todo[k:k + 500]
+            connection.execute(f"DELETE FROM heilong_daily WHERE trade_date IN ({','.join('?' for _ in chunk)})", chunk)
+        connection.execute(f"INSERT INTO heilong_daily ({INSERT_COLUMNS}) SELECT {INSERT_COLUMNS} FROM heilong_daily_new")
         if target:
             connection.execute("DELETE FROM heilong_daily WHERE trade_date < ?", (target[0],))
+        _meta_set(connection, "adjust_version", version)
+        connection.execute("COMMIT")
+        connection.execute("DROP TABLE IF EXISTS heilong_daily_new")
         result["rows"] = connection.execute("SELECT COUNT(*) FROM heilong_daily").fetchone()[0]
     result["written"] = total
     return result
 
 
-def load_rows() -> tuple[list[str], dict[str, dict[str, dict[str, Any]]]]:
-    """(交易日 舊到新, {交易日: {代號: 列}})。"""
+def table_dates() -> list[str]:
+    """表裡的交易日，舊到新。"""
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        rows = connection.execute("SELECT * FROM heilong_daily").fetchall()
+        return [str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM heilong_daily ORDER BY trade_date").fetchall()]
+
+
+def load_rows(days: int | None = None) -> tuple[list[str], dict[str, dict[str, dict[str, Any]]]]:
+    """(交易日 舊到新, {交易日: {代號: 列}})；days＝只載最近幾個交易日（表留 250 天，全載太大）。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        if days:
+            dates = [str(r["trade_date"]) for r in connection.execute(
+                "SELECT DISTINCT trade_date FROM heilong_daily ORDER BY trade_date DESC LIMIT ?", (int(days),)).fetchall()]
+            rows = connection.execute("SELECT * FROM heilong_daily WHERE trade_date >= ?", (min(dates),)).fetchall() if dates else []
+        else:
+            rows = connection.execute("SELECT * FROM heilong_daily").fetchall()
     table: dict[str, dict[str, dict[str, Any]]] = {}
     for r in rows:
         code = str(r["stock_code"])
@@ -458,6 +559,7 @@ def load_rows() -> tuple[list[str], dict[str, dict[str, dict[str, Any]]]]:
             "disposed": bool(r["disposed"]),
             "score2": r["score2"], "groupAvg2": r["group_avg2"],
             "bias": r["bias"], "outDays": r["out_days"], "attention": bool(r["attention"]), "inGroup": bool(r["in_group"]),
+            "hiLen": r["hi_len"],
         }
     return sorted(table), table
 
@@ -732,7 +834,7 @@ def _burst_stats(trades: list[dict[str, Any]], n: int) -> dict[str, Any]:
 def backtest(params: dict[str, Any] | None = None) -> dict[str, Any]:
     """前端要的整包：參數、出場方式績效、累積曲線、爆發力、今日名單、每日明細。"""
     p = normalize_params(params)
-    dates, table = load_rows()
+    dates, table = load_rows(p["days"] or MAX_DAYS_PARAM)
     if not dates:
         return {"status": "empty", "reason": "還沒有黑龍名單（收盤後會自動建）", "params": p, "rules": RULES, "collector": collector_status()}
     latest = dates[-1]

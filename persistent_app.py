@@ -49,6 +49,8 @@ from after_hours_fixed_price_collector import start_after_hours_fixed_price_coll
 from after_hours_fixed_price import load_after_hours_day, load_latest_after_hours_day
 from otc_gap_backfill import start_otc_gap_backfill, backfill_state as otc_gap_backfill_state
 from daily_bars_history_backfill import start_group_history_backfill, backfill_state as group_history_backfill_state
+from bars_history import coverage as bars_history_coverage, run_in_background as run_bars_history, start_bars_history_collector, status as bars_history_status
+from price_adjust import list_events as list_price_adjust_events
 from four_gate_signals import fix_stale_four_gate_labels
 from intraday_signal_store import load_latest_signals, load_latest_signals_by_kind, load_recent_trade_dates, load_signals_for_ticker, find_out_of_session_kline_signals, purge_out_of_session_kline_signals
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
@@ -105,6 +107,7 @@ async def _persistent_lifespan(fastapi_app):
             start_fundamentals_collector()  # 本益比、月營收、股本、集保週籌碼（波段日報第二階段）
             start_etf_collector()  # 主動式 ETF 五檔每日持股（下午報第三階段）
             start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
+            start_bars_history_collector()  # 日K補到三年＋分割減資還原事件（創高黑選股，2026-10-04 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -173,6 +176,7 @@ def get_persistence_status() -> dict[str, Any]:
             ).strip().lower() not in {"0", "false", "no", "off"},
             "otcGapBackfill": otc_gap_backfill_state(),
             "groupHistoryBackfill": group_history_backfill_state(),
+            "barsHistory": bars_history_status(),
             "stockBarAutoRepairEnabled": False,
             "stockBarAutoRepair": stock_bar_repair_status(),
             "mainForceBackfillPausedReason": backfill_pause_reason(),
@@ -895,6 +899,24 @@ def get_heilong(
         })
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/bars-history/status")
+def get_bars_history_status() -> dict[str, Any]:
+    """日K補到三年的進度（上市逐日、上櫃鏡像、還原事件）與目前涵蓋範圍。"""
+    return {"status": "ok", **bars_history_status(), "coverage": bars_history_coverage()}
+
+
+@app.post("/api/hub/bars-history/run")
+def post_bars_history_run() -> dict[str, Any]:
+    """立刻補一輪（背景跑，馬上回狀態）；tw-groups 的上櫃日K鏡像推完會戳這裡。"""
+    return run_bars_history()
+
+
+@app.get("/api/hub/price-adjust/events")
+def get_price_adjust_events(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
+    """分割減資還原事件（最新的在前）：來源 twse／tpex 官方表、tpex-quote 櫃買行情反推、inferred 日K推測。"""
+    return {"status": "ok", "events": list_price_adjust_events(limit)}
 
 
 @app.get("/api/hub/heilong/status")

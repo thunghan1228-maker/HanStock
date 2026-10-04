@@ -210,6 +210,38 @@ class NewFilterTests(unittest.TestCase):
         self.assertEqual(module.trade_cost_pct(0.6), 0.471)
 
 
+class FastFeatureTests(unittest.TestCase):
+    """2026-10-04：特徵改成滑動視窗一次算完，結果要跟逐日呼叫 official_score 一模一樣；另外多了創高天數。"""
+
+    def test_matches_naive_official_score(self) -> None:
+        import random
+
+        rng = random.Random(7)
+        dates = trading_dates("2026-09-24", 420)
+        price = 100.0
+        bars = []
+        for d in dates:
+            price = max(5.0, round(price * (1 + rng.uniform(-0.05, 0.055)), 2))
+            o = round(price * (1 + rng.uniform(-0.02, 0.02)), 2)
+            bars.append(bar(d, o, max(o, price) + 1, min(o, price) - 1, price, rng.randint(100, 5000)))
+        # 刻意放幾個平手的高點
+        bars[300] = bar(dates[300], bars[299][4], bars[299][4], bars[299][4], bars[299][4], 100)
+        out = module.compute_features(bars, set(dates))
+        closes = [b[4] for b in bars]
+        for i in range(239, len(bars)):
+            mas = {p: sum(closes[i + 1 - p:i + 1]) / p for p in module.MA_PERIODS}
+            self.assertEqual(out[dates[i]]["score2"], module.official_score(closes[:i + 1]), dates[i])
+            self.assertEqual(out[dates[i]]["score"], module.ma_alignment_score(mas), dates[i])
+        for i in range(len(bars)):
+            expected = next((i - j for j in range(i - 1, -1, -1) if closes[j] > closes[i]), i + 1)
+            self.assertEqual(out[dates[i]]["hiLen"], expected, dates[i])
+
+    def test_hi_lengths(self) -> None:
+        self.assertEqual(module.hi_lengths([1, 3, 2, 4]), [1, 2, 1, 4])
+        self.assertEqual(module.hi_lengths([5, 5, 4, 5]), [1, 2, 1, 4])   # 平手也算創高
+        self.assertEqual(module.hi_lengths([]), [])
+
+
 class RebuildTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -217,6 +249,8 @@ class RebuildTests(unittest.TestCase):
         self.db_patch.start()
         database.initialize_database()
         self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history)]
+        # 正式表留 250 天（創高黑選股）；這組測試照原本 60 天的情境寫
+        self.patches.append(patch.object(module, "HISTORY_DAYS", 60))
         for p in self.patches:
             p.start()
         brew_launch_history._group_by_code.clear()
@@ -428,3 +462,62 @@ class SwingHookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdjustedRebuildTests(unittest.TestCase):
+    """分割減資還原：表裡的價格用還原後的；還原事件變了整張重算。"""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+        self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history)]
+        self.patches.append(patch.object(module, "HISTORY_DAYS", 60))
+        for p in self.patches:
+            p.start()
+        brew_launch_history._group_by_code.clear()
+        self.dates = trading_dates("2026-09-24", 300)
+        d = self.dates
+        # 合晶：前 280 天 400 元，第 281 天起一拆四變 100 元，之後慢慢漲
+        rows = [("6182", x + "T00:00:00", 400, 404, 396, 400, 500) for x in d[:280]]
+        rows += [("6182", x + "T00:00:00", 100 + k, 101 + k, 99 + k, 100 + k, 2000) for k, x in enumerate(d[280:])]
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+
+    def tearDown(self) -> None:
+        brew_launch_history._group_by_code.clear()
+        for p in self.patches:
+            p.stop()
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_split_adjusted_and_version_forces_rebuild(self) -> None:
+        import price_adjust
+
+        d = self.dates
+        module.rebuild()
+        _dates, table = module.load_rows()
+        raw_row = table[d[279]]["6182"]
+        self.assertEqual(raw_row["close"], 400.0)            # 還沒有還原事件：原始價
+        self.assertEqual(table[d[290]]["6182"]["hiLen"], 11)  # 原始價：往前數到一拆四前的 400 元就停，只算創 11 日高
+
+        again = module.rebuild()
+        self.assertEqual(again["rebuiltCount"], 3)          # 沒變：只重算最後 3 天
+        price_adjust.save_events([{"code": "6182", "date": d[280], "prevClose": 400.0, "refPrice": 100.0, "kind": "par", "source": "twse"}])
+        forced = module.rebuild()
+        self.assertEqual(forced["reason"], "還原事件有變")
+        self.assertEqual(forced["rebuiltCount"], 60)
+        _dates, table = module.load_rows()
+        self.assertEqual(table[d[279]]["6182"]["close"], 100.0)   # 還原後：一拆四前的 400 元變 100 元
+        self.assertEqual(table[d[279]]["6182"]["volume"], 2000)   # 量乘 4
+        self.assertEqual(table[d[299]]["6182"]["hiLen"], 300)     # 還原後一路創新高
+        self.assertEqual(table[d[299]]["6182"]["score2"], 15)
+        self.assertEqual(module.rebuild()["rebuiltCount"], 3)    # 版本記住了，不會每次都整張重算
+
+    def test_load_rows_window(self) -> None:
+        module.rebuild()
+        dates, table = module.load_rows(5)
+        self.assertEqual(dates, self.dates[-5:])
+        self.assertEqual(sorted(table), self.dates[-5:])
+        self.assertEqual(len(module.table_dates()), 60)

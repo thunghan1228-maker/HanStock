@@ -17,7 +17,8 @@ logger = logging.getLogger("hanstock.daily_bars_collector")
 POLL_SECONDS = max(1800, int(os.getenv("HANSTOCK_DAILY_BARS_COLLECTOR_SECONDS", str(60 * 60))))
 BACKFILL_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_BACKFILL_DAYS", "370")))
 CATCHUP_DAYS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_CATCHUP_DAYS", "5")))
-KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "365")))
+# 2026-10-04 創高黑選股要三年日K（bars_history 補到三年），保留從 365 放寬到 800 個交易日（約 3.2 年）
+KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "800")))
 _started = False
 _lock = threading.Lock()
 _last_run: dict = {"running": False, "startedAt": None, "finishedAt": None, "result": None, "error": None}
