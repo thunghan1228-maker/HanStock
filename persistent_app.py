@@ -33,6 +33,7 @@ from swing_report import run_once as run_swing_report, start_swing_report_collec
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
 from heilong_picker import payload as picker_payload
+from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock
 from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
@@ -937,6 +938,29 @@ def get_picker(request: Request) -> dict[str, Any]:
         return picker_payload(view, query, day=day, week=int(week) if week not in (None, "") else None, lists=lists, stars=stars)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/chip-radar")
+def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
+    """籌碼暴增雷達（2026-10-04 使用者：照莊爸 zhuang.tw/radar 做）：集保週資料的大戶增減，本週買超／賣超榜（最近 8 週）、
+    上榜累積榜、族群排名、連續增排行、熱門股。week＝看哪一週（集保結算日 YYYY-MM-DD），不給＝最新一週。"""
+    from fastapi import HTTPException
+
+    try:
+        return chip_radar_payload(week or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/chip-radar/stock")
+def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
+    """籌碼暴增雷達的個股查詢：九週籌碼軌跡、同族群當週排名、三大法人（每週加總、近 5 日）。"""
+    from fastapi import HTTPException
+
+    try:
+        return chip_radar_stock(code)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/hub/heilong/status")

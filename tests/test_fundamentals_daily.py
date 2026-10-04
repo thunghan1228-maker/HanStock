@@ -133,6 +133,13 @@ class CollectTests(unittest.TestCase):
         status = module.collector_status()
         self.assertEqual(status["peDates"]["TSE"], ["2026-09-24"])
         self.assertEqual(status["tdccDates"], ["2026-09-24", "2026-09-19", "2026-09-12"])
+        # 舊鏡像沒有每檔的合計（第 17 級）：那幾週每輪重抓，等鏡像換成新檔；有合計之後就不再重抓
+        self.assertTrue(any(u.endswith("/tdcc-2026-09-12.json") for u in calls[n:]))
+        module.save_tdcc("2026-09-12", [("6182", 17, 1000, 470000000, 100.0)])
+        module.save_tdcc("2026-09-19", [("6182", 17, 1000, 470000000, 100.0), ("2330", 17, 1000, 25930380458, 100.0)])
+        n = len(calls)
+        module.collect_once(now=datetime(2026, 9, 26, 10, 0, tzinfo=TW), fetcher=fetch)
+        self.assertFalse(any(u.endswith("/tdcc-2026-09-12.json") or u.endswith("/tdcc-2026-09-19.json") for u in calls[n:]))
 
     def test_collect_survives_failures(self) -> None:
         def fetch(url):

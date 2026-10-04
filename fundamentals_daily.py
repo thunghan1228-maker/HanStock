@@ -35,7 +35,7 @@ MIRROR_BASICS = "basics-latest.json"
 MIRROR_TDCC_INDEX = "tdcc-index.json"
 PE_PUBLISH_MINUTE = 16 * 60 + 30     # 證交所本益比約 16:30 後才有當天的
 BIG_HOLDER_LEVELS = (12, 13, 14, 15)  # 400 張以上（400-600、600-800、800-1000、1000 張以上）
-TDCC_KEEP_WEEKS = 12
+TDCC_KEEP_WEEKS = 26     # 2026-10-04 籌碼暴增雷達要 16 週累積榜＋8 週可切＋9 週軌跡（原本 12 週）
 POLL_SECONDS = 30 * 60
 WINDOW_START = 16 * 60 + 45
 WINDOW_END = 19 * 60
@@ -138,6 +138,18 @@ def pe_dates(market: str, limit: int = 5) -> list[str]:
         _schema(connection)
         rows = connection.execute("SELECT DISTINCT trade_date FROM stock_pe_daily WHERE market = ? ORDER BY trade_date DESC LIMIT ?", (market, limit)).fetchall()
     return [str(r["trade_date"]) for r in rows]
+
+
+def tdcc_weeks_without_totals() -> set[str]:
+    """存了、但大部分股票沒有第 17 級（合計）的週：2026-10-04 以前的鏡像只給族群股票留合計，籌碼暴增雷達要每檔的
+    總股數，這幾週鏡像換成新檔後要重抓一次。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute(
+            "SELECT data_date, SUM(CASE WHEN level = 17 THEN 1 ELSE 0 END) AS t, SUM(CASE WHEN level = 15 THEN 1 ELSE 0 END) AS b FROM tdcc_weekly GROUP BY data_date"
+        ).fetchall()
+    return {str(r["data_date"]) for r in rows if r["b"] and r["t"] * 2 < r["b"]}
 
 
 def tdcc_dates(limit: int = TDCC_KEEP_WEEKS) -> list[str]:
@@ -454,10 +466,11 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
         index = fetch(_mirror_url(MIRROR_TDCC_INDEX, volatile=True))
         wanted = [str(d) for d in index if isinstance(d, str)] if isinstance(index, list) else []
         have = set(tdcc_dates(TDCC_KEEP_WEEKS))
+        lacking = tdcc_weeks_without_totals()
         added = []
         for i, day in enumerate(sorted(wanted, reverse=True)[:TDCC_KEEP_WEEKS]):
             newest = i == 0
-            if day in have and not newest and not force:
+            if day in have and day not in lacking and not newest and not force:
                 continue
             try:
                 date_iso, rows = parse_tdcc_mirror(fetch(_mirror_url(f"tdcc-{day}.json", volatile=newest or force)))
