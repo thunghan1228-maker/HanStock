@@ -299,6 +299,7 @@ class EndpointTests(unittest.TestCase):
             p.start()
         brew_launch_history._group_by_code.clear()
         picker._panel = None
+        picker._fp_cache["value"] = None
         dates = weekdays("2025-08-04", 300)
         rows = []
         price = 50.0

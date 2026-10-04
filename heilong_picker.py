@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
+import time
 from array import array
 from bisect import bisect_right
 from collections import OrderedDict
@@ -267,18 +268,29 @@ _panel: Panel | None = None
 _panel_lock = threading.Lock()
 
 
+_fp_cache: dict[str, Any] = {"at": 0.0, "value": None}
+FINGERPRINT_TTL = 20.0     # 秒：每個請求都去數 50 萬列太浪費；表一天才整理一次
+
+
 def _fingerprint() -> str:
+    now = time.monotonic()
+    if _fp_cache["value"] is not None and now - _fp_cache["at"] < FINGERPRINT_TTL:
+        return _fp_cache["value"]
     initialize_database()
     with get_connection() as connection:
         _heilong_schema(connection)
         row = connection.execute("SELECT MAX(trade_date) AS d, COUNT(*) AS n FROM heilong_daily").fetchone()
         meta = connection.execute("SELECT value FROM heilong_meta WHERE key = 'adjust_version'").fetchone()
-    return f"{row['d']}:{row['n']}:{meta['value'] if meta else ''}"
+    value = f"{row['d']}:{row['n']}:{meta['value'] if meta else ''}"
+    _fp_cache.update({"at": now, "value": value})
+    return value
 
 
 def load_panel(force: bool = False) -> Panel:
     """收盤後整理好的特徵表載進記憶體；表沒變（最新日期、筆數、還原版本都一樣）就用上次的。"""
     global _panel
+    if force:
+        _fp_cache["value"] = None
     key = _fingerprint()
     with _panel_lock:
         if _panel is not None and _panel.key == key and not force:
@@ -1144,8 +1156,8 @@ def pick_one(panel: Panel, codes: list[str], day: int, how: str, *, seed: int | 
 
 
 def warm() -> None:
-    """收盤後整表完先載進記憶體，第一個打開的人不用等。"""
+    """收盤後整表完先載進記憶體，第一個打開的人不用等（表剛換過：不看快取的指紋）。"""
     try:
-        load_panel()
+        load_panel(force=True)
     except Exception:  # noqa: BLE001
         logger.exception("picker warm failed")

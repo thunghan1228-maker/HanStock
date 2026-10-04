@@ -11,15 +11,19 @@
 - tpex：櫃買「減資恢復買賣參考價格」（櫃買擋正式站主機，走 tw-groups data 分支的鏡像）。
 - tpex-quote：櫃買每日行情的漲跌是跟參考價比，停止買賣後恢復那天，參考價＝收盤−漲跌（同樣走鏡像）。
 - inferred：上面都沒有、但日K看得出來的：這檔中間有交易日沒成交（停止買賣），恢復那天開盤跟停止前收盤
-  差超過 11%（正常一天漲跌停只有 10%）。參考價不知道，用恢復那天的開盤價估；離 1/2、1/4、2、4 這類整數倍
-  很近（2% 以內）就當成那個倍數（ETF 分割，例如 0050 在 2025-06-18 一拆四）。
+  差超過 11%（正常一天漲跌停只有 10%）。參考價不知道，用恢復那天的開盤價估（ETF 分割，例如 0050 在 2025-06-18 一拆四）。
+
+後兩種（行情反推、推測）只認整數倍（1/2、1/4、2、4…，差 2% 以內）：2026-10-04 用真的上櫃日K跑過，
+一天只成交 1 張的冷門股（例如宏太-KY、中湛）幾天沒成交、再開出來差一兩成很常見，參考價也會跟著漂，
+不是減資；減資的因子不是整數倍，一律以官方表為準。同一檔 20 天內兩筆不同來源的事件當成同一件事
+（官方的恢復買賣日那天沒成交，行情反推晚幾天才抓到），只留來源等級高的。
 """
 
 from __future__ import annotations
 
 import logging
 from bisect import bisect_right
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from database import get_connection, initialize_database
@@ -32,6 +36,7 @@ QUOTE_EVENT_MOVE = 0.15    # 櫃買行情反推的參考價跟前收盤差 15% �
 MIN_HALT_DAYS = 2          # 中間至少停止買賣 2 個交易日（減資／分割通常停 5 天左右；只有 1 天沒成交多半是冷門股沒人買）
 SNAP_RATIOS = (2, 3, 4, 5, 8, 10, 20, 25, 50)
 SNAP_TOLERANCE = 0.02
+DEDUPE_DAYS = 20           # 同一檔 20 天內兩筆不同來源的事件＝同一件事，留來源等級高的
 
 
 def _schema(connection) -> None:
@@ -49,13 +54,19 @@ def _now() -> str:
     return datetime.now(TW_TZ).isoformat(timespec="seconds")
 
 
-def snap_factor(factor: float) -> float:
-    """推測出來的因子離整數倍（1/2、1/4、2、4…）很近就取整數倍；不然原樣。"""
+def snapped(factor: float) -> float | None:
+    """因子離整數倍（1/2、1/4、2、4…）很近就回那個倍數；不是整數倍回 None。"""
     for ratio in SNAP_RATIOS:
         for target in (1 / ratio, float(ratio)):
             if abs(factor / target - 1) <= SNAP_TOLERANCE:
                 return round(target, 6)
-    return factor
+    return None
+
+
+def snap_factor(factor: float) -> float:
+    """推測出來的因子離整數倍很近就取整數倍；不然原樣。"""
+    snap = snapped(factor)
+    return factor if snap is None else snap
 
 
 def save_events(events: Iterable[dict[str, Any]]) -> int:
@@ -95,17 +106,33 @@ def load_events(codes: Iterable[str] | None = None) -> dict[str, list[tuple[str,
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        rows = connection.execute("SELECT stock_code, ex_date, factor FROM price_adjust_events ORDER BY ex_date").fetchall()
+        rows = connection.execute("SELECT stock_code, ex_date, factor, source FROM price_adjust_events ORDER BY ex_date").fetchall()
     wanted = {str(c).strip().upper() for c in codes} if codes is not None else None
-    out: dict[str, list[tuple[str, float]]] = {}
+    per_code: dict[str, list[tuple[str, float, int]]] = {}
     for r in rows:
         code = str(r["stock_code"])
         if wanted is not None and code not in wanted:
             continue
-        factor = float(r["factor"])
-        if factor > 0:
-            out.setdefault(code, []).append((str(r["ex_date"]), factor))
-    return out
+        factor, source = float(r["factor"]), str(r["source"])
+        if factor <= 0 or (source in ("tpex-quote", "inferred") and snapped(factor) is None):
+            continue   # 舊版存下的非整數倍反推／推測事件不套（見最上面的說明）
+        per_code.setdefault(code, []).append((str(r["ex_date"]), factor, SOURCE_RANK.get(source, len(SOURCE_RANK))))
+    return {code: dedupe_events(events) for code, events in per_code.items()}
+
+
+def dedupe_events(events: list[tuple[str, float, int]]) -> list[tuple[str, float]]:
+    """[(事件日, 因子, 來源等級)] 舊到新 → [(事件日, 因子)]：DEDUPE_DAYS 天內不同來源的兩筆只留等級高的
+    （官方恢復買賣日那天沒成交，櫃買行情反推晚幾天才抓到同一件事，兩筆都套會還原兩次）。"""
+    kept: list[tuple[str, float, int]] = []
+    for ev in events:
+        day = date.fromisoformat(ev[0])
+        clash = next((i for i, k in enumerate(kept)
+                      if k[2] != ev[2] and abs((date.fromisoformat(k[0]) - day).days) <= DEDUPE_DAYS), None)
+        if clash is None:
+            kept.append(ev)
+        elif ev[2] < kept[clash][2]:
+            kept[clash] = ev
+    return [(d, f) for d, f, _ in sorted(kept)]
 
 
 def list_events(limit: int = 200) -> list[dict[str, Any]]:
@@ -253,7 +280,7 @@ def has_event_between(known: dict[str, list[str]], code: str, after: str, until:
 
 
 def detect_halt_jumps(bars_by_code: dict[str, list[tuple]], days: list[str], known: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """停止買賣（中間有交易日沒成交）後恢復、開盤跟停止前收盤差超過 11%，又沒有其他來源的事件 → 推測事件。
+    """停止買賣（中間有交易日沒成交）後恢復、開盤跟停止前收盤差超過 11% 而且是整數倍，又沒有其他來源的事件 → 推測事件。
     known＝{代號: [已經有的事件日 舊到新]}。"""
     index = {d: i for i, d in enumerate(days)}
     out: list[dict[str, Any]] = []
@@ -267,7 +294,9 @@ def detect_halt_jumps(bars_by_code: dict[str, list[tuple]], days: list[str], kno
             prev_close, open_ = float(prev[4]), float(cur[1])
             if prev_close <= 0 or open_ <= 0 or abs(open_ / prev_close - 1) <= INFER_JUMP:
                 continue
-            factor = snap_factor(open_ / prev_close)
+            factor = snapped(open_ / prev_close)
+            if factor is None:
+                continue   # 不是整數倍：冷門股幾天沒成交後的正常漲跌（減資看官方表）
             out.append({"code": code, "date": cur[0], "prevClose": prev_close, "refPrice": round(prev_close * factor, 4),
                         "factor": factor, "kind": "inferred", "source": "inferred",
                         "note": f"停止買賣 {i_cur - i_prev - 1} 個交易日後恢復，開盤 {open_:g}／停止前收盤 {prev_close:g}"})
@@ -277,7 +306,7 @@ def detect_halt_jumps(bars_by_code: dict[str, list[tuple]], days: list[str], kno
 def quote_ref_events(day: str, rows: list[list[Any]], prev_close_of: dict[str, tuple[str, float]],
                      previous_market_days: list[str]) -> list[dict[str, Any]]:
     """櫃買鏡像某一天的行情列 [代號, 名稱, 開, 高, 低, 收, 漲跌, 量]：前一次成交早於前 MIN_HALT_DAYS 個交易日（中間停止買賣），
-    而且參考價（收盤−漲跌）跟停止前收盤差 15% 以上 → 事件。prev_close_of＝{代號: (前一次成交日, 收盤)}；
+    而且參考價（收盤−漲跌）跟停止前收盤差 15% 以上、是整數倍（面額變更）→ 事件。prev_close_of＝{代號: (前一次成交日, 收盤)}；
     previous_market_days＝這天之前的交易日（新到舊，至少 MIN_HALT_DAYS 天）。"""
     out: list[dict[str, Any]] = []
     if len(previous_market_days) < MIN_HALT_DAYS:
@@ -296,6 +325,9 @@ def quote_ref_events(day: str, rows: list[list[Any]], prev_close_of: dict[str, t
         ref = round(close - float(change), 4)
         if ref <= 0 or prev[1] <= 0 or abs(ref / prev[1] - 1) < QUOTE_EVENT_MOVE:
             continue
-        out.append({"code": code, "date": day, "prevClose": prev[1], "refPrice": ref, "factor": ref / prev[1],
-                    "kind": "resume", "source": "tpex-quote", "note": f"停止買賣後恢復（前一次成交 {prev[0]}），參考價＝收盤−漲跌"})
+        factor = snapped(ref / prev[1])
+        if factor is None:
+            continue   # 不是整數倍：冷門股沒成交幾天參考價也會漂，不當事件（減資看官方表）
+        out.append({"code": code, "date": day, "prevClose": prev[1], "refPrice": ref, "factor": factor,
+                    "kind": "resume", "source": "tpex-quote", "note": f"停止買賣後恢復（前一次成交 {prev[0]}），參考價 {ref:g}＝收盤−漲跌"})
     return out

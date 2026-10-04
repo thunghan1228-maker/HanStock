@@ -71,19 +71,24 @@ class DetectTests(unittest.TestCase):
                 # 只差一天沒成交（冷門股）：不算
                 "9999": [("2025-06-09", 10, 0, 0, 10, 0), ("2025-06-11", 13, 0, 0, 13, 0)],
                 # 有官方事件落在停止買賣期間（恢復那天沒成交，日K第一根比較晚）：不重複推測
-                "2327": [("2025-06-09", 546, 0, 0, 546, 0), ("2025-06-18", 140, 0, 0, 141, 0)]}
+                "2327": [("2025-06-09", 546, 0, 0, 546, 0), ("2025-06-18", 140, 0, 0, 141, 0)],
+                # 冷門股幾天沒成交、再開出來跌 12%（2026-10-04 真實上櫃日K：宏太-KY 25.15 → 22.05）：不是整數倍，不算
+                "2924": [("2025-06-09", 25.15, 0, 0, 25.15, 0), ("2025-06-13", 22.05, 0, 0, 23.0, 0)]}
         out = module.detect_halt_jumps(bars, days, {"2327": ["2025-06-17"]})
         self.assertEqual([(e["code"], e["date"], e["factor"], e["source"]) for e in out], [("0050", "2025-06-18", 0.25, "inferred")])
         self.assertEqual(out[0]["refPrice"], 47.1625)
 
     def test_quote_ref_events(self) -> None:
-        rows = [["3064", "泰偉", 31.95, 32.2, 31.95, 32.2, -3.3, 8170000],      # 減資恢復：參考價 35.5
+        rows = [["4747", "強生", 28.5, 29.0, 28.2, 28.9, 0.65, 81000],          # 面額變更一拆二：參考價 28.25＝前收 56.5 的一半
+                ["3064", "泰偉", 31.95, 32.2, 31.95, 32.2, -3.3, 8170000],      # 減資恢復（參考價 35.5）：不是整數倍，看官方表
+                ["2924", "宏太-KY", 28.7, 28.7, 28.7, 28.7, 0.85, 1000],        # 冷門股沒成交幾天、參考價漂了兩成：不算
                 ["6488", "環球晶", 579.0, 584.0, 574.0, 579.0, 0.0, 679837],     # 昨天有成交：一般漲跌
                 ["1234", "小股", 10.0, 10.0, 10.0, 10.2, 0.2, 1000],             # 停了幾天但參考價沒變多少（除息）：不算
                 ["5555", "沒漲跌", 10.0, 10.0, 10.0, 10.0, None, 1000]]
-        prev = {"3064": ("2024-01-24", 10.65), "6488": ("2024-02-02", 579.0), "1234": ("2024-01-24", 10.5), "5555": ("2024-01-24", 30.0)}
+        prev = {"4747": ("2024-01-24", 56.5), "3064": ("2024-01-24", 10.65), "2924": ("2024-01-24", 23.0), "6488": ("2024-02-02", 579.0),
+                "1234": ("2024-01-24", 10.5), "5555": ("2024-01-24", 30.0)}
         out = module.quote_ref_events("2024-02-05", rows, prev, ["2024-02-02", "2024-02-01", "2024-01-31"])
-        self.assertEqual([(e["code"], e["refPrice"], round(e["factor"], 4)) for e in out], [("3064", 35.5, 3.3333)])
+        self.assertEqual([(e["code"], e["refPrice"], e["factor"]) for e in out], [("4747", 28.25, 0.5)])
 
 
 class SaveTests(unittest.TestCase):
@@ -110,6 +115,26 @@ class SaveTests(unittest.TestCase):
         self.assertNotEqual(module.events_version(), v0)
         self.assertEqual(module.load_events(["2330"]), {})
         self.assertEqual(module.save_events([{"code": "1", "date": "2025-01-01", "prevClose": 0, "refPrice": 1, "source": "twse"}]), 0)
+
+    def test_same_event_from_two_sources_applied_once(self) -> None:
+        # 2026-10-04 真實資料：桂田文創 2025-10-03 減資恢復（官方，那天沒成交），行情反推 10-07 又抓到一次 → 只套官方的
+        module.save_events([{"code": "4806", "date": "2025-10-03", "prevClose": 7.54, "refPrice": 15.08, "source": "tpex", "kind": "reduction"},
+                            {"code": "4806", "date": "2025-10-07", "prevClose": 7.54, "refPrice": 15.1, "factor": 2.0, "source": "tpex-quote", "kind": "resume"},
+                            {"code": "4806", "date": "2026-10-02", "prevClose": 10.4, "refPrice": 14.87, "source": "tpex", "kind": "reduction"}])
+        self.assertEqual([d for d, _ in module.load_events()["4806"]], ["2025-10-03", "2026-10-02"])   # 隔一年的另一次減資照套
+        # 推測的晚存進來也一樣（官方那筆等級高）
+        module.save_events([{"code": "0050", "date": "2025-06-20", "prevClose": 188.65, "refPrice": 47.16, "factor": 0.25, "source": "inferred", "kind": "inferred"},
+                            {"code": "0050", "date": "2025-06-18", "prevClose": 188.65, "refPrice": 47.16, "source": "twse", "kind": "par"}])
+        self.assertEqual([d for d, _ in module.load_events()["0050"]], ["2025-06-18"])
+
+    def test_old_non_whole_ratio_guesses_ignored(self) -> None:
+        # 舊版存下來的非整數倍推測／反推（冷門股的正常漲跌）不套；官方的減資照套
+        module.save_events([{"code": "2924", "date": "2025-11-07", "prevClose": 25.15, "refPrice": 22.05, "factor": 0.8767, "source": "inferred", "kind": "inferred"},
+                            {"code": "2924", "date": "2025-12-26", "prevClose": 23.0, "refPrice": 27.85, "factor": 1.2109, "source": "tpex-quote", "kind": "resume"},
+                            {"code": "3064", "date": "2024-02-05", "prevClose": 10.65, "refPrice": 35.5, "source": "tpex", "kind": "reduction"}])
+        events = module.load_events()
+        self.assertNotIn("2924", events)
+        self.assertAlmostEqual(events["3064"][0][1], 35.5 / 10.65, places=6)
 
 
 if __name__ == "__main__":

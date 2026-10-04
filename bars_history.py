@@ -30,10 +30,11 @@ from price_adjust import detect_halt_jumps, load_events, market_days, parse_offi
 logger = logging.getLogger("hanstock.bars_history")
 TW_TZ = timezone(timedelta(hours=8))
 HISTORY_YEARS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_HISTORY_YEARS", "3")))
-TWSE_DELAY_SECONDS = float(os.getenv("HANSTOCK_BARS_HISTORY_TWSE_DELAY", "1.5"))
+TWSE_DELAY_SECONDS = float(os.getenv("HANSTOCK_BARS_HISTORY_TWSE_DELAY", "2.0"))   # 證交所大約每 5 秒 3 次以內才不會被擋
 TWSE_PAUSE_AFTER_FAILURES = 3
 TWSE_MAX_FAILURES = 12
 POLL_SECONDS = 6 * 60 * 60
+BULK_INSERTED = 5000      # 這一輪補進這麼多根日K＝補了一大段歷史：黑龍表整張重算（以前歷史不夠的日子分數是空的）
 OTC_DAY_COMPLETE_RATIO = 0.9
 TWSE_REDUCTION_URL = "https://www.twse.com.tw/rwd/zh/reducation/TWTAUU"
 TWSE_PAR_URL = "https://www.twse.com.tw/rwd/zh/change/TWTB8U"
@@ -384,7 +385,8 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
             try:
                 from heilong_backtest import rebuild as rebuild_heilong_table
 
-                heilong = rebuild_heilong_table()
+                bulk = int(tse.get("inserted", 0) or 0) + int(otc.get("inserted", 0) or 0) >= BULK_INSERTED
+                heilong = rebuild_heilong_table(force=bulk)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("bars history: heilong rebuild failed")
                 heilong = {"error": str(exc)}

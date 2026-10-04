@@ -104,7 +104,7 @@ class OtcMirrorTests(BaseCase):
             if d <= date(2024, 1, 24):
                 rows.append(["3064", "泰偉", 10.65, 10.65, 10.65, 10.65, 0.0, 1000])   # 1/25 起停止買賣
             if d == date(2024, 2, 5):
-                rows.append(["3064", "泰偉", 31.95, 32.2, 31.95, 32.2, -3.3, 8170000])   # 減資恢復
+                rows.append(["3064", "泰偉", 5.3, 5.4, 5.3, 5.4, 0.08, 8170000])   # 面額變更一拆二恢復：參考價 5.32
             (jan if d.month == 1 else feb)["days"][d.isoformat()] = rows
         raw = self.mirror({"2024-01": jan, "2024-02": feb})
         result = module.import_otc_from_mirror(date(2024, 1, 1), date(2024, 2, 29), raw=raw)
@@ -118,7 +118,7 @@ class OtcMirrorTests(BaseCase):
         self.assertEqual((vol, market), (8170, "OTC"))      # 股 → 張
         events = price_adjust.load_events()
         self.assertEqual(list(events), ["3064"])
-        self.assertAlmostEqual(events["3064"][0][1], 35.5 / 10.65, places=6)
+        self.assertEqual(events["3064"][0], ("2024-02-05", 0.5))
         # 鏡像沒變：下一輪整個月跳過
         again = module.import_otc_from_mirror(date(2024, 1, 1), date(2024, 2, 29), raw=raw)
         self.assertEqual(again["months"], 0)
@@ -181,7 +181,7 @@ class RunTests(BaseCase):
         self.assertEqual(result["status"], "ok")
         tse.assert_called_once()
         otc.assert_called_once()
-        rebuild.assert_called_once()                     # 上櫃有補進新的日K：黑龍表要重算
+        rebuild.assert_called_once_with(force=False)     # 上櫃有補進新的日K：黑龍表要重算（只補幾根：照常增量）
         state = module.status()
         self.assertEqual((state["running"], state["phase"], state["events"]["twse"]), (False, "done", 1))
         self.assertEqual(state["heilong"]["rows"], 10)
@@ -193,6 +193,15 @@ class RunTests(BaseCase):
              patch("heilong_backtest.rebuild") as rebuild2:
             module.run_once()
         rebuild2.assert_not_called()                     # 什麼都沒變：不重算
+
+    def test_bulk_backfill_forces_full_rebuild(self) -> None:
+        with patch.object(module, "backfill_tse", return_value={"inserted": 4000}), \
+             patch.object(module, "import_otc_from_mirror", return_value={"inserted": 3000, "events": 0}), \
+             patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
+             patch.object(module, "infer_events", return_value=0), \
+             patch("heilong_backtest.rebuild", return_value={}) as rebuild:
+            module.run_once()
+        rebuild.assert_called_once_with(force=True)      # 補了一大段歷史：整張重算
 
     def test_target_start_and_coverage(self) -> None:
         self.assertEqual(module.target_start(date(2026, 10, 4), 3), date(2023, 10, 4))

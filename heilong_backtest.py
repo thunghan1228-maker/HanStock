@@ -437,16 +437,15 @@ def _row_tuple(d: str, code: str, f: dict[str, Any]) -> tuple:
 
 
 def _warm_picker() -> None:
-    """表重算過：背景先把創高黑選股要用的特徵載進記憶體（延遲匯入，選股模組會 import 這個模組）。"""
-    def run() -> None:
-        try:
-            from heilong_picker import warm
-
-            warm()
-        except Exception:  # noqa: BLE001
-            logger.exception("picker warm failed")
-
-    threading.Thread(target=run, name="hanstock-picker-warm", daemon=True).start()
+    """表重算過：有人用過創高黑選股（記憶體裡已經有一份特徵）才在背景換成新的，下一個打開的人不用等；
+    沒人用過就不載（省記憶體，測試也不會留下背景執行緒）。延遲匯入：選股模組會 import 這個模組。"""
+    try:
+        import heilong_picker
+    except Exception:  # noqa: BLE001
+        return
+    if heilong_picker._panel is None:
+        return
+    threading.Thread(target=heilong_picker.warm, name="hanstock-picker-warm", daemon=True).start()
 
 
 def _rebuild(*, force: bool) -> dict[str, Any]:

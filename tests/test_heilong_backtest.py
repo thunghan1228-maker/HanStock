@@ -251,6 +251,7 @@ class RebuildTests(unittest.TestCase):
         self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history)]
         # 正式表留 250 天（創高黑選股）；這組測試照原本 60 天的情境寫
         self.patches.append(patch.object(module, "HISTORY_DAYS", 60))
+        self.patches.append(patch.object(module, "_warm_picker", lambda: None))   # 不要在背景載選股特徵（測試完暫存資料庫就刪了）
         for p in self.patches:
             p.start()
         brew_launch_history._group_by_code.clear()
@@ -474,6 +475,7 @@ class AdjustedRebuildTests(unittest.TestCase):
         database.initialize_database()
         self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history)]
         self.patches.append(patch.object(module, "HISTORY_DAYS", 60))
+        self.patches.append(patch.object(module, "_warm_picker", lambda: None))
         for p in self.patches:
             p.start()
         brew_launch_history._group_by_code.clear()

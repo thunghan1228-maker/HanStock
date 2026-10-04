@@ -17,8 +17,10 @@ logger = logging.getLogger("hanstock.daily_bars_collector")
 POLL_SECONDS = max(1800, int(os.getenv("HANSTOCK_DAILY_BARS_COLLECTOR_SECONDS", str(60 * 60))))
 BACKFILL_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_BACKFILL_DAYS", "370")))
 CATCHUP_DAYS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_CATCHUP_DAYS", "5")))
-# 2026-10-04 創高黑選股要三年日K（bars_history 補到三年），保留從 365 放寬到 800 個交易日（約 3.2 年）
-KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "800")))
+# 2026-10-04 創高黑選股要三年日K（bars_history 補到三年），保留從 365 放寬到 800 個交易日（約 3.2 年）；
+# 正式站要是有設 HANSTOCK_DAILY_BARS_KEEP_DAYS（例如以前的 365），也不能比「補幾年」還短，不然補進來的歷史隔一輪就被刪掉。
+HISTORY_YEARS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_HISTORY_YEARS", "3")))
+KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "800")), HISTORY_YEARS * 252 + 30)
 _started = False
 _lock = threading.Lock()
 _last_run: dict = {"running": False, "startedAt": None, "finishedAt": None, "result": None, "error": None}
