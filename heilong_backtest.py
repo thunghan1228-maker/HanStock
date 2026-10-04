@@ -407,6 +407,8 @@ def rebuild(*, force: bool = False) -> dict[str, Any]:
             with _lock:
                 _state.update({"builtAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "lastDate": result.get("date"),
                                "dates": result.get("dates", 0), "rows": result.get("rows", 0), "lastRebuilt": result.get("rebuilt", []), "lastError": None})
+            if result.get("rebuiltCount"):
+                _warm_picker()
             return result
         except Exception as exc:  # noqa: BLE001
             logger.exception("heilong rebuild failed")
@@ -432,6 +434,19 @@ def _row_tuple(d: str, code: str, f: dict[str, Any]) -> tuple:
     return (d, code, f["open"], f["high"], f["low"], f["close"], f["volume"], f["prevClose"], f["changePct"], f["score"], f["hits20"], f["val5"],
             f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0, f["score2"], f["groupAvg2"],
             f["bias"], f["outDays"], 1 if f["attention"] else 0, 1 if f["inGroup"] else 0, f.get("hiLen"))
+
+
+def _warm_picker() -> None:
+    """表重算過：背景先把創高黑選股要用的特徵載進記憶體（延遲匯入，選股模組會 import 這個模組）。"""
+    def run() -> None:
+        try:
+            from heilong_picker import warm
+
+            warm()
+        except Exception:  # noqa: BLE001
+            logger.exception("picker warm failed")
+
+    threading.Thread(target=run, name="hanstock-picker-warm", daemon=True).start()
 
 
 def _rebuild(*, force: bool) -> dict[str, Any]:

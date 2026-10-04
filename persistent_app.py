@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import Query
+from fastapi import Query, Request
 
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
@@ -32,6 +32,7 @@ from chips_daily import chips_daily as chips_daily_payload, collector_status as 
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
+from heilong_picker import payload as picker_payload
 from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
@@ -917,6 +918,25 @@ def post_bars_history_run() -> dict[str, Any]:
 def get_price_adjust_events(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
     """分割減資還原事件（最新的在前）：來源 twse／tpex 官方表、tpex-quote 櫃買行情反推、inferred 日K推測。"""
     return {"status": "ok", "events": list_price_adjust_events(limit)}
+
+
+@app.get("/api/hub/picker")
+def get_picker(request: Request) -> dict[str, Any]:
+    """創高黑選股（2026-10-04 使用者：照莊爸 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、
+    每日新進、條件池）／perf（實績：各種出場方式）／rules；其餘查詢參數是模組參數（見 heilong_picker.DEFAULTS），
+    date＝看哪一天、week＝每週名單看第幾週、lists＝使用者改過的名單『週一:代號,代號;…』、stars＝設成優先的代號。"""
+    from fastapi import HTTPException
+
+    query = dict(request.query_params)
+    view = query.pop("view", "today")
+    day = query.pop("date", None)
+    week = query.pop("week", None)
+    lists = query.pop("lists", None)
+    stars = query.pop("stars", None)
+    try:
+        return picker_payload(view, query, day=day, week=int(week) if week not in (None, "") else None, lists=lists, stars=stars)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/hub/heilong/status")
