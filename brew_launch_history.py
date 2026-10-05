@@ -455,11 +455,15 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 continue
             prev_close = _num(item.get("y"))
             price = _num(item.get("z"))
+            source = "trade"
             if price is None:
                 bid, ask = _book(item.get("b")), _book(item.get("a"))
                 price = bid if bid and not ask else ask if ask and not bid else (bid + ask) / 2 if bid and ask else None
+                source = "book"
             if price is None:
+                # 沒成交也沒委買委賣：只剩開盤價／最高／最低／昨收可以填，不是現在的價格（scan_once 不拿它判斷回落）
                 price = _num(item.get("o")) or _num(item.get("h")) or _num(item.get("l")) or prev_close
+                source = "fallback"
             if price is None:
                 continue
             day = str(item.get("d") or "")
@@ -473,6 +477,7 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 "quoteTime": str(item.get("t") or "") or None,
                 "limitUp": limit_up_price is not None and price >= limit_up_price - 1e-6,
                 "limitDown": limit_down_price is not None and price <= limit_down_price + 1e-6,
+                "priceSource": source,
             }
     return out
 
@@ -496,6 +501,8 @@ def _markets(codes: list[str]) -> dict[str, str]:
 _currently_live: set[str] = set()  # 這一天目前還在發動中的代號（不是「今天發動過」，是「現在還在發動」）
 _currently_live_date: str | None = None
 _currently_live_seeded = False  # 程式剛啟動／換日後的第一輪只用來建立基準，不能把「本來就在發動」的股票誤判成剛剛才發動
+# 報價有問題（這一輪沒拿到／只剩開盤價可填／量是 0）而照舊算「還在發動」的次數，一天一份，給 /scan 狀態看
+_carried_today: dict[str, Any] = {"date": None, "missing": 0, "fallback": 0, "noVolume": 0}
 
 
 def scan_once(
@@ -522,6 +529,8 @@ def scan_once(
         return {"status": "skipped", "reason": f"醞釀資料的交易日 {payload.get('session')} 不是今天", "brewSnapshot": snapshot}
     if _currently_live_date != today:
         _currently_live, _currently_live_date, _currently_live_seeded = set(), today, False
+    if _carried_today.get("date") != today:
+        _carried_today.update({"date": today, "missing": 0, "fallback": 0, "noVolume": 0})
     rules = payload["rules"]
     stocks = {code: info for code, info in (payload.get("stocks") or {}).items() if not info.get("skipped")}
     codes = sorted(stocks)
@@ -531,9 +540,18 @@ def scan_once(
         quotes = fetch_mis_quotes(codes, _markets(codes), fetcher=quotes_fetcher)
     live_now: set[str] = set()
     newly_live: list[dict[str, Any]] = []
+    carried = {"missing": 0, "fallback": 0, "noVolume": 0}
     for code in codes:
         quote = quotes.get(code)
-        if not quote:
+        # 2026-10-05 使用者兩台電腦「今天曾發動」對不起來，順便查到後端紀錄灌水：鼎元漲停鎖死一早上記了 10 筆、
+        # 9/30 聯合再生一天 56 筆。證交所報價偶爾某一輪沒有這檔、或那一盤沒成交也沒委買委賣（只剩開盤價可填）、
+        # 或量是 0——都不是真的回落，但以前直接當成「沒在發動」，下一輪報價正常就又記一筆「重新發動」。
+        # 本來在發動中的遇到這種報價照舊算在發動中；本來沒在發動的也不拿這種報價判斷新發動。
+        glitch = "missing" if not quote else "fallback" if quote.get("priceSource") == "fallback" else "noVolume" if not quote.get("volume") else None
+        if glitch:
+            if code in _currently_live:
+                live_now.add(code)
+                carried[glitch] += 1
             continue
         metrics = evaluate_launch(stocks[code], quote, rules)
         if not metrics:
@@ -562,9 +580,12 @@ def scan_once(
             row["holderLabel"] = holder["holderLabel"] if holder else None
         record_launch_episode(today, newly_live, now.isoformat(timespec="seconds"))
     _currently_live = live_now
+    for key, count in carried.items():
+        _carried_today[key] += count
     return {
         "status": "ok", "checked": len(codes), "launched": len(newly_live), "codes": [row["code"] for row in newly_live],
         "launchedToday": len(launched_codes(today)), "currentlyLive": len(live_now), "brewSnapshot": snapshot,
+        "carried": carried, "carriedToday": dict(_carried_today),
     }
 
 

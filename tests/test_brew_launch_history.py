@@ -43,6 +43,7 @@ class HistoryTests(unittest.TestCase):
         module._currently_live = set()
         module._currently_live_date = None
         module._currently_live_seeded = False
+        module._carried_today.update({"date": None, "missing": 0, "fallback": 0, "noVolume": 0})
         self.payload = {"session": "2026-09-24", "rules": RULES, "stocks": {
             "6207": _info(boxHigh=124.0, maSums=_sums(BULL, 125.0)),
             "3016": _info(boxHigh=170.0, maSums=_sums(BULL, 160.0), brewing=False),
@@ -114,6 +115,42 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(first_row["price"], 125.0)                                # 第一筆的細節也沒被蓋掉
         self.assertTrue(second_row["recordedAt"].startswith("2026-09-24T11:00"))   # 第二次另外留一筆
         self.assertEqual(second_row["price"], 126.0)
+
+    def test_quote_glitches_do_not_count_as_fall_and_relaunch(self) -> None:
+        # 2026-10-05：鼎元漲停鎖死一早上被記了 10 筆「重新發動」——證交所報價某一輪沒有這檔、那一盤沒成交也沒
+        # 委買委賣（只剩開盤價可填）、或量是 0，都被當成回落。這三種都要照舊算在發動中，報價恢復後不能再記一筆。
+        others = {"3016": self.quotes["3016"], "2881": self.quotes["2881"]}
+        good = {"price": 125.0, "prevClose": 114.0, "volume": 2000, "priceSource": "book"}
+        first = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
+        self.assertEqual(first["codes"], ["6207"])
+        glitches = [
+            ("missing", others),                                                                                   # 這一輪沒有 6207
+            ("fallback", {"6207": {"price": 110.0, "prevClose": 114.0, "volume": 2100, "priceSource": "fallback"}, **others}),  # 只剩開盤價 110
+            ("noVolume", {"6207": {"price": 125.0, "prevClose": 114.0, "volume": 0, "priceSource": "trade"}, **others}),
+        ]
+        for minute, (kind, quotes) in enumerate(glitches, start=1):
+            result = module.scan_once(now=datetime(2026, 9, 24, 10, minute, tzinfo=TW), payload=self.payload, quotes=quotes)
+            self.assertEqual(result["currentlyLive"], 1, kind)          # 還算在發動中
+            self.assertEqual(result["carried"][kind], 1, kind)
+            back = module.scan_once(now=datetime(2026, 9, 24, 10, minute, 30, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
+            self.assertEqual(back["codes"], [], kind)                   # 報價恢復：不是重新發動
+        self.assertEqual(back["carriedToday"], {"date": "2026-09-24", "missing": 1, "fallback": 1, "noVolume": 1})
+        launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
+        self.assertEqual(len([r for r in launch if r["code"] == "6207"]), 1)
+        # 真的回落（有成交、價格跌回箱頂下）照舊算回落，之後再過箱頂才是新的一筆
+        fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 10, tzinfo=TW), payload=self.payload,
+                                  quotes={"6207": {"price": 120.0, "prevClose": 114.0, "volume": 2500, "priceSource": "trade"}, **others})
+        self.assertEqual(fallen["currentlyLive"], 0)
+        again = module.scan_once(now=datetime(2026, 9, 24, 10, 11, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
+        self.assertEqual(again["codes"], ["6207"])
+
+    def test_fallback_price_never_starts_a_launch(self) -> None:
+        # 本來沒在發動的股票，只剩開盤價可填的那一輪不能拿來判斷發動（開盤價過箱頂不代表現在還在上面）
+        quotes = dict(self.quotes)
+        quotes["6207"] = {"price": 125.0, "prevClose": 114.0, "volume": 2000, "priceSource": "fallback"}
+        result = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes=quotes)
+        self.assertEqual(result["codes"], [])
+        self.assertEqual(result["currentlyLive"], 0)
 
     def test_restart_does_not_fabricate_relaunch_for_already_recorded_stock(self) -> None:
         # 2026-09-29 使用者發現：程式重新部署後，記憶體裡「現在有誰在發動中」的基準會歸零，
@@ -471,6 +508,16 @@ class FetchMisQuotesLimitPriceTests(unittest.TestCase):
         quotes = self._fetch([{"c": "2330", "z": "90.0", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261002", "t": "13:30:00", "v": "100"}])
         self.assertFalse(quotes["2330"]["limitUp"])
         self.assertTrue(quotes["2330"]["limitDown"])
+
+    def test_price_source_marks_trade_book_and_fallback(self) -> None:
+        base = {"c": "2330", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261005", "t": "09:55:00", "v": "100", "o": "101.0"}
+        self.assertEqual(self._fetch([{**base, "z": "105.0"}])["2330"]["priceSource"], "trade")
+        book = self._fetch([{**base, "z": "-", "b": "104.5_104.0_", "a": "105.0_105.5_"}])["2330"]
+        self.assertEqual((book["priceSource"], book["price"]), ("book", 104.75))
+        locked = self._fetch([{**base, "z": "-", "b": "110.0_109.5_", "a": "-"}])["2330"]
+        self.assertEqual((locked["priceSource"], locked["price"], locked["limitUp"]), ("book", 110.0, True))
+        fallback = self._fetch([{**base, "z": "-", "b": "-", "a": "-"}])["2330"]
+        self.assertEqual((fallback["priceSource"], fallback["price"]), ("fallback", 101.0))
 
     def test_price_between_limits_is_not_flagged(self) -> None:
         quotes = self._fetch([{"c": "2330", "z": "105.0", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261002", "t": "13:30:00", "v": "100"}])
