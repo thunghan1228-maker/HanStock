@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import Query, Request
+from fastapi import Body, Query, Request
+from fastapi.responses import JSONResponse
 
 from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
@@ -29,6 +30,7 @@ from brew_launch_history import (
     start_brew_launch_scan,
 )
 from trading_days import is_trading_day
+from watchlist_store import WatchlistError, load as watchlist_load, save as watchlist_save
 from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
@@ -806,6 +808,25 @@ def post_brew_launch_purge_false_relaunches(date: str | None = Query(None), dry_
     收盤後再加上 13:26 以後收盤試撮時段記到、但收盤那一盤沒成交或收盤價不是發動的。
     預設 dry_run=true 只回報會刪哪些；確認後帶 dry_run=false 才真的刪。"""
     return brew_launch_purge_false_relaunches(trade_date=date, dry_run=dry_run)
+
+
+@app.post("/api/hub/watchlist/load")
+def post_watchlist_load(body: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    """自選股（2026-10-05 使用者）：用同步碼讀清單；沒存過回空清單（版本 0）。同步碼放在內容裡，不放網址。"""
+    try:
+        return watchlist_load(body.get("key"))
+    except WatchlistError as error:
+        return JSONResponse({"status": "error", "error": str(error)}, status_code=400)
+
+
+@app.post("/api/hub/watchlist/save")
+def post_watchlist_save(body: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    """自選股存檔：body＝{key, data, baseVersion}。別台電腦已經先存過（版本不同）回 409＋最新的一份，不會互相蓋掉。"""
+    try:
+        result = watchlist_save(body.get("key"), body.get("data"), body.get("baseVersion"))
+    except WatchlistError as error:
+        return JSONResponse({"status": "error", "error": str(error)}, status_code=400)
+    return JSONResponse(result, status_code=409) if result["status"] == "conflict" else result
 
 
 @app.post("/api/hub/brew-launch/backfill-holder-force")

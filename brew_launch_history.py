@@ -254,7 +254,9 @@ def purge_false_relaunches(
                 end = datetime.fromisoformat(str(cur["recorded_at"]))
                 window = [b for b in bars if start.timestamp() * 1000 <= int(b["ts"]) < end.timestamp() * 1000]
                 if window:                                  # 查不到 1 分K：不能確定，保留
-                    low = min(float(b["low"]) for b in window)
+                    # 2026-10-05：1 分K 改從 Yahoo 補的時候價格是 float32（69.3 變 69.30000305175781），
+                    # 剛好跌到箱頂 69.3 會被當成還在箱頂上；證交所價格最多 4 位小數，先四捨五入
+                    low = round(min(float(b["low"]) for b in window), 4)
                     fake = low > box_high and live_score(info["maSums"], low, periods) >= min_score   # 中間沒回落過
             if not fake and code in closing and hms >= CLOSING_AUCTION_CHECK_FROM and not _closing_trade_launch(info, closing[code], rules):
                 fake = True
@@ -471,6 +473,35 @@ def _run_backfill(now: datetime) -> None:
 # ------------------------------------------------------------------ 發動判斷（跟前端同一套）
 
 _group_by_code: dict[str, tuple[str, str]] = {}
+# 2026-10-05 使用者：創高黑龍的今日名單裡，不在族群表的股票（聯傑、宏齊、南茂…）股名欄只顯示代號。
+# 族群表找不到的改查 stocks 資料表（日K收集時存的官方中文股名），一小時重讀一次；
+# 讀失敗或表還是空的（剛開機）一分鐘後再試。
+DB_NAMES_TTL = 3600
+_db_names: dict[str, str] = {}
+_db_names_state: dict[str, Any] = {"path": None, "at": 0.0}
+_db_names_lock = threading.Lock()
+
+
+def _db_stock_name(code: str) -> str | None:
+    import database
+
+    path, now = str(database.DATABASE_PATH), time.time()
+    with _db_names_lock:
+        if _db_names_state["path"] != path or now - _db_names_state["at"] > DB_NAMES_TTL:
+            fresh: dict[str, str] = {}
+            try:
+                initialize_database()
+                with get_connection() as connection:
+                    for row in connection.execute("SELECT stock_code, stock_name FROM stocks"):
+                        key, name = str(row["stock_code"]).strip().upper(), str(row["stock_name"] or "").strip()
+                        if name and name.upper() != key:
+                            fresh[key] = name
+            except Exception:  # noqa: BLE001
+                logger.warning("讀 stocks 股名失敗，一分鐘後再試", exc_info=True)
+            _db_names.clear()
+            _db_names.update(fresh)
+            _db_names_state.update(path=path, at=now if fresh else now - DB_NAMES_TTL + 60)
+        return _db_names.get(code)
 
 
 def group_and_name(code: str) -> tuple[str, str]:
@@ -480,7 +511,10 @@ def group_and_name(code: str) -> tuple[str, str]:
                 continue
             for member_code, stock_name in members:
                 _group_by_code.setdefault(str(member_code).strip().upper(), (name, str(stock_name)))
-    return _group_by_code.get(code, ("", code))
+    hit = _group_by_code.get(code)
+    if hit:
+        return hit
+    return "", _db_stock_name(str(code).strip().upper()) or code
 
 
 def in_scan_window(now: datetime) -> bool:
