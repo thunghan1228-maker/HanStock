@@ -566,10 +566,28 @@ def test_black_dragon_fires_when_all_conditions_met(monkeypatch):
     assert "blackDragon" in kinds(result)
 
 
-def test_black_dragon_does_not_fire_before_1100(monkeypatch):
+def test_black_dragon_fires_in_the_morning_before_1100(monkeypatch):
+    # 2026-10-05 使用者：拿掉 11:00 後才成立的限制，9 點一開盤就開始偵測。
     monitor = _black_dragon_monitor(monkeypatch)
     monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
-    result = monitor.on_bar_completed("2330", bar(10, 55, 107, 109.0, 106, 105.0))
+    result = monitor.on_bar_completed("2330", bar(9, 5, 107, 109.0, 106, 105.0))
+    assert "blackDragon" in kinds(result)
+
+
+def test_black_dragon_first_bar_itself_can_fire(monkeypatch):
+    # 第一根905K：開110、最高111過前5日高108、收105低於開盤＝開高走低的黑K，一開盤就成立
+    monitor = _black_dragon_monitor(monkeypatch)
+    result = monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 104, 105.0))
+    assert kinds(result) == ["blackDragon"]
+    # 一天一次：後面再創高收黑也不重複
+    again = monitor.on_bar_completed("2330", bar(9, 5, 106, 112.0, 103, 104.0))
+    assert "blackDragon" not in kinds(again)
+
+
+def test_black_dragon_stops_after_close(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    result = monitor.on_bar_completed("2330", bar(13, 35, 107, 109.0, 106, 105.0))
     assert "blackDragon" not in kinds(result)
 
 
