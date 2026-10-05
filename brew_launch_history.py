@@ -40,6 +40,10 @@ MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 MIS_CHUNK = 80
 MARKET_OPEN_MINUTE = 9 * 60
 MARKET_SCAN_END_MINUTE = 13 * 60 + 35  # 13:30 收盤，最後一盤成交後再掃幾分鐘
+CLOSING_AUCTION_START = "13:25:00"  # 13:25～13:30 收盤集合競價：證交所只揭示試撮價，不是真的成交
+CLOSING_AUCTION_END = "13:30:00"
+CLOSING_AUCTION_CHECK_FROM = "13:26:00"  # 清假紀錄：這之後記的才核對收盤價（13:25 那一分鐘可能是 13:25 前最後成交才掃到的）
+CLOSING_CHECK_AFTER = "13:31:00"  # 收盤價出來以後才核對
 BREW_DETAIL_KEYS = ("prevClose", "boxHigh", "boxLow", "boxRangePct", "maSpreadPct", "score")
 LAUNCH_DETAIL_KEYS = ("changePct", "boxHigh", "projTurnoverPct", "volRatio", "brewing", "eod", "limitUp", "limitDown",
                       "strengthPct", "netAmount", "holderLabel")
@@ -175,12 +179,16 @@ def record_launch_episode(trade_date: str, rows: list[dict[str, Any]], recorded_
 def purge_false_relaunches(
     *, trade_date: str | None = None, dry_run: bool = True, payload: dict[str, Any] | None = None,
     bars_loader: Callable[[str], list[dict[str, Any]]] | None = None,
+    closing_loader: Callable[[list[str]], dict[str, dict[str, Any]]] | None = None, now: datetime | None = None,
 ) -> dict[str, Any]:
     """2026-10-05 使用者：把當天確定是假的「重新發動」紀錄刪掉（修正前報價怪掉灌進去的，鼎元漲停鎖死
-    一早上記了 14 筆）。同一檔第二筆以後的每一筆，看它跟前一筆之間的 1 分K：有成交的價格從沒跌到箱頂
+    一早上記了 14 筆）。同一檔第二筆以後的每一筆，看它跟前一筆（留下來的）之間的 1 分K：有成交的價格從沒跌到箱頂
     （含）以下、用那段最低價算的均線分數也還在門檻以上（分數只會隨價格越低越少，量是累積的不會變少），
     就代表中間根本沒回落，這筆是假的，刪掉。中間有任何一根 1 分K 跌到箱頂以下、分數掉下門檻、或抓不到
-    1 分K 的，都保留；第一筆永遠保留。只能清醞釀資料那個交易日（要用當天的均線合計算分數）。
+    1 分K 的，都保留；第一筆不看這一條。只能清醞釀資料那個交易日（要用當天的均線合計算分數）。
+    收盤後另外核對收盤試撮時段（13:26 以後）記到的紀錄（包括當天第一筆）：那段沒有真的成交，只有 13:30
+    收盤那一盤是真的，收盤那一盤沒成交、或收盤價不符合發動條件的，就是試撮價造成的假紀錄，刪掉；
+    證交所報價抓不到這檔的不能確定，保留。
     dry_run=True 只回報會刪哪些、不動資料。"""
     if payload is None:
         from brew_launch import get_brew_launch
@@ -211,37 +219,73 @@ def purge_false_relaunches(
     by_code: dict[str, list[Any]] = {}
     for row in records:
         by_code.setdefault(str(row["stock_code"]), []).append(row)
+    errors: list[dict[str, str]] = []
+    now = now or datetime.now(TW_TZ)
+    closed = (now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S")) >= (trade_date, CLOSING_CHECK_AFTER)
+    auction_codes = sorted(code for code, recs in by_code.items()
+                           if any(str(r["recorded_at"])[11:19] >= CLOSING_AUCTION_CHECK_FROM for r in recs))
+    closing: dict[str, dict[str, Any]] = {}
+    if auction_codes and closed:
+        try:
+            closing = (closing_loader or (lambda codes: _closing_quotes(codes, trade_date)))(auction_codes)
+        except Exception as error:  # noqa: BLE001
+            errors.append({"code": "收盤報價", "error": f"{type(error).__name__}: {error}"[:200]})
     to_delete: list[int] = []
     by_stock: dict[str, dict[str, Any]] = {}
-    errors: list[dict[str, str]] = []
     for code, recs in by_code.items():
         info = stocks.get(code)
-        if len(recs) < 2 or not info or info.get("skipped") or not info.get("maSums"):
+        if not info or info.get("skipped") or not info.get("maSums") or (len(recs) < 2 and code not in closing):
             continue
-        try:
-            bars = sorted(bars_loader(code), key=lambda b: int(b["ts"]))
-        except Exception as error:  # noqa: BLE001
-            errors.append({"code": code, "error": f"{type(error).__name__}: {error}"[:200]})
-            continue
+        bars: list[dict[str, Any]] | None = None
+        if len(recs) >= 2:
+            try:
+                bars = sorted(bars_loader(code), key=lambda b: int(b["ts"]))
+            except Exception as error:  # noqa: BLE001
+                errors.append({"code": code, "error": f"{type(error).__name__}: {error}"[:200]})
         box_high = float(info.get("boxHigh") or 0)
         removed: list[str] = []
-        for prev, cur in zip(recs, recs[1:]):
-            start = datetime.fromisoformat(str(prev["recorded_at"])).replace(second=0, microsecond=0)
-            end = datetime.fromisoformat(str(cur["recorded_at"]))
-            window = [b for b in bars if start.timestamp() * 1000 <= int(b["ts"]) < end.timestamp() * 1000]
-            if not window or box_high <= 0:
-                continue                                    # 查不到 1 分K：不能確定，保留
-            low = min(float(b["low"]) for b in window)
-            if low <= box_high or live_score(info["maSums"], low, periods) < min_score:
-                continue                                    # 中間真的有回落過：保留
-            to_delete.append(int(cur["id"]))
-            removed.append(str(cur["recorded_at"])[11:19])
-        by_stock[code] = {"before": len(recs), "removed": len(removed), "after": len(recs) - len(removed), "removedTimes": removed}
+        auction_removed: list[str] = []
+        kept_prev = None
+        for cur in recs:
+            hms = str(cur["recorded_at"])[11:19]
+            fake = False
+            if kept_prev is not None and bars is not None and box_high > 0:
+                start = datetime.fromisoformat(str(kept_prev["recorded_at"])).replace(second=0, microsecond=0)
+                end = datetime.fromisoformat(str(cur["recorded_at"]))
+                window = [b for b in bars if start.timestamp() * 1000 <= int(b["ts"]) < end.timestamp() * 1000]
+                if window:                                  # 查不到 1 分K：不能確定，保留
+                    low = min(float(b["low"]) for b in window)
+                    fake = low > box_high and live_score(info["maSums"], low, periods) >= min_score   # 中間沒回落過
+            if not fake and code in closing and hms >= CLOSING_AUCTION_CHECK_FROM and not _closing_trade_launch(info, closing[code], rules):
+                fake = True
+                auction_removed.append(hms)
+            if fake:
+                to_delete.append(int(cur["id"]))
+                removed.append(hms)
+            else:
+                kept_prev = cur
+        by_stock[code] = {"before": len(recs), "removed": len(removed), "after": len(recs) - len(removed),
+                          "removedTimes": removed, "closingAuctionTimes": auction_removed}
     if to_delete and not dry_run:
         with get_connection() as connection:
             connection.executemany("DELETE FROM brew_launch_daily WHERE id = ? AND kind = 'launch'", [(i,) for i in to_delete])
     return {"status": "ok", "tradeDate": trade_date, "dryRun": dry_run, "removed": len(to_delete),
-            "stocks": {code: v for code, v in by_stock.items() if v["removed"]}, "checked": len(by_stock), "errors": errors}
+            "stocks": {code: v for code, v in by_stock.items() if v["removed"]}, "checked": len(by_stock), "errors": errors,
+            "closingCheck": {"ran": bool(closing), "waitingForClose": bool(auction_codes) and not closed,
+                             "quotes": {code: {k: q.get(k) for k in ("price", "quoteTime", "priceSource", "volume")} for code, q in closing.items()}}}
+
+
+def _closing_quotes(codes: list[str], trade_date: str) -> dict[str, dict[str, Any]]:
+    """收盤後證交所 MIS 的報價（隔天開盤前都還是那天的），只留那個交易日的。"""
+    quotes = fetch_mis_quotes(codes, _markets(codes))
+    return {code: quote for code, quote in quotes.items() if quote.get("quoteDate") == trade_date}
+
+
+def _closing_trade_launch(info: dict[str, Any], quote: dict[str, Any], rules: dict[str, Any]) -> bool:
+    """13:30 收盤那一盤真的有成交，而且收盤價（含全天量）符合發動條件。"""
+    if quote.get("priceSource") != "trade" or str(quote.get("quoteTime") or "") < CLOSING_AUCTION_END:
+        return False
+    return evaluate_launch(info, quote, rules) is not None
 
 
 def launched_codes(trade_date: str) -> set[str]:
@@ -544,7 +588,9 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
             source = "trade"
             if price is None:
                 bid, ask = _book(item.get("b")), _book(item.get("a"))
-                price = bid if bid and not ask else ask if ask and not bid else (bid + ask) / 2 if bid and ask else None
+                # 2026-10-05：千附委買委賣平均算出 69.30000000000001（例如 69.2／69.4），比箱頂 69.3 多一點點就被當成過箱頂；
+                # 證交所價格最多 4 位小數，平均價四捨五入到 4 位
+                price = bid if bid and not ask else ask if ask and not bid else round((bid + ask) / 2, 4) if bid and ask else None
                 source = "book"
             if price is None:
                 # 沒成交也沒委買委賣：只剩開盤價／最高／最低／昨收可以填，不是現在的價格（scan_once 不拿它判斷回落）
@@ -586,17 +632,29 @@ def _markets(codes: list[str]) -> dict[str, str]:
 
 _currently_live: set[str] = set()  # 這一天目前還在發動中的代號（不是「今天發動過」，是「現在還在發動」）
 _currently_live_date: str | None = None
-_currently_live_seeded = False  # 程式剛啟動／換日後的第一輪只用來建立基準，不能把「本來就在發動」的股票誤判成剛剛才發動
-# 報價有問題（這一輪沒拿到／只剩開盤價可填／量是 0／醞釀資料這輪沒這檔）或回落還沒確認而照舊算「還在發動」
-# 的次數，一天一份，給 /scan 狀態看
-CARRY_KEYS = ("missing", "fallback", "noVolume", "notInPayload", "unconfirmed")
+# 報價有問題（這一輪沒拿到／只剩開盤價可填／量是 0／收盤試撮／醞釀資料這輪沒這檔）、回落還沒確認、
+# 或今天記過又沒看到它回落而照舊算「還在發動」（不記新的一筆）的次數，一天一份，給 /scan 狀態看
+CARRY_KEYS = ("missing", "fallback", "noVolume", "auction", "notInPayload", "unconfirmed", "noSeenFall")
 _carried_today: dict[str, Any] = {"date": None, **{key: 0 for key in CARRY_KEYS}}
 # 2026-10-05：合併第一版修正後，漲停鎖死的聯一光 10:16 還是被記了一筆「重新發動」（報價看起來正常）。
-# 本來在發動中的股票要連續 FALL_CONFIRM_POLLS 輪都判斷不在發動才算真的回落，單獨一輪的怪報價不算；
-# 每次判斷不在發動的細節留最近幾筆（_recent_misses），從 /scan 狀態看得到是哪一個條件掉的。
+# 要連續 FALL_CONFIRM_POLLS 輪都判斷不在發動才算真的回落，單獨一輪的怪報價不算；
+# 本來在發動中的股票每次判斷不在發動的細節留最近幾筆（_recent_misses），從 /scan 狀態看得到是哪一個條件掉的。
 FALL_CONFIRM_POLLS = 2
 _fall_streak: dict[str, int] = {}
 _recent_misses: deque = deque(maxlen=30)
+# 2026-10-05：10:52 盤中重新部署後，鼎元、聯一光、萬潤又被記了一筆「重新發動」——程式重開後記憶體是空的，
+# 第一輪剛好沒拿到它們的正常報價，基準裡就沒有它們，下一輪報價正常就被當成剛剛才發動。
+# 今天已經有紀錄的股票，要這次啟動後親眼看到它確定回落（連續 FALL_CONFIRM_POLLS 輪不在發動）、
+# 之後再站上來，才記一筆重新發動；沒看到回落的（重開前就在發動、或重開那幾輪報價怪怪的）只放回發動中。
+# 今天還沒有任何紀錄的股票不受影響，第一次發動照樣馬上記（重開機前錯過的也會補上）。
+_seen_fall: set[str] = set()
+# 2026-10-05：13:25～13:30 收盤前是集合競價，證交所 MIS 這段只揭示試撮的價格／委買委賣，不是真的成交
+# （千附收盤前被記了兩筆「重新發動」、茂訊 127.5 這個價格今天根本沒成交過也被記成發動）。
+# 報價時間落在這段的不拿來改變發動狀態：本來在發動的照舊、沒在發動的不算新發動；13:30 收盤那一盤再照常判斷。
+
+
+def _closing_auction_quote(quote: dict[str, Any]) -> bool:
+    return CLOSING_AUCTION_START <= str(quote.get("quoteTime") or "") < CLOSING_AUCTION_END
 
 
 def scan_once(
@@ -607,9 +665,9 @@ def scan_once(
     每一輪都重新判斷全部股票現在是不是發動中（不是只查還沒發動過的），跟上一輪比對，從「沒發動」變「發動」
     才算一次新的開始，各自新增一筆紀錄（record_launch_episode，不覆蓋任何一筆舊的，包括第一次那筆）。
     2026-09-29 使用者：程式重開機（部署新版）記憶體會歸零，如果直接把這一輪全部currently-live股票都當
-    「剛剛才發動」會灌一堆假紀錄進去；所以換日或程式剛啟動後的第一輪只拿來建立「現在有誰在發動中」的基準，
-    只有「今天完全沒被記過」的股票才補一筆（代表真的錯過了它今天的第一次），已經有紀錄的不會被當成新發動。"""
-    global _currently_live, _currently_live_date, _currently_live_seeded
+    「剛剛才發動」會灌一堆假紀錄進去；所以「今天已經有紀錄」的股票要這次啟動後看到它確定回落（_seen_fall）
+    才會再記一筆，只有「今天完全沒被記過」的股票才直接補一筆（代表真的錯過了它今天的第一次）。"""
+    global _currently_live, _currently_live_date
     now = now or datetime.now(TW_TZ)
     if payload is None:
         from brew_launch import get_brew_launch
@@ -622,8 +680,9 @@ def scan_once(
     if str(payload.get("session") or today) != today:
         return {"status": "skipped", "reason": f"醞釀資料的交易日 {payload.get('session')} 不是今天", "brewSnapshot": snapshot}
     if _currently_live_date != today:
-        _currently_live, _currently_live_date, _currently_live_seeded = set(), today, False
+        _currently_live, _currently_live_date = set(), today
         _fall_streak.clear()
+        _seen_fall.clear()
     if _carried_today.get("date") != today:
         _carried_today.update({"date": today, **{key: 0 for key in CARRY_KEYS}})
     rules = payload["rules"]
@@ -645,7 +704,8 @@ def scan_once(
         # 9/30 聯合再生一天 56 筆。證交所報價偶爾某一輪沒有這檔、或那一盤沒成交也沒委買委賣（只剩開盤價可填）、
         # 或量是 0——都不是真的回落，但以前直接當成「沒在發動」，下一輪報價正常就又記一筆「重新發動」。
         # 本來在發動中的遇到這種報價照舊算在發動中；本來沒在發動的也不拿這種報價判斷新發動。
-        glitch = "missing" if not quote else "fallback" if quote.get("priceSource") == "fallback" else "noVolume" if not quote.get("volume") else None
+        glitch = ("missing" if not quote else "fallback" if quote.get("priceSource") == "fallback"
+                  else "noVolume" if not quote.get("volume") else "auction" if _closing_auction_quote(quote) else None)
         if glitch:
             if code in _currently_live:
                 live_now.add(code)
@@ -653,25 +713,29 @@ def scan_once(
             continue
         metrics = evaluate_launch(stocks[code], quote, rules)
         if not metrics:
+            streak = min(_fall_streak.get(code, 0) + 1, FALL_CONFIRM_POLLS)
+            _fall_streak[code] = streak
             if code in _currently_live:
-                streak = _fall_streak.get(code, 0) + 1
                 _recent_misses.append({"at": now.isoformat(timespec="seconds"), "code": code, "streak": streak,
                                        **_miss_detail(stocks[code], quote, rules)})
-                if streak < FALL_CONFIRM_POLLS:
-                    _fall_streak[code] = streak
+            if streak < FALL_CONFIRM_POLLS:
+                if code in _currently_live:
                     live_now.add(code)
                     carried["unconfirmed"] += 1
-                    continue
-            _fall_streak.pop(code, None)
+                continue
+            _seen_fall.add(code)
             continue
         _fall_streak.pop(code, None)
         live_now.add(code)
         if code not in _currently_live:
             newly_live.append({"code": code, **metrics})
-    if not _currently_live_seeded:
+    held_back: set[str] = set()
+    if newly_live:
         already_recorded = launched_codes(today)
-        newly_live = [row for row in newly_live if row["code"] not in already_recorded]
-        _currently_live_seeded = True
+        held_back = {row["code"] for row in newly_live if row["code"] in already_recorded and row["code"] not in _seen_fall}
+        newly_live = [row for row in newly_live if row["code"] not in held_back]
+        carried["noSeenFall"] += len(held_back)
+    _seen_fall.difference_update(live_now)
     if newly_live:
         # 2026-10-03 使用者：發動永久紀錄（今天曾發動／昨天／前天）也要能顯示盤中大戶力，跟即時
         # 列表、所有族群綜合表同一套；只查這一輪新發動的那幾檔（通常個位數），不是整個排行，
@@ -694,7 +758,7 @@ def scan_once(
     return {
         "status": "ok", "checked": len(codes), "launched": len(newly_live), "codes": [row["code"] for row in newly_live],
         "launchedToday": len(launched_codes(today)), "currentlyLive": len(live_now), "brewSnapshot": snapshot,
-        "carried": carried, "carriedToday": dict(_carried_today),
+        "carried": carried, "carriedToday": dict(_carried_today), "noSeenFallCodes": sorted(held_back),
     }
 
 
