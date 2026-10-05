@@ -802,7 +802,8 @@ def get_brew_launch_history(days: int = Query(10, ge=1, le=60), date: str | None
 
 @app.post("/api/hub/brew-launch/purge-false-relaunches")
 def post_brew_launch_purge_false_relaunches(date: str | None = Query(None), dry_run: bool = Query(True)) -> dict[str, Any]:
-    """刪掉當天確定是假的「重新發動」紀錄（兩筆之間 1 分K 從沒跌回箱頂以下、分數也沒掉下門檻）。
+    """刪掉當天確定是假的發動紀錄：兩筆之間 1 分K 從沒跌回箱頂以下、分數也沒掉下門檻的「重新發動」；
+    收盤後再加上 13:26 以後收盤試撮時段記到、但收盤那一盤沒成交或收盤價不是發動的。
     預設 dry_run=true 只回報會刪哪些；確認後帶 dry_run=false 才真的刪。"""
     return brew_launch_purge_false_relaunches(trade_date=date, dry_run=dry_run)
 
