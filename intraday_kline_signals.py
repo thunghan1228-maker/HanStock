@@ -29,6 +29,7 @@ from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_bars_5m_store import (
     bars_5m_coverage_complete,
     load_stock_bars_5m_before,
+    load_stock_bars_5m_on,
     prune_stock_bars_5m,
     save_stock_bars_5m,
     save_stock_bars_5m_many,
@@ -625,10 +626,20 @@ def backfill_today_kline_signals(
         try:
             if bars_5m_coverage_complete(code, trade_date):
                 # 即時路徑今天從開盤到收盤最後一根都連續追到了（沒有晚訂閱、沒有缺根），
-                # 當天即時算出的訊號本來就是對的，不用再打一次歷史 kbars 重抓／重播一遍——
-                # 全市場524檔逐檔重抓很吃永豐的歷史流量額度，只有真的有缺口的股票才需要。
-                # 完整的不用打任何外部 API，不需要延遲；跳過的檔數越多，這一輪收盤後校正
-                # 整體要花的時間跟吃掉的額度也跟著降低。
+                # 不用再打一次歷史 kbars 重抓——全市場524檔逐檔重抓很吃永豐的歷史流量額度，
+                # 只有真的有缺口的股票才需要。完整的不打任何外部 API，不需要延遲。
+                # 2026-10-05：但不再整檔跳過——改用本機已經存好的今天 5 分K 照最新規則重播一次
+                # （創高黑龍改成 09:00 起算當天，早上 9～11 點符合的要補得回來；盤中重新部署
+                # 記憶體狀態歸零後漏掉的訊號也一起補齊），跟歷史 kbars 重抓一樣先刪掉這檔今天的
+                # K 線訊號再整批重算。
+                local_bars = load_stock_bars_5m_on(code, trade_date)
+                if local_bars:
+                    delete_kline_signals_for_ticker(trade_date, code)
+                    monitor.reset_for_backfill(code, trade_date)
+                    for bar in local_bars:
+                        emitted = monitor.on_bar_completed(code, bar, persist=False)
+                        bars_replayed += 1
+                        signals_emitted += len(emitted)
                 codes_skipped_complete += 1
                 processed += 1
                 continue
