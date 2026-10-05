@@ -172,6 +172,78 @@ def record_launch_episode(trade_date: str, rows: list[dict[str, Any]], recorded_
         return len(rows)
 
 
+def purge_false_relaunches(
+    *, trade_date: str | None = None, dry_run: bool = True, payload: dict[str, Any] | None = None,
+    bars_loader: Callable[[str], list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """2026-10-05 使用者：把當天確定是假的「重新發動」紀錄刪掉（修正前報價怪掉灌進去的，鼎元漲停鎖死
+    一早上記了 14 筆）。同一檔第二筆以後的每一筆，看它跟前一筆之間的 1 分K：有成交的價格從沒跌到箱頂
+    （含）以下、用那段最低價算的均線分數也還在門檻以上（分數只會隨價格越低越少，量是累積的不會變少），
+    就代表中間根本沒回落，這筆是假的，刪掉。中間有任何一根 1 分K 跌到箱頂以下、分數掉下門檻、或抓不到
+    1 分K 的，都保留；第一筆永遠保留。只能清醞釀資料那個交易日（要用當天的均線合計算分數）。
+    dry_run=True 只回報會刪哪些、不動資料。"""
+    if payload is None:
+        from brew_launch import get_brew_launch
+
+        payload = get_brew_launch()
+    session = str(payload.get("session") or "")
+    trade_date = trade_date or session
+    if not session or trade_date != session:
+        return {"status": "error", "reason": f"只能清醞釀資料的交易日 {session or '（沒有）'}", "tradeDate": trade_date}
+    rules = payload["rules"]
+    stocks = payload.get("stocks") or {}
+    periods = list(rules["maPeriods"])
+    min_score = int(rules["launchMinScore"])
+    if bars_loader is None:
+        from stock_history_service import get_stock_history_bars_1m
+
+        def bars_loader(code: str) -> list[dict[str, Any]]:
+            bars = get_stock_history_bars_1m(code, calendar_days=3).get("bars") or []
+            return [b for b in bars if datetime.fromtimestamp(int(b["ts"]) / 1000, TW_TZ).strftime("%Y-%m-%d") == trade_date]
+
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        records = connection.execute(
+            "SELECT id, stock_code, recorded_at FROM brew_launch_daily WHERE trade_date = ? AND kind = 'launch' ORDER BY stock_code, recorded_at, id",
+            (trade_date,),
+        ).fetchall()
+    by_code: dict[str, list[Any]] = {}
+    for row in records:
+        by_code.setdefault(str(row["stock_code"]), []).append(row)
+    to_delete: list[int] = []
+    by_stock: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, str]] = []
+    for code, recs in by_code.items():
+        info = stocks.get(code)
+        if len(recs) < 2 or not info or info.get("skipped") or not info.get("maSums"):
+            continue
+        try:
+            bars = sorted(bars_loader(code), key=lambda b: int(b["ts"]))
+        except Exception as error:  # noqa: BLE001
+            errors.append({"code": code, "error": f"{type(error).__name__}: {error}"[:200]})
+            continue
+        box_high = float(info.get("boxHigh") or 0)
+        removed: list[str] = []
+        for prev, cur in zip(recs, recs[1:]):
+            start = datetime.fromisoformat(str(prev["recorded_at"])).replace(second=0, microsecond=0)
+            end = datetime.fromisoformat(str(cur["recorded_at"]))
+            window = [b for b in bars if start.timestamp() * 1000 <= int(b["ts"]) < end.timestamp() * 1000]
+            if not window or box_high <= 0:
+                continue                                    # 查不到 1 分K：不能確定，保留
+            low = min(float(b["low"]) for b in window)
+            if low <= box_high or live_score(info["maSums"], low, periods) < min_score:
+                continue                                    # 中間真的有回落過：保留
+            to_delete.append(int(cur["id"]))
+            removed.append(str(cur["recorded_at"])[11:19])
+        by_stock[code] = {"before": len(recs), "removed": len(removed), "after": len(recs) - len(removed), "removedTimes": removed}
+    if to_delete and not dry_run:
+        with get_connection() as connection:
+            connection.executemany("DELETE FROM brew_launch_daily WHERE id = ? AND kind = 'launch'", [(i,) for i in to_delete])
+    return {"status": "ok", "tradeDate": trade_date, "dryRun": dry_run, "removed": len(to_delete),
+            "stocks": {code: v for code, v in by_stock.items() if v["removed"]}, "checked": len(by_stock), "errors": errors}
+
+
 def launched_codes(trade_date: str) -> set[str]:
     initialize_database()
     with get_connection() as connection:

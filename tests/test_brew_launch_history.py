@@ -173,6 +173,42 @@ class HistoryTests(unittest.TestCase):
         launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
         self.assertEqual(len([r for r in launch if r["code"] == "6207"]), 1)
 
+    def test_purge_false_relaunches_uses_one_minute_bars(self) -> None:
+        # 2026-10-05 使用者：把今天確定是假的「重新發動」刪掉。兩筆之間 1 分K 從沒跌到箱頂以下（分數也沒掉）
+        # 的才刪；中間真的跌回箱頂下、分數掉下門檻、或查不到 1 分K 的都留著；第一筆永遠留著。
+        row = {"code": "6207", "price": 125.0, "score": 15, "changePct": 9.6, "boxHigh": 124.0}
+        for hm in ("10:00", "10:05", "10:20", "10:30", "10:40"):
+            module.record_launch_episode("2026-09-24", [row], f"2026-09-24T{hm}:10+08:00")
+
+        def one_min(hm: str, low: float) -> dict:
+            t = datetime.fromisoformat(f"2026-09-24T{hm}:00+08:00")
+            return {"ts": int(t.timestamp() * 1000), "open": 125.0, "high": 125.0, "low": low, "close": 125.0}
+
+        bars = [one_min(f"10:{m:02d}", 125.0) for m in range(0, 5)]                  # 10:00~10:05 一直在箱頂上：10:05 那筆是假的
+        bars += [one_min(f"10:{m:02d}", 123.5 if m == 10 else 125.0) for m in range(5, 20)]   # 10:10 跌到 123.5（箱頂 124 下）：10:20 是真的
+        bars += [one_min(f"10:{m:02d}", 124.5) for m in range(31, 40)]               # 10:30~10:40 都在箱頂上，但分數掉下門檻：10:40 是真的
+        # 10:20~10:30 之間沒有 1 分K：10:30 那筆不能確定，保留
+        with patch.object(module, "live_score", lambda sums, price, periods: 15 if price >= 125.0 else 9):
+            dry = module.purge_false_relaunches(trade_date="2026-09-24", payload=self.payload, bars_loader=lambda code: bars)
+            self.assertEqual((dry["dryRun"], dry["removed"]), (True, 1))
+            self.assertEqual(dry["stocks"]["6207"]["removedTimes"], ["10:05:10"])
+            self.assertEqual(len(module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]), 5)   # 試算不動資料
+            done = module.purge_false_relaunches(trade_date="2026-09-24", dry_run=False, payload=self.payload, bars_loader=lambda code: bars)
+        self.assertEqual(done["removed"], 1)
+        left = [r["recordedAt"][11:16] for r in module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]]
+        self.assertEqual(left, ["10:00", "10:20", "10:30", "10:40"])
+        wrong_day = module.purge_false_relaunches(trade_date="2026-09-23", payload=self.payload, bars_loader=lambda code: bars)
+        self.assertEqual(wrong_day["status"], "error")
+
+    def test_purge_endpoint_defaults_to_dry_run(self) -> None:
+        calls = []
+        with patch.object(persistent_app, "brew_launch_purge_false_relaunches",
+                          lambda **kw: calls.append(kw) or {"status": "ok", **kw}):
+            client = TestClient(persistent_app.app)
+            client.post("/api/hub/brew-launch/purge-false-relaunches")
+            client.post("/api/hub/brew-launch/purge-false-relaunches?date=2026-10-05&dry_run=false")
+        self.assertEqual(calls, [{"trade_date": None, "dry_run": True}, {"trade_date": "2026-10-05", "dry_run": False}])
+
     def test_fallback_price_never_starts_a_launch(self) -> None:
         # 本來沒在發動的股票，只剩開盤價可填的那一輪不能拿來判斷發動（開盤價過箱頂不代表現在還在上面）
         quotes = dict(self.quotes)
