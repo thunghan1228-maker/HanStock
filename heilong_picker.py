@@ -893,7 +893,7 @@ def simulate(panel: Panel, p: dict[str, Any], end: int, overrides: dict[str, lis
     swaps_used = 0
     exited_week: set[str] = set()
     today_actions: list[dict[str, Any]] = []
-    missed: list[str] = []
+    missed: dict[str, tuple[str, str]] = {}      # 最後一天收黑但沒買：代號 →（來源, 原因）
     bench_start: float | None = None
     start_day = panel.weeks[start_week][0] if started else None
 
@@ -909,6 +909,20 @@ def simulate(panel: Panel, p: dict[str, Any], end: int, overrides: dict[str, lis
             if ret < 0 and (worst is None or ret < worst[0]):
                 worst = (ret, code)
         return worst
+
+    def swap_note() -> str:
+        return "模組設定不換股" if p["swaps"] <= 0 else f"本週換股 {swaps_used}/{p['swaps']} 次用完"
+
+    def full_reason(bought_now: list[str]) -> str:
+        """滿檔買不進來的原因（2026-10-05 使用者：沒進的每檔寫清楚實際原因）。"""
+        head = f"滿檔 {len(positions)}/{p['maxpos']}"
+        if bought_now:
+            head = "空位給了排前面的" + "、".join(panel.series[c].name for c in bought_now) + "，" + head
+        if not p["full"]:
+            return head + "，模組沒開滿檔換股"
+        if p["swaps"] <= 0 or swaps_used >= p["swaps"]:
+            return head + "，" + swap_note()
+        return head + ("，其他持股都沒賠錢" if bought_now else "，持股都沒賠錢") + "，沒有可以換掉的"
 
     if started:
         for i in range(start_day, end + 1):
@@ -957,14 +971,19 @@ def simulate(panel: Panel, p: dict[str, Any], end: int, overrides: dict[str, lis
                     rank = week_codes.index(code) if source == "list" else 0
                     candidates.append(((0 if code in stars_set else 1, 0 if source == "list" else 1, rank, sort_key(s, i, p["wsort"])), code, source))
             candidates.sort()
+            bought_now: list[str] = []
             for _prio, code, source in candidates:
                 s = panel.series[code]
                 is_swap = source != "list"
+                if int(batch_amount // s.c[i]) <= 0:      # 一批的錢連 1 股都買不起：先擋，不要為了它把持股換掉
+                    if i == end:
+                        missed[code] = (source, f"一批 {batch_amount / 10000:.1f} 萬買不到 1 股")
+                    continue
                 if len(positions) >= p["maxpos"]:
                     worst = worst_loser(i) if p["full"] and swaps_used < p["swaps"] else None
                     if worst is None:
                         if i == end:
-                            missed.append(code)
+                            missed[code] = (source, full_reason(bought_now))
                         continue
                     other = positions.pop(worst[1])
                     so = panel.series[worst[1]]
@@ -977,7 +996,7 @@ def simulate(panel: Panel, p: dict[str, Any], end: int, overrides: dict[str, lis
                     is_swap = True
                 elif is_swap and swaps_used >= p["swaps"]:
                     if i == end:
-                        missed.append(code)
+                        missed[code] = (source, f"{SOURCE_LABELS[source]}買進要算換股，{swap_note()}")
                     continue
                 pos = Position(code, i, source)
                 n = pos.buy(s.c[i], batch_amount, rates[0])
@@ -986,6 +1005,7 @@ def simulate(panel: Panel, p: dict[str, Any], end: int, overrides: dict[str, lis
                 ma_r = s.ma(p["rma"])[i]
                 pos.armed = not (ma_r == ma_r and s.c[i] < ma_r)
                 positions[code] = pos
+                bought_now.append(code)
                 if is_swap:
                     swaps_used += 1
                 actions.append({"type": "buy", "code": code, "price": s.c[i], "shares": n, "batch": 1,
@@ -1076,7 +1096,7 @@ def simulate(panel: Panel, p: dict[str, Any], end: int, overrides: dict[str, lis
         },
         "holdings": holding_rows, "full": len(positions) >= p["maxpos"], "maxpos": p["maxpos"],
         "watch": watch_rows, "today": today_actions,
-        "missed": [_row(panel, c, i, pool) for c in dict.fromkeys(missed) if c not in bought_today],
+        "missed": [_row(panel, c, i, pool, source=src, reason=why) for c, (src, why) in missed.items() if c not in bought_today],
         "blackAll": [_row(panel, c, i, pool, source="list" if c in week_codes else "daily") for c in black_all],
         "log": log[::-1][:40], "closed": closed[::-1][:60], "equity": equity,
     }

@@ -247,6 +247,42 @@ class SimulateTests(unittest.TestCase):
         self.assertIn("滿檔換弱", day["actions"][0]["reason"])
         self.assertEqual(sim["swapsUsed"], 1)
         self.assertEqual([r["code"] for r in sim["missed"]], ["C"])             # 換股次數用完，C 沒進
+        self.assertEqual(sim["missed"][0]["reason"], "空位給了排前面的股B，滿檔 1/1，本週換股 1/1 次用完")
+
+    def test_missed_reasons(self) -> None:
+        """收黑但沒買的，每檔寫實際原因（2026-10-05 使用者）。"""
+        panel = self.build()
+        base = dict(sdays=0, start=-1, fee=0, lots=1, fri=False)
+
+        def reasons(sim):
+            return [(r["code"], r["source"], r["reason"]) for r in sim["missed"]]
+
+        # 週三 B、C 一起收黑：空位先給排前面的 B；滿檔後持股都沒賠錢，C 沒得換
+        sim = picker.simulate(panel, params(**base, weekN=3, maxpos=2, swaps=2, full=True), 7)
+        self.assertEqual(reasons(sim), [("C", "list", "空位給了排前面的股B，滿檔 2/2，其他持股都沒賠錢，沒有可以換掉的")])
+        sim = picker.simulate(panel, params(**base, weekN=3, maxpos=2, swaps=2, full=False), 7)
+        self.assertEqual(reasons(sim), [("C", "list", "空位給了排前面的股B，滿檔 2/2，模組沒開滿檔換股")])
+        # 週二 A 就把唯一的位子買走了，週三沒有人買進
+        sim = picker.simulate(panel, params(**base, weekN=3, maxpos=1, swaps=2, full=True), 7)
+        self.assertEqual([r["reason"] for r in sim["missed"]], ["滿檔 1/1，持股都沒賠錢，沒有可以換掉的"] * 2)
+        # 名單只有 A，B、C 是週選備選：有空位也要算換股
+        sim = picker.simulate(panel, params(**base, weekN=1, maxpos=3, swaps=1, swapFrom="week"), 7)
+        self.assertEqual(reasons(sim), [("C", "week", "週選備選買進要算換股，本週換股 1/1 次用完")])
+        sim = picker.simulate(panel, params(**base, weekN=1, maxpos=3, swaps=0, swapFrom="week"), 7)
+        self.assertEqual([r["reason"] for r in sim["missed"]], ["週選備選買進要算換股，模組設定不換股"] * 2)
+
+    def test_missed_when_one_batch_cannot_buy_a_share(self) -> None:
+        panel = self.build()
+        c = panel.series["C"]
+        for i in range(len(panel.dates)):
+            c.o[i], c.h[i], c.l[i], c.c[i] = c.o[i] * 50, c.h[i] * 50, c.l[i] * 50, c.c[i] * 50
+        panel.series["B"].o[7] = 100.0             # B 週三不收黑
+        panel.series["A"].c[7] = 90.0              # A 賠錢，照理可以被換掉
+        p = params(sdays=0, weekN=3, maxpos=1, swaps=2, full=True, start=-1, fee=0, lots=5, per=1, fri=False, xma=20, reduce=False)
+        sim = picker.simulate(panel, p, 7)
+        self.assertEqual([(r["code"], r["reason"]) for r in sim["missed"]], [("C", "一批 0.2 萬買不到 1 股")])
+        self.assertEqual([h["code"] for h in sim["holdings"]], ["A"])            # 不會為了買不起的 C 先把 A 賣掉
+        self.assertEqual(sim["swapsUsed"], 0)
 
     def test_friday_weed_out_and_norebuy(self) -> None:
         panel = self.build()
