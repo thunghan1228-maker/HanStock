@@ -39,6 +39,7 @@ def _isolated_bars_5m_store(monkeypatch):
     monkeypatch.setattr(module, "save_stock_bars_5m", lambda code, bars: 0)
     monkeypatch.setattr(module, "prune_stock_bars_5m", lambda *args, **kwargs: 0)
     monkeypatch.setattr(module, "bars_5m_coverage_complete", lambda code, trade_date: False)
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: [])
     monkeypatch.setattr(module, "_last_reset_trade_date", None)
     monkeypatch.setattr(module, "_pending_bars_5m", {})
     monkeypatch.setattr(module, "_pending_bars_count", 0)
@@ -849,6 +850,91 @@ def test_backfill_replays_complete_codes_from_local_bars_with_current_rules(monk
     assert result["barsReplayed"] == 2
     assert result["codesSkippedComplete"] == 1
     assert [r["kind"] for r in saved if r["kind"] == "blackDragon"] == ["blackDragon"]
+
+
+def _morning_bars(until_hour: int, until_minute: int, gap_at: tuple[int, int] | None = None) -> list[dict]:
+    """09:00 起每 5 分一根（開 104），09:30 那根創前 5 日高 109、收 103.5 低於開盤＝創高黑龍。"""
+    out, h, m = [], 9, 0
+    while (h, m) <= (until_hour, until_minute):
+        if (h, m) != gap_at:
+            out.append(bar(h, m, 106, 109.0, 103, 103.5) if (h, m) == (9, 30) else bar(h, m, 104, 106, 103, 105.5))
+        m += 5
+        if m == 60:
+            h, m = h + 1, 0
+    return out
+
+
+def _black_dragon_backfill_env(monkeypatch, local: dict):
+    saved: list[dict] = []
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: saved.extend(rows) or rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [{"high": 108.0, "close": 105.0}] * 5)
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "_group_lookup_cache", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [(c, "股" + c) for c in local]})
+    monkeypatch.setattr(module, "compute_ma_alignment_score", lambda code: 12)
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: local.get(code, []))
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("盤中補訊號不該打歷史 API")))
+    deleted: list[str] = []
+    monkeypatch.setattr(module, "delete_kline_signals_for_ticker", lambda trade_date, code: deleted.append(code))
+    slept: list[float] = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: slept.append(seconds))
+    return saved, deleted, slept
+
+
+def test_local_only_backfill_replays_contiguous_codes_midday(monkeypatch):
+    # 2026-10-05 使用者：創高黑龍改成 09:00 起算，今天 9 點到現在的要馬上補——盤中只用本機存好的 5 分K，
+    # 從 09:00 起連續的才重播（中間缺根的不動），不打永豐歷史 API、不用延遲。
+    local = {"2330": _morning_bars(10, 40), "2317": _morning_bars(10, 40, gap_at=(10, 15))}
+    saved, deleted, slept = _black_dragon_backfill_env(monkeypatch, local)
+
+    result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0.3, local_only=True)
+
+    assert deleted == ["2330"]
+    assert result["codesSkippedGap"] == 1
+    assert result["localOnly"] is True
+    assert [(r["code"], r["barTs"]) for r in result["blackDragon"]] == [("2330", ts(9, 35))]
+    assert [r["kind"] for r in saved if r["kind"] == "blackDragon"] == ["blackDragon"]
+    assert slept == []
+    # 重播完即時狀態也補齊：開盤基準在、創高黑龍記為今天已觸發（不會再發第二次）
+    state = module.get_intraday_kline_signal_monitor()._states["2330"]
+    assert state.today_open == 104 and state.fired_black_dragon and not state.late_subscription
+
+
+def test_restart_warm_start_restores_today_state_from_stored_bars(monkeypatch):
+    # 2026-10-05：盤中重新部署後第一根收到的是 10:45 那根，以前直接當晚訂閱、創高黑龍整天停擺；
+    # 本機有 09:00~10:40 連續的 5 分K 就先安靜重播補回狀態（不發訊號），接著照常偵測。
+    monitor = new_monitor(monkeypatch, prev_close=105.0, prev_high=1000.0, ma_alignment_score=12)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [{"high": 108.0, "close": 105.0}] * 5)
+    monkeypatch.setattr(module, "_group_lookup_cache", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    # 09:30 那根換成普通 K（早上沒有創高黑龍），等一下才在 10:50 觸發
+    stored = [bar(9, 30, 104, 106, 103, 105.5) if b["ts"] == ts(9, 30) else b for b in _morning_bars(10, 40)]
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: stored)
+    monkeypatch.setattr(module, "queue_bar_5m", lambda code, b: None)
+    monkeypatch.setattr(module, "flush_pending_bars_5m", lambda **kwargs: 0)
+
+    first = monitor.on_bar_completed("2330", bar(10, 45, 105, 106, 104, 105.5))
+    assert first == []                                   # 補狀態那段不發訊號
+    state = monitor._states["2330"]
+    assert state.today_open == 104 and not state.late_subscription
+    later = monitor.on_bar_completed("2330", bar(10, 50, 106, 109.5, 103, 103.0))   # 創前 5 日高、收低於開盤 104
+    assert "blackDragon" in kinds(later)
+
+
+def test_restart_without_contiguous_stored_bars_stays_late(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=105.0, prev_high=1000.0, ma_alignment_score=12)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [{"high": 108.0, "close": 105.0}] * 5)
+    monkeypatch.setattr(module, "_group_lookup_cache", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: _morning_bars(10, 40, gap_at=(10, 0)))
+    monkeypatch.setattr(module, "queue_bar_5m", lambda code, b: None)
+    monkeypatch.setattr(module, "flush_pending_bars_5m", lambda **kwargs: 0)
+
+    monitor.on_bar_completed("2330", bar(10, 45, 105, 106, 104, 105.5))
+    assert monitor._states["2330"].late_subscription          # 缺根：照舊當晚訂閱，不拿不完整的基準
+    later = monitor.on_bar_completed("2330", bar(10, 50, 106, 109.5, 103, 103.0))
+    assert "blackDragon" not in kinds(later)
 
 
 def test_backfill_does_not_sleep_between_skipped_codes(monkeypatch):

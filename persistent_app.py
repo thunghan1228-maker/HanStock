@@ -442,7 +442,9 @@ def get_intraday_signals_for_stock(
 
 
 @app.get("/api/hub/kline-signals/backfill-today")
-def trigger_kline_signal_backfill_today(trade_date: str | None = Query(None)) -> dict[str, Any]:
+def trigger_kline_signal_backfill_today(
+    trade_date: str | None = Query(None), local_only: bool = Query(False),
+) -> dict[str, Any]:
     """一次性回補：用Shioaji歷史kbars重播trade_date(預設今天)已經走完的
     5分K，補回905/520/1+2多/創高黑龍等訊號偵測引擎剛上線那天漏掉的
     部分。也可以指定過去幾天內的日期(例如假日想先驗證上一個交易日的
@@ -454,7 +456,9 @@ def trigger_kline_signal_backfill_today(trade_date: str | None = Query(None)) ->
         except ValueError as exc:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
-    return start_kline_signal_backfill_today(trade_date=trade_date)
+    # local_only=true（2026-10-05）：盤中只用本機存好的今天 5 分K 重播（從 09:00 起連續的才做），不打永豐歷史 API；
+    # 規則改了要馬上補今天的訊號、或盤中重新部署後要把即時狀態補回來時用。
+    return start_kline_signal_backfill_today(trade_date=trade_date, local_only=local_only)
 
 
 @app.get("/api/hub/kline-signals/backfill-today/status")
