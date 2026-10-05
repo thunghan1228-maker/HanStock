@@ -43,7 +43,7 @@ class WatchlistStoreTests(unittest.TestCase):
                 {"code": "6669a"},                     # 小寫轉大寫還是不合格式（6 碼以內英數字）的會被收下
                 "2317",                                # 格式不對
             ]},
-            {"id": "hold", "name": "", "items": [{"code": "3707", "ma": 7, "lots": 2}]},   # id 重複、名字空白
+            {"id": "hold", "name": "", "items": [{"code": "3707", "ma": 7, "lots": 2, "name": " 漢磊 "}]},   # id 重複、名字空白
             "garbage",
         ], "settings": {"notifyLaunch": True, "bad key": 1, "level": 3, "tag": "x" * 80, "obj": {"a": 1}}}
         clean = module.sanitize(raw)
@@ -52,7 +52,7 @@ class WatchlistStoreTests(unittest.TestCase):
         self.assertEqual([i["code"] for i in first["items"]], ["2330", "6669A"])
         self.assertEqual(first["items"][0], {"code": "2330", "note": "長抱", "addedAt": "2026-10-05", "above": 1500.0, "ma": 10})
         self.assertNotEqual(second["id"], "hold")
-        self.assertEqual((second["name"], second["items"]), ("自選", [{"code": "3707", "lots": 2.0}]))   # ma 7 不在選項裡
+        self.assertEqual((second["name"], second["items"]), ("自選", [{"code": "3707", "name": "漢磊", "lots": 2.0}]))   # ma 7 不在選項裡
         self.assertEqual(clean["settings"], {"notifyLaunch": True, "level": 3, "tag": "x" * 50})
         with self.assertRaises(module.WatchlistError):
             module.sanitize({"groups": "not a list"})

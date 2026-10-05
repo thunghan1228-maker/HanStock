@@ -6,7 +6,7 @@
 前端換成最新的再做一次，不會互相蓋掉。
 
 清單格式（存之前一律重新整理過，不認得的欄位丟掉）：
-  {"groups": [{"id", "name", "items": [{"code", "note", "addedAt", "above", "below", "ma", "cost", "lots"}]}],
+  {"groups": [{"id", "name", "items": [{"code", "name", "note", "addedAt", "above", "below", "ma", "cost", "lots"}]}],
    "settings": {...}}
   above／below／ma＝到價提醒與跌破均線提醒（個股訊號追蹤用）、cost／lots＝持股成本與張數，先留著欄位。
 """
@@ -77,6 +77,9 @@ def _item(raw: Any) -> dict[str, Any] | None:
     if not CODE_RE.match(code):
         return None
     item: dict[str, Any] = {"code": code}
+    name = _text(raw.get("name"), 20)
+    if name:
+        item["name"] = name          # 族群表外的股票，其他電腦不用再查一次股名
     note = _text(raw.get("note"), 200)
     if note:
         item["note"] = note

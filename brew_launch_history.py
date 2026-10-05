@@ -473,6 +473,35 @@ def _run_backfill(now: datetime) -> None:
 # ------------------------------------------------------------------ 發動判斷（跟前端同一套）
 
 _group_by_code: dict[str, tuple[str, str]] = {}
+# 2026-10-05 使用者：創高黑龍的今日名單裡，不在族群表的股票（聯傑、宏齊、南茂…）股名欄只顯示代號。
+# 族群表找不到的改查 stocks 資料表（日K收集時存的官方中文股名），一小時重讀一次；
+# 讀失敗或表還是空的（剛開機）一分鐘後再試。
+DB_NAMES_TTL = 3600
+_db_names: dict[str, str] = {}
+_db_names_state: dict[str, Any] = {"path": None, "at": 0.0}
+_db_names_lock = threading.Lock()
+
+
+def _db_stock_name(code: str) -> str | None:
+    import database
+
+    path, now = str(database.DATABASE_PATH), time.time()
+    with _db_names_lock:
+        if _db_names_state["path"] != path or now - _db_names_state["at"] > DB_NAMES_TTL:
+            fresh: dict[str, str] = {}
+            try:
+                initialize_database()
+                with get_connection() as connection:
+                    for row in connection.execute("SELECT stock_code, stock_name FROM stocks"):
+                        key, name = str(row["stock_code"]).strip().upper(), str(row["stock_name"] or "").strip()
+                        if name and name.upper() != key:
+                            fresh[key] = name
+            except Exception:  # noqa: BLE001
+                logger.warning("讀 stocks 股名失敗，一分鐘後再試", exc_info=True)
+            _db_names.clear()
+            _db_names.update(fresh)
+            _db_names_state.update(path=path, at=now if fresh else now - DB_NAMES_TTL + 60)
+        return _db_names.get(code)
 
 
 def group_and_name(code: str) -> tuple[str, str]:
@@ -482,7 +511,10 @@ def group_and_name(code: str) -> tuple[str, str]:
                 continue
             for member_code, stock_name in members:
                 _group_by_code.setdefault(str(member_code).strip().upper(), (name, str(stock_name)))
-    return _group_by_code.get(code, ("", code))
+    hit = _group_by_code.get(code)
+    if hit:
+        return hit
+    return "", _db_stock_name(str(code).strip().upper()) or code
 
 
 def in_scan_window(now: datetime) -> bool:

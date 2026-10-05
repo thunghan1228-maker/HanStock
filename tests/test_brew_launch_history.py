@@ -372,6 +372,16 @@ class HistoryTests(unittest.TestCase):
         launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
         self.assertEqual(sorted((r["code"], r["recordedAt"][11:19]) for r in launch), [("3016", "13:30:13"), ("6207", "13:00:00")])
 
+    def test_name_outside_groups_comes_from_stocks_table(self) -> None:
+        # 2026-10-05 使用者：創高黑龍今日名單裡，不在族群表的股票（聯傑 3094…）股名欄只顯示代號
+        database.save_stock("3094", "聯傑", "OTC")
+        database.save_stock("9999", "9999", "TSE")                 # 股名就是代號的不算
+        module._db_names_state.update(path=None, at=0.0)
+        self.assertEqual(module.group_and_name("6207"), ("玻璃基板", "雷科"))   # 族群表優先
+        self.assertEqual(module.group_and_name("3094"), ("", "聯傑"))
+        self.assertEqual(module.group_and_name("9999"), ("", "9999"))
+        self.assertEqual(module.group_and_name("1234"), ("", "1234"))         # 查不到照舊顯示代號
+
     def test_outside_window_stores_snapshot_but_not_launches(self) -> None:
         result = self._scan(14, 0)
         self.assertEqual(result["status"], "skipped")
