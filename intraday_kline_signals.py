@@ -29,6 +29,7 @@ from otc_index import taipei_minute_of_day, taipei_trade_date
 from stock_bars_5m_store import (
     bars_5m_coverage_complete,
     load_stock_bars_5m_before,
+    load_stock_bars_5m_on,
     prune_stock_bars_5m,
     save_stock_bars_5m,
     save_stock_bars_5m_many,
@@ -40,7 +41,7 @@ logger = logging.getLogger("hanstock.intraday_kline_signals")
 LONG_PRECONDITION_MAX_PCT = 6.0  # 905收盤漲幅需<6%（相對昨收）才適用【5】/20MA上彎系列
 CUTOFF_MINUTE = 10 * 60 + 30  # A8空／破905D的期限
 FIRST_BAR_MAX_CLOSE_MINUTE = 9 * 60 + 10  # 真正的905K收盤時間=09:05，多留5分鐘緩衝
-BLACK_DRAGON_START_MINUTE = 11 * 60  # 創高黑龍11:00後才成立
+BLACK_DRAGON_START_MINUTE = 9 * 60  # 創高黑龍09:00開盤就開始（2026-10-05 使用者：拿掉以前11:00後才成立的限制）
 BLACK_DRAGON_END_MINUTE = 13 * 60 + 30  # 到13:30收盤
 BLACK_DRAGON_MIN_MA_SCORE = 10  # 六均線兩兩比較共15組，至少10組排列正確
 _LIMIT_EPS = 1e-6
@@ -407,6 +408,9 @@ class IntradayKlineSignalMonitor:
             if state.prev_close is not None and state.prev_close > 0:
                 pct = (close / state.prev_close - 1) * 100
                 state.long_ok = close > state.prev_close and pct < LONG_PRECONDITION_MAX_PCT
+            # 2026-10-05 使用者：創高黑龍 9 點一開盤就開始偵測——第一根905K自己也能觸發（最高價過前5日高、
+            # 收盤低於開盤＝開高走低的黑K）；其他訊號第一根照舊只建立基準。
+            self._detect_black_dragon(state, close, high, taipei_minute_of_day(int(bar["ts"])), group_name, emit)
             return out
 
         ma5 = _moving_average(state.closes, 5)
@@ -532,8 +536,8 @@ class IntradayKlineSignalMonitor:
     def _detect_black_dragon(
         self, state: _KlineState, close: float, high: float, bar_start_minute: int, group_name: str, emit
     ) -> None:
-        """創高黑龍(盤中版)：11:00~13:30限定(用「這根5分K自己的起始時間」
-        判斷，10:55-11:00這根收盤時間剛好=11:00但起始在11:00前，不算)，
+        """創高黑龍(盤中版)：09:00開盤~13:30(用「這根5分K自己的起始時間」判斷；
+        2026-10-05 使用者：以前限定11:00後，現在一開盤就算，第一根905K也算)，
         同一根5分K自己的最高價突破前5個完整交易日最高價(平高不算)、該根
         收盤<今日09:00開盤價、六均線(5/10/20/60/120/240)排列分數≥10
         (滿分15)，一天一次。股票要屬於HanStock正式主族群範圍(group_name
@@ -622,10 +626,20 @@ def backfill_today_kline_signals(
         try:
             if bars_5m_coverage_complete(code, trade_date):
                 # 即時路徑今天從開盤到收盤最後一根都連續追到了（沒有晚訂閱、沒有缺根），
-                # 當天即時算出的訊號本來就是對的，不用再打一次歷史 kbars 重抓／重播一遍——
-                # 全市場524檔逐檔重抓很吃永豐的歷史流量額度，只有真的有缺口的股票才需要。
-                # 完整的不用打任何外部 API，不需要延遲；跳過的檔數越多，這一輪收盤後校正
-                # 整體要花的時間跟吃掉的額度也跟著降低。
+                # 不用再打一次歷史 kbars 重抓——全市場524檔逐檔重抓很吃永豐的歷史流量額度，
+                # 只有真的有缺口的股票才需要。完整的不打任何外部 API，不需要延遲。
+                # 2026-10-05：但不再整檔跳過——改用本機已經存好的今天 5 分K 照最新規則重播一次
+                # （創高黑龍改成 09:00 起算當天，早上 9～11 點符合的要補得回來；盤中重新部署
+                # 記憶體狀態歸零後漏掉的訊號也一起補齊），跟歷史 kbars 重抓一樣先刪掉這檔今天的
+                # K 線訊號再整批重算。
+                local_bars = load_stock_bars_5m_on(code, trade_date)
+                if local_bars:
+                    delete_kline_signals_for_ticker(trade_date, code)
+                    monitor.reset_for_backfill(code, trade_date)
+                    for bar in local_bars:
+                        emitted = monitor.on_bar_completed(code, bar, persist=False)
+                        bars_replayed += 1
+                        signals_emitted += len(emitted)
                 codes_skipped_complete += 1
                 processed += 1
                 continue

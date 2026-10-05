@@ -43,7 +43,9 @@ class HistoryTests(unittest.TestCase):
         module._currently_live = set()
         module._currently_live_date = None
         module._currently_live_seeded = False
-        module._carried_today.update({"date": None, "missing": 0, "fallback": 0, "noVolume": 0})
+        module._carried_today.update({"date": None, **{key: 0 for key in module.CARRY_KEYS}})
+        module._fall_streak.clear()
+        module._recent_misses.clear()
         self.payload = {"session": "2026-09-24", "rules": RULES, "stocks": {
             "6207": _info(boxHigh=124.0, maSums=_sums(BULL, 125.0)),
             "3016": _info(boxHigh=170.0, maSums=_sums(BULL, 160.0), brewing=False),
@@ -99,7 +101,10 @@ class HistoryTests(unittest.TestCase):
         first = module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes={"6207": launch_quote, **others})
         self.assertEqual(first["codes"], ["6207"])
         self.assertEqual(first["currentlyLive"], 1)
-        fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 30, tzinfo=TW), payload=self.payload, quotes={"6207": fallen_quote, **others})
+        # 2026-10-05：回落要連續兩輪都不在發動才算（單獨一輪的怪報價不算回落）
+        pending = module.scan_once(now=datetime(2026, 9, 24, 10, 30, tzinfo=TW), payload=self.payload, quotes={"6207": fallen_quote, **others})
+        self.assertEqual(pending["currentlyLive"], 1)    # 第一輪：還沒確認
+        fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 31, tzinfo=TW), payload=self.payload, quotes={"6207": fallen_quote, **others})
         self.assertEqual(fallen["codes"], [])            # 回落這一輪沒有新發動
         self.assertEqual(fallen["currentlyLive"], 0)
         self.assertEqual(fallen["launchedToday"], 1)     # 今天累計還是算發動過一次（不管幾筆都算同一檔）
@@ -134,15 +139,75 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(result["carried"][kind], 1, kind)
             back = module.scan_once(now=datetime(2026, 9, 24, 10, minute, 30, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
             self.assertEqual(back["codes"], [], kind)                   # 報價恢復：不是重新發動
-        self.assertEqual(back["carriedToday"], {"date": "2026-09-24", "missing": 1, "fallback": 1, "noVolume": 1})
+        self.assertEqual(back["carriedToday"], {"date": "2026-09-24", "missing": 1, "fallback": 1, "noVolume": 1, "notInPayload": 0, "unconfirmed": 0})
         launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
         self.assertEqual(len([r for r in launch if r["code"] == "6207"]), 1)
         # 真的回落（有成交、價格跌回箱頂下）照舊算回落，之後再過箱頂才是新的一筆
-        fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 10, tzinfo=TW), payload=self.payload,
-                                  quotes={"6207": {"price": 120.0, "prevClose": 114.0, "volume": 2500, "priceSource": "trade"}, **others})
+        below = {"6207": {"price": 120.0, "prevClose": 114.0, "volume": 2500, "priceSource": "trade"}, **others}
+        module.scan_once(now=datetime(2026, 9, 24, 10, 9, tzinfo=TW), payload=self.payload, quotes=below)
+        fallen = module.scan_once(now=datetime(2026, 9, 24, 10, 10, tzinfo=TW), payload=self.payload, quotes=below)
         self.assertEqual(fallen["currentlyLive"], 0)
         again = module.scan_once(now=datetime(2026, 9, 24, 10, 11, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
         self.assertEqual(again["codes"], ["6207"])
+
+    def test_single_odd_poll_is_not_a_fall_and_is_logged(self) -> None:
+        # 2026-10-05：第一版合併後聯一光（漲停鎖死）10:16 又多一筆——報價看起來正常、卻有一輪判斷不在發動。
+        # 只差一輪的不算回落；細節留在 /scan 狀態的 recentMisses 查原因。
+        others = {"3016": self.quotes["3016"], "2881": self.quotes["2881"]}
+        good = {"price": 125.0, "prevClose": 114.0, "volume": 2000, "priceSource": "book"}
+        odd = {"price": 125.0, "prevClose": 114.0, "volume": 3, "priceSource": "trade", "quoteTime": "10:15:31"}   # 量怪怪的
+        module.scan_once(now=datetime(2026, 9, 24, 10, 0, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
+        blip = module.scan_once(now=datetime(2026, 9, 24, 10, 1, tzinfo=TW), payload=self.payload, quotes={"6207": odd, **others})
+        self.assertEqual(blip["currentlyLive"], 1)
+        self.assertEqual(blip["carried"]["unconfirmed"], 1)
+        back = module.scan_once(now=datetime(2026, 9, 24, 10, 2, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
+        self.assertEqual(back["codes"], [])
+        miss = module.scan_status()["recentMisses"][-1]
+        self.assertEqual((miss["code"], miss["reason"], miss["streak"], miss["volume"], miss["quoteTime"]), ("6207", "volume", 1, 3.0, "10:15:31"))
+        # 醞釀資料這一輪剛好沒有這檔：也不算回落
+        payload = {**self.payload, "stocks": {k: v for k, v in self.payload["stocks"].items() if k != "6207"}}
+        gone = module.scan_once(now=datetime(2026, 9, 24, 10, 3, tzinfo=TW), payload=payload, quotes={"6207": good, **others})
+        self.assertEqual((gone["currentlyLive"], gone["carried"]["notInPayload"]), (1, 1))
+        again = module.scan_once(now=datetime(2026, 9, 24, 10, 4, tzinfo=TW), payload=self.payload, quotes={"6207": good, **others})
+        self.assertEqual(again["codes"], [])
+        launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]
+        self.assertEqual(len([r for r in launch if r["code"] == "6207"]), 1)
+
+    def test_purge_false_relaunches_uses_one_minute_bars(self) -> None:
+        # 2026-10-05 使用者：把今天確定是假的「重新發動」刪掉。兩筆之間 1 分K 從沒跌到箱頂以下（分數也沒掉）
+        # 的才刪；中間真的跌回箱頂下、分數掉下門檻、或查不到 1 分K 的都留著；第一筆永遠留著。
+        row = {"code": "6207", "price": 125.0, "score": 15, "changePct": 9.6, "boxHigh": 124.0}
+        for hm in ("10:00", "10:05", "10:20", "10:30", "10:40"):
+            module.record_launch_episode("2026-09-24", [row], f"2026-09-24T{hm}:10+08:00")
+
+        def one_min(hm: str, low: float) -> dict:
+            t = datetime.fromisoformat(f"2026-09-24T{hm}:00+08:00")
+            return {"ts": int(t.timestamp() * 1000), "open": 125.0, "high": 125.0, "low": low, "close": 125.0}
+
+        bars = [one_min(f"10:{m:02d}", 125.0) for m in range(0, 5)]                  # 10:00~10:05 一直在箱頂上：10:05 那筆是假的
+        bars += [one_min(f"10:{m:02d}", 123.5 if m == 10 else 125.0) for m in range(5, 20)]   # 10:10 跌到 123.5（箱頂 124 下）：10:20 是真的
+        bars += [one_min(f"10:{m:02d}", 124.5) for m in range(31, 40)]               # 10:30~10:40 都在箱頂上，但分數掉下門檻：10:40 是真的
+        # 10:20~10:30 之間沒有 1 分K：10:30 那筆不能確定，保留
+        with patch.object(module, "live_score", lambda sums, price, periods: 15 if price >= 125.0 else 9):
+            dry = module.purge_false_relaunches(trade_date="2026-09-24", payload=self.payload, bars_loader=lambda code: bars)
+            self.assertEqual((dry["dryRun"], dry["removed"]), (True, 1))
+            self.assertEqual(dry["stocks"]["6207"]["removedTimes"], ["10:05:10"])
+            self.assertEqual(len(module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]), 5)   # 試算不動資料
+            done = module.purge_false_relaunches(trade_date="2026-09-24", dry_run=False, payload=self.payload, bars_loader=lambda code: bars)
+        self.assertEqual(done["removed"], 1)
+        left = [r["recordedAt"][11:16] for r in module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"]]
+        self.assertEqual(left, ["10:00", "10:20", "10:30", "10:40"])
+        wrong_day = module.purge_false_relaunches(trade_date="2026-09-23", payload=self.payload, bars_loader=lambda code: bars)
+        self.assertEqual(wrong_day["status"], "error")
+
+    def test_purge_endpoint_defaults_to_dry_run(self) -> None:
+        calls = []
+        with patch.object(persistent_app, "brew_launch_purge_false_relaunches",
+                          lambda **kw: calls.append(kw) or {"status": "ok", **kw}):
+            client = TestClient(persistent_app.app)
+            client.post("/api/hub/brew-launch/purge-false-relaunches")
+            client.post("/api/hub/brew-launch/purge-false-relaunches?date=2026-10-05&dry_run=false")
+        self.assertEqual(calls, [{"trade_date": None, "dry_run": True}, {"trade_date": "2026-10-05", "dry_run": False}])
 
     def test_fallback_price_never_starts_a_launch(self) -> None:
         # 本來沒在發動的股票，只剩開盤價可填的那一輪不能拿來判斷發動（開盤價過箱頂不代表現在還在上面）

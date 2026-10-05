@@ -24,6 +24,7 @@ from stock_groups import industry_group_codes
 from brew_launch_history import (
     backfill_holder_force as brew_launch_backfill_holder_force,
     history as brew_launch_history,
+    purge_false_relaunches as brew_launch_purge_false_relaunches,
     scan_status as brew_launch_scan_status,
     start_brew_launch_scan,
 )
@@ -793,6 +794,13 @@ def get_brew_launch_history(days: int = Query(10, ge=1, le=60), date: str | None
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return {**brew_launch_history(days=days, date=date), "scan": brew_launch_scan_status()}
+
+
+@app.post("/api/hub/brew-launch/purge-false-relaunches")
+def post_brew_launch_purge_false_relaunches(date: str | None = Query(None), dry_run: bool = Query(True)) -> dict[str, Any]:
+    """刪掉當天確定是假的「重新發動」紀錄（兩筆之間 1 分K 從沒跌回箱頂以下、分數也沒掉下門檻）。
+    預設 dry_run=true 只回報會刪哪些；確認後帶 dry_run=false 才真的刪。"""
+    return brew_launch_purge_false_relaunches(trade_date=date, dry_run=dry_run)
 
 
 @app.post("/api/hub/brew-launch/backfill-holder-force")

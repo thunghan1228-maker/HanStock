@@ -566,10 +566,28 @@ def test_black_dragon_fires_when_all_conditions_met(monkeypatch):
     assert "blackDragon" in kinds(result)
 
 
-def test_black_dragon_does_not_fire_before_1100(monkeypatch):
+def test_black_dragon_fires_in_the_morning_before_1100(monkeypatch):
+    # 2026-10-05 使用者：拿掉 11:00 後才成立的限制，9 點一開盤就開始偵測。
     monitor = _black_dragon_monitor(monkeypatch)
     monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
-    result = monitor.on_bar_completed("2330", bar(10, 55, 107, 109.0, 106, 105.0))
+    result = monitor.on_bar_completed("2330", bar(9, 5, 107, 109.0, 106, 105.0))
+    assert "blackDragon" in kinds(result)
+
+
+def test_black_dragon_first_bar_itself_can_fire(monkeypatch):
+    # 第一根905K：開110、最高111過前5日高108、收105低於開盤＝開高走低的黑K，一開盤就成立
+    monitor = _black_dragon_monitor(monkeypatch)
+    result = monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 104, 105.0))
+    assert kinds(result) == ["blackDragon"]
+    # 一天一次：後面再創高收黑也不重複
+    again = monitor.on_bar_completed("2330", bar(9, 5, 106, 112.0, 103, 104.0))
+    assert "blackDragon" not in kinds(again)
+
+
+def test_black_dragon_stops_after_close(monkeypatch):
+    monitor = _black_dragon_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 110, 111, 109, 110.5))
+    result = monitor.on_bar_completed("2330", bar(13, 35, 107, 109.0, 106, 105.0))
     assert "blackDragon" not in kinds(result)
 
 
@@ -805,6 +823,32 @@ def test_backfill_skips_codes_whose_live_coverage_is_already_complete(monkeypatc
     monitor = module.get_intraday_kline_signal_monitor()
     assert "2330" not in monitor._states  # 沒碰過，維持即時路徑原本算出的狀態
     assert monitor._states["2317"].bar_count == 2
+
+
+def test_backfill_replays_complete_codes_from_local_bars_with_current_rules(monkeypatch):
+    # 2026-10-05：創高黑龍改成 09:00 起算當天，整天都追到的股票收盤後也要照新規則重算——
+    # 用本機存的今天 5 分K 重播（不打歷史 API），早上那根創高收黑要補得出來。
+    saved: list[dict] = []
+    monkeypatch.setattr(module, "save_intraday_signals", lambda rows: saved.extend(rows) or rows)
+    monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: [{"high": 108.0, "close": 105.0}] * 5)
+    monkeypatch.setattr(module, "_monitor", None)
+    monkeypatch.setattr(module, "_group_lookup_cache", None)
+    monkeypatch.setattr(module, "STOCK_GROUPS", {"測試群組": [("2330", "台積電")]})
+    monkeypatch.setattr(module, "compute_ma_alignment_score", lambda code: 12, raising=False)
+    monkeypatch.setattr(module, "bars_5m_coverage_complete", lambda code, trade_date: True)
+    local = [bar(9, 0, 104, 106, 103, 105.5), bar(9, 30, 106, 109.0, 103, 103.5)]   # 09:30 那根創前 5 日高 108、收盤低於開盤 104
+    monkeypatch.setattr(module, "load_stock_bars_5m_on", lambda code, trade_date: local)
+    monkeypatch.setattr(stock_history_service, "get_stock_history_bars_5m",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("完整的不該打歷史 API")))
+    deleted: list[str] = []
+    monkeypatch.setattr(module, "delete_kline_signals_for_ticker", lambda trade_date, code: deleted.append(code))
+
+    result = module.backfill_today_kline_signals(trade_date="2026-09-18", delay=0)
+
+    assert deleted == ["2330"]
+    assert result["barsReplayed"] == 2
+    assert result["codesSkippedComplete"] == 1
+    assert [r["kind"] for r in saved if r["kind"] == "blackDragon"] == ["blackDragon"]
 
 
 def test_backfill_does_not_sleep_between_skipped_codes(monkeypatch):
