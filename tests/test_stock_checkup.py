@@ -190,6 +190,22 @@ class RebuildTests(unittest.TestCase):
         again = module.rebuild()
         self.assertEqual(again["rows"], 4)
 
+    def test_checkup_carries_hi_len_from_picker_table(self) -> None:
+        """創高天數借創高黑選股的特徵表（2026-10-05 使用者：自選股盤後籌碼要看）。"""
+        d = self.dates
+        module.rebuild()
+        self.assertIsNone(module.checkup("6182")["rows"][0]["hiLen"])            # 特徵表還沒資料：不給
+        insert = "INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, hi_len) VALUES (?, ?, 1, 1, 1, 1, 1, ?)"
+        with database.get_connection() as c:
+            heilong_backtest._schema(c)
+            c.executemany(insert, [(d[-2], "6182", 5), (d[-2], "2330", 1)])
+        rows = {x["code"]: x["hiLen"] for x in module.checkup("6182 2330 6488")["rows"]}
+        self.assertEqual(rows, {"6182": 5, "2330": 1, "6488": None})              # 特徵表晚一天建好：先用前一天的
+        with database.get_connection() as c:
+            c.execute(insert, (d[-1], "6182", 242))
+        rows = {x["code"]: x["hiLen"] for x in module.checkup("6182 2330")["rows"]}
+        self.assertEqual(rows, {"6182": 242, "2330": None})                      # 用最新一天；那天沒有的不拿舊的
+
     def test_cross_up_and_diag(self) -> None:
         d = self.dates
         # 環球晶改成：昨收在月線下、今天站上月線 3% 且量夠 → 穿惡
