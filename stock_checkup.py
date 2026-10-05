@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -619,15 +620,41 @@ def normalize_codes(raw: str | list[str] | None) -> list[str]:
     return out[:MAX_CODES]
 
 
+def _hi_lens(codes: list[str], trade_date: str) -> dict[str, int]:
+    """創高天數（今天收盤是近幾日最高收盤）：創高黑選股的特徵表 heilong_daily 就有，回應時順便帶上
+    （2026-10-05 使用者：自選股盤後籌碼要看）。用不晚於健診日期的最新一天；表還沒建就不給。"""
+    if not codes:
+        return {}
+    out: dict[str, int] = {}
+    try:
+        with get_connection() as connection:
+            row = connection.execute("SELECT MAX(trade_date) AS d FROM heilong_daily WHERE trade_date <= ?", (trade_date,)).fetchone()
+            day = row["d"] if row else None
+            if not day:
+                return {}
+            for start in range(0, len(codes), 400):
+                batch = codes[start:start + 400]
+                for r in connection.execute(
+                    f"SELECT stock_code, hi_len FROM heilong_daily WHERE trade_date = ? AND hi_len IS NOT NULL "
+                    f"AND stock_code IN ({','.join('?' for _ in batch)})",
+                    (day, *batch),
+                ):
+                    out[str(r["stock_code"])] = int(r["hi_len"])
+    except sqlite3.Error:
+        return {}
+    return out
+
+
 def checkup(codes: str | list[str] | None) -> dict[str, Any]:
     wanted = normalize_codes(codes)
     date = latest_date()
     if not date:
         return {"status": "empty", "reason": "還沒有健診資料（收盤後會自動建）", "codes": wanted, "rules": RULES, "collector": collector_status()}
     rows = load_rows(date, wanted) if wanted else {}
+    hi = _hi_lens([c for c in wanted if c in rows], date)
     return {
         "status": "ok", "date": date, "codes": wanted,
-        "rows": [rows[c] for c in wanted if c in rows],
+        "rows": [{**rows[c], "hiLen": hi.get(c)} for c in wanted if c in rows],
         "missing": [c for c in wanted if c not in rows],
         "weights": DEFAULT_WEIGHTS, "rules": RULES, "collector": collector_status(),
     }
