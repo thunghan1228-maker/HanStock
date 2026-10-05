@@ -254,7 +254,9 @@ def purge_false_relaunches(
                 end = datetime.fromisoformat(str(cur["recorded_at"]))
                 window = [b for b in bars if start.timestamp() * 1000 <= int(b["ts"]) < end.timestamp() * 1000]
                 if window:                                  # 查不到 1 分K：不能確定，保留
-                    low = min(float(b["low"]) for b in window)
+                    # 2026-10-05：1 分K 改從 Yahoo 補的時候價格是 float32（69.3 變 69.30000305175781），
+                    # 剛好跌到箱頂 69.3 會被當成還在箱頂上；證交所價格最多 4 位小數，先四捨五入
+                    low = round(min(float(b["low"]) for b in window), 4)
                     fake = low > box_high and live_score(info["maSums"], low, periods) >= min_score   # 中間沒回落過
             if not fake and code in closing and hms >= CLOSING_AUCTION_CHECK_FROM and not _closing_trade_launch(info, closing[code], rules):
                 fake = True

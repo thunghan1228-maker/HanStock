@@ -210,6 +210,19 @@ class HistoryTests(unittest.TestCase):
         wrong_day = module.purge_false_relaunches(trade_date="2026-09-23", payload=self.payload, bars_loader=lambda code: bars)
         self.assertEqual(wrong_day["status"], "error")
 
+    def test_purge_treats_float32_bar_at_box_top_as_a_fall(self) -> None:
+        # 2026-10-05：1 分K 從 Yahoo 補的價格是 float32，跌到箱頂 124.3 的那根 low 變成 124.30000305175781，
+        # 不能因為這一點點誤差就當成「中間沒回落」把真的重新發動刪掉
+        payload = dict(self.payload, stocks=dict(self.payload["stocks"], **{"6207": dict(self.payload["stocks"]["6207"], boxHigh=124.3)}))
+        row = {"code": "6207", "price": 125.0, "score": 15, "changePct": 9.6, "boxHigh": 124.3}
+        for hm in ("10:00", "10:30"):
+            module.record_launch_episode("2026-09-24", [row], f"2026-09-24T{hm}:10+08:00")
+        t = datetime.fromisoformat("2026-09-24T10:15:00+08:00")
+        bars = [{"ts": int(t.timestamp() * 1000), "open": 124.5, "high": 124.5, "low": 124.30000305175781, "close": 124.5}]
+        result = module.purge_false_relaunches(trade_date="2026-09-24", payload=payload, bars_loader=lambda code: bars,
+                                               now=datetime(2026, 9, 24, 14, 0, tzinfo=TW))
+        self.assertEqual(result["removed"], 0)
+
     def test_purge_checks_closing_auction_records_against_closing_trade(self) -> None:
         # 2026-10-05：收盤試撮時段（13:26 以後）記到的紀錄，收盤那一盤沒成交、或收盤價不是發動的，就是假的——
         # 包括當天第一筆（茂訊）；收盤價真的站上箱頂的留著（千如、漢磊收盤真的再站上箱頂）。
