@@ -46,6 +46,13 @@ BLACK_DRAGON_END_MINUTE = 13 * 60 + 30  # 到13:30收盤
 BLACK_DRAGON_MIN_MA_SCORE = 10  # 六均線兩兩比較共15組，至少10組排列正確
 _LIMIT_EPS = 1e-6
 
+
+def _contiguous_from_open(bars: list[dict[str, Any]]) -> bool:
+    """今天的 5 分K 是不是從 09:00 那根開始、中間一根都沒缺（重播／補狀態前先確認基準不會算錯）。"""
+    if not bars or taipei_minute_of_day(int(bars[0]["ts"])) != 9 * 60:
+        return False
+    return all(int(cur["ts"]) - int(prev["ts"]) == BAR_INTERVAL_5M_MS for prev, cur in zip(bars, bars[1:]))
+
 _group_lookup_cache: dict[str, tuple[str, str]] | None = None
 
 
@@ -299,6 +306,22 @@ class IntradayKlineSignalMonitor:
         self._states[code] = state
         return state
 
+    def _warm_start_from_stored_bars(self, code: str, state: _KlineState, bar: dict[str, Any], trade_date: str) -> None:
+        """2026-10-05：盤中重新部署（程式重開）後，每檔第一根收到的已經不是 905K，以前直接標成晚訂閱，
+        當天 905／創高黑龍這些要靠開盤基準的訊號整天都不會再偵測。本機 bars_5m 有今天從 09:00 起連續、
+        而且剛好接到這一根前面的 K 棒時，先把它們安靜地重播一遍把狀態補回來（不發訊號、不存——那段時間的
+        訊號重開前已經存過，漏掉的收盤後校正會照本機 K 棒重算補齊）；不連續就照舊當晚訂閱。"""
+        try:
+            earlier = [b for b in load_stock_bars_5m_on(code, trade_date) if int(b["ts"]) < int(bar["ts"])]
+        except Exception:  # noqa: BLE001
+            logger.warning("重開後補今天狀態失敗 code=%s", code, exc_info=True)
+            return
+        if not _contiguous_from_open(earlier) or int(bar["ts"]) - int(earlier[-1]["ts"]) != BAR_INTERVAL_5M_MS:
+            return
+        for earlier_bar in earlier:
+            earlier_close_ts = int(earlier_bar["ts"]) + BAR_INTERVAL_5M_MS
+            self._process_bar(code, state, earlier_bar, earlier_close_ts, trade_date, taipei_minute_of_day(earlier_close_ts))
+
     def reset_for_backfill(
         self, code: str, trade_date: str, seed_bars: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -331,6 +354,8 @@ class IntradayKlineSignalMonitor:
             state = self._states.get(code)
             if state is None or state.trade_date != trade_date:
                 state = self._reset_for_new_day(code, trade_date)
+                if persist and minute_of_day > FIRST_BAR_MAX_CLOSE_MINUTE:
+                    self._warm_start_from_stored_bars(code, state, bar, trade_date)
             signals = self._process_bar(code, state, bar, close_ts, trade_date, minute_of_day)
 
         if persist:
@@ -573,6 +598,7 @@ def get_intraday_kline_signal_monitor() -> IntradayKlineSignalMonitor:
 
 def backfill_today_kline_signals(
     *, service: Any = None, hub: Any = None, trade_date: str | None = None, delay: float = 0.3,
+    local_only: bool = False,
 ) -> dict[str, Any]:
     """一次性回補：用Shioaji歷史kbars重播trade_date當天已經走完的5分K，
     補回「偵測引擎當天收盤後才上線」這段時間本來會漏掉的訊號。
@@ -620,10 +646,35 @@ def backfill_today_kline_signals(
     signals_emitted = 0
     bars_stored = 0
     codes_skipped_complete = 0
+    codes_skipped_gap = 0
+    black_dragon: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     flush_pending_bars_5m(force=True)
+
+    def replay(code: str, todays_bars: list[dict[str, Any]], seed_bars: list[dict[str, Any]] | None = None) -> None:
+        nonlocal bars_replayed, signals_emitted
+        delete_kline_signals_for_ticker(trade_date, code)
+        monitor.reset_for_backfill(code, trade_date, seed_bars=seed_bars)
+        for one in todays_bars:
+            emitted = monitor.on_bar_completed(code, one, persist=False)
+            bars_replayed += 1
+            signals_emitted += len(emitted)
+            black_dragon.extend({"code": code, "name": s.get("name"), "barTs": s.get("barTs")}
+                                for s in emitted if s.get("kind") == "blackDragon")
+
     for code in codes:
         try:
+            if local_only:
+                # 2026-10-05 使用者：創高黑龍改成 09:00 起算，今天 9 點到現在的要馬上補，不等收盤後校正。
+                # 盤中只用本機已經存好的今天 5 分K（從 09:00 起連續、沒缺根的才重播），不打永豐歷史 API、
+                # 不吃額度；重播完這檔的即時狀態也跟著補齊（重新部署後歸零的開盤基準回來了）。
+                local_bars = load_stock_bars_5m_on(code, trade_date)
+                if _contiguous_from_open(local_bars):
+                    replay(code, local_bars)
+                else:
+                    codes_skipped_gap += 1
+                processed += 1
+                continue
             if bars_5m_coverage_complete(code, trade_date):
                 # 即時路徑今天從開盤到收盤最後一根都連續追到了（沒有晚訂閱、沒有缺根），
                 # 不用再打一次歷史 kbars 重抓——全市場524檔逐檔重抓很吃永豐的歷史流量額度，
@@ -634,12 +685,7 @@ def backfill_today_kline_signals(
                 # K 線訊號再整批重算。
                 local_bars = load_stock_bars_5m_on(code, trade_date)
                 if local_bars:
-                    delete_kline_signals_for_ticker(trade_date, code)
-                    monitor.reset_for_backfill(code, trade_date)
-                    for bar in local_bars:
-                        emitted = monitor.on_bar_completed(code, bar, persist=False)
-                        bars_replayed += 1
-                        signals_emitted += len(emitted)
+                    replay(code, local_bars)
                 codes_skipped_complete += 1
                 processed += 1
                 continue
@@ -651,12 +697,9 @@ def backfill_today_kline_signals(
             # 前一天有沒有存到）；週一 calendar_days=3 抓不到上週五時，reset 會退回本機資料。
             prior_bars = [b for b in all_bars if taipei_trade_date(int(b["ts"])) < trade_date]
             if todays_bars:
-                delete_kline_signals_for_ticker(trade_date, code)
-            monitor.reset_for_backfill(code, trade_date, seed_bars=prior_bars)
-            for bar in todays_bars:
-                emitted = monitor.on_bar_completed(code, bar, persist=False)
-                bars_replayed += 1
-                signals_emitted += len(emitted)
+                replay(code, todays_bars, seed_bars=prior_bars)
+            else:
+                monitor.reset_for_backfill(code, trade_date, seed_bars=prior_bars)
             # 這幾天的 5 分 K 一併存進 bars_5m：明天開盤 MA20 的種子就齊了，即時路徑
             # 沒訂閱到的股票也有。
             try:
@@ -678,6 +721,9 @@ def backfill_today_kline_signals(
         "codeCount": len(codes),
         "codesProcessed": processed,
         "codesSkippedComplete": codes_skipped_complete,
+        "codesSkippedGap": codes_skipped_gap,
+        "localOnly": local_only,
+        "blackDragon": black_dragon,
         "barsReplayed": bars_replayed,
         "signalsEmitted": signals_emitted,
         "barsStored": bars_stored,
@@ -695,7 +741,7 @@ def kline_signal_backfill_status() -> dict[str, Any]:
         return dict(_backfill_status)
 
 
-def start_kline_signal_backfill_today(trade_date: str | None = None) -> dict[str, Any]:
+def start_kline_signal_backfill_today(trade_date: str | None = None, *, local_only: bool = False) -> dict[str, Any]:
     """背景執行緒觸發一次性回補；已經在跑就不會重複啟動。trade_date預設
     今天，也可以指定過去幾天內的日期(例如週末想驗證週五的資料)——只要
     在Shioaji歷史kbars查詢範圍內(目前呼叫端calendar_days=3天)就抓得到。"""
@@ -707,7 +753,7 @@ def start_kline_signal_backfill_today(trade_date: str | None = None) -> dict[str
 
     def _run() -> None:
         try:
-            result = backfill_today_kline_signals(trade_date=trade_date)
+            result = backfill_today_kline_signals(trade_date=trade_date, local_only=local_only)
         except Exception as error:  # noqa: BLE001
             result = {"error": str(error)}
             logger.exception("五分鐘K訊號回補整體失敗")
