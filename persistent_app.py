@@ -24,6 +24,7 @@ from disposition_stocks import disposition_status, get_disposition_map, start_di
 from stock_groups import industry_group_codes
 from brew_launch_history import (
     backfill_holder_force as brew_launch_backfill_holder_force,
+    group_quotes_payload,
     history as brew_launch_history,
     purge_false_relaunches as brew_launch_purge_false_relaunches,
     scan_status as brew_launch_scan_status,
@@ -763,6 +764,19 @@ def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[
     from group_daily_changes import get_group_daily_changes
 
     return get_group_daily_changes(days)
+
+
+@app.get("/api/hub/group-quotes")
+def get_group_quotes_endpoint(codes: str = Query("", description="代號，逗號分隔（最多 600 檔）")) -> Any:
+    """證交所即時報價代抓（2026-10-06 使用者：tw-groups 首頁報價在使用者那邊一直抓不到，醞釀／發動、刀劍空全空）。
+    tw-groups worker 自己向證交所抓失敗時改問這裡：每檔 price／prevClose／change／changePercent／open／
+    limitUp／limitDown／volume／name，加上報價日期時間與沒抓到的檔數；同一批代號 10 秒內共用一份。"""
+    try:
+        return group_quotes_payload(codes)
+    except ValueError as error:
+        return JSONResponse({"status": "error", "error": str(error)}, status_code=400)
+    except Exception as error:  # noqa: BLE001
+        return JSONResponse({"status": "error", "error": f"證交所報價抓不到：{error}"}, status_code=502)
 
 
 @app.get("/api/hub/session-close")

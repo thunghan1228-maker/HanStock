@@ -639,6 +639,7 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
             limit_down_price = _num(item.get("w"))
             out[code] = {
                 "price": price, "prevClose": prev_close, "volume": int(_num(item.get("v")) or 0),
+                "open": _num(item.get("o")), "name": str(item.get("n") or "").strip() or None,
                 "quoteDate": f"{day[:4]}-{day[4:6]}-{day[6:8]}" if len(day) == 8 else None,
                 "quoteTime": str(item.get("t") or "") or None,
                 "limitUp": limit_up_price is not None and price >= limit_up_price - 1e-6,
@@ -646,6 +647,66 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 "priceSource": source,
             }
     return out
+
+
+GROUP_QUOTES_CACHE_SECONDS = 10
+GROUP_QUOTES_MAX_CODES = 600
+_group_quotes_cache: dict[str, Any] = {"key": None, "at": 0.0, "payload": None}
+_group_quotes_lock = threading.Lock()
+
+
+def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """證交所即時報價代抓（2026-10-06 使用者：tw-groups 那邊 Cloudflare 抓證交所一直失敗，首頁報價、醞釀／發動、刀劍空全空）。
+    worker 自己抓不到時改問這裡：從這台主機抓（跟醞釀／發動掃描同一套 fetch_mis_quotes），每 80 檔一段同時抓；
+    同一批代號 10 秒內共用一份（同時進來的請求排隊等同一份，不會各自去打證交所）。全部段落都失敗才丟例外。"""
+    seen: list[str] = []
+    for token in str(raw_codes or "").replace(" ", ",").split(","):
+        code = token.strip().upper()
+        if code and 4 <= len(code) <= 6 and code.isalnum() and code not in seen:
+            seen.append(code)
+    if not seen:
+        raise ValueError("沒有代號")
+    codes = sorted(seen[:GROUP_QUOTES_MAX_CODES])
+    key = ",".join(codes)
+    with _group_quotes_lock:
+        cached = _group_quotes_cache["payload"]
+        if cached is not None and _group_quotes_cache["key"] == key and time.time() - _group_quotes_cache["at"] < GROUP_QUOTES_CACHE_SECONDS:
+            return cached
+        markets = _markets(codes)
+        chunks = [codes[i:i + MIS_CHUNK] for i in range(0, len(codes), MIS_CHUNK)]
+        quotes: dict[str, dict[str, Any]] = {}
+        failed: list[str] = []
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(6, len(chunks))) as pool:
+            futures = [pool.submit(fetch_mis_quotes, chunk, markets, fetcher=fetcher) for chunk in chunks]
+            for future in futures:
+                try:
+                    quotes.update(future.result())
+                except Exception as exc:  # noqa: BLE001
+                    failed.append(str(exc)[:200])
+        if len(failed) == len(chunks):
+            raise RuntimeError(failed[0] if failed else "證交所沒有回應")
+        out: dict[str, dict[str, Any]] = {}
+        latest_date = latest_time = ""
+        for code, q in quotes.items():
+            price, prev = q.get("price"), q.get("prevClose")
+            if not price or not prev:
+                continue
+            out[code] = {
+                "price": price, "prevClose": prev, "change": round(price - prev, 4), "changePercent": (price - prev) / prev * 100,
+                "open": q.get("open"), "limitUp": bool(q.get("limitUp")), "limitDown": bool(q.get("limitDown")),
+                "volume": q.get("volume"), "name": q.get("name"),
+            }
+            day, clock = str(q.get("quoteDate") or ""), str(q.get("quoteTime") or "")
+            if day > latest_date or (day == latest_date and clock > latest_time):
+                latest_date, latest_time = day, clock
+        payload = {
+            "status": "ok", "quotes": out, "quoteDate": latest_date or None, "quoteTime": latest_time or None,
+            "missing": len(codes) - len(out), "failedChunks": len(failed), "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+        }
+        _group_quotes_cache.update(key=key, at=time.time(), payload=payload)
+        return payload
 
 
 def _markets(codes: list[str]) -> dict[str, str]:
