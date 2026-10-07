@@ -24,9 +24,10 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from array import array
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from database import get_connection, initialize_database
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
@@ -227,7 +228,7 @@ def _now() -> datetime:
 
 # ------------------------------------------------------------------ 特徵
 
-def _ma_series(c: list[float], n: int) -> list[float]:
+def _ma_series(c: Sequence[float], n: int) -> list[float]:
     out = [math.nan] * len(c)
     total = 0.0
     for i, value in enumerate(c):
@@ -239,7 +240,7 @@ def _ma_series(c: list[float], n: int) -> list[float]:
     return out
 
 
-def _std_series(c: list[float], ma20: list[float], start: int) -> list[float]:
+def _std_series(c: Sequence[float], ma20: list[float], start: int) -> list[float]:
     out = [math.nan] * len(c)
     for i in range(max(19, start), len(c)):
         m = ma20[i]
@@ -247,7 +248,7 @@ def _std_series(c: list[float], ma20: list[float], start: int) -> list[float]:
     return out
 
 
-def compute_features(o: list[float], h: list[float], l: list[float], c: list[float], v: list[float]) -> dict[str, Any] | None:
+def compute_features(o: Sequence[float], h: Sequence[float], l: Sequence[float], c: Sequence[float], v: Sequence[float]) -> dict[str, Any] | None:
     """最後一根（i = 最後）是「今天」（盤中就是到那一刻的K棒）；不夠 131 根或均線算不出來回 None。"""
     n = len(c)
     i = n - 1
@@ -388,32 +389,36 @@ def _universe() -> dict[str, dict[str, str]]:
     return out
 
 
-def _load_bars(codes: list[str], *, until: str, include_until: bool) -> dict[str, dict[str, list]]:
-    """{代號: {d, o, h, l, c, v}}，舊到新；until 那天要不要算進去看 include_until。"""
+def _load_bars(codes: list[str], *, until: str, include_until: bool) -> dict[str, dict[str, Any]]:
+    """{代號: {last（最後一根的日期）, o, h, l, c, v}}，舊到新；until 那天要不要算進去看 include_until。
+    全市場一年多的日K放在 array('d')（一個數 8 bytes），盤中整天留在記憶體裡也只要三十 MB 上下。"""
     since = (date.fromisoformat(until) - timedelta(days=HISTORY_CALENDAR_DAYS)).isoformat()
     op = "<=" if include_until else "<"
     wanted = set(codes)
-    out: dict[str, dict[str, list]] = {}
+    out: dict[str, dict[str, Any]] = {}
     with get_connection() as connection:
         rows = connection.execute(
             f"""SELECT stock_code, substr(bar_time, 1, 10) AS d, open, high, low, close, volume FROM bars_1d
                 WHERE substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) {op} ?
                 ORDER BY stock_code, bar_time""",
             (since, until),
-        ).fetchall()
-    for row in rows:
-        code = str(row["stock_code"]).strip().upper()
-        if code not in wanted:
-            continue
-        series = out.setdefault(code, {"d": [], "o": [], "h": [], "l": [], "c": [], "v": []})
-        if series["d"] and series["d"][-1] == row["d"]:
-            continue
-        series["d"].append(str(row["d"]))
-        series["o"].append(float(row["open"]))
-        series["h"].append(float(row["high"]))
-        series["l"].append(float(row["low"]))
-        series["c"].append(float(row["close"]))
-        series["v"].append(float(row["volume"] or 0))
+        )
+        for row in rows:
+            code = str(row["stock_code"]).strip().upper()
+            if code not in wanted:
+                continue
+            series = out.get(code)
+            if series is None:
+                series = out[code] = {"last": None, "o": array("d"), "h": array("d"), "l": array("d"), "c": array("d"), "v": array("d")}
+            day = str(row["d"])
+            if series["last"] == day:
+                continue
+            series["last"] = day
+            series["o"].append(float(row["open"]))
+            series["h"].append(float(row["high"]))
+            series["l"].append(float(row["low"]))
+            series["c"].append(float(row["close"]))
+            series["v"].append(float(row["volume"] or 0))
     return out
 
 
@@ -537,7 +542,7 @@ _history_cache: dict[str, Any] = {"key": None, "bars": None, "universe": None, "
 _history_lock = threading.Lock()
 
 
-def _intraday_history(day: str) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, list]], dict[str, float]]:
+def _intraday_history(day: str) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, Any]], dict[str, float]]:
     """盤中用：今天以前的官方日K（一天只讀一次）。"""
     with _history_lock:
         if _history_cache["key"] != day:
@@ -557,7 +562,7 @@ def _stock_row(code: str, name: str, f: dict[str, Any], price: float, volume: fl
     }
 
 
-def _evaluate_all(universe: dict[str, dict[str, str]], bars: dict[str, dict[str, list]], logic_keys: list[str],
+def _evaluate_all(universe: dict[str, dict[str, str]], bars: dict[str, dict[str, Any]], logic_keys: list[str],
                   today: dict[str, dict[str, Any]] | None, shares: dict[str, float]) -> dict[str, list[dict[str, Any]]]:
     """today＝盤中K棒（接在 bars 後面）；None 表示 bars 最後一根就是要算的那天。"""
     futures = _futures_codes()
@@ -571,7 +576,8 @@ def _evaluate_all(universe: dict[str, dict[str, str]], bars: dict[str, dict[str,
             live = today.get(code)
             if not live:
                 continue
-            o, h, l, c, v = o + [live["open"]], h + [live["high"]], l + [live["low"]], c + [live["close"]], v + [live["volume"]]
+            o, h, l, c, v = (o + array("d", [live["open"]]), h + array("d", [live["high"]]), l + array("d", [live["low"]]),
+                             c + array("d", [live["close"]]), v + array("d", [live["volume"]]))
         f = compute_features(o, h, l, c, v)
         if f is None:
             continue
@@ -618,7 +624,7 @@ def run_close(day: str, *, force: bool = False) -> dict[str, Any]:
         return {"date": day, "skipped": "官方日K還沒到齊"}
     universe = _universe()
     bars = _load_bars(sorted(universe), until=day, include_until=True)
-    bars = {code: series for code, series in bars.items() if series["d"] and series["d"][-1] == day}   # 那天沒交易（停牌）的不算
+    bars = {code: series for code, series in bars.items() if series["last"] == day}   # 那天沒交易（停牌）的不算
     results = _evaluate_all(universe, bars, [logic["key"] for logic in LOGICS], None, _shares(sorted(universe), day))
     _save(day, CLOSE_SLOT, results, "official")
     return {"date": day, "stocks": len(bars), "counts": {key: len(rows) for key, rows in results.items()}}
