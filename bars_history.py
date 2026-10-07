@@ -7,7 +7,8 @@
   手動跑可以一次回補幾年），只補資料庫裡還沒有的日子。
 - 還原事件（price_adjust）：證交所減資／變更面額表（直接抓）、櫃買減資表（鏡像）、櫃買行情的漲跌反推恢復買賣參考價、
   最後用日K推測其他停止買賣後跳空超過一成的（例如 ETF 分割）。
-補完會叫黑龍表重算（還原後的價格、更長的歷史）。已經有的日K一律不覆蓋（ON CONFLICT DO NOTHING）。
+補完會叫黑龍表重算（還原後的價格、更長的歷史）。已經有的日K一律不覆蓋（ON CONFLICT DO NOTHING）；
+只有上櫃最近幾個月會拿鏡像核對，價格對不上的用鏡像蓋掉（repair_otc_from_mirror，2026-10-07 查到錯一天的上櫃日K）。
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ TWSE_PAUSE_AFTER_FAILURES = 3
 TWSE_MAX_FAILURES = 12
 POLL_SECONDS = 6 * 60 * 60
 BULK_INSERTED = 5000      # 這一輪補進這麼多根日K＝補了一大段歷史：黑龍表整張重算（以前歷史不夠的日子分數是空的）
+OTC_REPAIR_MONTHS = 4     # 每輪拿鏡像核對最近幾個月的上櫃日K
 OTC_DAY_COMPLETE_RATIO = 0.9
 TWSE_REDUCTION_URL = "https://www.twse.com.tw/rwd/zh/reducation/TWTAUU"
 TWSE_PAR_URL = "https://www.twse.com.tw/rwd/zh/change/TWTB8U"
@@ -43,6 +45,7 @@ _state: dict[str, Any] = {
     "running": False, "phase": None, "startedAt": None, "finishedAt": None, "error": None,
     "tse": {"todo": 0, "done": 0, "inserted": 0, "closed": 0, "failures": 0, "lastDate": None},
     "otc": {"months": 0, "monthsDone": 0, "inserted": 0, "days": 0, "error": None},
+    "otcRepair": None,
     "events": {"twse": 0, "tpex": 0, "tpexQuote": 0, "inferred": 0, "errors": []},
     "coverage": None, "heilong": None,
 }
@@ -306,6 +309,61 @@ def import_otc_from_mirror(start: date, end: date, *, raw: Callable[[str], bytes
     return result
 
 
+def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw: Callable[[str], bytes] = _download) -> dict[str, Any]:
+    """上櫃日K跟鏡像（櫃買官方每日行情）核對最近幾個月：開高低收任何一個對不上就用鏡像蓋掉（量一起換）。
+    2026-10-07 查到 8/21～8/27、9/07～9/09 的上櫃日K整段錯一天（存的是前一個交易日的行情，8/21、9/07 跟前一天一模一樣）：
+    當天櫃買還沒公布就去抓，拿到前一天的行情當成當天存進去，之後 ON CONFLICT DO NOTHING 就再也蓋不掉；
+    均線、布林、創高天數全部跟著錯（飆股雷達對嗨投資的布林帶寬就是這樣對不上）。今天的不核對（鏡像 16:50 才更新）。"""
+    result: dict[str, Any] = {"months": [], "checked": 0, "repaired": 0, "days": {}, "error": None}
+    try:
+        index = json.loads(_mirror_get("quotes/index.json", volatile=True, raw=raw).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"鏡像索引抓不到：{type(exc).__name__}: {exc}"[:200]
+        return result
+    cursor = today.replace(day=1)
+    wanted = []
+    for _ in range(max(1, months)):
+        wanted.append(f"{cursor.year}-{cursor.month:02d}")
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+    current = {wanted[0], wanted[1] if len(wanted) > 1 else wanted[0]}
+    for ym in sorted(set(wanted) & set((index.get("months") or {}).keys())):
+        try:
+            month = load_mirror_month(ym, volatile=ym in current, raw=raw)
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = f"{ym} 抓不到：{type(exc).__name__}: {exc}"[:200]
+            continue
+        result["months"].append(ym)
+        for day, rows in sorted((month.get("days") or {}).items()):
+            if day >= today.isoformat():
+                continue
+            with get_connection() as connection:
+                have = {
+                    str(r["stock_code"]).upper(): r for r in connection.execute(
+                        """SELECT b.stock_code, b.bar_time, b.open, b.high, b.low, b.close FROM bars_1d b
+                           JOIN stocks s ON s.stock_code = b.stock_code
+                           WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) = ?""", (day,)).fetchall()
+                }
+                fixes = []
+                for row in rows:
+                    try:
+                        code, _name, o, h, l, c, _chg, volume = row[:8]
+                        prices = (float(o), float(h), float(l), float(c))
+                    except (TypeError, ValueError):
+                        continue
+                    old = have.get(str(code).strip().upper())
+                    if old is None or min(prices) <= 0:
+                        continue
+                    result["checked"] += 1
+                    if any(abs(float(old[k]) - v) > 1e-6 for k, v in zip(("open", "high", "low", "close"), prices)):
+                        fixes.append((*prices, max(0, int((volume or 0) / 1000)), old["stock_code"], old["bar_time"]))
+                if fixes:
+                    connection.executemany(
+                        "UPDATE bars_1d SET open = ?, high = ?, low = ?, close = ?, volume = ? WHERE stock_code = ? AND bar_time = ?", fixes)
+                    result["repaired"] += len(fixes)
+                    result["days"][day] = len(fixes)
+    return result
+
+
 # ------------------------------------------------------------------ 還原事件
 
 def refresh_official_events(start_year: int, end_year: int, *, fetcher: Callable[..., Any] = fetch_json,
@@ -371,6 +429,8 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
         before = coverage()
         tse = backfill_tse(start, today)
         otc = import_otc_from_mirror(start, today)
+        repair = repair_otc_from_mirror(today)
+        _update(otcRepair={k: repair.get(k) for k in ("months", "checked", "repaired", "days", "error")})
         _update(phase="events")
         official = refresh_official_events(start.year, today.year)
         inferred = infer_events(start)
@@ -379,20 +439,30 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
         after = coverage()
         _update(coverage=after)
         heilong: dict[str, Any] | None = None
-        changed = tse.get("inserted", 0) or otc.get("inserted", 0) or otc.get("events", 0) or inferred or (before.get("bars") != after.get("bars"))
+        changed = (tse.get("inserted", 0) or otc.get("inserted", 0) or otc.get("events", 0) or inferred or repair.get("repaired", 0)
+                   or (before.get("bars") != after.get("bars")))
         if rebuild_heilong and changed:
             _update(phase="heilong")
             try:
                 from heilong_backtest import rebuild as rebuild_heilong_table
 
-                bulk = int(tse.get("inserted", 0) or 0) + int(otc.get("inserted", 0) or 0) >= BULK_INSERTED
+                # 修過舊日子的上櫃日K（不只最新 3 天）也要整張重算，不然黑龍表留著錯的均線分數
+                bulk = (int(tse.get("inserted", 0) or 0) + int(otc.get("inserted", 0) or 0) >= BULK_INSERTED
+                        or bool(repair.get("repaired")))
                 heilong = rebuild_heilong_table(force=bulk)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("bars history: heilong rebuild failed")
                 heilong = {"error": str(exc)}
             _update(heilong={k: heilong.get(k) for k in ("date", "dates", "rows", "written", "error") if isinstance(heilong, dict)})
+        if repair.get("repaired"):
+            try:
+                from grail_radar import backfill_close as grail_radar_backfill
+
+                grail_radar_backfill(recompute=True)   # 飆股雷達往日的「收盤」名單用修好的上櫃日K重算
+            except Exception:  # noqa: BLE001
+                logger.exception("bars history: grail radar recompute failed")
         _update(running=False, phase="done", finishedAt=_now())
-        return {"status": "ok", "before": before, "after": after, "tse": tse, "otc": otc, "official": official,
+        return {"status": "ok", "before": before, "after": after, "tse": tse, "otc": otc, "otcRepair": repair, "official": official,
                 "inferred": inferred, "heilong": heilong}
     except Exception as exc:  # noqa: BLE001
         logger.exception("bars history run failed")
