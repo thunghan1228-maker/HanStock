@@ -129,6 +129,36 @@ class OtcMirrorTests(BaseCase):
 
         result = module.import_otc_from_mirror(date(2024, 1, 1), date(2024, 2, 29), raw=raw)
         self.assertIn("鏡像索引抓不到", result["error"])
+        self.assertIn("鏡像索引抓不到", module.repair_otc_from_mirror(date(2026, 10, 7), raw=raw)["error"])
+
+    def test_repair_overwrites_bars_that_disagree_with_mirror(self) -> None:
+        # 2026-10-07 實際狀況：上櫃 9/07 存成 9/04 的行情（一模一樣），鏡像裡是真的 9/07
+        from official_daily_bars import _save_day
+
+        def otc(day: date, o: float, h: float, l: float, c: float, volume: int) -> dict:
+            return {"stock_code": "6173", "stock_name": "信昌電", "market": "OTC", "time": datetime.combine(day, datetime.min.time(), tzinfo=UTC),
+                    "open": o, "high": h, "low": l, "close": c, "volume": volume}
+
+        _save_day([otc(date(2026, 9, 4), 260.0, 265.0, 254.5, 260.5, 18478), otc(date(2026, 9, 7), 260.0, 265.0, 254.5, 260.5, 18478),
+                   otc(date(2026, 10, 7), 280.0, 281.0, 279.0, 280.0, 100)])
+        sep = {"month": "2026-09", "days": {
+            "2026-09-04": [["6173", "信昌電", 260.0, 265.0, 254.5, 260.5, 19.5, 18478287], ["9999", "沒存過", 10.0, 10.0, 10.0, 10.0, 0.0, 1000]],
+            "2026-09-07": [["6173", "信昌電", 273.5, 286.5, 273.0, 286.5, 26.0, 12484573]],
+        }}
+        octo = {"month": "2026-10", "days": {"2026-10-07": [["6173", "信昌電", 1.0, 1.0, 1.0, 1.0, 0.0, 1000]]}}
+        raw = self.mirror({"2026-09": sep, "2026-10": octo})
+        result = module.repair_otc_from_mirror(date(2026, 10, 7), raw=raw)
+        self.assertIsNone(result["error"])
+        self.assertEqual((result["repaired"], result["days"]), (1, {"2026-09-07": 1}))
+        with database.get_connection() as c:
+            rows = {r[0][:10]: tuple(r[1:]) for r in c.execute(
+                "SELECT bar_time, open, high, low, close, volume FROM bars_1d WHERE stock_code = '6173' ORDER BY bar_time").fetchall()}
+            unknown = c.execute("SELECT COUNT(*) FROM bars_1d WHERE stock_code = '9999'").fetchone()[0]
+        self.assertEqual(rows["2026-09-07"], (273.5, 286.5, 273.0, 286.5, 12484))
+        self.assertEqual(rows["2026-09-04"], (260.0, 265.0, 254.5, 260.5, 18478))   # 對得上的不動（量也不動）
+        self.assertEqual(rows["2026-10-07"], (280.0, 281.0, 279.0, 280.0, 100))     # 今天不核對
+        self.assertEqual(unknown, 0)                                                 # 只修已經有的，缺的交給 import
+        self.assertEqual(module.repair_otc_from_mirror(date(2026, 10, 7), raw=raw)["repaired"], 0)
 
 
 class EventTests(BaseCase):
@@ -174,6 +204,7 @@ class RunTests(BaseCase):
     def test_run_once_flow(self) -> None:
         with patch.object(module, "backfill_tse", return_value={"inserted": 0}) as tse, \
              patch.object(module, "import_otc_from_mirror", return_value={"inserted": 5, "events": 0}) as otc, \
+             patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 0}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 1, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
              patch("heilong_backtest.rebuild", return_value={"date": "2026-10-02", "dates": 250, "rows": 10, "written": 10}) as rebuild:
@@ -188,6 +219,7 @@ class RunTests(BaseCase):
 
         with patch.object(module, "backfill_tse", return_value={"inserted": 0}), \
              patch.object(module, "import_otc_from_mirror", return_value={"inserted": 0, "events": 0}), \
+             patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 0}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
              patch("heilong_backtest.rebuild") as rebuild2:
@@ -197,11 +229,25 @@ class RunTests(BaseCase):
     def test_bulk_backfill_forces_full_rebuild(self) -> None:
         with patch.object(module, "backfill_tse", return_value={"inserted": 4000}), \
              patch.object(module, "import_otc_from_mirror", return_value={"inserted": 3000, "events": 0}), \
+             patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 0}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
              patch("heilong_backtest.rebuild", return_value={}) as rebuild:
             module.run_once()
         rebuild.assert_called_once_with(force=True)      # 補了一大段歷史：整張重算
+
+    def test_repaired_otc_bars_rebuild_tables_and_radar(self) -> None:
+        with patch.object(module, "backfill_tse", return_value={"inserted": 0}), \
+             patch.object(module, "import_otc_from_mirror", return_value={"inserted": 0, "events": 0}), \
+             patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 860, "days": {"2026-09-07": 860}}), \
+             patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
+             patch.object(module, "infer_events", return_value=0), \
+             patch("heilong_backtest.rebuild", return_value={}) as rebuild, \
+             patch("grail_radar.backfill_close", return_value={}) as radar:
+            result = module.run_once()
+        self.assertEqual(result["otcRepair"]["repaired"], 860)
+        rebuild.assert_called_once_with(force=True)      # 修了舊日子：黑龍表整張重算
+        radar.assert_called_once_with(recompute=True)    # 飆股雷達往日名單也重算
 
     def test_target_start_and_coverage(self) -> None:
         self.assertEqual(module.target_start(date(2026, 10, 4), 3), date(2023, 10, 4))

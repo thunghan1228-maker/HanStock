@@ -38,6 +38,8 @@ from etf_holdings import collector_status as etf_status, run_collect as run_etf_
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
 from heilong_picker import payload as picker_payload
 from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock
+from grail_radar import collector_status as grail_radar_status, day_payload as grail_radar_payload, run_close as grail_radar_run_close
+from grail_radar import start_grail_radar_collector
 from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
@@ -114,6 +116,7 @@ async def _persistent_lifespan(fastapi_app):
             start_etf_collector()  # 主動式 ETF 五檔每日持股（下午報第三階段）
             start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
             start_bars_history_collector()  # 日K補到三年＋分割減資還原事件（創高黑選股，2026-10-04 使用者）
+            start_grail_radar_collector()  # 飆股雷達：15 個聖杯邏輯照時間點算、收盤再算一次（2026-10-07 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -998,6 +1001,37 @@ def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
         return chip_radar_payload(week or None)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/grail-radar")
+def get_grail_radar(date: str | None = Query(None)) -> dict[str, Any]:
+    """飆股雷達（2026-10-07 使用者：照莊爸 App 的飆股雷達做）：紫殺四個聖杯 15 個邏輯，每個邏輯照固定時間點
+    （盤中用證交所即時報價、收盤用官方日K）篩出來的名單。date＝看哪一天（YYYY-MM-DD），不給＝最新有資料的一天。"""
+    from fastapi import HTTPException
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return grail_radar_payload(date or None)
+
+
+@app.get("/api/hub/grail-radar/status")
+def get_grail_radar_status() -> dict[str, Any]:
+    return {"status": "ok", **grail_radar_status()}
+
+
+@app.post("/api/hub/grail-radar/run-close")
+def post_grail_radar_run_close(date: str = Query(...), force: bool = Query(False)) -> dict[str, Any]:
+    """用官方日K重算某一天的「收盤」名單（日K修正後、或想補某天時用）。"""
+    from fastapi import HTTPException
+
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return {"status": "ok", "result": grail_radar_run_close(date, force=force)}
 
 
 @app.get("/api/hub/chip-radar/stock")
