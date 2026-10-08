@@ -56,7 +56,7 @@ BACKFILL_DAYS = max(0, int(os.getenv("HANSTOCK_GRAIL_RADAR_BACKFILL_DAYS", "20")
 TSE_DAY_MIN = 500
 OTC_DAY_RATIO = 0.9
 MA_PERIODS = (5, 10, 20, 60, 120, 240)
-RULES_VERSION = 2               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
+RULES_VERSION = 3               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
 # 2026-10-08 使用者：以莊爸的時點為主，我們每個時點都提早 10 分鐘（他 12:00 我們 11:50、他 13:20 我們 13:10，以此類推）
 SWING_TIMES = ["12:50", "14:50"]               # 波段：莊爸 13:00、15:00 → 12:50、14:50（14:50 用收盤後的最後報價），另有官方日K的「收盤」
 OVERNIGHT_TIMES = ["11:50", "13:10", "13:35"]  # 隔日沖：莊爸 12:00、13:20、13:45 → 11:50、13:10、13:35
@@ -70,157 +70,182 @@ SAINTS = [
 
 
 def _cross2022(f: dict[str, Any]) -> bool:
-    return (f["chg"] >= 1.8 and f["pc_ma20"] <= 0 and f["c_ma20"] > 0 and f["c_ma5"] >= 0.75 and f["c_ma120"] >= 10
-            and f["dd60"] >= -15.5 and f["run60"] >= 25 and f["ma60_slope5"] >= -0.5 and f["vol"] >= 1000 and f["h_ma20"] >= 1.8
-            and f["hiago60"] <= 30 and f["c_ma240"] <= 100)
+    return (f["pc_ma20"] <= 0 and f["c_ma20"] > 0 and f["c_ma5"] >= 0.75 and f["c_ma120"] >= 10.4 and f["dd60"] >= -15.5
+            and f["run60"] >= 25 and f["ma60_slope5"] >= -0.8 and f["vol"] >= 1000 and f["h_ma20"] >= 1.8 and f["hiago60"] <= 28
+            and f["c_ma240"] <= 100 and f["range"] >= 2.86 and f["v_v5"] <= 6.1 and f["ma60_slope"] >= 0 and f["bw"] <= 29.3
+            and f["c_ma60"] >= 4.18)
 
 
 def _breakred(f: dict[str, Any]) -> bool:
-    return (f["body"] >= 0.2 and f["l_pl"] <= -0.1 and f["l_ma20"] <= 0 and f["h_ma20"] >= -1.5 and f["c_ma20"] <= 2.7
-            and f["ma20_ma60"] >= 1.8 and f["c_m5_prev"] <= 0.25 and f["c_ma240"] >= 3.5 and f["dd60"] >= -21 and f["vma5"] >= 250
-            and f["l_ma5"] <= -1)
+    return (f["body"] >= 0.2 and f["l_pl"] <= -0.1 and f["l_ma20"] <= 0 and f["h_ma20"] >= -1.6 and f["c_ma20"] <= 2.97
+            and f["ma20_ma60"] >= 1.4 and f["c_m5_prev"] <= 0.4 and f["c_ma240"] >= 2.8 and f["dd60"] >= -15.4
+            and f["vma5"] >= 262.5 and f["l_ma5"] <= -1.05 and f["chg"] >= -0.55 and f["close_pos"] >= 0.6
+            and f["below_cnt20"] <= 12)
 
 
 def _crossconv(f: dict[str, Any]) -> bool:
-    return (-6 <= f["c_ma20"] <= -0.75 and f["h_ma20"] >= -2.5 and f["ma20_ma60"] >= 2 and f["m5_m10"] <= -0.5
-            and f["ma10_slope"] <= -0.1 and f["v_pv"] <= 0.8 and f["v_v5"] <= 0.7 and f["v_v20"] <= 0.45 and f["vma5"] >= 350
-            and f["dd120"] >= -22 and f["ret3"] <= 0.5)
+    return (-9 <= f["c_ma20"] <= -0.4 and f["h_ma20"] >= -2.5 and f["ma20_ma60"] >= 1.8 and f["m5_m10"] <= -0.5
+            and f["ma10_slope"] <= -0.1 and f["v_pv"] <= 0.8 and f["v_v5"] <= 1.1 and f["v_v20"] <= 0.405 and f["vma5"] >= 280
+            and f["dd120"] >= -15.5 and f["ret3"] <= 0.55 and f["run60"] <= 31 and f["ma20_slope5"] <= 1)
 
 
 def _rsword(f: dict[str, Any]) -> bool:
-    return (f["hiago20"] == 0 and f["ushadow"] >= 2.05 and f["body"] >= 0.1 and f["chg"] <= 5 and f["c_ma20"] >= 5
-            and f["ma20_slope5"] >= -1.7 and f["vol"] >= 1000)
+    return (f["hiago20"] == 0 and f["ushadow"] >= 2.062 and f["body"] >= 0.1 and f["chg"] <= 5 and f["c_ma20"] >= 5
+            and f["ma20_slope5"] >= -2.1 and f["vol"] >= 1000)
 
 
 def _xdragon(f: dict[str, Any]) -> bool:
-    return (f["chg"] < 0 and f["black"] and f["c_m5_prev"] >= 4.7 and f["ma5_slope"] >= 1 and f["l_ma5"] >= 0 and f["hiago20"] <= 1
-            and f["range"] >= 3.8 and f["lshadow"] <= 2.9 and f["ma20_ma60"] >= 0 and f["ma20_slope5"] >= 0.3 and f["c_ma60"] >= 8.5
-            and f["vol"] >= 2000)
+    return (f["chg"] < 0 and f["black"] and f["c_m5_prev"] >= 4.5 and f["ma5_slope"] >= 0.95 and f["l_ma5"] >= -0.2
+            and f["hiago20"] <= 1 and f["range"] >= 3.6 and f["lshadow"] <= 3 and f["ma20_ma60"] >= -0.2
+            and f["ma20_slope5"] >= 0.1 and f["c_ma60"] >= 4.2 and f["vol"] >= 1900)
 
 
 def _panther(f: dict[str, Any]) -> bool:
-    return (f["hiago120"] == 0 and f["body"] <= -2 and f["h_ph"] >= 4 and f["c_m5_prev"] >= 9 and f["ma5_ma20"] <= 18
-            and f["vol"] >= 5000)
+    return (f["hiago120"] == 0 and f["body"] <= -1.8 and f["h_ph"] >= 2 and f["c_m5_prev"] >= 8.98 and f["ma5_ma20"] <= 29.7
+            and f["vol"] >= 4500 and f["c_ma20"] <= 31.4)
 
 
 def _shadow(f: dict[str, Any]) -> bool:
-    return (f["lshadow"] >= 2.6 and not f["l_ge_pl"] and f["body"] <= 2.4 and f["chg"] >= -2.7 and f["c_ma5"] <= 1.3
-            and f["z_min5"] >= 0.74 and f["c_ma60"] >= 9 and f["vol"] >= 1000)
+    return (f["lshadow"] >= 2.6 and not f["l_ge_pl"] and f["body"] <= 2.6 and f["chg"] >= -3 and f["c_ma5"] <= 1.8
+            and f["z_min5"] >= 0.7 and f["c_ma60"] >= 8.6 and f["vol"] >= 950 and f["chg_max4"] >= 0.34 and f["v_v20"] >= 0.45
+            and f["ma20_ma60"] <= 27.1 and f["ma5_slope"] <= 3)
 
 
 def _bfw2021(f: dict[str, Any]) -> bool:
-    return (f["prev_black"] and f["c_m5_prev"] >= 3 and f["hiago60"] <= 1 and f["newhi_cnt3"] >= 2 and not f["h_gt_ph"]
-            and f["v_pv"] <= 0.85 and f["body"] >= -3.5 and f["vol_prev"] >= 5000 and f["ret3"] >= 0.5 and f["run20"] >= 20
-            and f["l_ma10"] <= 12 and f["hup_max20"] <= 15.5)
+    return (f["prev_black"] and f["c_m5_prev"] >= 2.2 and f["hiago60"] <= 1 and f["newhi_cnt3"] >= 2 and not f["h_gt_ph"]
+            and f["v_pv"] <= 1.1 and f["body"] >= -5.5 and f["vol_prev"] >= 5000 and f["ret3"] >= 0.2 and f["run20"] >= 10
+            and f["l_ma10"] <= 18 and f["hup_max20"] <= 16.27 and f["bw"] <= 62.605 and f["bw_min10"] >= 6.6
+            and f["h_ma20"] >= 9.1 and f["above5_cnt3"] >= 3)
 
 
 def _bfw905(f: dict[str, Any]) -> bool:
-    return (f["prev_black"] and f["hiago120"] <= 1 and f["vol_prev"] >= 5000 and f["hup_max20"] >= 8.5
-            and f["ma60_ma120"] >= 0 and f["l_ma5"] >= -3 and f["below_cnt20"] <= 10)
+    return (f["prev_black"] and f["hiago120"] <= 1 and f["vol_prev"] >= 5548 and f["hup_max20"] >= 8.1 and f["ma60_ma120"] >= -0.2
+            and f["l_ma5"] >= -3.1 and f["below_cnt20"] <= 10 and f["vol"] <= 8420 and f["bw_min10"] <= 77.5 and f["body"] <= 6.5)
 
 
 def _swordfw(f: dict[str, Any]) -> bool:
-    return (f["pc_ma20"] >= 11 and f["v_pv"] <= 0.33 and not f["l_ge_pl"] and f["above5_cnt3"] == 3 and f["bw"] <= 63
-            and f["vol"] >= 1000)
+    return (f["pc_ma20"] >= 9.9 and f["v_pv"] <= 0.352 and not f["l_ge_pl"] and f["above5_cnt3"] == 3 and f["bw"] <= 71.8
+            and f["vol"] >= 900 and f["body"] <= 2.8 and f["chg_2"] >= 4.9)
 
 
 def _bfwfut(f: dict[str, Any]) -> bool:
-    return (f["futures"] and f["newhi_cnt3"] >= 2 and f["h_ph"] <= -0.5 and f["bigred_cnt3"] >= 1 and f["v_v5"] <= 1.0
-            and f["v_v20"] >= 0.7 and f["ret3_min"] >= -4.5 and f["chg_prev"] <= 3.5 and f["range"] <= 6.2 and f["run60"] >= 30
-            and f["hup_max20"] >= 6 and f["below_cnt10"] <= 2)
+    return (f["futures"] and f["newhi_cnt3"] >= 2 and f["h_ph"] <= -0.2 and f["bigred_cnt3"] >= 1 and f["v_v5"] <= 0.973
+            and f["v_v20"] >= 0.3 and f["ret3_min"] >= -4.5 and f["chg_prev"] <= 3.7 and f["run60"] >= 40.5
+            and f["hup_max20"] >= 3.3 and f["below_cnt10"] <= 2 and f["vma5"] >= 1748.8 and f["c_ma60"] >= 4.5)
 
 
 def _fly3(f: dict[str, Any]) -> bool:
-    return (f["nh60_2"] and f["launch_chg"] >= 4 and f["chg_prev"] <= 3.5 and f["ret3"] <= 12 and f["above5_cnt3"] == 3
-            and f["vma5"] >= 300)
+    return (f["nh60_2"] and f["launch_chg"] >= 4.5 and f["chg_prev"] <= 3.3 and f["ret3"] <= 12 and f["above5_cnt3"] == 3
+            and f["vma5"] >= 297 and f["chg_3"] >= -0.5)
 
 
 def _flyburst(f: dict[str, Any]) -> bool:
-    return (f["hiago120"] == 0 and f["chg"] >= 6 and f["v_v5"] >= 2.8 and f["hup_max20"] <= 10 and f["bw_min10"] <= 22
-            and f["vol"] >= 3500)
+    return (f["hiago120"] == 0 and f["chg"] >= 4.8 and f["v_v5"] >= 2.5 and f["hup_max20"] <= 11 and f["bw_min10"] <= 24.2
+            and f["vol"] >= 3150 and f["ma20_ma60"] >= 2 and f["c_m5_prev"] >= 1.5 and f["c_ma120"] <= 47.81)
 
 
 def _flybreak(f: dict[str, Any]) -> bool:
-    return (f["hiago60"] == 0 and f["chg"] >= 6 and f["close_pos"] >= 0.5 and f["chg_prev"] <= 3.5 and f["bw"] <= 25
-            and f["c_ma120"] >= 9.5 and f["c_ma240"] >= 15 and f["ma60_slope"] >= 0.1)
+    return (f["hiago60"] == 0 and f["chg"] >= 5.7 and f["close_pos"] >= 0.4 and f["chg_prev"] <= 3.5 and f["bw"] <= 25
+            and f["c_ma120"] >= 7.6 and f["c_ma240"] >= 14.2 and f["ma60_slope"] >= 0.1 and f["vol_prev"] >= 64
+            and f["range"] <= 11.3 and f["chg_2"] >= -2.5 and f["hiago120"] <= 118 and f["c_m5_prev"] <= 7.3)
 
 
 def _red3(f: dict[str, Any]) -> bool:
-    return (f["consec_red"] >= 3 and f["c_ma5"] >= 2.5 and f["c_ma20"] >= 5 and f["spread3"] <= 4.6 and 0.4 <= f["close_pos"] <= 0.98
-            and f["chg_prev"] <= 8.4 and f["chg_max4"] <= 8.5 and f["dd60"] <= -2 and f["c_ma240"] >= 0 and f["ma60_ma120"] >= -8
-            and f["vol"] >= 1000)
+    return (f["consec_red"] >= 3 and f["c_ma5"] >= 1.2 and f["c_ma20"] >= 5 and f["spread3"] <= 5.8
+            and 0.2 <= f["close_pos"] <= 0.98 and f["chg_prev"] <= 12.6 and f["chg_max4"] <= 8.5 and f["dd60"] <= -1.6
+            and f["c_ma240"] >= -1 and f["ma60_ma120"] >= -8.4 and f["vol"] >= 900 and f["z_min5"] <= 0.4 and f["ushadow"] <= 3.85
+            and f["run20"] >= 11)
 
 
 # 名稱照莊爸網站；時間點＝莊爸的固定時點提早 10 分鐘（波段 12:50、14:50＋收盤，隔日沖 11:50／13:10／13:35；R劍照他現在的頁面算隔日沖）；
-# desc 是我們反推的條件（給頁面「條件說明」用）；calibration＝第二版對答案（一個月嗨投資名單＋莊爸 10/01～10/07 五天全名單）。
+# desc 是我們反推的條件（給頁面「條件說明」用）；calibration＝第三版對答案（一個月嗨投資名單＋莊爸 10/01～10/08 六天全名單）。
+# 第三版（2026-10-08）：從第二版出發重調，門檻往寬的方向留邊（分數幾乎不掉就放寬，不卡在某一天剛好的邊上）；
+# 輪流拿掉一天調、用那天驗：六天平均抓到莊爸 79%、我們名單 79% 跟他一樣（第二版在沒看過的 10/08 是 73%／60%）。
 LOGICS: list[dict[str, Any]] = [
     {"key": "cross2022", "saintId": 57, "name": "波段穿惡2022版本", "kind": "波段", "rule": _cross2022, "times": SWING_TIMES,
-     "desc": "穿惡：昨天收在月線（20日線）下、今天收盤站回月線，漲 1.8% 以上、收在 5 日線上 0.75% 以上、最高超過月線 1.8%；"
-             "60 日高點在最近 30 天內、前 60 天高低差 25% 以上（第一波）、離 60 日高點回檔 15.5% 以內；"
-             "收盤比半年線高 10% 以上、但沒超過年線一倍；季線沒有往下彎；量 1000 張以上。",
-     "calibration": {"recall": 88, "precision": 66}},
+     "desc": "穿惡：昨天收在月線（20日線）下、今天收盤站回月線，收在 5 日線上 0.75% 以上、最高超過月線 1.8%、振幅 2.86% 以上；"
+             "60 日高點在最近 28 天內、前 60 天高低差 25% 以上（第一波）、離 60 日高點回檔 15.5% 以內；"
+             "收盤比季線高 4.18%、比半年線高 10.4% 以上、但沒超過年線一倍；季線沒有往下彎；布林帶寬 29.3% 以內；"
+             "量 1000 張以上、不到 5 日均量 6.1 倍。",
+     "calibration": {"recall": 86, "precision": 90}},
     {"key": "breakred", "saintId": 57, "name": "即將突破惡(紅)", "kind": "波段", "rule": _breakred, "times": SWING_TIMES,
-     "desc": "回測月線收紅：今天收紅K（收比開高 0.2% 以上）、低點跌破昨天低點、跌破 5 日線 1% 以上、碰到月線，"
-             "最高不低於月線 1.5%、收盤在月線 +2.7% 以內；昨天收在 5 日線以下；"
-             "月線比季線高 1.8% 以上、收盤比年線高 3.5% 以上、離 60 日高點 21% 以內；5 日均量 250 張以上。",
-     "calibration": {"recall": 91, "precision": 46}},
+     "desc": "回測月線收紅：今天收紅K（收比開高 0.2% 以上）、跌幅 0.55% 以內、收在當天振幅 6 成以上；"
+             "低點跌破昨天低點、跌破 5 日線 1.05% 以上、碰到月線，最高不低於月線 1.6%、收盤在月線 +2.97% 以內；"
+             "昨天收盤在 5 日線 +0.4% 以內；"
+             "月線比季線高 1.4% 以上、收盤比年線高 2.8% 以上、離 60 日高點 15.4% 以內、近 20 天收在月線下最多 12 天；"
+             "5 日均量 262.5 張以上。",
+     "calibration": {"recall": 75, "precision": 73}},
     {"key": "crossconv", "saintId": 57, "name": "即將穿惡(收斂)", "kind": "波段", "rule": _crossconv, "times": SWING_TIMES,
-     "desc": "月線下量縮收斂：收在月線下 0.75%～6%、最高離月線不到 2.5%；5 日線在 10 日線下、10 日線往下彎；"
-             "量比昨天縮到 8 成以下、不到 5 日均量 7 成、不到 20 日均量 45%（5 日均量 350 張以上）；"
-             "月線比季線高 2% 以上、離 120 日高點 22% 以內、近 3 天沒漲。",
-     "calibration": {"recall": 86, "precision": 39}},
+     "desc": "月線下量縮收斂：收在月線下 0.4%～9%、最高離月線不到 2.5%；"
+             "5 日線在 10 日線下 0.5% 以上、10 日線往下彎、月線 5 天內漲不到 1%；"
+             "量比昨天縮到 8 成以下、不到 5 日均量 1.1 倍、不到 20 日均量 40.5%（5 日均量 280 張以上）；"
+             "月線比季線高 1.8% 以上、離 120 日高點 15.5% 以內、60 天高低差 31% 以內、近 3 天漲不到 0.55%。",
+     "calibration": {"recall": 62, "precision": 100}},
     {"key": "rsword", "saintId": 32, "name": "隔日沖-R劍", "kind": "隔日沖", "rule": _rsword, "times": OVERNIGHT_TIMES,
-     "desc": "創 20 日新高的紅K長上影（R劍）：今天最高是 20 日新高、上影線 2.05% 以上、收紅、漲幅 5% 以內；"
-             "收盤比月線高 5% 以上、月線 5 天內沒有明顯下彎；量 1000 張以上。",
-     "calibration": {"recall": 100, "precision": 98}},
+     "desc": "創 20 日新高的紅K長上影（R劍）：今天最高是 20 日新高、上影線 2.06% 以上、收紅、漲幅 5% 以內；"
+             "收盤比月線高 5% 以上、月線 5 天內下彎不到 2.1%；量 1000 張以上。",
+     "calibration": {"recall": 100, "precision": 97}},
     {"key": "xdragon", "saintId": 32, "name": "隔日沖-極限黑龍", "kind": "隔日沖", "rule": _xdragon, "times": OVERNIGHT_TIMES,
-     "desc": "強勢股換手收黑：今天收黑K而且下跌、低點不破 5 日線、振幅 3.8% 以上、下影線 2.9% 以內；"
-             "昨天收盤在 5 日線上 4.7% 以上、5 日線還在往上（比昨天高 1% 以上）、20 日新高在今天或昨天；"
-             "月線在季線上而且 5 天內往上、收盤比季線高 8.5% 以上；量 2000 張以上。",
-     "calibration": {"recall": 94, "precision": 94}},
+     "desc": "強勢股換手收黑：今天收黑K而且下跌、低點最多跌破 5 日線 0.2%、振幅 3.6% 以上、下影線 3% 以內；"
+             "昨天收盤在 5 日線上 4.5% 以上、5 日線還在往上（比昨天高 0.95% 以上）、20 日新高在今天或昨天；"
+             "月線最多比季線低 0.2% 而且 5 天內往上、收盤比季線高 4.2% 以上；量 1900 張以上。",
+     "calibration": {"recall": 97, "precision": 88}},
     {"key": "panther", "saintId": 32, "name": "超黑豹2023版", "kind": "隔日沖", "rule": _panther, "times": OVERNIGHT_TIMES,
-     "desc": "創 120 日新高的長黑：今天最高是 120 日新高、比昨天最高再高 4% 以上，但收長黑（收比開低 2% 以上）；"
-             "昨天收盤在 5 日線上 9% 以上、5 日線離月線 18% 以內；量 5000 張以上。",
-     "calibration": {"recall": 92, "precision": 100}},
+     "desc": "創 120 日新高的長黑：今天最高是 120 日新高、比昨天最高再高 2% 以上，但收長黑（收比開低 1.8% 以上）；"
+             "昨天收盤在 5 日線上 8.98% 以上、5 日線離月線 29.7% 以內、收盤離月線 31.4% 以內；"
+             "量 4500 張以上。",
+     "calibration": {"recall": 100, "precision": 100}},
     {"key": "shadow", "saintId": 32, "name": "隔日沖-神下影", "kind": "隔日沖", "rule": _shadow, "times": OVERNIGHT_TIMES,
-     "desc": "強勢股長下影：下影線 2.6% 以上、低點跌破昨天低點、實體 2.4% 以內、跌幅 2.7% 以內、收盤離 5 日線 1.3% 以內；"
-             "近 5 天收盤都在月線上方（至少 0.74 個標準差）、收盤比季線高 9% 以上；量 1000 張以上。",
-     "calibration": {"recall": 96, "precision": 76}},
+     "desc": "強勢股長下影：下影線 2.6% 以上、低點跌破昨天低點、實體 2.6% 以內、跌幅 3% 以內、收盤離 5 日線 1.8% 以內、5 日線一天漲不到 3%；"
+             "近 5 天收盤都在月線上方（至少 0.7 個標準差）、近 4 天有一天漲 0.34% 以上、收盤比季線高 8.6% 以上、月線離季線 27.1% 以內；"
+             "量 950 張以上、有 20 日均量 45%。",
+     "calibration": {"recall": 89, "precision": 89}},
     {"key": "bfw2021", "saintId": 24, "name": "黑飛舞小波段2021版", "kind": "隔日沖", "rule": _bfw2021, "times": OVERNIGHT_TIMES,
-     "desc": "黑飛舞：昨天收黑K而且大量（5000 張以上），但收盤還在 5 日線上 3% 以上；今天量縮到昨天 85% 以下、"
-             "最高沒超過昨天、不是長黑（收比開低 3.5% 以內）；60 日新高在今天或昨天、近 3 天有 2 天創 20 日新高、"
-             "3 天漲 0.5% 以上、20 天高低差 20% 以上、低點離 10 日線 12% 以內、近 20 天最多超出布林上緣 15.5%。",
-     "calibration": {"recall": 86, "precision": 83}},
+     "desc": "黑飛舞：昨天收黑K而且大量（5000 張以上），但收盤還在 5 日線上 2.2% 以上；"
+             "今天最高沒超過昨天、量最多是昨天 1.1 倍、不是長黑（收比開低 5.5% 以內）；"
+             "60 日新高在今天或昨天、近 3 天有 2 天創 20 日新高、近 3 天都收在 5 日線上、3 天漲 0.2% 以上；"
+             "最高比月線高 9.1% 以上、低點離 10 日線 18% 以內；"
+             "20 天高低差 10% 以上、近 20 天最多超出布林上緣 16.27%、布林帶寬 62.6% 以內、近 10 天最窄帶寬 6.6% 以上。",
+     "calibration": {"recall": 91, "precision": 100}},
     {"key": "bfw905", "saintId": 24, "name": "黑飛舞905", "kind": "隔日沖", "rule": _bfw905, "times": OVERNIGHT_TIMES,
-     "desc": "黑飛舞 905：昨天收黑K而且大量（5000 張以上）、120 日新高在今天或昨天；近 20 天曾超出布林上緣 8.5% 以上；"
-             "季線在半年線上；今天低點離 5 日線 3% 以內；近 20 天收在月線下的日子 10 天以內。",
-     "calibration": {"recall": 81, "precision": 39}},
+     "desc": "黑飛舞 905：昨天收黑K而且大量（5548 張以上）、120 日新高在今天或昨天；"
+             "今天量 8420 張以內、實體紅K 6.5% 以內；"
+             "近 20 天曾超出布林上緣 8.1% 以上、近 10 天最窄帶寬 77.5% 以內；季線最多比半年線低 0.2%；"
+             "今天低點離 5 日線 3.1% 以內；近 20 天收在月線下的日子 10 天以內。",
+     "calibration": {"recall": 80, "precision": 100}},
     {"key": "swordfw", "saintId": 24, "name": "隔日沖-劍飛舞", "kind": "隔日沖", "rule": _swordfw, "times": OVERNIGHT_TIMES,
-     "desc": "劍飛舞：昨天收盤比月線高 11% 以上（很強）、今天量急縮到昨天 1/3 以下、低點跌破昨天低點，但近 3 天都收在 5 日線上；"
-             "布林帶寬 63% 以內；量 1000 張以上。",
-     "calibration": {"recall": 90, "precision": 97}},
+     "desc": "劍飛舞：兩天前漲 4.9% 以上、昨天收盤比月線高 9.9% 以上（很強）；"
+             "今天量急縮到昨天 35.2% 以下、低點跌破昨天低點、實體 2.8% 以內，但近 3 天都收在 5 日線上；"
+             "布林帶寬 71.8% 以內；量 900 張以上。",
+     "calibration": {"recall": 97, "precision": 100}},
     {"key": "bfwfut", "saintId": 24, "name": "黑飛舞(股期)", "kind": "隔日沖", "rule": _bfwfut, "times": OVERNIGHT_TIMES,
-     "desc": "有股票期貨的股票：近 3 天有 2 天創 20 日新高、今天最高比昨天低 0.5% 以上（不再創高）、近 3 天有一根 3% 以上的紅K；"
-             "量不到 5 日均量但有 20 日均量 7 成；近 3 天單日跌幅都在 4.5% 以內、昨天漲 3.5% 以內、振幅 6.2% 以內；"
-             "60 天高低差 30% 以上、近 20 天曾衝出布林上緣 6% 以上、近 10 天最多 2 天收在月線下。",
-     "calibration": {"recall": 78, "precision": 88}},
+     "desc": "有股票期貨的股票：近 3 天有 2 天創 20 日新高、今天最高比昨天低 0.2% 以上（不再創高）、近 3 天有一根 3% 以上的紅K；"
+             "量不到 5 日均量 97.3% 但有 20 日均量 3 成、5 日均量 1748.8 張以上；"
+             "近 3 天單日跌幅都在 4.5% 以內、昨天漲 3.7% 以內；"
+             "收盤比季線高 4.5% 以上、60 天高低差 40.5% 以上、近 20 天曾衝出布林上緣 3.3% 以上、近 10 天最多 2 天收在月線下。",
+     "calibration": {"recall": 85, "precision": 100}},
     {"key": "fly3", "saintId": 30, "name": "三日飛龍", "kind": "波段", "rule": _fly3, "times": SWING_TIMES,
-     "desc": "三日飛龍：兩天前創 60 日新高，而且兩、三天前有一天漲 4% 以上（發動）；之後整理：昨天漲 3.5% 以內、"
-             "3 天漲幅 12% 以內、近 3 天都收在 5 日線上；5 日均量 300 張以上。",
-     "calibration": {"recall": 89, "precision": 70}},
+     "desc": "三日飛龍：兩天前創 60 日新高，而且兩、三天前有一天漲 4.5% 以上（發動）、三天前沒跌超過 0.5%；"
+             "之後整理：昨天漲 3.3% 以內、3 天漲幅 12% 以內、近 3 天都收在 5 日線上；5 日均量 297 張以上。",
+     "calibration": {"recall": 84, "precision": 79}},
     {"key": "flyburst", "saintId": 30, "name": "飛龍紅爆2022版", "kind": "波段", "rule": _flyburst, "times": SWING_TIMES,
-     "desc": "飛龍紅爆：今天最高是 120 日新高、漲 6% 以上、爆量（5 日均量 2.8 倍以上、3500 張以上）；"
-             "近 10 天布林帶寬曾縮到 22% 以內（從整理區噴出）、近 20 天最多超出布林上緣 10%。",
-     "calibration": {"recall": 100, "precision": 73}},
+     "desc": "飛龍紅爆：今天最高是 120 日新高、漲 4.8% 以上、爆量（5 日均量 2.5 倍以上、3150 張以上）；"
+             "昨天收盤在 5 日線上 1.5% 以上、月線比季線高 2% 以上、收盤離半年線 47.81% 以內；"
+             "近 10 天布林帶寬曾縮到 24.2% 以內（從整理區噴出）、近 20 天最多超出布林上緣 11%。",
+     "calibration": {"recall": 100, "precision": 100}},
     {"key": "flybreak", "saintId": 30, "name": "飛龍突破2023版", "kind": "波段", "rule": _flybreak, "times": SWING_TIMES,
-     "desc": "飛龍突破：今天最高是 60 日新高、漲 6% 以上（漲停也算）、收在當天振幅的上半段；昨天漲 3.5% 以內；"
-             "布林帶寬 25% 以內（從整理區突破）；收盤比半年線高 9.5%、比年線高 15% 以上、季線往上。",
-     "calibration": {"recall": 96, "precision": 76}},
+     "desc": "飛龍突破：今天最高是 60 日新高、漲 5.7% 以上（漲停也算）、振幅 11.3% 以內、收在當天振幅 4 成以上；"
+             "昨天漲 3.5% 以內、昨收離 5 日線 7.3% 以內、兩天前跌幅 2.5% 以內；"
+             "布林帶寬 25% 以內（從整理區突破）；"
+             "收盤比半年線高 7.6%、比年線高 14.2% 以上、季線往上（另有兩條很寬的條件：昨天有量、120 日高點不在最舊那一天）。",
+     "calibration": {"recall": 100, "precision": 96}},
     {"key": "red3", "saintId": 30, "name": "三紅劍小波段", "kind": "波段", "rule": _red3, "times": SWING_TIMES,
-     "desc": "三紅劍：連續 3 天以上收紅K、收在 5 日線上 2.5%、月線上 5% 以上；5/10/20 日線糾結在 4.6% 以內；"
-             "收在當天振幅的中上段（40%～98%）、昨天漲 8.4% 以內、近 4 天沒有單日漲 8.5% 以上；"
-             "離 60 日高點至少回 2%、收在年線上、季線沒有比半年線低超過 8%；量 1000 張以上。",
-     "calibration": {"recall": 87, "precision": 64}},
+     "desc": "三紅劍：連續 3 天以上收紅K、收在 5 日線上 1.2%、月線上 5% 以上；"
+             "5/10/20 日線糾結在 5.8% 以內、近 5 天有一天收盤離月線不到 0.4 個標準差（剛從月線附近上來）；"
+             "收在當天振幅 2 成～98%、上影線 3.85% 以內、昨天漲 12.6% 以內、近 4 天沒有單日漲 8.5% 以上；"
+             "20 天高低差 11% 以上、離 60 日高點至少回 1.6%、收盤最多低於年線 1%、季線沒有比半年線低超過 8.4%；"
+             "量 900 張以上。",
+     "calibration": {"recall": 88, "precision": 91}},
 ]
 LOGIC_BY_KEY = {logic["key"]: logic for logic in LOGICS}
 ALL_SLOTS = sorted({t for logic in LOGICS for t in logic["times"]})
