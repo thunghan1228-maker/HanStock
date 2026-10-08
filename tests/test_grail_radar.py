@@ -51,7 +51,7 @@ class FeatureTests(unittest.TestCase):
         self.assertIsNone(module.compute_features(o, h, l, c, v))
 
     def test_three_day_dragon_needs_launch_two_days_ago(self) -> None:
-        """三日飛龍（第二版）：兩天前漲 4% 以上創 60 日新高，之後兩天整理。"""
+        """三日飛龍（第三版）：兩天前漲 4.5% 以上創 60 日新高，之後兩天整理。"""
         history = uptrend()
         last = history[-1][3]
 
@@ -64,9 +64,11 @@ class FeatureTests(unittest.TestCase):
         o, h, l, c, v = columns(history + days_after(0.06))
         features = module.compute_features(o, h, l, c, v)
         self.assertTrue(features["nh60_2"])
-        self.assertGreaterEqual(features["launch_chg"], 4)
+        self.assertGreaterEqual(features["launch_chg"], 4.5)
         self.assertIn("fly3", module.evaluate(features))
-        o, h, l, c, v = columns(history + days_after(0.02))   # 兩天前只漲 2%：不算發動
+        o, h, l, c, v = columns(history + days_after(0.05))   # 漲 5% 也算
+        self.assertIn("fly3", module.evaluate(module.compute_features(o, h, l, c, v)))
+        o, h, l, c, v = columns(history + days_after(0.04))   # 兩天前只漲 4%：第三版不算發動
         self.assertNotIn("fly3", module.evaluate(module.compute_features(o, h, l, c, v)))
 
 
