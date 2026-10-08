@@ -7,11 +7,12 @@
 （CALIBRATION＝一個月名單＋五天全名單：嗨投資選的我們抓到幾成、我們選的有幾成在他們名單裡）。
 主力籌碼（嗨投資的「主力買賣超」「1日σ／10日σ」）我們沒有全市場的資料，所以有幾個邏輯準度比較低。
 
-時間點照莊爸網站 10/07 起的固定時點（2026-10-07 使用者：時點改成跟莊爸一樣）：
-波段（穿山鱷龍、R劍、飛龍戰法）13:00＋收盤；隔日沖（極限黑龍、超黑豹、神下影、黑飛舞家族）12:00、13:20、13:45。
+時間點以莊爸網站的固定時點為主、每個都提早 10 分鐘（2026-10-08 使用者）：
+波段（穿山鱷龍、飛龍戰法）莊爸 13:00、15:00 → 我們 12:50、14:50＋收盤；
+隔日沖（黑龍短沖 4 個含 R劍、黑飛舞家族）莊爸 12:00、13:20、13:45 → 我們 11:50、13:10、13:35。
 - 盤中時間點：證交所 MIS 即時報價（跟首頁同一個來源）組出全市場今天到那一刻的K棒（開、高、低、現價、累積張數），
   接在官方日K後面算條件；那個時間點過了 SLOT_GRACE_MINUTES 分鐘還沒算到（例如剛好重新部署）就不補，留空。
-  13:30 收盤以後的時間點（13:45）用的是收盤後的最後報價，晚一點算也一樣，所以當天都可以補。
+  13:30 收盤以後的時間點（13:35、14:50）用的是收盤後的最後報價，晚一點算也一樣，所以當天都可以補。
 - 收盤：官方日K（上市證交所、上櫃鏡像／Yahoo）到齊以後再用整根日K算一次「收盤」，往日名單也是這樣回推的。
 名單上的均線分數跟莊爸一樣用「前一交易日收盤」的官網式 15 分（heilong_daily.score2，籌碼暴增雷達也是這套）。
 條件改版（RULES_VERSION 變了）重新啟動時，存著的「收盤」名單全部用新條件重算。
@@ -56,8 +57,9 @@ TSE_DAY_MIN = 500
 OTC_DAY_RATIO = 0.9
 MA_PERIODS = (5, 10, 20, 60, 120, 240)
 RULES_VERSION = 2               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
-SWING_TIMES = ["13:00"]                     # 波段：13:00＋收盤（莊爸 15:00 收盤那一輪＝我們的「收盤」）
-OVERNIGHT_TIMES = ["12:00", "13:20", "13:45"]   # 隔日沖：中午一次、尾盤兩次
+# 2026-10-08 使用者：以莊爸的時點為主，我們每個時點都提早 10 分鐘（他 12:00 我們 11:50、他 13:20 我們 13:10，以此類推）
+SWING_TIMES = ["12:50", "14:50"]               # 波段：莊爸 13:00、15:00 → 12:50、14:50（14:50 用收盤後的最後報價），另有官方日K的「收盤」
+OVERNIGHT_TIMES = ["11:50", "13:10", "13:35"]  # 隔日沖：莊爸 12:00、13:20、13:45 → 11:50、13:10、13:35
 
 SAINTS = [
     {"id": 57, "name": "穿山鱷龍"},
@@ -149,7 +151,7 @@ def _red3(f: dict[str, Any]) -> bool:
             and f["vol"] >= 1000)
 
 
-# 名稱照莊爸網站；時間點照莊爸 10/07 起的固定時點（波段 13:00＋收盤、隔日沖 12:00／13:20／13:45，R劍算波段）；
+# 名稱照莊爸網站；時間點＝莊爸的固定時點提早 10 分鐘（波段 12:50、14:50＋收盤，隔日沖 11:50／13:10／13:35；R劍照他現在的頁面算隔日沖）；
 # desc 是我們反推的條件（給頁面「條件說明」用）；calibration＝第二版對答案（一個月嗨投資名單＋莊爸 10/01～10/07 五天全名單）。
 LOGICS: list[dict[str, Any]] = [
     {"key": "cross2022", "saintId": 57, "name": "波段穿惡2022版本", "kind": "波段", "rule": _cross2022, "times": SWING_TIMES,
@@ -167,7 +169,7 @@ LOGICS: list[dict[str, Any]] = [
              "量比昨天縮到 8 成以下、不到 5 日均量 7 成、不到 20 日均量 45%（5 日均量 350 張以上）；"
              "月線比季線高 2% 以上、離 120 日高點 22% 以內、近 3 天沒漲。",
      "calibration": {"recall": 86, "precision": 39}},
-    {"key": "rsword", "saintId": 32, "name": "隔日沖-R劍", "kind": "波段", "rule": _rsword, "times": SWING_TIMES,
+    {"key": "rsword", "saintId": 32, "name": "隔日沖-R劍", "kind": "隔日沖", "rule": _rsword, "times": OVERNIGHT_TIMES,
      "desc": "創 20 日新高的紅K長上影（R劍）：今天最高是 20 日新高、上影線 2.05% 以上、收紅、漲幅 5% 以內；"
              "收盤比月線高 5% 以上、月線 5 天內沒有明顯下彎；量 1000 張以上。",
      "calibration": {"recall": 100, "precision": 98}},
@@ -717,11 +719,17 @@ def backfill_close(days: int = BACKFILL_DAYS, *, today: date | None = None, reco
 
 def day_payload(day: str | None = None) -> dict[str, Any]:
     initialize_database()
+    now = _now()
+    today = now.date().isoformat()
     with get_connection() as connection:
         _schema(connection)
         dates = [str(r["trade_date"]) for r in connection.execute(
             "SELECT DISTINCT trade_date FROM grail_radar_runs ORDER BY trade_date DESC LIMIT 60").fetchall()]
-        day = day or (dates[0] if dates else _now().date().isoformat())
+        # 2026-10-08 使用者：今天第一輪 12:00 才算，早上打開卻停在昨天。交易日一律預設看今天（還沒有名單就是空的），
+        # 頁面另外寫下一輪幾點；往日照樣可以從日期選。
+        if is_trading_day(now) and today not in dates:
+            dates.insert(0, today)
+        day = day or (dates[0] if dates else today)
         rows = connection.execute(
             "SELECT logic, slot, computed_at, source, stocks_json FROM grail_radar_runs WHERE trade_date = ?", (day,)
         ).fetchall()
@@ -741,8 +749,16 @@ def day_payload(day: str | None = None) -> dict[str, Any]:
         "status": "ok", "date": day, "dates": dates, "updated": updated, "saints": SAINTS,
         "logics": [{k: logic[k] for k in ("key", "saintId", "name", "kind", "times", "desc", "calibration")} for logic in LOGICS],
         "closeSlot": CLOSE_SLOT, "runs": runs,
+        "nextSlot": _next_slot(now) if day == today and is_trading_day(now) else None,
         "note": "條件是用嗨投資名單反推的近似條件，跟嗨投資不會完全一樣；不是買賣建議。",
     }
+
+
+def _next_slot(now: datetime) -> str | None:
+    """今天還沒到的下一個時間點（都過了就是「收盤」，14:30 後官方日K到齊才算）。"""
+    minutes = now.hour * 60 + now.minute
+    upcoming = [slot for slot in ALL_SLOTS if _slot_minutes(slot) > minutes]
+    return upcoming[0] if upcoming else (CLOSE_SLOT if (now.hour, now.minute) < CLOSE_FINAL_AFTER else None)
 
 
 # ------------------------------------------------------------------ 排程
