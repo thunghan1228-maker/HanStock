@@ -7,7 +7,7 @@
 
 頁面各段：
 - 一週出獄時間表：處置迄日的下一個交易日＝出獄（恢復正常交易），本週／下週／下下週，休市日標「休市」
-- 犯罪集團：同一族群（我們的 44 個族群）下一個交易日有 ≥2 檔在關（含今天剛公告的）；不在任何族群的傳產股
+- 犯罪集團：同一族群（我們的 44 個族群）≥2 檔被關或即將被關（資料日在關＋今天剛公告的）；不在任何族群的傳產股
   用官方產業別補（鋼鐵、塑膠、航運…；電子類太廣、交給我們的族群，不補）
 - 今日入獄：資料日當天公告的新處置（下一個交易日生效）、幾分盤、剩幾個交易日出獄
 - 嫌疑名單：照作業要點第六條的累積規則（連續 3 日第一款；連續 5 日、10 日內 6 日、30 日內 12 日第一～八款），
@@ -698,9 +698,10 @@ def _build(now: datetime) -> dict[str, Any]:
     jailed_next = covering(next_day)
     jailed_now = covering(data_day)
 
-    # 犯罪集團：我們的族群；不在任何族群的就用官方產業別（彰源、佳大＝鋼鐵）
+    # 犯罪集團：資料日還在關＋剛公告入獄的（「被關或即將被關」，彰源 10/12 出獄也算）；我們的族群，
+    # 不在任何族群的就用官方產業別（彰源、佳大＝鋼鐵）
     gangs: dict[str, list[dict[str, Any]]] = {}
-    for code, p in jailed_next.items():
+    for code, p in ({**jailed_now, **jailed_next}).items():
         industry = INDUSTRY_NAMES.get((companies.get(code) or {}).get("industry") or "")
         for g in groups_of.get(code) or ([industry] if industry else []):
             gangs.setdefault(g, []).append({"code": code, "name": p["name"], "new": p["new"], "release": p["release"],
