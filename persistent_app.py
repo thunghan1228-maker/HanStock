@@ -42,6 +42,8 @@ from grail_radar import collector_status as grail_radar_status, day_payload as g
 from grail_radar import start_grail_radar_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
+from revenue_rank import build_payload as revenue_payload, collector_status as revenue_status, run_collect as revenue_run_collect
+from revenue_rank import start_revenue_collector, stock_detail as revenue_stock_detail
 from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
@@ -120,6 +122,7 @@ async def _persistent_lifespan(fastapi_app):
             start_bars_history_collector()  # 日K補到三年＋分割減資還原事件（創高黑選股，2026-10-04 使用者）
             start_grail_radar_collector()  # 飆股雷達：15 個聖杯邏輯照時間點算、收盤再算一次（2026-10-07 使用者）
             start_jail_collector()  # 處置監獄：證交所／櫃買注意股、處置股公告（2026-10-09 使用者）
+            start_revenue_collector()  # 營收成長榜：觀測站每月營收彙總表鏡像、公布日、隔日漲跌（2026-10-09 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1066,6 +1069,43 @@ def get_jail_status() -> dict[str, Any]:
 def post_jail_collect(days: int | None = Query(None, ge=1, le=400)) -> dict[str, Any]:
     """馬上抓一次（上櫃鏡像推完會戳這裡）；days＝往回抓幾天（不給：第一次 150 天、之後 10 天）。"""
     return {"status": "ok", "result": jail_run_collect(days=days)}
+
+
+@app.get("/api/hub/revenue")
+def get_revenue(month: str | None = Query(None)) -> dict[str, Any]:
+    """營收成長榜（2026-10-09 使用者：照莊爸「每月營收成長榜」做）：某個營收月份（YYYY-MM，不給＝最新）全部已公布公司的
+    年增、月增、累計年增、月營收、收盤、成交量、公布日、公布隔日漲跌、上月年增；加上歷月「公布→隔日」統計。"""
+    import re
+
+    from fastapi import HTTPException
+
+    if month is not None and not re.fullmatch(r"\d{4}-\d{2}", month.strip()):
+        raise HTTPException(status_code=422, detail="month 必須是 YYYY-MM")
+    return revenue_payload(month.strip() if month else None)
+
+
+@app.get("/api/hub/revenue/stock")
+def get_revenue_stock(code: str = Query(...)) -> dict[str, Any]:
+    """查個股營收：每個月的年增、月增、累計年增、公布日、公布隔日漲跌。"""
+    import re
+
+    from fastapi import HTTPException
+
+    code = code.strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{4,6}", code):
+        raise HTTPException(status_code=422, detail="code 格式不對")
+    return revenue_stock_detail(code)
+
+
+@app.get("/api/hub/revenue/status")
+def get_revenue_status() -> dict[str, Any]:
+    return {"status": "ok", **revenue_status()}
+
+
+@app.post("/api/hub/revenue/collect")
+def post_revenue_collect() -> dict[str, Any]:
+    """馬上從鏡像拉一次（排程主機推完營收彙總表會戳這裡）。"""
+    return {"status": "ok", "result": revenue_run_collect()}
 
 
 @app.get("/api/hub/chip-radar/stock")
