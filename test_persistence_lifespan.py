@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import patch
+from contextlib import ExitStack
+from unittest.mock import Mock, patch
 
 import persistent_app
 
@@ -35,9 +36,12 @@ class PersistenceLifespanTests(unittest.TestCase):
             patch.object(persistent_app, "start_stock_bar_repair_collector") as repair_worker,
             patch.object(persistent_app, "start_kline_signal_backfill_collector") as kline_backfill_worker,
             patch.object(persistent_app, "start_main_force_flip_backfill_collector") as flip_backfill_worker,
-            patch.object(persistent_app, "start_disposition_collector"),
-            patch.object(persistent_app, "start_trading_eligibility_warmer"),
+            ExitStack() as other_workers,
         ):
+            # 其他後來加的背景工作（醞釀、籌碼、飆股雷達…）也一律擋掉，不然測試會啟動真的連網路收集器。
+            for name in dir(persistent_app):
+                if name.startswith("start_") and not isinstance(getattr(persistent_app, name), Mock):
+                    other_workers.enter_context(patch.object(persistent_app, name))
             asyncio.run(exercise_lifespan())
 
         main_force_worker.assert_called_once_with()
