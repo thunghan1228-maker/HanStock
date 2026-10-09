@@ -203,7 +203,7 @@ class PayloadTests(DbTestCase):
         ])
         module.save_punishes([
             punish("7772", "2026-09-23", "2026-09-24", "2026-10-02", "OTC"),
-            punish("2030", "2026-10-05", "2026-10-06", "2026-10-13"), punish("2033", "2026-10-07", "2026-10-08", "2026-10-14"),
+            punish("2030", "2026-10-01", "2026-10-02", "2026-10-08"), punish("2033", "2026-10-07", "2026-10-08", "2026-10-14"),
             punish("2243", "2026-06-22", "2026-06-23", "2026-07-06"), punish("2478", "2026-06-18", "2026-06-22", "2026-07-03"),
         ])
         companies = module.parse_companies([
@@ -215,7 +215,7 @@ class PayloadTests(DbTestCase):
         module.save_companies("TSE", companies)
         module.save_companies("TSE", {"2030": {"industry": None, "shares": None}})   # 沒帶產業別的不要洗掉舊的
         p = module.build_payload(now)
-        self.assertIn({"group": "鋼鐵", "stocks": ["2030", "2033"]},
+        self.assertIn({"group": "鋼鐵", "stocks": ["2030", "2033"]},   # 彰源 10/08 還在關、10/12 出獄也算
                       [{"group": g["group"], "stocks": [s["code"] for s in g["stocks"]]} for g in p["gangs"]])
         self.assertEqual([f["code"] for f in p["firstTime"]], ["7772"])
         index = {r["code"] for r in p["index"]}
