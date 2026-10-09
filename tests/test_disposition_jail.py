@@ -132,11 +132,13 @@ class ThresholdTests(DbTestCase):
 
     def test_turnover_lines_only_when_any_clause_counts(self) -> None:
         self.add_bars("8111", [80.0, 82, 84, 86, 88, 90, 93.7], volume=17017)
-        th = module.thresholds("8111", "OTC", "2026-10-08", need_any=True, recent_clauses={6}, verb="被關", shares=109_100_000)
+        th = module.thresholds("8111", "OTC", "2026-10-08", need_any=True, recent_clauses={6}, verb="被關", shares=109_103_000)
         volume_lines = [line for line in th["lines"] if line["kind"] == "volume"]
-        self.assertEqual(volume_lines[-1]["lots"], 5455)       # 第六款：週轉率 5%
+        self.assertEqual(volume_lines[-1]["lots"], 5455)       # 第六款：週轉率 5%＝5,455.15 張 → 「> 5,455 張」（莊爸同）
+        self.assertIn("成交量 > 5,455 張", volume_lines[-1]["text"])
         self.assertTrue(volume_lines[-1]["passed"])
-        th2 = module.thresholds("8111", "OTC", "2026-10-08", need_any=False, recent_clauses={6}, verb="被關", shares=109_100_000)
+        self.assertEqual(module._lots_over(5455.0), 5454)      # 剛好整數：5,455 張就達標 → 「> 5,454」
+        th2 = module.thresholds("8111", "OTC", "2026-10-08", need_any=False, recent_clauses={6}, verb="被關", shares=109_103_000)
         self.assertFalse([line for line in th2["lines"] if line["kind"] == "volume"])   # 連 3 日第一款那條只看第一款
 
 
@@ -156,6 +158,8 @@ class PayloadTests(DbTestCase):
                 return TWSE_NOTICE
             if "punish" in url:
                 return TWSE_PUNISH
+            if "t187ap03" in url or "basics" in url:
+                return []
             raise AssertionError(url)
 
         with patch.object(module, "_mirror_url", lambda name, volatile: name):
@@ -180,6 +184,43 @@ class PayloadTests(DbTestCase):
         self.assertEqual(detail["jailCount"], 2)
         self.assertEqual(detail["tier"]["key"], "prior")
         self.assertEqual(detail["verdict"]["kind"], "jailed")
+
+    def test_industry_gang_first_time_after_release_and_index_window(self) -> None:
+        now = datetime(2026, 10, 8, 20, 40, tzinfo=TW)
+
+        def notice(code: str, day: str, clauses: list[int], market: str = "OTC") -> dict:
+            return {"code": code, "date": day, "market": market, "name": code, "clauses": clauses, "info": "", "close": 10.0}
+
+        def punish(code: str, announce: str, start: str, end: str, market: str = "TSE") -> dict:
+            return {"code": code, "start": start, "end": end, "market": market, "name": code, "announce": announce,
+                    "condition": "連續三次", "measure": "第一次處置", "days": 5, "minutes": 2, "content": ""}
+
+        module.save_notices([
+            notice("7772", "2026-09-22", [1]), notice("7772", "2026-09-23", [1]), notice("7772", "2026-09-24", [1]),
+            notice("7772", "2026-10-08", [1]),               # 9/24~10/02 關完出獄，10/08 是出獄後第一次
+            notice("6174", "2026-10-05", [1]), notice("6174", "2026-10-08", [1]),   # 10/05 才中過，不算第一次
+            notice("1111", "2026-09-01", [9], "TSE"), notice("1112", "2026-09-03", [9], "TSE"),
+        ])
+        module.save_punishes([
+            punish("7772", "2026-09-23", "2026-09-24", "2026-10-02", "OTC"),
+            punish("2030", "2026-10-05", "2026-10-06", "2026-10-13"), punish("2033", "2026-10-07", "2026-10-08", "2026-10-14"),
+            punish("2243", "2026-06-22", "2026-06-23", "2026-07-06"), punish("2478", "2026-06-18", "2026-06-22", "2026-07-03"),
+        ])
+        companies = module.parse_companies([
+            {"公司代號": "2030", "產業別": "10", "已發行普通股數或TDR原股發行股數": "100000000"},
+            {"公司代號": "2033", "產業別": "10", "已發行普通股數或TDR原股發行股數": "50000000"},
+            {"公司代號": "033569", "產業別": "10"},
+        ])
+        self.assertEqual(sorted(companies), ["2030", "2033"])
+        module.save_companies("TSE", companies)
+        module.save_companies("TSE", {"2030": {"industry": None, "shares": None}})   # 沒帶產業別的不要洗掉舊的
+        p = module.build_payload(now)
+        self.assertIn({"group": "鋼鐵", "stocks": ["2030", "2033"]},
+                      [{"group": g["group"], "stocks": [s["code"] for s in g["stocks"]]} for g in p["gangs"]])
+        self.assertEqual([f["code"] for f in p["firstTime"]], ["7772"])
+        index = {r["code"] for r in p["index"]}
+        self.assertTrue({"1112", "2243"} <= index)       # 近 25 個交易日被注意（9/03）、迄日在 95 天內（7/06）
+        self.assertFalse({"1111", "2478"} & index)       # 9/01、7/03 太舊
 
 
 if __name__ == "__main__":

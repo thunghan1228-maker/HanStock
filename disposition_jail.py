@@ -7,7 +7,8 @@
 
 頁面各段：
 - 一週出獄時間表：處置迄日的下一個交易日＝出獄（恢復正常交易），本週／下週／下下週，休市日標「休市」
-- 犯罪集團：同一族群（我們的 43 個族群）下一個交易日有 ≥2 檔在關（含今天剛公告的）
+- 犯罪集團：同一族群（我們的 44 個族群）下一個交易日有 ≥2 檔在關（含今天剛公告的）；不在任何族群的傳產股
+  用官方產業別補（鋼鐵、塑膠、航運…；電子類太廣、交給我們的族群，不補）
 - 今日入獄：資料日當天公告的新處置（下一個交易日生效）、幾分盤、剩幾個交易日出獄
 - 嫌疑名單：照作業要點第六條的累積規則（連續 3 日第一款；連續 5 日、10 日內 6 日、30 日內 12 日第一～八款），
   明天再被公布一次注意就會被關（處置中的＝會延長）的股票，並用公開收盤價反推明天的門檻：
@@ -15,8 +16,9 @@
   第四款（6 日累積上市 25%／上櫃 27% ＋ 當日週轉率上市 10%／上櫃 5%）、第六款（週轉率 5%、上市另需 3000 張）、
   第二款（30/60/90 日起迄漲跌持續超標，收紅就再中）。門檻數字取自證交所第四條異常標準詳細數據（115.08.03 版），
   上櫃的從櫃買實際公告的數字反推（8/10 新制後：第一款最低 30.02%、23.38%＋價差 40.5 元；第三／四款 27%；週轉率 5%）
-- 今日第一次第一款：資料日觸及第一款、前 9 個交易日都沒有第一款
-- 個股處置前科索引／查詢：近 90 日曾被處置或注意的股票，每檔的處置紀錄、注意日期與款別、明天判定
+- 今日第一次第一款：資料日觸及第一款、前 9 個交易日都沒有第一款（出獄後重新算：關完之前的第一款不算，耀穎 10/08）
+- 個股處置前科索引／查詢：處置迄日在近 95 天內、或近 25 個交易日內被注意過的股票（照莊爸 10/08 的 293 檔反推），
+  每檔的處置紀錄、注意日期與款別、明天判定
 
 累積天數只算最近一次處置公告「之後」的注意（公告那天以前的已經用掉了）；第九款以後的不算進累積
 （第十三款只影響處置天數 5→7 天）。官方的差幅條件（跟全體／同類平均比）這裡不算，平常市場平均很小，
@@ -38,7 +40,7 @@ from typing import Any, Callable, Optional
 from chips_daily import _default_fetcher, _mirror_url
 from daily_bars_store import load_daily_bars
 from database import get_connection, initialize_database
-from fundamentals_daily import shares_map
+from fundamentals_daily import MIRROR_BASICS, TWSE_BASICS_URL, parse_basics, shares_map
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 from trading_days import is_trading_day, next_trading_day, previous_trading_day
 
@@ -52,7 +54,8 @@ TWSE_PUNISH_URL = ("https://www.twse.com.tw/rwd/zh/announcement/punish?querytype
 MIRROR_ATTENTION = "jail-attention.json"
 MIRROR_DISPOSAL = "jail-disposal.json"
 HISTORY_DAYS = 150          # 第一次啟動回補幾天（30 營業日累積＋90 日前科索引）
-INDEX_DAYS = 90             # 前科索引：近 90 日曾被處置／注意
+INDEX_PUNISH_DAYS = 95      # 前科索引：處置迄日在近 95 天內（莊爸 10/08：迄日 7/06 有、7/03 沒有）
+INDEX_NOTICE_DAYS = 25      # 　　　　　或近 25 個交易日內被注意過（9/02 以後有、9/01 沒有）
 KEEP_DAYS = 400
 POLL_SECONDS = 15 * 60
 POLL_START = 17 * 60 + 20   # 證交所約 18:00 前後公告
@@ -66,6 +69,11 @@ RULES = {
     "OTC": {"c1": 30.0, "c1alt": 23.0, "c1diff": 40.0, "c4cum": 27.0, "c4turn": 5.0, "c6turn": 5.0, "c6vol": 0},
 }
 CLAUSE2_WINDOWS = ((30, 100.0), (60, 130.0), (90, 160.0))
+# 官方產業別（證交所、櫃買共用代碼）：犯罪集團給不在我們族群裡的傳產股用。電子類（24～31、34、36）、綜合、其他不補
+INDUSTRY_NAMES = {"01": "水泥", "02": "食品", "03": "塑膠", "04": "紡織", "05": "電機機械", "06": "電器電纜", "08": "玻璃陶瓷",
+                  "09": "造紙", "10": "鋼鐵", "11": "橡膠", "12": "汽車", "14": "建材營造", "15": "航運", "16": "觀光餐旅",
+                  "17": "金融保險", "18": "貿易百貨", "21": "化學", "22": "生技醫療", "23": "油電燃氣", "32": "文化創意",
+                  "33": "農業科技", "35": "綠能環保", "37": "運動休閒", "38": "居家生活"}
 HIGH_PROB_DROP = -5.0       # 最容易的門檻要跌超過 5% 才躲得掉＝高機率
 LIMIT_PCT = 10.0
 
@@ -259,6 +267,9 @@ def _schema(connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS jail_punish_end_idx ON jail_punish (end_date);
         CREATE TABLE IF NOT EXISTS jail_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS jail_company (
+            code TEXT PRIMARY KEY, market TEXT NOT NULL, industry TEXT, shares INTEGER, updated_at TEXT NOT NULL
+        );
         """
     )
 
@@ -299,6 +310,48 @@ def save_punishes(rows: list[dict[str, Any]]) -> int:
               r["days"], r["minutes"], r["content"]) for r in rows],
         )
     return len(rows)
+
+
+def parse_companies(payload: Any) -> dict[str, dict[str, Any]]:
+    """t187ap03（上市證交所直抓、上櫃鏡像）：代號 → 官方產業別代碼、已發行股數（全部公司，不限族群）。"""
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(payload, list):
+        return out
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("公司代號") or item.get("SecuritiesCompanyCode") or "").strip().upper()
+        if not CODE_RE.fullmatch(code):
+            continue
+        industry = str(item.get("產業別") or item.get("SecuritiesIndustryCode") or "").strip()
+        out[code] = {"industry": industry.zfill(2) if industry.isdigit() else None, "shares": parse_basics([item]).get(code)}
+    return out
+
+
+def save_companies(market: str, rows: dict[str, dict[str, Any]]) -> int:
+    """鏡像還沒帶產業別時不要把舊的洗掉（COALESCE）。"""
+    if not rows:
+        return 0
+    initialize_database()
+    stamp = _now().isoformat(timespec="seconds")
+    with get_connection() as connection:
+        _schema(connection)
+        connection.executemany(
+            """INSERT INTO jail_company (code, market, industry, shares, updated_at) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(code) DO UPDATE SET market = excluded.market,
+                 industry = COALESCE(excluded.industry, jail_company.industry),
+                 shares = COALESCE(excluded.shares, jail_company.shares), updated_at = excluded.updated_at""",
+            [(code, market, r["industry"], r["shares"], stamp) for code, r in rows.items()],
+        )
+    return len(rows)
+
+
+def load_companies() -> dict[str, dict[str, Any]]:
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute("SELECT code, industry, shares FROM jail_company").fetchall()
+    return {r["code"]: {"industry": r["industry"], "shares": r["shares"]} for r in rows}
 
 
 def _meta_get(key: str) -> str | None:
@@ -385,6 +438,17 @@ def collect(now: datetime | None = None, fetcher: Callable[[str], Any] | None = 
             result["errors"].append(f"TPEx 鏡像 {kind}: {type(exc).__name__}: {exc}")
     result["notices"] = save_notices(notices)
     result["punishes"] = save_punishes(punishes)
+    # 公司基本資料（產業別、已發行股數）一天抓一次就好
+    if _meta_get("companies") != today.isoformat():
+        saved = {}
+        for market, url in (("TSE", TWSE_BASICS_URL), ("OTC", _mirror_url(MIRROR_BASICS, volatile=True))):
+            try:
+                saved[market] = save_companies(market, parse_companies(call(url)))
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"公司基本資料 {market}: {type(exc).__name__}: {exc}")
+        result["companies"] = saved
+        if saved.get("TSE") and saved.get("OTC"):
+            _meta_set("companies", today.isoformat())
     tse_ok = not any(e.startswith("TWSE") for e in result["errors"])
     if days >= HISTORY_DAYS and tse_ok and result["notices"]:
         _meta_set("backfilled", now.isoformat(timespec="seconds"))
@@ -446,8 +510,13 @@ def _fmt_price(value: float) -> str:
     return f"{value:,.2f}"
 
 
+def _lots_over(value: float) -> int:
+    """週轉率「達」5%＝成交量 ≥ 門檻；張數是整數，寫成「> N 張」的 N＝門檻無條件進位再減 1（立碁 5,455.2 張 → > 5,455）。"""
+    return max(int(math.ceil(value - 1e-9)) - 1, 0)
+
+
 def _fmt_lots(value: float) -> str:
-    return f"{int(math.ceil(value)):,}"
+    return f"{_lots_over(value):,}"
 
 
 def thresholds(code: str, market: str, data_day: str, *, need_any: bool, recent_clauses: set[int], verb: str,
@@ -497,15 +566,15 @@ def thresholds(code: str, market: str, data_day: str, *, need_any: bool, recent_
         pct4 = (p4 / c - 1) * 100
         if sign * pct4 <= -LIMIT_PCT:
             lines.append({"kind": "note", "text": f"{'跌停' if up else '漲停'}都觸發 第四款（6 日累積已超 {rule['c4cum']:g}%）"})
-            lines.append({"kind": "volume", "lots": int(math.ceil(v4)), "today": vol, "passed": vol > v4, "clause": "第四款",
+            lines.append({"kind": "volume", "lots": _lots_over(v4), "today": vol, "passed": vol > v4, "clause": "第四款",
                           "text": f"成交量 > {_fmt_lots(v4)} 張 會{verb}"})
         elif sign * pct4 <= LIMIT_PCT:
             op = ">" if up else "<"
-            lines.append({"kind": "volume", "lots": int(math.ceil(v4)), "today": vol, "passed": vol > v4, "clause": "第四款",
+            lines.append({"kind": "volume", "lots": _lots_over(v4), "today": vol, "passed": vol > v4, "clause": "第四款",
                           "text": f"收盤 {op} {_fmt_price(p4)} 元（{pct4:+.2f}%）且成交量 > {_fmt_lots(v4)} 張 會{verb}"})
         if 6 in recent_clauses:
             v6 = max(lots * rule["c6turn"] / 100, rule["c6vol"])
-            lines.append({"kind": "volume", "lots": int(math.ceil(v6)), "today": vol, "passed": vol > v6, "clause": "第六款",
+            lines.append({"kind": "volume", "lots": _lots_over(v6), "today": vol, "passed": vol > v6, "clause": "第六款",
                           "text": f"成交量 > {_fmt_lots(v6)} 張 會{verb}"})
     persistent = False
     if need_any and 2 in recent_clauses and len(closes) >= 91:
@@ -579,6 +648,7 @@ def _build(now: datetime) -> dict[str, Any]:
     data_day = max(latest.values())
     next_day = next_trading_day(_d(data_day)).isoformat()
     groups_of = _group_index()
+    companies = load_companies()
     names: dict[str, str] = {}
     markets: dict[str, str] = {}
     by_code_notice: dict[str, dict[str, list[int]]] = {}
@@ -628,10 +698,11 @@ def _build(now: datetime) -> dict[str, Any]:
     jailed_next = covering(next_day)
     jailed_now = covering(data_day)
 
-    # 犯罪集團
+    # 犯罪集團：我們的族群；不在任何族群的就用官方產業別（彰源、佳大＝鋼鐵）
     gangs: dict[str, list[dict[str, Any]]] = {}
     for code, p in jailed_next.items():
-        for g in groups_of.get(code, []):
+        industry = INDUSTRY_NAMES.get((companies.get(code) or {}).get("industry") or "")
+        for g in groups_of.get(code) or ([industry] if industry else []):
             gangs.setdefault(g, []).append({"code": code, "name": p["name"], "new": p["new"], "release": p["release"],
                                             "releaseMd": md(p["release"])})
     gang_list = [{"group": g, "stocks": sorted(rows, key=lambda r: r["code"])} for g, rows in gangs.items() if len(rows) >= 2]
@@ -663,6 +734,9 @@ def _build(now: datetime) -> dict[str, Any]:
             continue
         candidates.append((code, market, acc, day_map))
     share_of = shares_map([c for c, *_ in candidates]) if candidates else {}
+    for code, *_ in candidates:   # 族群外的股票波段日報沒存股數，用這裡一天抓一次的全部公司資料
+        if (companies.get(code) or {}).get("shares"):
+            share_of[code] = companies[code]["shares"]
     for code, market, acc, day_map in candidates:
         jailed = code in jailed_next
         verb = "延長" if jailed else "被關"
@@ -685,13 +759,17 @@ def _build(now: datetime) -> dict[str, Any]:
     prev9 = trading_days_back(data_day, 10)[1:]
     first_time = []
     for code, day_map in by_code_notice.items():
-        if 1 in day_map.get(data_day, []) and not any(1 in day_map.get(d, []) for d in prev9):
+        if 1 not in day_map.get(data_day, []):
+            continue
+        served = max((p["end"] for p in by_code_punish.get(code, []) if p["release"] <= data_day), default="")
+        if not any(1 in day_map.get(d, []) for d in prev9 if d > served):
             first_time.append({"code": code, "name": names.get(code, ""), "market": MARKET_LABEL.get(markets.get(code, ""), "")})
     first_time.sort(key=lambda r: r["code"])
 
-    # 前科索引（近 90 日曾被處置／注意）
-    cutoff = (_d(data_day) - timedelta(days=INDEX_DAYS)).isoformat()
-    index_codes = {n["code"] for n in notices if n["date"] >= cutoff} | {p["code"] for p in punishes if p["end"] >= cutoff}
+    # 前科索引：處置迄日近 95 天內、或近 25 個交易日內被注意
+    punish_cut = (_d(data_day) - timedelta(days=INDEX_PUNISH_DAYS)).isoformat()
+    notice_cut = trading_days_back(data_day, INDEX_NOTICE_DAYS)[-1]
+    index_codes = {n["code"] for n in notices if n["date"] >= notice_cut} | {p["code"] for p in punishes if p["end"] >= punish_cut}
     index_codes |= {s["code"] for s in suspects} | set(jailed_next)
     index = [{"code": c, "name": names.get(c, ""), "tier": _tier(len(by_code_punish.get(c, [])))["key"],
               "jailed": c in jailed_next} for c in sorted(index_codes)]
