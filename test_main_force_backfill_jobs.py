@@ -273,10 +273,11 @@ class MainForceBackfillJobTests(unittest.TestCase):
                   and node.name == "get_persisted_main_force_bars")
         fn.decorator_list = []
         writer = Mock(return_value={"queued": True})
-        env = {"Any": object, "Query": lambda value, **kw: value,
+        env = {"Any": object, "datetime": datetime, "Query": lambda value, **kw: value,
                "_normalize_stock_code": lambda code: code, "_validate_trade_date": lambda date: date,
                "load_main_force_bars": lambda *a, **kw: [{"ts": 1788832800000}],
-               "request_main_force_backfill": writer}
+               "request_main_force_backfill": writer,
+               "main_force_threshold": lambda: {"minLots": 100, "minAmount": 10_000_000}}
         exec(compile(ast.Module(body=[fn], type_ignores=[]), "persistent_app.py", "exec"), env)
         endpoint = env[fn.name]
         data = endpoint("2455", trade_date="2026-09-08", backfill=True)
