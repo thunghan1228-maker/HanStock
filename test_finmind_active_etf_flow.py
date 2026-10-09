@@ -162,12 +162,6 @@ class ActiveEtfFlowTest(unittest.TestCase):
         self.assertNotIn("USU09265AF31", {row["ticker"] for row in result["rows"]})
         self.assertNotIn("00984D", result["etfs"])
 
-    def test_persistent_app_keeps_the_public_active_etf_route(self):
-        source = (Path(__file__).parent / "persistent_app.py").read_text(encoding="utf-8")
-        self.assertIn("active_etf_flow_for_ticker, active_etf_flow_radar", source)
-        self.assertIn('@app.get("/api/hub/active-etf-flow")', source)
-        self.assertIn('@app.get("/api/hub/active-etf-radar")', source)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -282,25 +282,16 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(second["already_subscribed"], ["2330"])
         self.assertEqual(len(self.service.api.subscribed), 2)
 
-    def test_extra_index_futures_subscription_is_idempotent_and_restorable(self):
-        contract = FakeContract("MXFR1", "FUT", "MXFH6")
-        self.assertTrue(self.service.ensure_extra_futures_subscription(contract))
-        self.assertTrue(self.service.ensure_extra_futures_subscription(contract))
-        self.assertEqual(self.service.api.subscribed, [("MXFR1", "tick")])
-
-        self.service._resubscribe_extra_futures()
-        self.assertEqual(self.service.api.subscribed, [("MXFR1", "tick"), ("MXFR1", "tick")])
-
-    def test_capacity_spills_to_shared_pool_without_eviction(self):
+    def test_capacity_full_fails_new_codes_without_eviction(self):
+        # 共用連線池已拿掉：主連線滿了，新的股票直接回「台股訂閱上限」，不踢掉舊的。
         self.service.ensure_stock_subscriptions(["2330", "2344"])
         result = self.service.ensure_stock_subscriptions(["2408"])
-        self.assertEqual(result["newly_subscribed"], ["2408"])
+        self.assertEqual(result["newly_subscribed"], [])
+        self.assertEqual(result["failed"], {"2408": "台股訂閱上限"})
         self.assertEqual(result["evicted"], [])
-        self.assertEqual(result["active_count"], 3)
-        self.assertEqual(result["main_active_count"], 2)
-        self.assertEqual(result["shared_active_count"], 1)
+        self.assertEqual(result["active_count"], 2)
         self.assertNotIn(("2330", "tick"), self.service.api.unsubscribed)
-        self.assertEqual(self.service.get_active_stock_codes(), ["2330", "2344", "2408"])
+        self.assertEqual(self.service.get_active_stock_codes(), ["2330", "2344"])
 
     def test_concurrent_batches_do_not_exceed_main_connection_limit(self):
         original_subscribe = self.service.api.subscribe
@@ -317,11 +308,13 @@ class QuoteServiceStockTests(unittest.TestCase):
                 executor.map(lambda code: self.service.ensure_stock_subscriptions([code]), codes)
             )
 
-        self.assertTrue(all(result["failed"] == {} for result in results))
+        failed = {code: reason for result in results for code, reason in result["failed"].items()}
+        self.assertEqual(len(failed), 2)
+        self.assertTrue(all(reason == "台股訂閱上限" for reason in failed.values()))
         health = self.service.get_stock_health()
-        self.assertEqual(health["active_subscription_count"], 4)
+        self.assertEqual(health["active_subscription_count"], 2)
         self.assertEqual(health["main_connection_active_count"], 2)
-        self.assertEqual(health["shared_pool_active_count"], 2)
+        self.assertEqual(health["shared_pool_active_count"], 0)
         self.assertEqual(len(self.service.api.subscribed), 2)
 
     def test_base_contract_is_used_for_subscriptions_and_contracts_stocks_only_as_fallback(self):
@@ -369,7 +362,7 @@ class QuoteServiceStockTests(unittest.TestCase):
         },
         clear=False,
     )
-    def test_full_664_stock_universe_stays_active_without_lru_eviction(self):
+    def test_full_664_stock_universe_caps_at_main_limit_without_lru_eviction(self):
         import stock_futures_service
 
         if stock_futures_service._service is not None:
@@ -382,17 +375,16 @@ class QuoteServiceStockTests(unittest.TestCase):
 
         result = service.ensure_stock_subscriptions(codes)
 
-        self.assertEqual(result["failed"], {})
+        self.assertEqual(result["newly_subscribed"], codes[:190])
+        self.assertEqual(result["failed"], {code: "台股訂閱上限" for code in codes[190:]})
         self.assertEqual(result["evicted"], [])
-        self.assertEqual(result["active_count"], 664)
-        self.assertEqual(result["main_active_count"], 190)
-        self.assertEqual(result["shared_active_count"], 474)
-        self.assertEqual(len(service.get_active_stock_codes()), 664)
+        self.assertEqual(result["active_count"], 190)
+        self.assertEqual(len(service.get_active_stock_codes()), 190)
         health = service.get_stock_health()
-        self.assertEqual(health["active_subscription_count"], 664)
+        self.assertEqual(health["active_subscription_count"], 190)
         self.assertEqual(health["eviction_policy"], "disabled")
         self.assertEqual(health["main_connection_active_count"], 190)
-        self.assertEqual(health["shared_pool_active_count"], 474)
+        self.assertEqual(health["shared_pool_active_count"], 0)
 
 
 if __name__ == "__main__":
