@@ -40,6 +40,8 @@ from heilong_picker import payload as picker_payload
 from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock
 from grail_radar import collector_status as grail_radar_status, day_payload as grail_radar_payload, run_close as grail_radar_run_close
 from grail_radar import start_grail_radar_collector
+from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
+from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
 from stock_checkup import checkup as checkup_payload, collector_status as checkup_status, diag as diag_payload, rebuild as rebuild_checkup
 from fundamentals_daily import collector_status as fundamentals_status, run_collect as run_fundamentals_collect, start_fundamentals_collector
 from stock_trading_eligibility import (
@@ -117,6 +119,7 @@ async def _persistent_lifespan(fastapi_app):
             start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
             start_bars_history_collector()  # 日K補到三年＋分割減資還原事件（創高黑選股，2026-10-04 使用者）
             start_grail_radar_collector()  # 飆股雷達：15 個聖杯邏輯照時間點算、收盤再算一次（2026-10-07 使用者）
+            start_jail_collector()  # 處置監獄：證交所／櫃買注意股、處置股公告（2026-10-09 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1032,6 +1035,37 @@ def post_grail_radar_run_close(date: str = Query(...), force: bool = Query(False
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return {"status": "ok", "result": grail_radar_run_close(date, force=force)}
+
+
+@app.get("/api/hub/jail")
+def get_jail() -> dict[str, Any]:
+    """處置監獄（2026-10-09 使用者：照莊爸「處置股・出獄與嫌疑名單」做）：一週出獄時間表、犯罪集團、今日入獄、
+    嫌疑名單（明天門檻）、今日第一次第一款、前科索引。資料是證交所／櫃買中心的注意股、處置股公告。"""
+    return jail_payload()
+
+
+@app.get("/api/hub/jail/stock")
+def get_jail_stock(code: str = Query(...)) -> dict[str, Any]:
+    """個股前科查詢：處置紀錄、近 30 個交易日注意款別、明天判定。"""
+    import re
+
+    from fastapi import HTTPException
+
+    code = code.strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{4,6}", code):
+        raise HTTPException(status_code=422, detail="code 格式不對")
+    return jail_stock_detail(code)
+
+
+@app.get("/api/hub/jail/status")
+def get_jail_status() -> dict[str, Any]:
+    return {"status": "ok", **jail_status()}
+
+
+@app.post("/api/hub/jail/collect")
+def post_jail_collect(days: int | None = Query(None, ge=1, le=400)) -> dict[str, Any]:
+    """馬上抓一次（上櫃鏡像推完會戳這裡）；days＝往回抓幾天（不給：第一次 150 天、之後 10 天）。"""
+    return {"status": "ok", "result": jail_run_collect(days=days)}
 
 
 @app.get("/api/hub/chip-radar/stock")
