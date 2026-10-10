@@ -7,7 +7,8 @@
 
 算法：
 - 董監淨增減＝本月增加－本月減少；經理人、大股東用持股跟上個月比。內部人淨增減＝董監＋經理人（大股東常常就是董監，另列不加總）。
-- 配股、減資會讓持股同比例變動（8 月配股季最明顯），不是買賣：股本比上月多（少）幾 %，就把上月董監＋經理人持股 × 那個比例扣掉。
+- 配股、減資會讓持股同比例變動（8 月配股季最明顯），不是買賣：股本比上月多（少）幾 %，就把上月董監＋經理人持股 × 那個比例扣掉；
+  只扣跟股本同方向的部分、最多扣到實際變動量（現金增資、可轉債轉換讓股本變多但內部人沒動，不能算成賣出）。
 - 金額＝股數 × 那個月我們日K的平均收盤（估算）；集中市場金額同樣估算。
 - 疊上集保 400 張以上大戶持股比（最新一週）與近 4 週變化（百分點）：內部人買＋大戶增＝「雙買」，內部人賣＋大戶減＝「雙賣」。
 """
@@ -202,11 +203,13 @@ def _row(r: dict[str, Any], prev: dict[str, Any] | None, detail: dict[str, Any] 
     big = None if not prev or r.get("bigHold") is None or prev.get("bigHold") is None else r["bigHold"] - prev["bigHold"]
     raw = dir_net + (mgr or 0)
     # 股本變動（配股、減資）會讓大家的持股同比例增減，不是買賣：上月持股 × 股本變動比例先扣掉
+    # 只扣「跟著股本同方向」的那部分、最多扣到實際變動量：現金增資、可轉債轉換也會讓股本變多，但內部人沒動，不能當成賣出
     cap = 0.0
     if prev and r.get("issued") and prev.get("issued"):
         ratio = r["issued"] / prev["issued"] - 1
         if abs(ratio) >= CAPITAL_CHANGE_MIN:
-            cap = ((prev.get("dirHold") or 0) + ((prev.get("mgrHold") or 0) if mgr is not None else 0)) * ratio
+            expected = ((prev.get("dirHold") or 0) + ((prev.get("mgrHold") or 0) if mgr is not None else 0)) * ratio
+            cap = min(max(raw, 0.0), expected) if ratio > 0 else max(min(raw, 0.0), expected)
     net = raw - cap
     if abs(net) < 1000:          # 不到一張（配股零頭）當沒動
         net = 0

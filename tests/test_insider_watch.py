@@ -20,12 +20,14 @@ JULY = {"month": "2026-07", "fetched": "2026-08-20T20:40+08:00", "published": {"
     ["3037", "欣興電子股份", "TSE", 1_500_000_000, 0, 0, 230_000_000, 15.33, 2_000_000, 204_423_723],
     ["1240", "茂生農經股份", "OTC", 44_232_373, 0, 0, 4_918_113, 11.11, 1_272_941, 0],
     ["5880", "配股金控", "TSE", 10_000_000, 0, 0, 1_000_000, 10.0, 0, 0],
+    ["6672", "現增公司", "OTC", 10_000_000, 0, 0, 2_000_000, 20.0, 0, 0],
 ], "detail": {}}
 AUG = {"month": "2026-08", "fetched": "2026-09-22T20:40+08:00", "published": {"sii": "115/09/22", "otc": "115/09/18"}, "fields": FIELDS, "rows": [
     ["3037", "欣興電子股份", "TSE", 1_500_000_000, 1_000_000, 0, 231_000_000, 15.4, 2_500_000, 204_423_723],   # 董監 +100 萬、經理人 +50 萬
     ["1240", "茂生農經股份", "OTC", 44_232_373, 0, 300_000, 4_618_113, 10.44, 1_272_941, 0],                    # 董監 -30 萬
     ["9999", "沒動股份", "TSE", 10_000_000, 0, 0, 1_000_000, 10.0, 0, 0],
     ["5880", "配股金控", "TSE", 11_000_000, 100_000, 0, 1_100_000, 10.0, 0, 0],                                  # 股本 +10%、董監 +10 萬＝全部是配股
+    ["6672", "現增公司", "OTC", 12_000_000, 0, 0, 2_000_000, 16.67, 0, 0],                                     # 現金增資 +20%、內部人沒動＝不是賣
 ], "detail": {"3037": {"buyC": 800_000, "buyO": 200_000, "sellC": 0, "sellO": 0, "people": [["董事長", "某甲", 800000, 0, 0, 0, 5000000]]}}}
 INDEX = {"months": ["2026-08", "2026-07"], "updated": "x"}
 
@@ -55,7 +57,7 @@ class InsiderTests(unittest.TestCase):
 
     def test_collect_and_overview(self) -> None:
         result = module.collect(fetcher=self.fetch, now=datetime(2026, 10, 10, 21, 30, tzinfo=module.TW_TZ))
-        self.assertEqual(result["months"], {"2026-08": {"rows": 4, "detail": 1}, "2026-07": {"rows": 3, "detail": 0}})
+        self.assertEqual(result["months"], {"2026-08": {"rows": 5, "detail": 1}, "2026-07": {"rows": 4, "detail": 0}})
         o = module.overview()
         self.assertEqual((o["status"], o["month"], o["months"], o["moved"], o["detailCount"]), ("ok", "2026-08", ["2026-08", "2026-07"], 2, 1))
         b = o["buys"][0]
@@ -67,8 +69,8 @@ class InsiderTests(unittest.TestCase):
         self.assertEqual(o["centralBuys"][0]["code"], "3037")
         self.assertEqual((o["summary"]["buy"]["count"], o["summary"]["sell"]["amount"]), (1, -0.15))
         self.assertEqual(module.overview("2026-07")["moved"], 0)            # 7 月沒有上個月可比，只看董監增減
-        div = [x for x in o["buys"] + o["sells"] if x["code"] == "5880"]
-        self.assertEqual(div, [])                                           # 配股扣掉後沒動，不上榜
+        div = [x for x in o["buys"] + o["sells"] if x["code"] in ("5880", "6672")]
+        self.assertEqual(div, [])                                           # 配股扣掉後沒動、現增內部人沒動，都不上榜
 
     def test_stock(self) -> None:
         module.collect(fetcher=self.fetch)
@@ -89,7 +91,7 @@ class InsiderTests(unittest.TestCase):
         client = TestClient(persistent_app.app)
         with patch.object(module, "_default_fetcher", self.fetch):
             r = client.post("/api/hub/insider/collect")
-        self.assertEqual(r.json()["result"]["months"]["2026-08"]["rows"], 4)
+        self.assertEqual(r.json()["result"]["months"]["2026-08"]["rows"], 5)
         self.assertEqual(client.get("/api/hub/insider?month=2026-08").json()["buys"][0]["code"], "3037")
         self.assertEqual(client.get("/api/hub/insider?month=bad").status_code, 422)
         self.assertEqual(client.get("/api/hub/insider/stock?code=1240").json()["history"][0]["dirNet"], -300_000)
