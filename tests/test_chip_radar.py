@@ -165,6 +165,31 @@ class RadarTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.payload("2026-01-02")
 
+    def test_skipped_week_small_capital_cut_and_all_window(self) -> None:
+        # 方土霖 4527：9/24 那週減資停止過戶、集保查無資料 → 10/02 改跟 9/18 比；總股數 7615 萬 → 6854 萬（−10%）、
+        # 大戶 51,420,250 → 45,529,718 → x −8.59（莊爸 10/08 賣超榜 −8.6%），籌碼% 不大照列
+        for d in WEEKS[:5]:
+            fundamentals_daily.save_tdcc(d, [("4527", 12, 4, 4_257_487, 0.0), ("4527", 15, 17, 47_162_763, 0.0),
+                                             ("4527", 17, 4000, 76_152_370, 100.0)])
+        fundamentals_daily.save_tdcc("2026-10-02", [("4527", 12, 4, 3_992_336, 0.0), ("4527", 15, 17, 41_537_382, 0.0),
+                                                    ("4527", 17, 4084, 68_537_133, 100.0)])
+        module._cache.update({"at": 0.0, "key": None, "radar": None})
+        out = module.payload()
+        sell = {r["code"]: r for r in out["lists"][0]["sell"]}
+        self.assertEqual((sell["4527"]["chip"], sell["4527"]["chip1"], sell["4527"]["vs"], sell["4527"]["capital"]),
+                         (-8.59, -8.6, "2026-09-18", -10.0))
+        self.assertIsNone(sell["1727"]["vs"])
+        stock = module.stock("4527")
+        self.assertFalse(stock["excluded"])
+        self.assertEqual((stock["trail"][0]["vs"], stock["trail"][1]["chip"]), ("2026-09-18", None))
+        # 累積榜「全部」：06/18 起有幾週就幾週（這裡 6 週），不足 16 週時一樣給全部
+        cum = out["cumulative"]
+        self.assertEqual((cum["allWeeks"], cum["allFrom"], len(cum["dates"])), (6, "2026-08-28", 6))
+        self.assertEqual(out["rules"]["allSince"], "2026-06-18")
+        with patch.object(module, "ALL_SINCE", "2026-09-11"):
+            cum = module.load_radar().cumulative("2026-10-02")
+        self.assertEqual((cum["allWeeks"], cum["allFrom"], len(cum["dates"])), (4, "2026-09-11", 6))
+
     def test_stock_and_institutional(self) -> None:
         with database.get_connection() as c:
             from chips_daily import _schema as chips_schema

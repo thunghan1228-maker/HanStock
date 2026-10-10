@@ -10,8 +10,9 @@
 
 畫面上的各區塊：
 - 本週籌碼暴增榜：買超榜（籌碼% ≥ 4）、賣超榜（≤ −1.5）；連兩週都在同一邊的榜上打 ⭐；可以切最近 8 週。
-- 上榜累積榜：每週買超榜前十名記一筆；視窗內（16／8／4 週）擠進前十的次數、近 4 週次數、平均籌碼%、
-  分數（＝那幾週籌碼% 加總＝次數 × 平均）、最佳名次。
+- 上榜累積榜：每週買超榜前十名記一筆；視窗內（全部／近 6 週／近 4 週，跟莊爸的選單一樣）擠進前十的次數、近 4 週次數、平均籌碼%、
+  分數（＝那幾週籌碼% 加總＝次數 × 平均）、最佳名次。「全部」跟莊爸一樣從 06/18 那週算起（他寫「全部 17 週
+  06/18～10/08」，2026-10-10），之後每週多一週，最多一年。
 - 族群排名比較：族群裡籌碼% 最高的 5 檔平均（莊爸的石英 +3.46% ＝ 前 5 檔平均，對得上），前十族群。
 - 連續增排行：六週內至少五週增（可漏一週）、連三週都增；都用窗口平均排序，各取前 20。
 - 熱門股：本週前十名＋前五大族群的第一名，附九週軌跡。
@@ -19,9 +20,13 @@
 每列最後的數字＝均線分數（官網那套 15 分，heilong_daily.score2，最近一個交易日）。
 
 股本變動：那週總股數變了（增資、減資、轉換公司債），變動 ≥1% 名單上標「股本 ±x%」。
+上一週集保沒有這檔（減資、停止過戶那週集保不出資料，例如方土霖 9/30～10/07 減資換股，10/02 那週查無資料），
+改跟更早一週比（莊爸 10/08 的賣超榜有方土霖，只能是跟 9/24 比），名單上標「比 9/24」。
+
 增資照算（跟莊爸一樣：環球晶 10/02 增資 10.5% 算出 +9.53、佳大 9/24 私募 48.7% 算出 +16.81 都照列）；
-總股數「減少」≥5%（減資、股份轉換）大戶股數會跟著機械式縮水，不進任何排行（例如桂田文創 10/02 減資 30% 算出 −40.15、
-益航股份轉換），個股軌跡照列並註明。
+總股數「減少」≥5%（減資、股份轉換）而且籌碼% 絕對值 ≥15，大戶股數是跟著機械式變動，不進任何排行（例如桂田文創
+10/02 減資 30% 算出 −40.15、益航股份轉換 +23.67、中環 10/08 減資 10% 算出 +20.82，莊爸的榜上都沒有），個股軌跡照列並註明；
+籌碼% 不大的照列（2026-10-10：方土霖 10/08 減資 10%、跟 9/24 比 −8.59，莊爸賣超榜列 −8.6%）。
 """
 
 from __future__ import annotations
@@ -52,15 +57,19 @@ STREAK_TOP = 20
 LIST_WEEKS = 8                    # 本週榜可以切幾週
 CARD_WEEKS = 9                    # 個股卡片的軌跡週數
 WINDOW_MAX = 16                   # 累積榜最多回看幾週
-WINDOWS = (16, 8, 4)
+WINDOWS = (6, 4)                  # 累積榜「全部」以外的選項（莊爸：全部／近 6 週／近 4 週）
+ALL_SINCE = "2026-06-18"          # 累積榜「全部」從這週算起（莊爸：全部 17 週 06/18～10/08）
+ALL_MAX = 52                      # 「全部」最多一年
 HOT_GROUPS = 5
 INST_WEEKS = 5
 INST_DAYS = 5
 CACHE_SECONDS = 60.0
 MAX_WEEK_GAP_DAYS = 10            # 兩個集保結算日最多差幾天還算「上一週」（遇到連假會差 6～8 天）
+MAX_SKIP_GAP_DAYS = 2 * MAX_WEEK_GAP_DAYS   # 上一週集保沒有這檔時，往前再找一週，最多差這麼多天
 CAPITAL_TAG = 1.0                 # 這週總股數變動 ≥1%（增資、減資、轉換公司債）：名單上標「股本 ±x%」
 CAPITAL_CUT_EXCLUDE = 5.0         # 總股數「減少」≥5%（減資、股份轉換）：大戶股數跟著機械式縮水，不進排行（軌跡照列並註明）；
                                   # 增資照算（莊爸也照列：佳大 9/24 私募 +48.7% 算出 +16.81，進了他的累積榜和六週平均）
+CAPITAL_CUT_CHIP = 15.0           # 上面那種週，籌碼% 絕對值 ≥15 才不進排行（方土霖減資 10% 算出 −8.59，莊爸照列）
 
 
 def chip_value(big_now: float, big_prev: float, total_now: float) -> tuple[float, float] | None:
@@ -172,7 +181,7 @@ class Radar:
     """一份算好的雷達（快取用）。chips[代號][日期] ＝ 籌碼%；dates 新到舊、都有上一週可以比。"""
 
     def __init__(self) -> None:
-        raw_dates, tdcc = _load_tdcc(WINDOW_MAX + LIST_WEEKS + 2)
+        raw_dates, tdcc = _load_tdcc(max(ALL_MAX, WINDOW_MAX + LIST_WEEKS) + 2)
         self.names = _names()
         self.score_date, self.scores = _ma_scores()
         self.group_members, self.group_of = _groups()
@@ -180,11 +189,16 @@ class Radar:
         self.xs: dict[str, dict[str, float]] = {}
         self.capital: dict[str, dict[str, float]] = {}      # 那週總股數變動 %（≥1% 才記）
         self.distorted: dict[str, dict[str, float]] = {}    # 股本大變那週的籌碼%（不進排行）
+        self.skipped: dict[str, dict[str, str]] = {}        # 上一週集保沒有這檔，改跟更早那週比：{代號: {這週: 比的那週}}
         # 只跟「上一週」比：中間缺了一週（鏡像漏抓）那週就不算，不然會變成兩週的變化
         pairs = [i for i in range(len(raw_dates) - 1) if _days_between(raw_dates[i + 1], raw_dates[i]) <= MAX_WEEK_GAP_DAYS]
         for code, per in tdcc.items():
             for i in pairs:
                 now, prev = per.get(raw_dates[i]), per.get(raw_dates[i + 1])
+                if now and not prev and i + 2 < len(raw_dates) and _days_between(raw_dates[i + 2], raw_dates[i]) <= MAX_SKIP_GAP_DAYS:
+                    prev = per.get(raw_dates[i + 2])
+                    if prev:
+                        self.skipped.setdefault(code, {})[raw_dates[i]] = raw_dates[i + 2]
                 if not now or not prev or not now[1]:
                     continue
                 value = chip_value(now[0], prev[0], now[1])
@@ -193,7 +207,7 @@ class Radar:
                 change = round((now[1] / prev[1] - 1) * 100, 1) if prev[1] else 0.0
                 if abs(change) >= CAPITAL_TAG:
                     self.capital.setdefault(code, {})[raw_dates[i]] = change
-                if change <= -CAPITAL_CUT_EXCLUDE:
+                if change <= -CAPITAL_CUT_EXCLUDE and abs(value[1]) >= CAPITAL_CUT_CHIP:
                     self.distorted.setdefault(code, {})[raw_dates[i]] = value[1]
                     continue
                 self.xs.setdefault(code, {})[raw_dates[i]] = value[0]
@@ -236,7 +250,8 @@ class Radar:
 
         def rows(codes: list[str], prev_set: set[str]) -> list[dict[str, Any]]:
             return [{**self.info(c), "chip": self.chips[c][day], "chip1": chip_one_decimal(self.xs[c][day]), "rank": i + 1,
-                     "star": c in prev_set, "capital": (self.capital.get(c) or {}).get(day)} for i, c in enumerate(codes)]
+                     "star": c in prev_set, "capital": (self.capital.get(c) or {}).get(day),
+                     "vs": (self.skipped.get(c) or {}).get(day)} for i, c in enumerate(codes)]
 
         return {"date": day, "label": _short(day), "buy": rows(buy, prev_buy_set), "sell": rows(sell, prev_sell_set)}
 
@@ -251,6 +266,8 @@ class Radar:
                 row["capital"] = cap[d]
             if d in bad:
                 row["excluded"] = True
+            if d in (self.skipped.get(code) or {}):
+                row["vs"] = self.skipped[code][d]
             out.append(row)
         return out
 
@@ -294,9 +311,11 @@ class Radar:
 
     # 累積榜 -----------------------------------------------------------
     def cumulative(self, day: str) -> dict[str, Any]:
-        """day 往前最多 16 週，每週前十名；回每檔每週的 [名次或 0, 籌碼%]（舊到新），前端照選的週數自己加總。"""
+        """day 往前「全部」（ALL_SINCE 起，最多 ALL_MAX 週；不足 16 週時給 16 週），每週前十名；回每檔每週的
+        [名次或 0, 籌碼%]（舊到新）＋ allWeeks（「全部」是最後幾週），前端照選的週數自己加總。"""
         i = self.dates.index(day)
-        window = list(reversed(self.dates[i:i + WINDOW_MAX]))      # 舊到新
+        since = [d for d in self.dates[i:i + ALL_MAX] if d >= ALL_SINCE]
+        window = list(reversed(self.dates[i:i + max(len(since), WINDOW_MAX)]))      # 舊到新
         tops = {d: self.lists(d)[0][:TOP_N] for d in window}
         codes = sorted({c for top in tops.values() for c in top})
         rows = []
@@ -304,7 +323,7 @@ class Radar:
             per = self.chips.get(code) or {}
             grid = [[(tops[d].index(code) + 1) if code in tops[d] else 0, per.get(d)] for d in window]
             rows.append({**self.info(code), "grid": grid})
-        return {"dates": window, "rows": rows}
+        return {"dates": window, "rows": rows, "allWeeks": len(since), "allFrom": since[-1] if since else None}
 
     # 熱門股 -----------------------------------------------------------
     def hot(self, day: str, groups: list[dict[str, Any]]) -> dict[str, Any]:
@@ -353,9 +372,9 @@ def load_radar(force: bool = False) -> Radar:
 def rules() -> dict[str, Any]:
     return {
         "buyMin": BUY_MIN, "sellMax": SELL_MAX, "topN": TOP_N, "groupTop": GROUP_TOP, "groupShow": GROUP_SHOW,
-        "capitalTag": CAPITAL_TAG, "capitalCutExclude": CAPITAL_CUT_EXCLUDE,
+        "capitalTag": CAPITAL_TAG, "capitalCutExclude": CAPITAL_CUT_EXCLUDE, "capitalCutChip": CAPITAL_CUT_CHIP,
         "streakLong": list(STREAK_LONG), "streakShort": STREAK_SHORT, "streakTop": STREAK_TOP,
-        "windows": list(WINDOWS), "cardWeeks": CARD_WEEKS, "listWeeks": LIST_WEEKS,
+        "windows": list(WINDOWS), "allSince": ALL_SINCE, "cardWeeks": CARD_WEEKS, "listWeeks": LIST_WEEKS,
         "formula": "x＝（這週 400 張以上大戶持股股數 − 上週）÷ 這週總股數 × 100；籌碼%＝3×√x（大戶增加）或 x（大戶減少）",
     }
 
