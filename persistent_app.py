@@ -128,6 +128,9 @@ async def _persistent_lifespan(fastapi_app):
             from heilong_noon import start_heilong_noon_collector
 
             start_heilong_noon_collector()  # 創高黑龍 12:00 暫定名單：MIS 即時報價組今天K棒套同一組參數（2026-10-10 使用者）
+            from macro_calendar import start_macro_calendar_collector
+
+            start_macro_calendar_collector()  # 國際大事行事曆：TradingView 經濟日曆每小時更新公布值（2026-10-10 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1282,6 +1285,37 @@ def get_revenue_status() -> dict[str, Any]:
 def post_revenue_collect() -> dict[str, Any]:
     """馬上從鏡像拉一次（排程主機推完營收彙總表會戳這裡）。"""
     return {"status": "ok", "result": revenue_run_collect()}
+
+
+@app.get("/api/hub/macro-calendar")
+def get_macro_calendar() -> dict[str, Any]:
+    """國際大事行事曆（2026-10-10 使用者：照莊爸 zhuang.tw/calendar 做）：美／中／日／歐重要數據與央行會議（台灣時間、星等、
+    前值／預期／公布）、台指期結算、美股季度結算、公司法說，加上名詞小學堂。還沒抓過（剛部署）就先抓一次。"""
+    import macro_calendar
+
+    payload = macro_calendar.calendar()
+    if payload["updatedAt"] is None:
+        try:
+            macro_calendar.fetch()
+            payload = macro_calendar.calendar()
+        except Exception as exc:  # noqa: BLE001
+            payload["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return payload
+
+
+@app.get("/api/hub/macro-calendar/status")
+def get_macro_calendar_status() -> dict[str, Any]:
+    import macro_calendar
+
+    return {"status": "ok", **macro_calendar.collector_status()}
+
+
+@app.post("/api/hub/macro-calendar/fetch")
+def post_macro_calendar_fetch() -> dict[str, Any]:
+    """馬上重抓一次經濟日曆。"""
+    import macro_calendar
+
+    return {"status": "ok", "result": macro_calendar.fetch()}
 
 
 @app.get("/api/hub/chip-radar/stock")
