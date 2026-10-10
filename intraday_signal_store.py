@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -34,6 +35,9 @@ EARLY_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000
 # 2026-09-23 使用者再要求把原始的注意12空／12空／加強12空（只畫在 K 線圖上）也整個移除。
 RETIRED_SIGNAL_KINDS = {"oneTwoShort", "watch12short", "short12", "enhanced12short"}
 _retired_purged = False
+# 只留最近幾個有訊號的交易日（2026-10-10 使用者選 60）：網站的歷史日期選單
+# （/api/hub/intraday-signals/dates）最多就列 60 天，更舊的沒人翻得到，卻一年長快 1 GB。
+KEEP_TRADE_DATES = max(5, int(os.getenv("HANSTOCK_INTRADAY_SIGNAL_KEEP_DAYS", "60")))
 
 
 def purge_retired_signal_kinds() -> int:
@@ -369,6 +373,29 @@ def load_recent_trade_dates(limit: int = 10) -> list[str]:
             (limit,),
         ).fetchall()
     return [str(row["trade_date"]) for row in rows]
+
+
+def prune_old_signals(keep_trade_dates: int = KEEP_TRADE_DATES) -> int:
+    """刪掉最近 keep_trade_dates 個有訊號的交易日之前的訊號；回傳刪了幾筆。
+    沿 (trade_date, ...) 索引一天一天往回跳找第 keep_trade_dates 天，不掃整張表。"""
+    _ensure_table()
+    keep = max(1, int(keep_trade_dates))
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            WITH RECURSIVE days(d) AS (
+                SELECT MAX(trade_date) FROM intraday_signals
+                UNION ALL
+                SELECT (SELECT MAX(trade_date) FROM intraday_signals WHERE trade_date < days.d) FROM days WHERE days.d IS NOT NULL
+            )
+            SELECT d FROM days WHERE d IS NOT NULL LIMIT ?
+            """,
+            (keep,),
+        ).fetchall()
+        if len(rows) < keep:
+            return 0
+        cursor = connection.execute("DELETE FROM intraday_signals WHERE trade_date < ?", (str(rows[-1][0]),))
+        return int(cursor.rowcount or 0)
 
 
 def purge_early_signals(trade_date: str, kind: str, cutoff_ts: int) -> int:

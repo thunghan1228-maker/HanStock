@@ -11,6 +11,7 @@ from intraday_signal_store import (
     load_latest_signals,
     load_latest_signals_by_kind,
     load_signals_for_ticker,
+    prune_old_signals,
     purge_out_of_session_kline_signals,
     purge_retired_signal_kinds,
     save_intraday_signals,
@@ -306,6 +307,38 @@ class DeleteKlineSignalsForTickerTests(unittest.TestCase):
 
     def test_returns_zero_when_nothing_to_delete(self):
         self.assertEqual(delete_kline_signals_for_ticker("2026-09-21", "9999"), 0)
+
+
+
+class PruneOldSignalsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _seed(self, days):
+        save_intraday_signals([
+            {"tradeDate": day, "ticker": ticker, "kind": "ma520Up", "label": "五二零上", "barTs": 1_000 + i, "price": 100.0}
+            for i, day in enumerate(days) for ticker in ("2330", "2317")
+        ])
+
+    def test_keeps_only_recent_trade_dates(self):
+        self._seed(["2026-09-14", "2026-09-15", "2026-09-17", "2026-09-18"])   # 9/16 沒訊號，不算一天
+        self.assertEqual(prune_old_signals(3), 2)
+        self.assertEqual(load_latest_signals("2026-09-14", include_chart_kinds=True), [])
+        for day in ("2026-09-15", "2026-09-17", "2026-09-18"):
+            self.assertEqual(len(load_latest_signals(day, include_chart_kinds=True)), 2)
+
+    def test_nothing_deleted_when_fewer_days_than_keep(self):
+        self._seed(["2026-09-17", "2026-09-18"])
+        self.assertEqual(prune_old_signals(3), 0)
+        self.assertEqual(prune_old_signals(2), 0)
+        self.assertEqual(len(load_latest_signals("2026-09-17", include_chart_kinds=True)), 2)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from intraday_kline_signals import kline_signal_backfill_status, start_kline_signal_backfill_today
+from intraday_signal_store import prune_old_signals
 
 logger = logging.getLogger("hanstock.kline_signal_backfill_collector")
 TW_TZ = timezone(timedelta(hours=8))
@@ -53,7 +54,12 @@ def collect_once() -> dict:
     result = kline_signal_backfill_status().get("result") or {}
     if not result.get("error"):
         _last_backfilled_date = trade_date_str
-    return {"tradeDate": trade_date_str, "result": result}
+    try:
+        signals_pruned = prune_old_signals()   # 每個交易日收盤後清一次：只留最近 60 個交易日的訊號
+    except Exception:  # noqa: BLE001
+        logger.warning("清除舊的盤中訊號失敗", exc_info=True)
+        signals_pruned = None
+    return {"tradeDate": trade_date_str, "result": result, "signalsPruned": signals_pruned}
 
 
 def _loop() -> None:
