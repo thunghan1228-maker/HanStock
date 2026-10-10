@@ -11,7 +11,7 @@
 - 有股票期貨／有小型股票期貨：期交所股票期貨標的清單（一般 2,000 股、小型 100 股）。
 - 排除處置股：處置中，以及交易所已公告、下一個交易日開始處置的。
 - 自己打造 K 棒：資料日那根紅K（收盤＞開盤）／黑K（收盤＜開盤）／不限，加漲跌幅（跟前一天收盤比）區間。
-- 河流圖位置：估值河流圖還在做，先不開放。
+- 河流圖位置 ≤：估值河流圖（本站版）的目前位置；1＝只要特價（含跌破）、2＝便宜以下。河流位置是目前的（回測過去的日子也照用目前位置）。
 回測指定日：資料日可以選過去的交易日，名單會帶 D+1／D+2／到最新收盤的表現（價格用還原日K）。
 """
 
@@ -53,7 +53,8 @@ MINI_FUTURES_FALLBACK = frozenset((
     "3680", "3711", "5269", "5274", "5904", "6139", "6223", "6472", "6488", "6510", "6526", "6669", "8046", "8299", "9958",
 ))
 
-PARAM_KEYS = ("score", "chip", "etf", "inst3", "inst5", "sword", "dispo", "fut", "mini", "exdispo", "k", "kmin", "kmax")
+PARAM_KEYS = ("score", "chip", "etf", "inst3", "inst5", "sword", "dispo", "river", "fut", "mini", "exdispo", "k", "kmin", "kmax")
+RIVER_ZONES = ("跌破特價", "特價", "便宜", "貴", "昂貴", "超昂貴")
 
 _lock = threading.Lock()
 _cache: dict[str, Any] = {}
@@ -250,6 +251,18 @@ def _chip_info(day: str) -> tuple[str | None, dict[str, float], dict[str, int], 
     return week, chips, counts, order
 
 
+def _river_zones() -> dict[str, int]:
+    try:
+        from river import zones
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        return zones()
+    except Exception:  # noqa: BLE001
+        logger.exception("river zones failed")
+        return {}
+
+
 def _ma_regulars(day: str) -> tuple[dict[str, int], list[str]]:
     try:
         from ma_rank import regulars
@@ -281,6 +294,7 @@ def _facts(day: str, dates: list[str]) -> dict[str, Any]:
     jailed, upcoming = _dispositions(day, after[0] if after else _next_trading(day))
     chip_week, chips, chip_counts, chip_order = _chip_info(day)
     ma_counts, ma_order = _ma_regulars(day)
+    river = _river_zones()      # 河流位置是「目前」的（本益比與股價都是最新一天），回測過去的日子也照用
     std, mini, fut_source = futures_sets()
     groups = _groups_of()
     names = _names()
@@ -303,6 +317,7 @@ def _facts(day: str, dates: list[str]) -> dict[str, Any]:
             "chip": round(chip, 2) if chip is not None else None, "chipOn": chip is not None and chip >= CHIP_BUY_MIN,
             "maHits": ma_counts.get(code), "chipHits": chip_counts.get(code),
             "etf": etf.get(code, 0), "dispo": jailed.get(code), "upcoming": code in upcoming,
+            "river": river.get(code), "riverName": RIVER_ZONES[river[code]] if code in river else None,
             "fut": code in std or code in mini, "mini": code in mini, "futLabel": "小期" if code in mini else ("期" if code in std else None),
             "inst3": _inst_pct(code, inst_days[-3:], inst, vols), "inst5": _inst_pct(code, inst_days[-5:], inst, vols),
             "d1": _pct(float(x1["close"]), c) if x1 else None, "d1h": _pct(float(x1["high"]), c) if x1 else None,
@@ -343,6 +358,7 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
         "score": _num(raw.get("score"), "score", integer=True), "chip": _num(raw.get("chip"), "chip"),
         "etf": _num(raw.get("etf"), "etf", integer=True), "inst3": _num(raw.get("inst3"), "inst3"), "inst5": _num(raw.get("inst5"), "inst5"),
         "sword": _num(raw.get("sword"), "sword", integer=True), "dispo": _num(raw.get("dispo"), "dispo", integer=True),
+        "river": _num(raw.get("river"), "river", integer=True),
         "fut": _flag(raw.get("fut")), "mini": _flag(raw.get("mini")), "exdispo": _flag(raw.get("exdispo")),
         "k": (raw.get("k") or "any").strip().lower(), "kmin": _num(raw.get("kmin"), "kmin"), "kmax": _num(raw.get("kmax"), "kmax"),
     }
@@ -364,6 +380,8 @@ def _match(row: dict[str, Any], p: dict[str, Any], sword: tuple[set[str], set[st
     if sword is not None and not (row["code"] in sword[0] and row["code"] in sword[1]):
         return False
     if p["dispo"] is not None and (row["dispo"] is None or row["dispo"] > p["dispo"]):
+        return False
+    if p["river"] is not None and (row["river"] is None or row["river"] > p["river"]):
         return False
     if p["fut"] and not row["fut"]:
         return False

@@ -79,6 +79,7 @@ class ScreenTests(unittest.TestCase):
             patch.object(module, "STOCK_GROUPS", groups),
             patch("chip_radar.load_radar", lambda: FakeRadar()),
             patch("ma_rank.regulars", lambda days, top, date: [("1111", 9), ("3333", 4), ("2222", 2)]),
+            patch.object(module, "_river_zones", lambda: {"1111": 2, "2222": 1, "3333": 4}),
         ]
         for p in self.patches:
             p.start()
@@ -107,6 +108,7 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual((one["name"], one["grp"], one["score"], one["k"], one["chg"]), ("一號", "甲", 15, "red", 5.0))
         self.assertEqual((one["chip"], one["chipOn"], one["maHits"], one["chipHits"], one["etf"]), (6.0, True, 9, 2, 2))
         self.assertEqual((one["fut"], one["mini"], one["futLabel"]), (True, False, "期"))
+        self.assertEqual((one["river"], one["riverName"]), (2, "便宜"))
         self.assertEqual(one["inst3"], {"net": 800, "pct": round(800 / 3000 * 100, 1), "buy": True})   # 只有兩天有量（10/02、10/05）
         self.assertEqual((one["d1"], one["d1h"], one["d2"], one["perf"]), (4.76, 6.67, -5.71, -4.76))
         two = next(r for r in out["rows"] if r["code"] == "2222")
@@ -125,6 +127,8 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(self.codes({"inst3": 30}), [])
         self.assertEqual(self.codes({"dispo": 5}), ["2222"])
         self.assertEqual(self.codes({"dispo": 1}), [])
+        self.assertEqual(self.codes({"river": 2}), ["1111", "2222"])   # 便宜以下（1111 便宜、2222 特價）
+        self.assertEqual(self.codes({"river": 1}), ["2222"])           # 只要特價
         self.assertEqual(self.codes({"exdispo": "1"}), ["1111"])   # 2222 處置中、3333 明天起處置
         self.assertEqual(self.codes({"fut": "1"}), ["1111"])
         self.assertEqual(self.codes({"mini": "1"}), [])

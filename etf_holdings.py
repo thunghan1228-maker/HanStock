@@ -326,9 +326,9 @@ def collect_once(fetcher: Callable[[str], Any] | None = None, *, limit: int = FE
     return result
 
 
-def run_collect(*, only_if_new: bool = False) -> dict[str, Any]:
-    """抓一輪；有新的快照就重算下午報（手動戳一定重算）。"""
-    result = collect_once()
+def run_collect(*, only_if_new: bool = False, limit: int = FETCH_LIMIT) -> dict[str, Any]:
+    """抓一輪；有新的快照就重算下午報（手動戳一定重算）。limit＝看鏡像最近幾天（回補舊歷史時放大）。"""
+    result = collect_once(limit=limit)
     if only_if_new and not result["added"]:
         result["swingRefreshed"] = False
         return result
