@@ -7,6 +7,7 @@
 
 算法：
 - 董監淨增減＝本月增加－本月減少；經理人、大股東用持股跟上個月比。內部人淨增減＝董監＋經理人（大股東常常就是董監，另列不加總）。
+- 配股、減資會讓持股同比例變動（8 月配股季最明顯），不是買賣：股本比上月多（少）幾 %，就把上月董監＋經理人持股 × 那個比例扣掉。
 - 金額＝股數 × 那個月我們日K的平均收盤（估算）；集中市場金額同樣估算。
 - 疊上集保 400 張以上大戶持股比（最新一週）與近 4 週變化（百分點）：內部人買＋大戶增＝「雙買」，內部人賣＋大戶減＝「雙賣」。
 """
@@ -30,6 +31,7 @@ KEEP_MONTHS = 13
 TOP_N = 25
 BIG_LEVELS = (12, 13, 14, 15)     # 400 張以上
 TDCC_WEEKS = 5                    # 最新一週＋往回 4 週
+CAPITAL_CHANGE_MIN = 0.0005       # 股本變動超過 0.05% 才當配股／減資校正
 POLL_SECONDS = 60 * 60
 COLLECT_AT = (21, 30)             # 鏡像 20:40 跑完；之後每天抓一次
 FIELDS = ["code", "name", "market", "issued", "dirInc", "dirDec", "dirHold", "dirPct", "mgrHold", "bigHold"]
@@ -198,11 +200,20 @@ def _row(r: dict[str, Any], prev: dict[str, Any] | None, detail: dict[str, Any] 
     dir_net = (r.get("dirInc") or 0) - (r.get("dirDec") or 0)
     mgr = None if not prev or r.get("mgrHold") is None or prev.get("mgrHold") is None else r["mgrHold"] - prev["mgrHold"]
     big = None if not prev or r.get("bigHold") is None or prev.get("bigHold") is None else r["bigHold"] - prev["bigHold"]
-    net = dir_net + (mgr or 0)
+    raw = dir_net + (mgr or 0)
+    # 股本變動（配股、減資）會讓大家的持股同比例增減，不是買賣：上月持股 × 股本變動比例先扣掉
+    cap = 0.0
+    if prev and r.get("issued") and prev.get("issued"):
+        ratio = r["issued"] / prev["issued"] - 1
+        if abs(ratio) >= CAPITAL_CHANGE_MIN:
+            cap = ((prev.get("dirHold") or 0) + ((prev.get("mgrHold") or 0) if mgr is not None else 0)) * ratio
+    net = raw - cap
+    if abs(net) < 1000:          # 不到一張（配股零頭）當沒動
+        net = 0
     out = {
         "code": r["code"], "name": r.get("name"), "market": r.get("market"), "dirNet": round(dir_net), "dirInc": round(r.get("dirInc") or 0),
         "dirDec": round(r.get("dirDec") or 0), "mgrNet": round(mgr) if mgr is not None else None, "bigNet": round(big) if big is not None else None,
-        "net": round(net), "netLots": round(net / 1000), "dirPct": r.get("dirPct"),
+        "rawNet": round(raw), "capAdj": round(cap), "net": round(net), "netLots": round(net / 1000), "dirPct": r.get("dirPct"),
         "dirPctChg": round(r["dirPct"] - prev["dirPct"], 2) if prev and r.get("dirPct") is not None and prev.get("dirPct") is not None else None,
         "netPctOfIssued": round(net / r["issued"] * 100, 3) if r.get("issued") else None,
         "price": round(price, 2) if price else None, "amount": round(net * price / 1e8, 2) if price else None,   # 億
@@ -261,7 +272,8 @@ def overview(month: str | None = None) -> dict[str, Any]:
         "summary": {"buy": total(None, 1), "sell": total(None, -1), "tseBuy": total("TSE", 1), "tseSell": total("TSE", -1),
                     "otcBuy": total("OTC", 1), "otcSell": total("OTC", -1)},
         "buys": buys, "sells": sells, "centralBuys": cbuy, "centralSells": csell,
-        "rule": ("內部人淨增減＝董監（本月增加－減少）＋經理人（持股跟上月比）；10% 大股東常常就是董監，另列不加總。金額＝股數 × 該月平均收盤（估算）。"
+        "rule": ("內部人淨增減＝董監（本月增加－減少）＋經理人（持股跟上月比），再扣掉配股／減資造成的同比例變動（股本變動比例 × 上月持股）；"
+                 "10% 大股東常常就是董監，另列不加總。金額＝股數 × 該月平均收盤（估算）。"
                  "董監增減包含贈與、信託、繼承等，「集中市場」才是在市場上真的買賣（只查當月異動最大的公司）。"
                  "大戶＝集保 400 張以上持股比，近 4 週變化以百分點計；內部人買＋大戶增＝雙買、內部人賣＋大戶減＝雙賣。"),
         "source": "公開資訊觀測站：董事、監察人、經理人及百分之十以上大股東股權異動彙總表（IRB110）、內部人持股異動事後申報表；集保結算所股權分散表",
