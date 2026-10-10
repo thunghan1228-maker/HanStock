@@ -931,9 +931,10 @@ def get_etf_status() -> dict[str, Any]:
 
 
 @app.post("/api/hub/etf/collect")
-def post_etf_collect() -> dict[str, Any]:
-    """立刻從鏡像拉主動式 ETF 五檔的持股（排程主機晚上推完會戳這裡），有新的就重算下午報。"""
-    return {"status": "ok", "result": run_etf_collect()}
+def post_etf_collect(days: int = Query(15, ge=1, le=60)) -> dict[str, Any]:
+    """立刻從鏡像拉主動式 ETF 五檔的持股（排程主機晚上推完會戳這裡），有新的就重算下午報；
+    days＝看鏡像最近幾個資料日（2026-10-10 持股雷達要更長的歷史，回補時放大到 60）。"""
+    return {"status": "ok", "result": run_etf_collect(limit=days)}
 
 
 @app.get("/api/hub/heilong")
@@ -1100,6 +1101,41 @@ def get_river_ma10() -> dict[str, Any]:
     from river import ma10
 
     return ma10()
+
+
+@app.get("/api/hub/etf-radar")
+def get_etf_radar(date: str | None = Query(None)) -> dict[str, Any]:
+    """主動式 ETF 持股雷達（2026-10-10 使用者：照莊爸 zhuang.tw/etf 做，併進籌碼日報）：五檔卡片、今天／這一週五檔合計
+    加碼出貨前十（依金額）、最多人共同持有、資金潮汐；date＝回測那一天。"""
+    from etf_radar import overview
+
+    return overview(date)
+
+
+@app.get("/api/hub/etf-radar/fund")
+def get_etf_radar_fund(code: str = Query(...), date: str | None = Query(None)) -> dict[str, Any]:
+    """單一檔主動式 ETF：最新一日動作、近 5 日累計流向、連續同向動作、持股權重前 20。"""
+    from fastapi import HTTPException
+
+    from etf_radar import fund
+
+    try:
+        return fund(code, date)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/etf-radar/stock")
+def get_etf_radar_stock(q: str = Query(...)) -> dict[str, Any]:
+    """個股 × 全部主動式 ETF：每一檔什麼時候買、什麼時候賣（最近 3 個月）＋目前持股與估計成本。"""
+    from fastapi import HTTPException
+
+    from etf_radar import stock
+
+    try:
+        return stock(q)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/hub/screener")
