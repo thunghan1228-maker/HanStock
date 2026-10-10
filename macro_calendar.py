@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import urllib.request
@@ -361,8 +362,16 @@ COMPANY_EVENTS: list[dict[str, Any]] = [
     {"date": "2026-10-14", "time": "13:00", "country": "EU", "zh": "歐 艾司摩爾 ASML 財報", "period": "Q3", "stars": 2, "key": "earnings",
      "note": "公布時間為慣例時間，待確認"},
     {"date": "2026-10-15", "time": "14:00", "country": "TW", "zh": "台 台積電法說會", "period": "Q3", "stars": 3, "key": "call",
-     "note": "慣例時間，以公司公告為準"},
+     "note": "慣例時間，以公司公告為準", "code": "2330"},
 ]
+
+# 法說會（觀測站法人說明會一覽表，tw-groups data 分支鏡像 tpex/conference.json）：每天一筆「法說會 N 家」，
+# 權值股另外單獨列（台積電 ★★★、其他前二十大權值 ★★）；股期標的在當天清單裡排前面
+CONFERENCE_MIRROR = "conference.json"
+CALL_STARS = {"2330": 3, **{c: 2 for c in ("2317", "2454", "2308", "2382", "3711", "2303", "2881", "2882", "2891", "2412", "3008",
+                                         "2345", "3017", "2357", "6669", "2379", "3034", "2603", "3231", "2886")}}
+CALL_BIG_GROUP = "股期標的"
+INVITED_RE = re.compile(r"受邀|邀請|證券.{0,8}(主辦|舉辦)")
 
 _lock = threading.Lock()
 _state: dict[str, Any] = {"running": False, "lastFetch": None, "lastError": None, "count": 0}
@@ -532,7 +541,56 @@ def _fixed(key: str, day: date, at: str, country: str, zh: str, stars: int, note
             "key": key, "period": period, "indicators": [], "notes": [note] if note else [], "released": False}
 
 
-def fixed_events(start: date, end: date) -> list[dict[str, Any]]:
+def parse_conferences(payload: Any) -> list[dict[str, Any]]:
+    fields = (payload or {}).get("fields") or ["code", "name", "market", "start", "end", "time", "place", "summary"]
+    out = []
+    for r in (payload or {}).get("rows") or []:
+        if isinstance(r, list) and len(r) >= 6:
+            item = dict(zip(fields, r))
+            if item.get("code") and item.get("start"):
+                item["name"] = str(item.get("name") or "").rstrip("*＊ ")      # 觀測站股名後面的 *（外國企業）拿掉
+                out.append(item)
+    return out
+
+
+def conference_events(rows: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
+    """法說會 → 每天一筆「台 法說會 N 家」（列出每家）＋權值股自辦的法說自己一筆。
+    觀測站的一覽表大部分是「受邀參加」券商論壇；擇要訊息有「受邀／邀請／某某證券主辦」的算論壇，其餘算公司自辦（多半是公布季報）。"""
+    from stock_groups import STOCK_GROUPS
+
+    big = {str(c) for c, _ in STOCK_GROUPS.get(CALL_BIG_GROUP, [])}
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not (start.isoformat() <= r["start"] <= end.isoformat()):
+            continue
+        code = str(r["code"])
+        stars = CALL_STARS.get(code) or (2 if code in big else 1)
+        summary = r.get("summary") or ""
+        invited = bool(INVITED_RE.search(summary))
+        item = {"code": code, "name": r.get("name") or "", "market": r.get("market"), "time": r.get("time") or "",
+                "until": r["end"] if r.get("end") and r["end"] != r["start"] else None, "place": r.get("place") or "",
+                "summary": summary[:120], "stars": stars, "invited": invited}
+        by_day.setdefault(r["start"], []).append(item)
+        if code in CALL_STARS and not invited:
+            ev = _fixed("call", date.fromisoformat(r["start"]), item["time"] if re.fullmatch(r"\d{1,2}:\d{2}", item["time"]) else "", "TW",
+                        f"台 {item['name']}法說會", stars, "・".join(x for x in (item["place"], item["summary"][:60]) if x))
+            ev["id"] = f"call-{code}-{r['start']}-{item['time']}"
+            ev["code"] = code
+            if item["until"]:
+                ev["until"] = item["until"]
+            out.append(ev)
+    for day, items in sorted(by_day.items()):
+        items.sort(key=lambda x: (-x["stars"], x["invited"], x["time"], x["code"]))
+        names = "、".join(x["name"] for x in items[:6]) + ("…" if len(items) > 6 else "")
+        own = sum(not x["invited"] for x in items)
+        ev = _fixed("call", date.fromisoformat(day), "", "TW", f"台 法說會 {len(items)} 家" + (f"（自辦 {own}）" if own and own < len(items) else ""), 1, names)
+        ev.update({"id": f"calls-{day}", "group": "calls", "companies": items})
+        out.append(ev)
+    return out
+
+
+def fixed_events(start: date, end: date, skip_codes: dict[str, list[str]] | None = None) -> list[dict[str, Any]]:
     """台指期結算（每月第三個星期三 13:30）、美股季度結算（3／6／9／12 月第三個星期五，美股收盤＝台灣隔天清晨）、公司法說。"""
     out: list[dict[str, Any]] = []
     y, m = start.year, start.month
@@ -547,13 +605,17 @@ def fixed_events(start: date, end: date) -> list[dict[str, Any]]:
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     for e in COMPANY_EVENTS:
         day = date.fromisoformat(e["date"])
+        official = (skip_codes or {}).get(e.get("code") or "", [])
+        if any(abs((date.fromisoformat(d) - day).days) <= 7 for d in official):
+            continue          # 觀測站已經有這家公司的正式法說，慣例時間那筆拿掉
         if start <= day <= end:
             out.append(_fixed(e["key"], day, e["time"], e["country"], e["zh"], e["stars"], e.get("note", ""), e.get("period", "")))
             out[-1]["id"] = f"co-{e['date']}-{e['zh']}"
     return out
 
 
-def fetch(*, fetcher: Callable[[str], Any] | None = None, now: datetime | None = None) -> dict[str, Any]:
+def fetch(*, fetcher: Callable[[str], Any] | None = None, now: datetime | None = None,
+          mirror_fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
     now = now or _now()
     call = fetcher or _default_fetcher
     start = (now - timedelta(days=BACK_DAYS)).astimezone(timezone.utc)
@@ -563,15 +625,24 @@ def fetch(*, fetcher: Callable[[str], Any] | None = None, now: datetime | None =
     events = parse_events(call(url))
     if not events:
         raise RuntimeError("經濟日曆抓到 0 筆")
+    conferences, conf_error = None, None
+    try:
+        from chips_daily import _default_fetcher as mirror_default, _mirror_url
+
+        conferences = parse_conferences((mirror_fetcher or mirror_default)(_mirror_url(CONFERENCE_MIRROR, volatile=True)))
+    except Exception as exc:  # noqa: BLE001
+        conf_error = f"{type(exc).__name__}: {exc}"[:200]
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        connection.execute("INSERT INTO macro_calendar (key, value, updated_at) VALUES ('events', ?, ?) "
-                           "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                           (json.dumps(events, ensure_ascii=False), now.isoformat(timespec="seconds")))
+        upsert = ("INSERT INTO macro_calendar (key, value, updated_at) VALUES (?, ?, ?) "
+                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+        connection.execute(upsert, ("events", json.dumps(events, ensure_ascii=False), now.isoformat(timespec="seconds")))
+        if conferences:
+            connection.execute(upsert, ("conference", json.dumps(conferences, ensure_ascii=False), now.isoformat(timespec="seconds")))
     with _lock:
-        _state.update({"lastFetch": now.isoformat(timespec="seconds"), "lastError": None, "count": len(events)})
-    return {"count": len(events), "at": now.isoformat(timespec="seconds")}
+        _state.update({"lastFetch": now.isoformat(timespec="seconds"), "lastError": None, "count": len(events), "conferenceError": conf_error})
+    return {"count": len(events), "at": now.isoformat(timespec="seconds"), "conferences": len(conferences or []), "conferenceError": conf_error}
 
 
 def glossary() -> list[dict[str, Any]]:
@@ -590,9 +661,15 @@ def calendar(*, now: datetime | None = None) -> dict[str, Any]:
     with get_connection() as connection:
         _schema(connection)
         row = connection.execute("SELECT value, updated_at FROM macro_calendar WHERE key = 'events'").fetchone()
+        conf_row = connection.execute("SELECT value, updated_at FROM macro_calendar WHERE key = 'conference'").fetchone()
     stored = json.loads(row["value"]) if row else []
+    conferences = json.loads(conf_row["value"]) if conf_row else []
     start, end = (now - timedelta(days=BACK_DAYS)).date(), (now + timedelta(days=AHEAD_DAYS)).date()
-    events = [e for e in stored if start.isoformat() <= e["date"] <= end.isoformat()] + fixed_events(start, end)
+    official: dict[str, list[str]] = {}
+    for c in conferences:
+        official.setdefault(str(c["code"]), []).append(c["start"])
+    events = ([e for e in stored if start.isoformat() <= e["date"] <= end.isoformat()] + fixed_events(start, end, official)
+              + conference_events(conferences, start, end))
     events.sort(key=lambda e: (e["date"], e["time"] or "99:99", -e["stars"], e["zh"]))
     stamp = (now.date().isoformat(), now.strftime("%H:%M"))
     upcoming = [e for e in events if e["stars"] >= 3 and (e["date"], e["time"] or "00:00") >= stamp]
@@ -600,7 +677,8 @@ def calendar(*, now: datetime | None = None) -> dict[str, Any]:
         "status": "ok" if events else "missing", "updatedAt": row["updated_at"] if row else None, "now": now.isoformat(timespec="seconds"),
         "today": now.date().isoformat(), "from": start.isoformat(), "to": end.isoformat(), "events": events,
         "next": upcoming[0] if upcoming else None, "glossary": glossary(),
-        "source": "TradingView 經濟日曆（美／中／日／歐）＋台指期結算、美股季度結算、公司法說（慣例時間）",
+        "conferenceUpdatedAt": conf_row["updated_at"] if conf_row else None,
+        "source": "TradingView 經濟日曆（美／中／日／歐）＋公開資訊觀測站法人說明會一覽表（上市櫃）＋台指期結算、美股季度結算",
     }
 
 

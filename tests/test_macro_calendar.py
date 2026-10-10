@@ -97,7 +97,7 @@ class MacroCalendarTests(unittest.TestCase):
     def test_fetch_and_calendar(self) -> None:
         now = datetime(2026, 10, 10, 9, 0, tzinfo=TW)
         urls: list[str] = []
-        result = module.fetch(fetcher=lambda u: urls.append(u) or PAYLOAD, now=now)
+        result = module.fetch(fetcher=lambda u: urls.append(u) or PAYLOAD, now=now, mirror_fetcher=lambda u: {"rows": []})
         self.assertEqual(result["count"], 8)
         self.assertIn("from=2026-10-03T00:00:00.000Z", urls[0])
         self.assertIn("countries=US,CN,JP,EU", urls[0])
@@ -115,8 +115,40 @@ class MacroCalendarTests(unittest.TestCase):
         self.assertTrue({e["key"] for e in cal["events"]} <= cards)       # 每個事件都有小學堂可連
         # 抓到 0 筆不覆蓋舊資料
         with self.assertRaises(RuntimeError):
-            module.fetch(fetcher=lambda u: {"result": []}, now=now)
+            module.fetch(fetcher=lambda u: {"result": []}, now=now, mirror_fetcher=lambda u: {"rows": []})
         self.assertEqual(len(module.calendar(now=now)["events"]), len(cal["events"]))
+
+    def test_conferences(self) -> None:
+        conf = {"fields": ["code", "name", "market", "start", "end", "time", "place", "summary"], "rows": [
+            ["2330", "台積電", "TSE", "2026-10-16", "2026-10-16", "14:00", "台北君悅", "說明本公司第三季營運成果"],
+            ["1101", "台泥", "TSE", "2026-10-16", "2026-10-20", "", "線上", "受邀參加券商論壇"],
+            ["6666", "小公司*", "OTC", "2026-10-16", "2026-10-16", "10:00", "", ""],
+            ["2317", "鴻海", "TSE", "2026-10-16", "2026-10-16", "09:00", "台北", "受富邦證券邀請參加投資人會議"],
+            ["9999", "太早", "OTC", "2026-09-01", "2026-09-01", "10:00", "", ""],
+            ["x"],
+        ]}
+        now = datetime(2026, 10, 10, 9, 0, tzinfo=TW)
+        seen: list[str] = []
+        result = module.fetch(fetcher=lambda u: PAYLOAD, now=now, mirror_fetcher=lambda u: seen.append(u) or conf)
+        self.assertEqual((result["conferences"], result["conferenceError"]), (5, None))
+        self.assertIn("conference.json", seen[0])
+        cal = module.calendar(now=now)
+        day = next(e for e in cal["events"] if e["id"] == "calls-2026-10-16")
+        self.assertEqual(day["zh"], "台 法說會 4 家（自辦 2）")
+        self.assertEqual([c["code"] for c in day["companies"]], ["2330", "1101", "2317", "6666"])     # 星等高、自辦的排前面
+        self.assertEqual([c["invited"] for c in day["companies"]], [False, True, True, False])
+        self.assertEqual((day["companies"][1]["until"], day["companies"][3]["name"]), ("2026-10-20", "小公司"))
+        self.assertFalse(any(e.get("code") == "2317" for e in cal["events"]))   # 權值股受邀券商論壇不單獨列
+        tsmc = [e for e in cal["events"] if e["key"] == "call" and e.get("code") == "2330"]
+        self.assertEqual([(e["date"], e["time"], e["stars"]) for e in tsmc], [("2026-10-16", "14:00", 3)])
+        self.assertFalse(any(e["id"].startswith("co-") and "台積電" in e["zh"] for e in cal["events"]))   # 慣例那筆拿掉
+        self.assertFalse(any("1101" == e.get("code") for e in cal["events"]))   # 股期標的不單獨列，只在當天清單
+        self.assertFalse(any(e["date"] == "2026-09-01" for e in cal["events"]))
+        self.assertEqual(cal["conferenceUpdatedAt"], "2026-10-10T09:00:00+08:00")
+        # 鏡像抓不到：行事曆照樣更新，舊的法說資料保留
+        result = module.fetch(fetcher=lambda u: PAYLOAD, now=now, mirror_fetcher=lambda u: 1 / 0)
+        self.assertIn("ZeroDivisionError", result["conferenceError"])
+        self.assertTrue(any(e["id"] == "calls-2026-10-16" for e in module.calendar(now=now)["events"]))
 
     def test_every_catalog_group_has_glossary(self) -> None:
         for group, (_, stars, key) in module.GROUPS.items():
@@ -128,7 +160,9 @@ class MacroCalendarTests(unittest.TestCase):
 
     def test_endpoint(self) -> None:
         client = TestClient(persistent_app.app)
-        with patch.object(module, "_default_fetcher", return_value=PAYLOAD):
+        import chips_daily
+
+        with patch.object(module, "_default_fetcher", return_value=PAYLOAD), patch.object(chips_daily, "_default_fetcher", return_value={"rows": []}):
             r = client.get("/api/hub/macro-calendar")
         body = r.json()
         self.assertEqual((r.status_code, body["status"]), (200, "ok"))
