@@ -307,7 +307,7 @@ def daily_quotes(trade_date: str, codes: list[str]) -> dict[str, dict[str, Any]]
             batch = codes[start:start + 400]
             rows = connection.execute(
                 f"""SELECT stock_code, substr(bar_time, 1, 10) AS d, close, volume FROM bars_1d
-                    WHERE stock_code IN ({','.join('?' for _ in batch)}) AND substr(bar_time, 1, 10) <= ? AND substr(bar_time, 1, 10) >= ?
+                    WHERE stock_code IN ({','.join('?' for _ in batch)}) AND bar_time < ? || 'z' AND bar_time >= ?
                     ORDER BY stock_code, d""",
                 (*batch, trade_date, since),
             ).fetchall()

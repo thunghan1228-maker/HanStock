@@ -463,15 +463,15 @@ def _load_bars(codes: list[str], *, until: str, include_until: bool) -> dict[str
     """{代號: {last（最後一根的日期）, o, h, l, c, v}}，舊到新；until 那天要不要算進去看 include_until。
     全市場一年多的日K放在 array('d')（一個數 8 bytes），盤中整天留在記憶體裡也只要三十 MB 上下。"""
     since = (date.fromisoformat(until) - timedelta(days=HISTORY_CALENDAR_DAYS)).isoformat()
-    op = "<=" if include_until else "<"
+    upper = f"{until}z" if include_until else until   # bar_time 以日期開頭：< 'Dz' 就是 <= D 那天
     wanted = set(codes)
     out: dict[str, dict[str, Any]] = {}
     with get_connection() as connection:
         rows = connection.execute(
             f"""SELECT stock_code, substr(bar_time, 1, 10) AS d, open, high, low, close, volume FROM bars_1d
-                WHERE substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) {op} ?
+                WHERE bar_time >= ? AND bar_time < ?
                 ORDER BY stock_code, bar_time""",
-            (since, until),
+            (since, upper),
         )
         for row in rows:
             code = str(row["stock_code"]).strip().upper()
@@ -500,7 +500,7 @@ def _shares(codes: list[str], before: str) -> dict[str, float]:
             rows = connection.execute(
                 """SELECT f.stock_code AS code, f.trade_date AS d, f.market_value AS mv, b.close AS c
                    FROM stock_fundamentals_daily f
-                   JOIN bars_1d b ON b.stock_code = f.stock_code AND substr(b.bar_time, 1, 10) = f.trade_date
+                   JOIN bars_1d b ON b.stock_code = f.stock_code AND b.bar_time >= f.trade_date AND b.bar_time < f.trade_date || 'z'
                    WHERE f.trade_date >= ? AND f.trade_date <= ? AND f.market_value > 0""",
                 (since, before),
             ).fetchall()
@@ -522,8 +522,8 @@ def _day_complete(day: str) -> bool:
         rows = connection.execute(
             """SELECT substr(b.bar_time, 1, 10) AS d, s.market AS m, COUNT(*) AS n FROM bars_1d b
                JOIN stocks s ON s.stock_code = b.stock_code
-               WHERE substr(b.bar_time, 1, 10) IN (?, ?) GROUP BY d, m""",
-            (day, prev),
+               WHERE (b.bar_time >= ? AND b.bar_time < ? || 'z') OR (b.bar_time >= ? AND b.bar_time < ? || 'z') GROUP BY d, m""",
+            (day, day, prev, prev),
         ).fetchall()
     counts = {(str(r["d"]), str(r["m"]).upper()): int(r["n"]) for r in rows}
     return counts.get((day, "TSE"), 0) >= TSE_DAY_MIN and counts.get((day, "OTC"), 0) >= max(100, counts.get((prev, "OTC"), 0) * OTC_DAY_RATIO)

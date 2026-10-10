@@ -66,7 +66,7 @@ _cache: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
 def _latest_bar_date() -> str | None:
     initialize_database()
     with get_connection() as connection:
-        row = connection.execute("SELECT MAX(substr(bar_time, 1, 10)) AS d FROM bars_1d").fetchone()
+        row = connection.execute("SELECT substr(MAX(bar_time), 1, 10) AS d FROM bars_1d").fetchone()
     return str(row["d"]) if row and row["d"] else None
 
 
@@ -112,7 +112,7 @@ def _load_bars(codes: list[str], *, session: str) -> dict[str, list[tuple[str, f
             rows = connection.execute(
                 f"""
                 SELECT stock_code, substr(bar_time, 1, 10) AS d, high, low, close, volume FROM bars_1d
-                WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) < ? AND substr(bar_time, 1, 10) >= ?
+                WHERE stock_code IN ({placeholders}) AND bar_time < ? AND bar_time >= ?
                 """,
                 (*batch, session, since),
             ).fetchall()

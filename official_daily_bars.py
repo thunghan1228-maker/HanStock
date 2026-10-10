@@ -394,9 +394,9 @@ def _otc_bars_exist(trade_date: date, minimum: int = 100) -> bool:
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS n FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
-                WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) = ?
+                WHERE s.market = 'OTC' AND b.bar_time >= ? AND b.bar_time < ? || 'z'
                 """,
-                (trade_date.isoformat(),),
+                (trade_date.isoformat(), trade_date.isoformat()),
             ).fetchone()
         return int(row["n"] if row else 0) >= minimum
     except Exception:  # noqa: BLE001
@@ -437,7 +437,7 @@ def _otc_presence(since: str, until: str) -> dict[str, set[str]]:
             """
             SELECT b.stock_code AS code, substr(b.bar_time, 1, 10) AS d
             FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
-            WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) >= ? AND substr(b.bar_time, 1, 10) <= ?
+            WHERE s.market = 'OTC' AND b.bar_time >= ? AND b.bar_time < ? || 'z'
             """,
             (since, until),
         ).fetchall()
@@ -456,7 +456,7 @@ def otc_day_complete(trade_date: date, *, ratio: float = 0.97) -> bool:
             """
             SELECT substr(b.bar_time, 1, 10) AS d, COUNT(*) AS n
             FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
-            WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) >= ? AND substr(b.bar_time, 1, 10) <= ?
+            WHERE s.market = 'OTC' AND b.bar_time >= ? AND b.bar_time < ? || 'z'
             GROUP BY d ORDER BY d DESC LIMIT 2
             """,
             ((trade_date - timedelta(days=20)).isoformat(), day),
@@ -482,9 +482,9 @@ def _day_done(trade_date: date) -> tuple[bool, bool]:
             row = connection.execute(
                 """
                 SELECT COUNT(*) FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
-                WHERE s.market = 'TSE' AND substr(b.bar_time, 1, 10) = ?
+                WHERE s.market = 'TSE' AND b.bar_time >= ? AND b.bar_time < ? || 'z'
                 """,
-                (trade_date.isoformat(),),
+                (trade_date.isoformat(), trade_date.isoformat()),
             ).fetchone()
         tse_done = int(row[0] if row else 0) >= TSE_DAY_COMPLETE_MIN
         return tse_done, tse_done and otc_day_complete(trade_date)

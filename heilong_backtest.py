@@ -145,10 +145,9 @@ def _mean(values: list[float]) -> float:
 
 def _bar_dates(limit: int) -> list[str]:
     """有日K的交易日，新到舊。"""
-    initialize_database()
-    with get_connection() as connection:
-        rows = connection.execute("SELECT DISTINCT substr(bar_time, 1, 10) AS d FROM bars_1d ORDER BY d DESC LIMIT ?", (limit,)).fetchall()
-    return [str(r["d"]) for r in rows]
+    from daily_bars_store import recent_bar_dates
+
+    return recent_bar_dates(limit)
 
 
 def _load_bars(codes: list[str], *, since: str, until: str, adjusted: bool = False) -> dict[str, list[Bar]]:
@@ -162,7 +161,7 @@ def _load_bars(codes: list[str], *, since: str, until: str, adjusted: bool = Fal
             rows = connection.execute(
                 f"""
                 SELECT stock_code, substr(bar_time, 1, 10) AS d, open, high, low, close, volume FROM bars_1d
-                WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) <= ?
+                WHERE stock_code IN ({placeholders}) AND bar_time >= ? AND bar_time < ? || 'z'
                 """,
                 (*batch, since, until),
             ).fetchall()
@@ -278,7 +277,7 @@ def attention_log_since() -> str | None:
 def _market_codes(since: str) -> list[str]:
     """全市場：日K裡 since 之後有資料的 4 位數代號（排除 ETF 等）。"""
     with get_connection() as connection:
-        rows = connection.execute("SELECT DISTINCT stock_code FROM bars_1d WHERE substr(bar_time, 1, 10) >= ?", (since,)).fetchall()
+        rows = connection.execute("SELECT DISTINCT stock_code FROM bars_1d WHERE bar_time >= ?", (since,)).fetchall()
     # 4 位數純數字、不是 00 開頭（0050／0056 這類 ETF 也是 4 位數）
     return sorted(c for c in (str(r["stock_code"]).strip().upper() for r in rows) if len(c) == 4 and c.isdigit() and not c.startswith("00"))
 

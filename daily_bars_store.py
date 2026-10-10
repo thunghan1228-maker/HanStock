@@ -43,13 +43,37 @@ def bar_codes(min_bars: int = 21) -> list[str]:
     return sorted({str(r["stock_code"]).strip().upper() for r in rows})
 
 
+def recent_bar_dates(limit: int, *, before: str | None = None, include_before: bool = False) -> list[str]:
+    """日K表裡最近 limit 個有資料的交易日（新到舊）；before＝只看這天之前（include_before＝含這天）。
+    沿著 bar_time 索引一天一天往回跳（每步只查一次 MAX），不用 SELECT DISTINCT 把整張表掃過。"""
+    limit = int(limit)
+    if limit <= 0:
+        return []
+    initialize_database()
+    upper = "\uffff" if before is None else (f"{str(before)[:10]}z" if include_before else str(before)[:10])
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            WITH RECURSIVE days(d) AS (
+                SELECT substr(MAX(bar_time), 1, 10) FROM bars_1d WHERE bar_time < ?
+                UNION ALL
+                SELECT (SELECT substr(MAX(bar_time), 1, 10) FROM bars_1d WHERE bar_time < days.d)
+                FROM days WHERE days.d IS NOT NULL
+            )
+            SELECT d FROM days WHERE d IS NOT NULL LIMIT ?
+            """,
+            (upper, limit),
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def latest_daily_trade_date_before(trade_date: str) -> str | None:
     """全市場日K裡、早於 trade_date 的最新交易日（YYYY-MM-DD）。個股的「昨日」日K比這個日期舊，
     就代表那檔的日K沒跟上（例如上櫃來源被擋），不能拿來當昨高／昨收。"""
     initialize_database()
     with get_connection() as connection:
         row = connection.execute(
-            "SELECT MAX(substr(bar_time, 1, 10)) AS d FROM bars_1d WHERE substr(bar_time, 1, 10) < ?",
+            "SELECT substr(MAX(bar_time), 1, 10) AS d FROM bars_1d WHERE bar_time < ?",
             (str(trade_date)[:10],),
         ).fetchone()
     return str(row["d"]) if row and row["d"] else None
@@ -60,21 +84,13 @@ def prune_old_daily_bars(keep_days: int = 365) -> int:
     用實際存在的交易日決定，不是單純日曆天數。"""
     initialize_database()
     keep_days = max(1, int(keep_days))
+    dates = recent_bar_dates(keep_days)
+    if len(dates) < keep_days:
+        return 0
+    cutoff_date = dates[-1]
     with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT DISTINCT substr(bar_time, 1, 10) AS trade_date
-            FROM bars_1d
-            ORDER BY trade_date DESC
-            LIMIT ?
-            """,
-            (keep_days,),
-        ).fetchall()
-        if len(rows) < keep_days:
-            return 0
-        cutoff_date = rows[-1]["trade_date"]
         cursor = connection.execute(
-            "DELETE FROM bars_1d WHERE substr(bar_time, 1, 10) < ?",
+            "DELETE FROM bars_1d WHERE bar_time < ?",
             (cutoff_date,),
         )
         return int(cursor.rowcount or 0)
@@ -86,8 +102,8 @@ def daily_bars_storage_status() -> dict[str, Any]:
         row = connection.execute(
             """
             SELECT COUNT(*) AS n, COUNT(DISTINCT stock_code) AS codes,
-                   MIN(substr(bar_time, 1, 10)) AS first_date,
-                   MAX(substr(bar_time, 1, 10)) AS last_date
+                   substr(MIN(bar_time), 1, 10) AS first_date,
+                   substr(MAX(bar_time), 1, 10) AS last_date
             FROM bars_1d
             """
         ).fetchone()

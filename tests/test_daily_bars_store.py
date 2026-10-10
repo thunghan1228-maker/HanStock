@@ -10,6 +10,7 @@ from daily_bars_store import (
     daily_bars_storage_status,
     load_daily_bars,
     prune_old_daily_bars,
+    recent_bar_dates,
 )
 
 UTC = timezone.utc
@@ -52,6 +53,28 @@ class DailyBarsStoreTests(unittest.TestCase):
         remaining_dates = sorted({b["ts"][:10] for b in load_daily_bars("2330", limit=100)})
         self.assertEqual(remaining_dates, ["2026-09-12", "2026-09-13", "2026-09-14", "2026-09-15"])
         self.assertEqual(deleted, 2)
+
+    def test_recent_bar_dates_newest_first_distinct(self):
+        for day in (10, 11, 14, 15):
+            self._seed_day("2330", day)
+            self._seed_day("2317", day)
+        self.assertEqual(recent_bar_dates(3), ["2026-09-15", "2026-09-14", "2026-09-11"])
+        self.assertEqual(recent_bar_dates(10), ["2026-09-15", "2026-09-14", "2026-09-11", "2026-09-10"])
+        self.assertEqual(recent_bar_dates(0), [])
+
+    def test_recent_bar_dates_before_session(self):
+        for day in (10, 11, 14, 15):
+            self._seed_day("2330", day)
+        self.assertEqual(recent_bar_dates(2, before="2026-09-14"), ["2026-09-11", "2026-09-10"])
+        self.assertEqual(recent_bar_dates(2, before="2026-09-14", include_before=True), ["2026-09-14", "2026-09-11"])
+        self.assertEqual(recent_bar_dates(5, before="2026-09-13", include_before=True), ["2026-09-11", "2026-09-10"])
+        self.assertEqual(recent_bar_dates(5, before="2026-09-10"), [])
+
+    def test_bars_1d_has_date_index(self):
+        with get_connection() as connection:
+            plan = " ".join(str(r[-1]) for r in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT stock_code FROM bars_1d WHERE bar_time >= ? AND bar_time < ?", ("2026-09-10", "2026-09-10z")))
+        self.assertIn("idx_bars_1d_time_code", plan)
 
     def test_prune_old_daily_bars_no_op_when_fewer_days_than_keep(self):
         self._seed_day("2330", 10)

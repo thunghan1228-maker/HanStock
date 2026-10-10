@@ -141,7 +141,7 @@ def _bar_counts(codes: list[str], since: str, until: str) -> dict[str, int]:
             rows = connection.execute(
                 f"""
                 SELECT stock_code, COUNT(*) AS n FROM bars_1d
-                WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) <= ?
+                WHERE stock_code IN ({placeholders}) AND bar_time >= ? AND bar_time < ? || 'z'
                 GROUP BY stock_code
                 """,
                 (*batch, since, until),
@@ -157,7 +157,7 @@ def _existing_closes(code: str, since: str, until: str) -> dict[str, float]:
         rows = connection.execute(
             """
             SELECT substr(bar_time, 1, 10) AS d, close FROM bars_1d
-            WHERE stock_code = ? AND substr(bar_time, 1, 10) >= ? AND substr(bar_time, 1, 10) <= ?
+            WHERE stock_code = ? AND bar_time >= ? AND bar_time < ? || 'z'
             """,
             (code, since, until),
         ).fetchall()

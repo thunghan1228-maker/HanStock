@@ -98,6 +98,10 @@ def initialize_database() -> None:
                 volume INTEGER NOT NULL,
                 PRIMARY KEY (stock_code, bar_time)
             );
+
+            -- 只用日期篩全市場（不指定代號）的查詢靠這個；主鍵是 (代號, 時間)，
+            -- 沒有它就得把整張日K表掃過一遍，整個資料庫檔都被讀進磁碟快取。帶代號：只數「哪天哪些代號」不用回表。
+            CREATE INDEX IF NOT EXISTS idx_bars_1d_time_code ON bars_1d (bar_time, stock_code);
             """
         )
         # bars_1d的volume過去誤存官方/FinMind原始股數，跟bars_1m/bars_5m的

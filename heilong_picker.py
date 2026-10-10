@@ -337,7 +337,7 @@ def _build_panel(key: str) -> Panel:
         shares = {str(r[0]).strip().upper(): int(r[1] or 0) for r in connection.execute("SELECT stock_code, shares FROM stock_shares")} \
             if connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='stock_shares'").fetchone() else {}
         bench_rows = connection.execute(
-            "SELECT substr(bar_time, 1, 10), open, high, low, close, volume FROM bars_1d WHERE stock_code = ? AND substr(bar_time, 1, 10) >= ? ORDER BY bar_time",
+            "SELECT substr(bar_time, 1, 10), open, high, low, close, volume FROM bars_1d WHERE stock_code = ? AND bar_time >= ? ORDER BY bar_time",
             (BENCHMARK, dates[0] if dates else "9999"),
         ).fetchall()
     for code, s in panel.series.items():
