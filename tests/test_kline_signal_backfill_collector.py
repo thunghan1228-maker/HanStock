@@ -10,8 +10,12 @@ TW_TZ = timezone(timedelta(hours=8))
 class KlineSignalBackfillCollectorTests(unittest.TestCase):
     def setUp(self):
         collector._last_backfilled_date = None
+        # 收盤後校正跑完會清舊訊號；測試不碰真的資料庫
+        self.prune_patch = patch.object(collector, "prune_old_signals", return_value=7)
+        self.mock_prune = self.prune_patch.start()
 
     def tearDown(self):
+        self.prune_patch.stop()
         collector._last_backfilled_date = None
 
     def test_skips_on_weekend(self):
@@ -20,6 +24,7 @@ class KlineSignalBackfillCollectorTests(unittest.TestCase):
             mock_dt.now.return_value = saturday
             result = collector.collect_once()
         self.assertEqual(result["skipped"], "weekend")
+        self.mock_prune.assert_not_called()
 
     def test_skips_before_settlement(self):
         before_settle = datetime(2026, 9, 18, 13, 30, tzinfo=TW_TZ)  # Friday
@@ -76,6 +81,8 @@ class KlineSignalBackfillCollectorTests(unittest.TestCase):
         self.assertEqual(result["tradeDate"], "2026-09-18")
         self.assertEqual(result["result"], success_result)
         self.assertEqual(collector._last_backfilled_date, "2026-09-18")
+        self.mock_prune.assert_called_once_with()
+        self.assertEqual(result["signalsPruned"], 7)
 
     def test_does_not_mark_date_done_when_backfill_result_has_error(self):
         # 回補整體失敗(result裡有error)時不該標記今天已經補完，讓下一輪
