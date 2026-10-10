@@ -39,6 +39,7 @@ PEAK_WINDOW = (20, 5)        # 崩盤前融資高點：指數高點前 20 天～
 PERCENTILE_DAYS = 750        # 三年百分位
 CHART_DAYS = 250
 HOT_MONTH_PCT = 8.0          # 融資一個月（20 日）增加 8% 以上＝過熱
+OTC_MIRROR = "margin-otc.json"
 NEAR_HIGH_PCT = 3.0          # 離歷史（2020 起）融資最高不到 3%＝高檔
 
 _lock = threading.Lock()
@@ -92,7 +93,21 @@ def _last_date(connection, series: str) -> str | None:
     return row["d"] if row else None
 
 
-def fetch(*, fetcher: Callable[[dict[str, str]], Any] | None = None, now: datetime | None = None) -> dict[str, Any]:
+def parse_otc_mirror(payload: Any) -> dict[str, dict[str, float]]:
+    """tw-groups 鏡像 tpex/margin-otc.json：{日期: [融資張數, 融資金額仟元, 融券張數]} → 上櫃融資金額（億）、張數。"""
+    out: dict[str, dict[str, float]] = {"otc_margin": {}, "otc_margin_units": {}, "otc_short_units": {}}
+    for day, row in ((payload or {}).get("rows") or {}).items():
+        if isinstance(row, list) and len(row) >= 3 and row[1]:
+            out["otc_margin"][day] = float(row[1]) / 1e5
+            if row[0] is not None:
+                out["otc_margin_units"][day] = float(row[0])
+            if row[2] is not None:
+                out["otc_short_units"][day] = float(row[2])
+    return out
+
+
+def fetch(*, fetcher: Callable[[dict[str, str]], Any] | None = None, now: datetime | None = None,
+          mirror_fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
     now = now or _now()
     call = fetcher or _default_fetcher
     initialize_database()
@@ -105,14 +120,22 @@ def fetch(*, fetcher: Callable[[dict[str, str]], Any] | None = None, now: dateti
     got["tpex"] = parse_index(call({"dataset": "TaiwanStockPrice", "data_id": "TPEx", "start_date": start}))
     if not got["margin"] or not got["taiex"]:
         raise RuntimeError("融資餘額或加權指數抓到 0 筆")
+    otc_error = None
+    try:      # 上櫃融資：櫃買擋正式站主機，走 tw-groups data 分支鏡像（.github/workflows/tpex-margin.yml）
+        from chips_daily import _default_fetcher as mirror_default, _mirror_url
+
+        got.update(parse_otc_mirror((mirror_fetcher or mirror_default)(_mirror_url(OTC_MIRROR, volatile=True))))
+    except Exception as exc:  # noqa: BLE001
+        otc_error = f"{type(exc).__name__}: {exc}"[:200]
     rows = [(series, d, v) for series, values in got.items() for d, v in values.items()]
     with get_connection() as connection:
         _schema(connection)
         connection.executemany("INSERT INTO fund_umbrella_series (series, trade_date, value) VALUES (?, ?, ?) "
                                "ON CONFLICT(series, trade_date) DO UPDATE SET value = excluded.value", rows)
     with _lock:
-        _state.update({"lastFetch": now.isoformat(timespec="seconds"), "lastError": None, "rows": len(rows)})
-    return {"rows": len(rows), "from": start, "latest": max(got["margin"])}
+        _state.update({"lastFetch": now.isoformat(timespec="seconds"), "lastError": None, "rows": len(rows), "otcError": otc_error})
+    return {"rows": len(rows), "from": start, "latest": max(got["margin"]), "otcLatest": max(got.get("otc_margin") or {"": 0}) or None,
+            "otcError": otc_error}
 
 
 def _load() -> dict[str, dict[str, float]]:
@@ -197,6 +220,28 @@ def index_state(dates: list[str], closes: list[float]) -> dict[str, Any] | None:
     }
 
 
+def margin_info(series: dict[str, float], as_of: str, units: dict[str, float], shorts: dict[str, float]) -> dict[str, Any]:
+    """融資餘額（億）：最新、日／週／月增減、三年百分位、2020 年以來最高、融券與券資比。"""
+    dates = sorted(d for d in series if d <= as_of)
+    vals = [series[d] for d in dates]
+    cur, day = vals[-1], dates[-1]
+
+    def back(k: int) -> float | None:
+        return vals[-1 - k] if len(vals) > k else None
+
+    hist = vals[-PERCENTILE_DAYS:]
+    top_i = max(range(len(vals)), key=lambda k: vals[k])
+    return {
+        "date": day, "balance": round(cur, 1),
+        "d1": round(cur - back(1), 1) if back(1) else None, "d5": round(cur - back(5), 1) if back(5) else None,
+        "d20": round(cur - back(20), 1) if back(20) else None, "d20Pct": _pct(cur, back(20)),
+        "percentile": round(sum(1 for v in hist if v <= cur) / len(hist) * 100),
+        "high": round(vals[top_i], 1), "highDate": dates[top_i], "vsHigh": _pct(cur, vals[top_i]),
+        "shortRatio": round(shorts[day] / units[day] * 100, 2) if units.get(day) and day in shorts else None,
+        "shortUnits": round(shorts[day]) if day in shorts else None, "since": dates[0], "back5": back(5), "back20": back(20),
+    }
+
+
 def payload(*, now: datetime | None = None) -> dict[str, Any]:
     now = now or _now()
     data = _load()
@@ -209,33 +254,26 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
     t_close = [taiex[d] for d in t_dates]
     o_dates = sorted(d for d in tpex if d <= as_of)
     o_close = [tpex[d] for d in o_dates]
-    m_dates = sorted(d for d in margin if d <= as_of)
-    m_vals = [margin[d] for d in m_dates]
-    cur = m_vals[-1]
-
-    def back(k: int) -> float | None:
-        return m_vals[-1 - k] if len(m_vals) > k else None
-
-    hist = m_vals[-PERCENTILE_DAYS:]
-    top_i = max(range(len(m_vals)), key=lambda k: m_vals[k])
-    units, shorts = data.get("margin_units", {}), data.get("short_units", {})
-    m_info = {
-        "date": as_of, "balance": round(cur, 1),
-        "d1": round(cur - back(1), 1) if back(1) else None, "d5": round(cur - back(5), 1) if back(5) else None,
-        "d20": round(cur - back(20), 1) if back(20) else None, "d20Pct": _pct(cur, back(20)),
-        "percentile": round(sum(1 for v in hist if v <= cur) / len(hist) * 100),
-        "high": round(m_vals[top_i], 1), "highDate": m_dates[top_i], "vsHigh": _pct(cur, m_vals[top_i]),
-        "shortRatio": round(shorts[as_of] / units[as_of] * 100, 2) if units.get(as_of) and as_of in shorts else None,
-        "shortUnits": round(shorts[as_of]) if as_of in shorts else None,
-    }
+    m_info = margin_info(margin, as_of, data.get("margin_units", {}), data.get("short_units", {}))
+    cur = m_info["balance"]
+    otc_margin = data.get("otc_margin", {})
+    o_info = margin_info(otc_margin, as_of, data.get("otc_margin_units", {}), data.get("otc_short_units", {})) if otc_margin else None
     crash_list = crashes(t_dates, t_close, margin)
     for c in crash_list:
         c["gap"] = round(cur - c["marginPeak"], 1) if c["marginPeak"] else None
         c["gapPct"] = _pct(cur, c["marginPeak"], 1) if c["marginPeak"] else None
+        if o_info:      # 同一段時間的上櫃融資高點
+            peak_i = t_dates.index(c["peakDate"])
+            window = [t_dates[k] for k in range(max(0, peak_i - PEAK_WINDOW[0]), min(len(t_dates), peak_i + PEAK_WINDOW[1] + 1)) if t_dates[k] in otc_margin]
+            if window:
+                top = max(window, key=lambda d: otc_margin[d])
+                c["otcMarginPeak"] = round(otc_margin[top], 1)
+                c["otcGap"] = round(o_info["balance"] - otc_margin[top], 1)
+                c["otcGapPct"] = _pct(o_info["balance"], otc_margin[top], 1)
     tx, otc = index_state(t_dates, t_close), index_state(o_dates, o_close) if len(o_close) > 60 else None
 
     # 背離：近 5 日指數漲跌 vs 融資增減
-    t5, m5 = _pct(t_close[-1], t_close[-6]) if len(t_close) > 5 else None, _pct(cur, back(5))
+    t5, m5 = _pct(t_close[-1], t_close[-6]) if len(t_close) > 5 else None, _pct(cur, m_info["back5"])
     if t5 is None or m5 is None:
         diverge = None
     elif t5 < 0 and m5 > 0:
@@ -256,8 +294,13 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
         reasons.append({"pt": 1, "text": f"加權跌破季線（{tx['ma60']:,.0f}）"})
     if otc and not otc["above20"]:
         reasons.append({"pt": 1, "text": f"櫃買跌破月線（{otc['ma20']:,.2f}）"})
-    if m_info["d20Pct"] is not None and m_info["d20Pct"] >= HOT_MONTH_PCT:
-        reasons.append({"pt": 1, "text": f"融資一個月增加 {m_info['d20Pct']:.1f}%（≥{HOT_MONTH_PCT:g}% 過熱）"})
+    # 融資過熱看上市＋上櫃合計（有上櫃資料時）
+    hot, hot_label = m_info["d20Pct"], "融資"
+    if o_info and o_info["back20"] and m_info["back20"] and o_info["date"] == as_of:
+        hot = _pct(cur + o_info["balance"], m_info["back20"] + o_info["back20"])
+        hot_label = "上市＋上櫃融資"
+    if hot is not None and hot >= HOT_MONTH_PCT:
+        reasons.append({"pt": 1, "text": f"{hot_label}一個月增加 {hot:.1f}%（≥{HOT_MONTH_PCT:g}% 過熱）"})
     if m_info["vsHigh"] is not None and m_info["vsHigh"] >= -NEAR_HIGH_PCT and (tx is None or not tx["above20"]):
         reasons.append({"pt": 1, "text": "融資在 2020 年以來最高檔附近，指數卻跌破月線"})
     if diverge and diverge["tone"] == "bear":
@@ -270,16 +313,21 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
     name, icon, tone, advice = levels[min(score, 3)]
 
     chart_from = t_dates[-CHART_DAYS] if len(t_dates) >= CHART_DAYS else t_dates[0]
-    series = [{"d": d, "t": round(taiex[d], 2), "o": round(tpex[d], 2) if d in tpex else None, "m": round(margin[d], 1) if d in margin else None}
+    series = [{"d": d, "t": round(taiex[d], 2), "o": round(tpex[d], 2) if d in tpex else None, "m": round(margin[d], 1) if d in margin else None,
+               "mo": round(otc_margin[d], 1) if d in otc_margin else None}
               for d in t_dates if d >= chart_from]
+    for info in (m_info, o_info):
+        if info:
+            info.pop("back5", None)
+            info.pop("back20", None)
     return {
         "status": "ok", "asOf": as_of, "updatedAt": _state.get("lastFetch"), "now": now.isoformat(timespec="seconds"),
         "umbrella": {"score": score, "name": name, "icon": icon, "tone": tone, "advice": advice, "reasons": reasons},
-        "margin": m_info, "taiex": tx, "tpex": otc, "diverge": diverge, "crashes": crash_list, "series": series,
-        "rule": (f"保護傘點數：加權跌破月線、跌破季線、櫃買跌破月線、融資月增 ≥{HOT_MONTH_PCT:g}%、融資在高檔但加權跌破月線、"
+        "margin": m_info, "otcMargin": o_info, "hotPct": hot, "hotLabel": hot_label, "taiex": tx, "tpex": otc, "diverge": diverge, "crashes": crash_list, "series": series,
+        "rule": (f"保護傘點數：加權跌破月線、跌破季線、櫃買跌破月線、上市＋上櫃融資月增 ≥{HOT_MONTH_PCT:g}%、上市融資在高檔但加權跌破月線、"
                  "近 5 日指數跌融資反增，各記 1 點；0 點收傘、1 點備傘、2 點半開、3 點以上全開。"
                  f"崩盤＝從近半年高點跌 {CRASH_DROP * 100:g}% 以上；崩盤前融資高點＝指數高點前 20 天到後 5 天的融資最大值。"),
-        "source": "FinMind 公開資料（證交所上市融資融券餘額、加權指數、櫃買指數），每天晚上更新；上櫃融資之後補",
+        "source": "FinMind 公開資料（證交所上市融資融券餘額、加權指數、櫃買指數）＋櫃買中心上櫃融資融券餘額（鏡像），每天晚上更新",
     }
 
 

@@ -58,6 +58,11 @@ class FundUmbrellaTests(unittest.TestCase):
             return {"data": [{"date": d, "close": c * scale} for d, c in zip(self.d, self.closes)]}
         return call
 
+    def mirror(self, url: str):
+        # 上櫃融資：每天 1,500 億、最後 20 天每天加 10 億
+        rows = {d: [2_000_000, (1500 + max(0, i - 179) * 10) * 1e5, 40_000] for i, d in enumerate(self.d)}
+        return {"rows": rows}
+
     def test_parse(self) -> None:
         got = module.parse_margin({"data": [{"date": "2026-10-08", "name": "MarginPurchaseMoney", "TodayBalance": 646405767000},
                                             {"date": "2026-10-08", "name": "ShortSale", "TodayBalance": 211949}, {"name": "X"}]})
@@ -81,9 +86,9 @@ class FundUmbrellaTests(unittest.TestCase):
 
     def test_fetch_and_payload(self) -> None:
         calls: list = []
-        result = module.fetch(fetcher=self.fetcher(calls), now=datetime(2026, 10, 10, 22, 0, tzinfo=TW))
+        result = module.fetch(fetcher=self.fetcher(calls), now=datetime(2026, 10, 10, 22, 0, tzinfo=TW), mirror_fetcher=self.mirror)
         self.assertEqual((result["from"], result["latest"]), ("2020-01-01", self.d[-1]))
-        module.fetch(fetcher=self.fetcher(calls), now=datetime(2026, 10, 11, 22, 0, tzinfo=TW))   # 第二次只補最近 15 天
+        module.fetch(fetcher=self.fetcher(calls), now=datetime(2026, 10, 11, 22, 0, tzinfo=TW), mirror_fetcher=self.mirror)   # 第二次只補最近 15 天
         self.assertEqual(calls[-1]["start_date"], (date.fromisoformat(self.d[-1]) - timedelta(days=15)).isoformat())
         p = module.payload()
         self.assertEqual((p["status"], p["asOf"], p["margin"]["balance"], p["margin"]["d1"]), ("ok", self.d[-1], self.margin[-1], 10.0))
@@ -95,6 +100,20 @@ class FundUmbrellaTests(unittest.TestCase):
         self.assertTrue(any("接刀" in t for t in texts))
         self.assertEqual(p["umbrella"]["score"], len(texts))
         self.assertEqual(len(p["series"]), 200)
+        o = p["otcMargin"]                                                 # 上櫃融資
+        self.assertEqual((o["balance"], o["d1"], o["d20"], o["shortRatio"]), (1700.0, 10.0, 200.0, 2.0))
+        self.assertEqual(p["series"][-1]["mo"], 1700.0)
+        self.assertEqual(p["crashes"][0]["otcMarginPeak"], 1500.0)
+        self.assertEqual(p["hotPct"], round((self.margin[-1] + 1700) / (self.margin[-21] + 1500) * 100 - 100, 2))
+        self.assertNotIn("back5", o)
+
+    def test_otc_mirror_down(self) -> None:
+        def down(url):
+            raise OSError("mirror down")
+        result = module.fetch(fetcher=self.fetcher([]), now=datetime(2026, 10, 10, 22, 0, tzinfo=TW), mirror_fetcher=down)
+        self.assertIn("mirror down", result["otcError"])                   # 上櫃鏡像抓不到不影響上市
+        p = module.payload()
+        self.assertEqual((p["status"], p["otcMargin"]), ("ok", None))
 
     def test_missing_and_due(self) -> None:
         self.assertEqual(module.payload()["status"], "missing")
@@ -107,9 +126,10 @@ class FundUmbrellaTests(unittest.TestCase):
 
     def test_endpoint(self) -> None:
         client = TestClient(persistent_app.app)
-        with patch.object(module, "_default_fetcher", self.fetcher([])):
+        import chips_daily
+        with patch.object(module, "_default_fetcher", self.fetcher([])), patch.object(chips_daily, "_default_fetcher", self.mirror):
             r = client.get("/api/hub/fund-umbrella")
-        self.assertEqual((r.status_code, r.json()["status"]), (200, "ok"))
+        self.assertEqual((r.status_code, r.json()["status"], r.json()["otcMargin"]["balance"]), (200, "ok", 1700.0))
 
 
 if __name__ == "__main__":

@@ -1398,6 +1398,15 @@ def get_stock_profile(code: str = Query(...)) -> dict[str, Any]:
     return stock_profile.profile(code)
 
 
+@app.get("/api/hub/watch-digest")
+def get_watch_digest(codes: str = Query(..., max_length=1200)) -> dict[str, Any]:
+    """自選股一頁看完（2026-10-10 使用者）：一批代號（逗號分隔，最多 120 檔）的內部人近三月動向＋400 張大戶、下次法說、
+    近四季 EPS／最新一季 EPS 年增／本益比。季報沒快取的每次補抓幾檔，pending 列出還沒補到的，前端過幾秒再要一次。"""
+    import watch_digest
+
+    return watch_digest.digest(codes)
+
+
 @app.get("/api/hub/chip-radar/stock")
 def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
     """籌碼暴增雷達的個股查詢：九週籌碼軌跡、同族群當週排名、三大法人（每週加總、近 5 日）。"""
