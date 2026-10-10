@@ -928,8 +928,20 @@ def backtest(params: dict[str, Any] | None = None) -> dict[str, Any]:
         "burst": {f"d{n}": _burst_stats(trades, n) for n in (1, 2, 3)},
         "curve": curve,
         "today": today,
+        "noon": _noon(p, latest),
         "daily": daily,
         "rules": RULES,
         "collector": collector_status(),
     }
     return result
+
+
+def _noon(p: dict[str, Any], latest: str) -> dict[str, Any] | None:
+    """今天 12:00 的暫定名單（比收盤整表新才給）；延遲匯入：heilong_noon 會 import 這個模組。"""
+    try:
+        from heilong_noon import noon_section
+
+        return noon_section(p, latest)
+    except Exception:  # noqa: BLE001
+        logger.exception("heilong noon section failed")
+        return None

@@ -125,6 +125,18 @@ async def _persistent_lifespan(fastapi_app):
             start_grail_radar_collector()  # 飆股雷達：15 個聖杯邏輯照時間點算、收盤再算一次（2026-10-07 使用者）
             start_jail_collector()  # 處置監獄：證交所／櫃買注意股、處置股公告（2026-10-09 使用者）
             start_revenue_collector()  # 營收成長榜：觀測站每月營收彙總表鏡像、公布日、隔日漲跌（2026-10-09 使用者）
+            from heilong_noon import start_heilong_noon_collector
+
+            start_heilong_noon_collector()  # 創高黑龍 12:00 暫定名單：MIS 即時報價組今天K棒套同一組參數（2026-10-10 使用者）
+            from macro_calendar import start_macro_calendar_collector
+
+            start_macro_calendar_collector()  # 國際大事行事曆：TradingView 經濟日曆每小時更新公布值（2026-10-10 使用者）
+            from fund_umbrella import start_fund_umbrella_collector
+
+            start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
+            from insider_watch import start_insider_collector
+
+            start_insider_collector()  # 內部人研究室：觀測站內部人持股異動月報鏡像（tw-groups data 分支），每天拉一次（2026-10-10 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1281,6 +1293,111 @@ def post_revenue_collect() -> dict[str, Any]:
     return {"status": "ok", "result": revenue_run_collect()}
 
 
+@app.get("/api/hub/macro-calendar")
+def get_macro_calendar() -> dict[str, Any]:
+    """國際大事行事曆（2026-10-10 使用者：照莊爸 zhuang.tw/calendar 做）：美／中／日／歐重要數據與央行會議（台灣時間、星等、
+    前值／預期／公布）、台指期結算、美股季度結算、公司法說，加上名詞小學堂。還沒抓過（剛部署）就先抓一次。"""
+    import macro_calendar
+
+    payload = macro_calendar.calendar()
+    if payload["updatedAt"] is None:
+        try:
+            macro_calendar.fetch()
+            payload = macro_calendar.calendar()
+        except Exception as exc:  # noqa: BLE001
+            payload["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return payload
+
+
+@app.get("/api/hub/macro-calendar/status")
+def get_macro_calendar_status() -> dict[str, Any]:
+    import macro_calendar
+
+    return {"status": "ok", **macro_calendar.collector_status()}
+
+
+@app.post("/api/hub/macro-calendar/fetch")
+def post_macro_calendar_fetch() -> dict[str, Any]:
+    """馬上重抓一次經濟日曆。"""
+    import macro_calendar
+
+    return {"status": "ok", "result": macro_calendar.fetch()}
+
+
+@app.get("/api/hub/fund-umbrella")
+def get_fund_umbrella() -> dict[str, Any]:
+    """資金保護傘（2026-10-10 使用者）：上市融資水位（日／週／月增減、三年百分位、歷次崩盤前融資高點對照）、加權與櫃買的
+    多空轉折（月線／季線位置、明天要守的價、最近一次站上／跌破月線）、指數與融資背離，合成保護傘等級。還沒抓過就先抓一次。"""
+    import fund_umbrella
+
+    body = fund_umbrella.payload()
+    if body["status"] == "missing":
+        try:
+            fund_umbrella.fetch()
+            body = fund_umbrella.payload()
+        except Exception as exc:  # noqa: BLE001
+            body["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return body
+
+
+@app.post("/api/hub/fund-umbrella/fetch")
+def post_fund_umbrella_fetch() -> dict[str, Any]:
+    import fund_umbrella
+
+    return {"status": "ok", "result": fund_umbrella.fetch(), "collector": fund_umbrella.collector_status()}
+
+
+@app.get("/api/hub/insider")
+def get_insider(month: str | None = Query(None)) -> dict[str, Any]:
+    """內部人研究室（2026-10-10 使用者）：某個月（YYYY-MM，不給＝最新）董監＋經理人持股淨增減、估算金額、集中市場買賣明細，
+    疊上集保 400 張大戶比與近 4 週變化（雙買／雙賣）。"""
+    import re
+
+    import insider_watch
+    from fastapi import HTTPException
+
+    if month is not None and not re.fullmatch(r"\d{4}-\d{2}", month.strip()):
+        raise HTTPException(status_code=422, detail="month 必須是 YYYY-MM")
+    return insider_watch.overview(month.strip() if month else None)
+
+
+@app.get("/api/hub/insider/stock")
+def get_insider_stock(code: str = Query(...)) -> dict[str, Any]:
+    """查個股的內部人：每個月董監／經理人／大股東持股與增減、集中市場明細、400 張大戶每週持股比。"""
+    import re
+
+    import insider_watch
+    from fastapi import HTTPException
+
+    code = code.strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{4,6}", code):
+        raise HTTPException(status_code=422, detail="code 格式不對")
+    return insider_watch.stock(code)
+
+
+@app.post("/api/hub/insider/collect")
+def post_insider_collect() -> dict[str, Any]:
+    """馬上從鏡像拉一次（排程主機推完內部人月報會戳這裡）。"""
+    import insider_watch
+
+    return {"status": "ok", "result": insider_watch.collect()}
+
+
+@app.get("/api/hub/stock-profile")
+def get_stock_profile(code: str = Query(...)) -> dict[str, Any]:
+    """個股研究補強（2026-10-10 使用者）：族群／產業白話介紹、同族群與同產業公司、近 8 季季報（營收、三率、EPS、年增）、
+    近四季 EPS 與本益比。"""
+    import re
+
+    import stock_profile
+    from fastapi import HTTPException
+
+    code = code.strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{4,6}", code):
+        raise HTTPException(status_code=422, detail="code 格式不對")
+    return stock_profile.profile(code)
+
+
 @app.get("/api/hub/chip-radar/stock")
 def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
     """籌碼暴增雷達的個股查詢：九週籌碼軌跡、同族群當週排名、三大法人（每週加總、近 5 日）。"""
@@ -1295,6 +1412,14 @@ def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
 @app.get("/api/hub/heilong/status")
 def get_heilong_status() -> dict[str, Any]:
     return {"status": "ok", **heilong_status()}
+
+
+@app.post("/api/hub/heilong/noon/run")
+def post_heilong_noon_run() -> dict[str, Any]:
+    """立刻算一次創高黑龍 12:00 暫定名單（盤中補算用；用的是現在的即時報價）。"""
+    from heilong_noon import collector_status as noon_status, run_noon
+
+    return {"status": "ok", "result": run_noon(), "collector": noon_status()}
 
 
 @app.post("/api/hub/heilong/rebuild")

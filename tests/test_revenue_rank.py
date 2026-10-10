@@ -122,6 +122,25 @@ class DbTests(unittest.TestCase):
         self.assertEqual(sep["decel"]["n"], 1)      # 中美晶 -6.1 vs 10：-16.1 點
         self.assertEqual((sep["yoy100"]["n"], sep["warn"]["n"], sep["nowarn"]["n"]), (1, 1, 1))
 
+    def test_report_section(self) -> None:
+        """籌碼日報的營收面精選：基準日當時已公布、年增 ≥30%、均線分數 ≥6、成交值 ≥5,000 萬，依年增排。"""
+        import heilong_backtest
+
+        self.collect()
+        with database.get_connection() as connection:
+            heilong_backtest._schema(connection)
+            for code, close, vol, score in (("2408", 514.0, 38411, 12), ("3006", 271.0, 100, 9), ("5483", 95.0, 9000, 10), ("8111", 93.7, 900, 3)):
+                connection.execute("INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, score2) VALUES ('2026-10-08', ?, 1, 1, 1, ?, ?, ?)",
+                                   (code, close, vol, score))
+        sec = module.report_section("2026-10-08")
+        self.assertEqual((sec["month"], sec["published"], sec["yoyHigh"], sec["qualified"]), ("2026-09", 4, 2, 1))
+        pick = sec["picks"][0]   # 晶豪科年增也 ≥30%，但成交值 271 × 100 張 ＝ 2,710 萬不夠
+        self.assertEqual((pick["code"], pick["yoy"], pick["score"], pick["turnoverYi"], pick["accel"], pick["revYi"]), ("2408", 576.62, 12, 197.43, True, 451.0))
+        early = module.report_section("2026-10-05")   # 中美晶 10/06、立碁 10/08 才公布；晶豪科是第一次抓就在（公布日不確定）算已公布
+        self.assertEqual((early["published"], early["yoyHigh"]), (2, 2))
+        self.assertEqual(module.report_section("2026-09-30")["month"], "2026-08")
+        self.assertIsNone(module.report_section("2026-08-15"))
+
     def test_stock_detail(self) -> None:
         self.collect()
         self.add_bars("2408", [("2026-10-02", 500.0), ("2026-10-05", 510.0), ("2026-10-06", 520.2)])
