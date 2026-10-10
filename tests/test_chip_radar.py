@@ -48,7 +48,7 @@ class RadarTests(unittest.TestCase):
         database.initialize_database()
         module._cache.update({"at": 0.0, "key": None, "radar": None})
         groups = {"石英": [("2484", "希華"), ("3042", "晶技"), ("8182", "加高"), ("3221", "台嘉碩"), ("8289", "泰藝"), ("6174", "安碁")],
-                  "被動元件": [("6127", "九豪"), ("3236", "千如")], "股期標的": [("2484", "希華")]}
+                  "被動元件": [("6127", "九豪"), ("3236", "千如")], "化學": [("1727", "中華化")], "股期標的": [("2484", "希華")]}
         self.groups_patch = patch.object(module, "STOCK_GROUPS", groups)
         self.groups_patch.start()
         # 每檔每週的 x（8/28 起六週，對 8/21）
@@ -108,23 +108,26 @@ class RadarTests(unittest.TestCase):
         week = out["lists"][0]
         self.assertEqual(week["date"], "2026-10-02")
         # 買超榜：籌碼% ≥ 4 → 佳大（私募 +50%）17.32、希華 8.19、晟銘電（股本 +4%，x＝4.18）6.13、九豪 3√3.19＝5.36、千如 3√2.85＝5.06、
-        # 晶技 3√2.43＝4.68；ETF 不在；益航（股份轉換、總股數 −16%）不進榜
+        # 晶技 3√2.43＝4.68；ETF 不在；佳大、晟銘電不在族群表但在莊爸的範圍（ZHUANG_EXTRA）；益航不在範圍，列在「範圍外」
         self.assertEqual([(r["code"], r["chip"]) for r in week["buy"]],
                          [("2033", 17.32), ("2484", 8.19), ("3013", 6.13), ("6127", 5.36), ("3236", 5.06), ("3042", 4.68)])
         self.assertEqual([r["rank"] for r in week["buy"]], [1, 2, 3, 4, 5, 6])
         self.assertEqual([r["chip1"] for r in week["buy"]], [17.3, 8.2, 6.1, 5.4, 5.1, 4.7])
         self.assertEqual(week["buy"][0]["capital"], 50.0)
         yh = module.stock("2601")
-        self.assertEqual((yh["capital"], yh["excluded"]), (-16.0, True))
+        self.assertEqual((yh["capital"], yh["outside"]), (-16.0, True))
+        self.assertEqual([(r["code"], r["chip1"]) for r in week["outside"]["buy"]], [("2601", 23.1)])
+        self.assertEqual([(r["code"], r["chip1"]) for r in week["outside"]["sell"]], [("4806", -40.0)])
+        self.assertFalse(module.stock("2484")["outside"])
         star = {r["code"]: r["star"] for r in week["buy"]}
         self.assertTrue(star["6127"])                 # 9/24 也在買超榜（3√2.0＝4.24）
         self.assertFalse(star["2484"])                # 9/24 3√1.5＝3.67 不到 4
-        self.assertEqual([(r["code"], r["chip"], r["star"]) for r in week["sell"]], [("1727", -7.28, True)])   # 桂田文創減資那週不進榜
+        self.assertEqual([(r["code"], r["chip"], r["star"]) for r in week["sell"]], [("1727", -7.28, True)])   # 桂田文創不在範圍
         self.assertIsNone(week["buy"][1]["capital"])
         cap = next(r for r in week["buy"] if r["code"] == "3013")
         self.assertEqual((cap["chip"], cap["capital"]), (6.13, 4.0))     # 股本 +4%：照列、標出來
         trail = module.stock("4806")["trail"]
-        self.assertEqual((trail[0]["chip"], trail[0]["capital"], trail[0].get("excluded")), (-40.0, -30.0, True))
+        self.assertEqual((trail[0]["chip"], trail[0]["capital"]), (-40.0, -30.0))     # 減資照算（莊爸：奇偶 9/18 減資 15% 照列）
         self.assertEqual(week["buy"][1]["group"], "石英")
         self.assertEqual(len(out["lists"]), 6)        # 最多 8 週，這裡只有 6 週可比
 
@@ -134,6 +137,7 @@ class RadarTests(unittest.TestCase):
         self.assertEqual([m["code"] for m in groups["石英"]["members"]][:2], ["2484", "3042"])
         self.assertNotIn("股期標的", groups)
         self.assertEqual(out["groups"][0]["name"], "被動元件")   # (5.36＋5.06)/2
+        self.assertEqual(len(out["lists"]), 6)
 
         # 連續增：六週內五週增（晶技 6/6、希華 5/6），連三週增
         six = {r["code"]: r for r in out["streaks"]["six"]["rows"]}
@@ -180,7 +184,7 @@ class RadarTests(unittest.TestCase):
                          (-8.59, -8.6, "2026-09-18", -10.0))
         self.assertIsNone(sell["1727"]["vs"])
         stock = module.stock("4527")
-        self.assertFalse(stock["excluded"])
+        self.assertFalse(stock["outside"])          # 方土霖在莊爸的範圍（他 10/08 賣超榜有）
         self.assertEqual((stock["trail"][0]["vs"], stock["trail"][1]["chip"]), ("2026-09-18", None))
         # 累積榜「全部」：06/18 起有幾週就幾週（這裡 6 週），不足 16 週時一樣給全部
         cum = out["cumulative"]
@@ -189,6 +193,45 @@ class RadarTests(unittest.TestCase):
         with patch.object(module, "ALL_SINCE", "2026-09-11"):
             cum = module.load_radar().cumulative("2026-10-02")
         self.assertEqual((cum["allWeeks"], cum["allFrom"], len(cum["dates"])), (4, "2026-09-11", 6))
+
+    def test_weekly_report(self) -> None:
+        # 日K：9/24 收 → 10/02 收（本週）、10/02 → 10/08 沒有下一週（最新一週不給一週後）
+        closes = {"6127": (50.0, 60.0), "3236": (40.0, 44.0), "2484": (80.0, 72.0), "3042": (100.0, 101.0), "1727": (100.0, 105.0),
+                  "2033": (30.0, 33.0), "3013": (90.0, 90.0)}
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                          [(code, d, v, v, v, v) for code, (a, b) in closes.items() for d, v in (("2026-09-24", a), ("2026-10-02", b))])
+        urls = []
+
+        def fake(url: str) -> dict:
+            urls.append(url)
+            return {"fields": ["日期", "成交股數", "成交金額", "成交筆數", "發行量加權股價指數", "漲跌點數"],
+                    "data": [["115/09/24", "1", "1", "1", "26,000.00", "1"], ["115/10/02", "1", "1", "1", "26,260.00", "1"]]}
+
+        out = module.weekly_report(fetcher=fake)
+        self.assertEqual((out["week"], out["prevWeek"], out["nextWeek"]), ("2026-10-02", "2026-09-24", None))
+        self.assertEqual(out["weeks"], ["2026-10-02", "2026-09-24", "2026-09-18", "2026-09-11"])
+        self.assertEqual(out["counts"], {"buy": 6, "sell": 1, "togetherGroups": 2, "togetherStocks": 4})
+        # 整族一起動：被動元件（九豪、千如）、石英（希華、晶技），照族群排名排
+        self.assertEqual([(t["name"], t["rank"], [c["code"] for c in t["cards"]]) for t in out["together"]],
+                         [("被動元件", 1, ["6127", "3236"]), ("石英", 2, ["2484", "3042"])])
+        nine = out["together"][0]["cards"][0]
+        self.assertEqual((nine["chip1"], nine["week"], nine["after"], nine["close"], nine["star"], nine["ups"]), (5.4, 20.0, None, 60.0, True, 2))   # 9/24、10/02 連兩週增
+        # 佳大、晟銘電不在這裡的族群表（正式族群表裡是鋼鐵、機殼）→ 不在族群表，但在莊爸的範圍
+        self.assertEqual(out["single"], [])
+        self.assertEqual([c["code"] for c in out["nogroup"]], ["2033", "3013"])
+        sell = out["sell"][0]
+        self.assertEqual((sell["code"], sell["star"], sell["week"]), ("1727", True, 5.0))
+        self.assertEqual([c["code"] for c in out["against"]], ["1727"])                # 賣超但本週漲 ≥3%
+        self.assertEqual(out["summary"]["top"], {"name": "被動元件", "listed": 2, "together": True})
+        self.assertEqual([r["code"] for r in out["summary"]["twoWeeks"]], ["6127"])     # 9/24 也在買超榜
+        recon = out["recon"]                                                            # 9/24 那份榜：九豪一檔，9/24 → 10/02 +20%
+        self.assertEqual((recon["buy"]["count"], recon["buy"]["avg"], recon["buy"]["up"], recon["taiex"]), (1, 20.0, 1, 1.0))
+        self.assertEqual((recon["sell"]["count"], recon["sell"]["avg"], [r["code"] for r in recon["sell"]["best"]]), (1, 5.0, ["1727"]))   # 中華化 9/24 −2.0
+        self.assertEqual(module.taiex_close("2026-10-03"), 26260.0)                      # 存起來了，週六查到週五
+        self.assertTrue(urls and "FMTQIK" in urls[0])
+        with self.assertRaises(ValueError):
+            module.weekly_report("2026-01-02")
 
     def test_stock_and_institutional(self) -> None:
         with database.get_connection() as c:
@@ -227,6 +270,10 @@ class RadarTests(unittest.TestCase):
         r = client.get("/api/hub/chip-radar/stock", params={"code": "2484"})
         self.assertEqual((r.status_code, r.json()["chip"]), (200, 8.19))
         self.assertEqual(client.get("/api/hub/chip-radar/stock", params={"code": "9999"}).status_code, 404)
+        with patch.object(module, "taiex_close", lambda day, fetcher=None: None):     # 不連證交所
+            r = client.get("/api/hub/chip-radar/weekly", params={"week": "2026-09-24"})
+            self.assertEqual((r.status_code, r.json()["week"], r.json()["recon"]["taiex"]), (200, "2026-09-24", None))
+            self.assertEqual(client.get("/api/hub/chip-radar/weekly", params={"week": "2025-01-03"}).status_code, 422)
 
     def test_empty(self) -> None:
         with database.get_connection() as c:

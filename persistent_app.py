@@ -37,7 +37,7 @@ from swing_report import run_once as run_swing_report, start_swing_report_collec
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
 from heilong_picker import payload as picker_payload
-from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock
+from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock, weekly_report as chip_weekly_report
 from grail_radar import collector_status as grail_radar_status, day_payload as grail_radar_payload, run_close as grail_radar_run_close
 from grail_radar import start_grail_radar_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
@@ -1005,6 +1005,18 @@ def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
 
     try:
         return chip_radar_payload(week or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/chip-radar/weekly")
+def get_chip_weekly(week: str | None = Query(None)) -> dict[str, Any]:
+    """籌碼週報（2026-10-10 使用者：照莊爸雷達頁的「籌碼週報・可回看 4 週」做）：本週摘要、上週榜對帳、族群排名、
+    整族一起動、單獨上榜、賣超。week＝集保結算日 YYYY-MM-DD，不給＝最新一週；weeks 回最近 4 週可以切。"""
+    from fastapi import HTTPException
+
+    try:
+        return chip_weekly_report(week or None)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
