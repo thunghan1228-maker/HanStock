@@ -133,9 +133,9 @@ def load_stock_bars_5m_on(code: str, trade_date: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """SELECT bar_time, open, high, low, close, volume
                FROM bars_5m
-               WHERE stock_code = ? AND substr(bar_time, 1, 10) = ?
+               WHERE stock_code = ? AND bar_time >= ? AND bar_time < ? || 'z'
                ORDER BY bar_time""",
-            (code, str(trade_date)[:10]),
+            (code, str(trade_date)[:10], str(trade_date)[:10]),
         ).fetchall()
     bars: list[dict[str, Any]] = []
     for row in rows:
@@ -174,8 +174,8 @@ def bars_5m_coverage_complete(code: str, trade_date: str) -> bool:
     with get_connection() as connection:
         row = connection.execute(
             """SELECT COUNT(*) AS n, MIN(bar_time) AS first_bt, MAX(bar_time) AS last_bt
-               FROM bars_5m WHERE stock_code = ? AND substr(bar_time, 1, 10) = ?""",
-            (code, str(trade_date)[:10]),
+               FROM bars_5m WHERE stock_code = ? AND bar_time >= ? AND bar_time < ? || 'z'""",
+            (code, str(trade_date)[:10], str(trade_date)[:10]),
         ).fetchone()
     count = int(row["n"] or 0)
     if count == 0 or not row["first_bt"] or not row["last_bt"]:

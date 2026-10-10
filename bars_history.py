@@ -123,7 +123,7 @@ def _counts_by_market(since: str, until: str) -> dict[str, dict[str, int]]:
         rows = connection.execute(
             """SELECT substr(b.bar_time, 1, 10) AS d, s.market AS m, COUNT(*) AS n
                FROM bars_1d b JOIN stocks s ON s.stock_code = b.stock_code
-               WHERE substr(b.bar_time, 1, 10) >= ? AND substr(b.bar_time, 1, 10) <= ?
+               WHERE b.bar_time >= ? AND b.bar_time < ? || 'z'
                GROUP BY d, m""",
             (since, until),
         ).fetchall()
@@ -149,7 +149,7 @@ def coverage() -> dict[str, Any]:
     initialize_database()
     with get_connection() as connection:
         row = connection.execute(
-            "SELECT MIN(substr(bar_time, 1, 10)) AS first, MAX(substr(bar_time, 1, 10)) AS last, COUNT(*) AS n FROM bars_1d"
+            "SELECT substr(MIN(bar_time), 1, 10) AS first, substr(MAX(bar_time), 1, 10) AS last, COUNT(*) AS n FROM bars_1d"
         ).fetchone()
         days = connection.execute(
             "SELECT COUNT(*) FROM (SELECT substr(bar_time, 1, 10) AS d FROM bars_1d GROUP BY d HAVING COUNT(*) >= ?)",
@@ -228,7 +228,7 @@ def _last_closes_before(day: str, codes: list[str] | None = None) -> dict[str, t
     with get_connection() as connection:
         rows = connection.execute(
             """SELECT b.stock_code AS code, substr(b.bar_time, 1, 10) AS d, b.close AS c FROM bars_1d b
-               JOIN (SELECT stock_code, MAX(bar_time) AS t FROM bars_1d WHERE substr(bar_time, 1, 10) < ? GROUP BY stock_code) last
+               JOIN (SELECT stock_code, MAX(bar_time) AS t FROM bars_1d WHERE bar_time < ? GROUP BY stock_code) last
                ON last.stock_code = b.stock_code AND last.t = b.bar_time""",
             (day,),
         ).fetchall()
@@ -341,7 +341,7 @@ def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw:
                     str(r["stock_code"]).upper(): r for r in connection.execute(
                         """SELECT b.stock_code, b.bar_time, b.open, b.high, b.low, b.close FROM bars_1d b
                            JOIN stocks s ON s.stock_code = b.stock_code
-                           WHERE s.market = 'OTC' AND substr(b.bar_time, 1, 10) = ?""", (day,)).fetchall()
+                           WHERE s.market = 'OTC' AND b.bar_time >= ? AND b.bar_time < ? || 'z'""", (day, day)).fetchall()
                 }
                 fixes = []
                 for row in rows:
@@ -405,7 +405,7 @@ def infer_events(start: date) -> int:
         with get_connection() as connection:
             rows = connection.execute(
                 f"""SELECT stock_code, substr(bar_time, 1, 10) AS d, open, close FROM bars_1d
-                    WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) >= ? ORDER BY stock_code, bar_time""",
+                    WHERE stock_code IN ({placeholders}) AND bar_time >= ? ORDER BY stock_code, bar_time""",
                 (*batch, start.isoformat()),
             ).fetchall()
         by_code: dict[str, list[tuple]] = {}

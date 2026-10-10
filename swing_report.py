@@ -166,10 +166,9 @@ def report_dates(limit: int = LOOKBACK_DATES) -> list[str]:
 
 def bar_dates(limit: int = LOOKBACK_DATES) -> list[str]:
     """最近幾個有日K的交易日（新的在前）。"""
-    initialize_database()
-    with get_connection() as connection:
-        rows = connection.execute("SELECT DISTINCT substr(bar_time, 1, 10) AS d FROM bars_1d ORDER BY d DESC LIMIT ?", (limit,)).fetchall()
-    return [str(r["d"]) for r in rows if r["d"]]
+    from daily_bars_store import recent_bar_dates
+
+    return recent_bar_dates(limit)
 
 
 # ------------------------------------------------------------------ 個股技術面

@@ -381,13 +381,9 @@ def _past_bar_dates(session: str, limit: int, *, include_session: bool) -> list[
     """日K表裡 session 之前（含 session 當天要 include_session）最近的幾個交易日，新的在前。"""
     if limit <= 0:
         return []
-    initialize_database()
-    with get_connection() as connection:
-        rows = connection.execute(
-            f"SELECT DISTINCT substr(bar_time, 1, 10) AS d FROM bars_1d WHERE substr(bar_time, 1, 10) {'<=' if include_session else '<'} ? ORDER BY d DESC LIMIT ?",
-            (session, limit),
-        ).fetchall()
-    return [str(row["d"]) for row in rows]
+    from daily_bars_store import recent_bar_dates
+
+    return recent_bar_dates(limit, before=session, include_before=include_session)
 
 
 def _day_bars(codes: list[str], day: str) -> dict[str, tuple[float, int]]:
@@ -397,8 +393,8 @@ def _day_bars(codes: list[str], day: str) -> dict[str, tuple[float, int]]:
         for start in range(0, len(codes), 400):
             batch = codes[start:start + 400]
             rows = connection.execute(
-                f"SELECT stock_code, close, volume FROM bars_1d WHERE substr(bar_time, 1, 10) = ? AND stock_code IN ({','.join('?' for _ in batch)})",
-                (day, *batch),
+                f"SELECT stock_code, close, volume FROM bars_1d WHERE bar_time >= ? AND bar_time < ? || 'z' AND stock_code IN ({','.join('?' for _ in batch)})",
+                (day, day, *batch),
             ).fetchall()
             for row in rows:
                 out[str(row["stock_code"]).strip().upper()] = (float(row["close"]), int(row["volume"] or 0))

@@ -79,7 +79,7 @@ def _load_recent_bars(codes: list[str], *, today: str) -> dict[str, dict[str, tu
             rows = connection.execute(
                 f"""
                 SELECT stock_code, substr(bar_time, 1, 10) AS d, close, volume FROM bars_1d
-                WHERE stock_code IN ({placeholders}) AND substr(bar_time, 1, 10) < ? AND substr(bar_time, 1, 10) >= ?
+                WHERE stock_code IN ({placeholders}) AND bar_time < ? AND bar_time >= ?
                 """,
                 (*batch, today, since),
             ).fetchall()
