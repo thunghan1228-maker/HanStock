@@ -24,12 +24,9 @@ import hanstock_app
 class HanstockAppOverrideTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.client_context = TestClient(hanstock_app.app)
-        cls.client = cls.client_context.__enter__()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.client_context.__exit__(None, None, None)
+        # 不進 lifespan：persistent_app 被其他測試匯入後，同一個 app 的 lifespan 會啟動十幾個
+        # 連真實網路的背景收集器，跑到別的測試 patch 過的函式（CI 上 test_official_otc_yahoo_fallback 因此失敗）。
+        cls.client = TestClient(hanstock_app.app)
 
     def test_root_serves_bundled_homepage_instead_of_redirecting(self):
         response = self.client.get("/", follow_redirects=False)

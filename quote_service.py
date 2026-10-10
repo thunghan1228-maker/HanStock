@@ -130,6 +130,8 @@ class QuoteService:
         self._stock_subscriptions: OrderedDict[str, float] = OrderedDict()
         self._stock_assignments: dict[str, str] = {}
         self._stock_errors: dict[str, str] = {}
+        # 檢查上限到真的訂閱之間會放開鎖（訂閱要打 Shioaji），先在鎖內佔位，並行的請求才不會一起衝過上限。
+        self._stock_pending: set[str] = set()
         legacy = _env_int("SHIOAJI_STOCK_MAX_SUBSCRIPTIONS", DEFAULT_STOCK_SUBSCRIPTION_LIMIT, 1, 190)
         self._stock_subscription_limit = _env_int("SHIOAJI_MAIN_STOCK_MAX_SUBSCRIPTIONS", max(DEFAULT_STOCK_SUBSCRIPTION_LIMIT, legacy), 1, 190)
 
@@ -204,10 +206,16 @@ class QuoteService:
             with self._stock_lock:
                 if code in self._stock_subscriptions:
                     self._stock_subscriptions[code]=time.time(); self._stock_subscriptions.move_to_end(code); result["already_subscribed"].append(code); continue
+                if code in self._stock_pending:
+                    result["already_subscribed"].append(code); continue
                 main_count=sum(1 for v in self._stock_assignments.values() if v=="main")
-            if main_count >= self._stock_subscription_limit:
-                result["failed"][code]="台股訂閱上限"; continue
-            if self._subscribe_stock(code): result["newly_subscribed"].append(code)
+                if main_count+len(self._stock_pending) >= self._stock_subscription_limit:
+                    result["failed"][code]="台股訂閱上限"; continue
+                self._stock_pending.add(code)
+            try: ok=self._subscribe_stock(code)
+            finally:
+                with self._stock_lock: self._stock_pending.discard(code)
+            if ok: result["newly_subscribed"].append(code)
             else:
                 with self._stock_lock: result["failed"][code]=self._stock_errors.get(code,"訂閱失敗")
         with self._stock_lock: result["active_count"]=len(self._stock_subscriptions)
