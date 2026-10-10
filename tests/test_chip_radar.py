@@ -217,9 +217,9 @@ class RadarTests(unittest.TestCase):
                          [("被動元件", 1, ["6127", "3236"]), ("石英", 2, ["2484", "3042"])])
         nine = out["together"][0]["cards"][0]
         self.assertEqual((nine["chip1"], nine["week"], nine["after"], nine["close"], nine["star"], nine["ups"]), (5.4, 20.0, None, 60.0, True, 2))   # 9/24、10/02 連兩週增
-        # 佳大、晟銘電不在我們族群表，照莊爸卡片上的標籤歸「鋼纜」「機殼」→ 單獨上榜（他的族群表有、我們沒有的族）
-        self.assertEqual([(c["code"], c["group"]) for c in out["single"]], [("2033", "鋼纜"), ("3013", "機殼")])
-        self.assertEqual(out["nogroup"], [])
+        # 晟銘電不在我們族群表，照莊爸卡片上的標籤歸「機殼」→ 單獨上榜；佳大（這裡的族群表沒有鋼鐵）→ 不在族群表
+        self.assertEqual([(c["code"], c["group"]) for c in out["single"]], [("3013", "機殼")])
+        self.assertEqual([c["code"] for c in out["nogroup"]], ["2033"])
         sell = out["sell"][0]
         self.assertEqual((sell["code"], sell["star"], sell["week"]), ("1727", True, 5.0))
         self.assertEqual([c["code"] for c in out["against"]], ["1727"])                # 賣超但本週漲 ≥3%
