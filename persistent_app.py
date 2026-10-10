@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
@@ -86,6 +87,7 @@ from stock_history_service import get_stock_history_bars_1m, get_stock_history_b
 from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import backfill_pause_reason, start_stock_bar_repair_collector
 from quote_service import get_quote_service
+from memory_diag import note_request as memory_note_request, payload as memory_payload, rss_mb, start_memory_sampler
 
 
 _market_data_lifespan = app.router.lifespan_context
@@ -97,6 +99,8 @@ async def _persistent_lifespan(fastapi_app):
         # 主力副圖是唯一保留的持久化背景工作。
         # 備援 Railway 專案不登入 Shioaji，因此不啟動沒有工作的保存執行緒。
         from quote_service import quote_deployment_role
+
+        start_memory_sampler()  # 記憶體診斷：每 30 秒取樣、暴增時記下誰在跑（2026-10-10 使用者）
 
         # 純本機SQLite文字修正，跟Shioaji/角色無關，兩個Railway都可以跑；
         # 已經是最新文字的列不會被UPDATE命中，重複執行成本趨近於0。
@@ -177,6 +181,21 @@ async def _persistent_lifespan(fastapi_app):
 
 
 app.router.lifespan_context = _persistent_lifespan
+
+
+@app.middleware("http")
+async def _memory_watch(request: Request, call_next):
+    started = time.monotonic()
+    before = rss_mb()
+    response = await call_next(request)
+    memory_note_request(request.url.path, before, rss_mb(), time.monotonic() - started)
+    return response
+
+
+@app.get("/api/hub/memory")
+def get_memory_diag(minutes: int = Query(120, ge=1, le=1440)) -> dict[str, Any]:
+    """記憶體診斷：程序／容器用量、每條執行緒在跑什麼、暴增紀錄、最近 minutes 分鐘的取樣。"""
+    return {"status": "ok", "data": memory_payload(minutes)}
 
 
 @app.get("/api/hub/persistence/status")
