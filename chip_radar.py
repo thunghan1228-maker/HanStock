@@ -145,9 +145,10 @@ def _load_tdcc(weeks: int) -> tuple[list[str], dict[str, dict[str, list[int]]]]:
     levels = ",".join(str(x) for x in (*BIG_LEVELS, TOTAL_LEVEL))
     with get_connection() as connection:
         _fundamentals_schema(connection)
+        # +level：按日期走主鍵（只讀這幾週）；不加的話會改走 (級距, 代號, 日期) 索引、把 60 週都掃過
         rows = connection.execute(
             f"""SELECT data_date, stock_code, level, shares, pct FROM tdcc_weekly
-                WHERE data_date IN ({','.join('?' for _ in dates)}) AND level IN ({levels})""",
+                WHERE data_date IN ({','.join('?' for _ in dates)}) AND +level IN ({levels})""",
             tuple(dates),
         ).fetchall()
     for r in rows:
