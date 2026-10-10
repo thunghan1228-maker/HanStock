@@ -1072,6 +1072,36 @@ def get_ma_rank_query(code: str | None = Query(None), group: str | None = Query(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/river")
+def get_river(q: str = Query(...)) -> dict[str, Any]:
+    """估值河流圖・本站版（2026-10-10 使用者：照莊爸估值河流圖做）：q＝股號或股名；分水嶺＝近 4 季 EPS × 同族群本益比中位數，
+    四區 ×0.618／0.8／1.2／1.382，附河道歷史、本益比、淨值比、近月營收。"""
+    from fastapi import HTTPException
+
+    from river import query as river_query
+
+    try:
+        return river_query(q)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/river/list")
+def get_river_list() -> dict[str, Any]:
+    """河流圖查詢框的股號／股名清單。"""
+    from river import stock_list
+
+    return {"status": "ok", "stocks": stock_list()}
+
+
+@app.get("/api/hub/river/ma10")
+def get_river_ma10() -> dict[str, Any]:
+    """⭐ 均線分數 ≥10 × 便宜區（含特價、跌破特價）。"""
+    from river import ma10
+
+    return ma10()
+
+
 @app.get("/api/hub/screener")
 def get_screener(request: Request, date: str | None = Query(None)) -> dict[str, Any]:
     """選股系統・條件選股（2026-10-10 使用者：照莊爸選股系統做，併進個股研究）：score／chip／etf／inst3／inst5／sword／dispo
