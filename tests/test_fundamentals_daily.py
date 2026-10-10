@@ -167,3 +167,24 @@ def test_has_new_data_only_when_something_changed():
     assert fd._has_new_data({**same, "sharesTSE": {"ok": True, "rows": 250}}, before) is True
     assert fd._has_new_data(same, {}) is True      # 剛啟動：之前什麼都沒有，算有新資料
     assert fd._has_new_data({**same, "peTSE": {"ok": False, "error": "x"}}, before) is False
+
+
+def test_pe_history_backfill() -> None:
+    """估值河流圖要的歷史本益比：每月最後一個交易日查一次證交所，已經有的跳過；查不到記失敗、不中斷。"""
+    asked: list[str] = []
+
+    def fetcher(url: str):
+        ymd = url.split("date=")[1][:8]
+        asked.append(ymd)
+        if ymd == "20260831":
+            raise OSError("blocked")
+        return {"stat": "OK", "date": str(int(ymd[:4]) - 1911) + ymd[4:], "fields": ["證券代號", "證券名稱", "本益比", "股價淨值比"],
+                "data": [["2492", "華新科", "30.5", "2.1"]]}
+
+    with tempfile.TemporaryDirectory() as temp_dir, patch.object(database, "DATABASE_PATH", Path(temp_dir) / "t.db"):
+        database.initialize_database()
+        module.save_pe("2026-07-31", "TSE", [{"code": "2492", "name": "華新科", "pe": 28.0, "pbr": 2.0, "yield": None}], "twse")
+        out = module.backfill_pe_history(3, fetcher=fetcher, pause=0, today=datetime(2026, 10, 10, tzinfo=module.TW_TZ))
+        assert asked == ["20260930", "20260831"]            # 7/31 已經有了
+        assert (out["done"], out["failed"], out["running"]) == (["2026-09-30"], ["2026-08-31"], False)
+        assert [(r["date"], r["pe"]) for r in module.pe_history("2492")] == [("2026-07-31", 28.0), ("2026-09-30", 30.5)]

@@ -39,6 +39,8 @@ from heilong_backtest import backtest as heilong_backtest_payload, collector_sta
 from heilong_picker import payload as picker_payload
 from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock, weekly_report as chip_weekly_report
 from grail_radar import collector_status as grail_radar_status, day_payload as grail_radar_payload, run_close as grail_radar_run_close
+from ma_rank import hits as ma_rank_hits, query as ma_rank_query, ranking as ma_rank_payload
+from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, stock as screener_stock
 from grail_radar import start_grail_radar_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
@@ -1019,6 +1021,99 @@ def get_chip_weekly(week: str | None = Query(None)) -> dict[str, Any]:
         return chip_weekly_report(week or None)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _ma_date(date: str | None) -> str | None:
+    from fastapi import HTTPException
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return date or None
+
+
+@app.get("/api/hub/ma-rank")
+def get_ma_rank(date: str | None = Query(None)) -> dict[str, Any]:
+    """均線分數排行（2026-10-10 使用者：照莊爸 zhuang.tw/ma 做）：個股分數前 60（昨天名次、連續上榜）＋族群分數前十大。
+    date＝選股日期 YYYY-MM-DD，不給＝最新一天；dates 回最近 20 個交易日可以切。"""
+    from fastapi import HTTPException
+
+    try:
+        return ma_rank_payload(_ma_date(date))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/ma-rank/hits")
+def get_ma_rank_hits(days: int = Query(20), top: int = Query(10), show: int = Query(20), date: str | None = Query(None)) -> dict[str, Any]:
+    """前十名常客：近 days 個交易日（10／20／40／60），每天取前 top 名（5／10／20／30，同分並列全部算），列 show 檔（20／30／50）。"""
+    from fastapi import HTTPException
+
+    try:
+        return ma_rank_hits(days, top, show, _ma_date(date))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/ma-rank/q")
+def get_ma_rank_query(code: str | None = Query(None), group: str | None = Query(None), date: str | None = Query(None)) -> dict[str, Any]:
+    """均線分數查詢：code＝股號（列出所屬族群全部成員）或 group＝族群名，依均線分數排序。"""
+    from fastapi import HTTPException
+
+    try:
+        return ma_rank_query(code=_normalize_stock_code(code) if code else None, group=group, date=_ma_date(date))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/screener")
+def get_screener(request: Request, date: str | None = Query(None)) -> dict[str, Any]:
+    """選股系統・條件選股（2026-10-10 使用者：照莊爸選股系統做，併進個股研究）：score／chip／etf／inst3／inst5／sword／dispo
+    門檻，fut／mini／exdispo＝1 勾選，k＝any／red／black 與 kmin／kmax 漲跌幅區間；date＝資料日（回測指定日）。"""
+    from fastapi import HTTPException
+
+    raw = {k: request.query_params.get(k) for k in SCREENER_KEYS}
+    try:
+        return screener_screen(raw, _ma_date(date))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/hub/fundamentals/pe-history/backfill")
+def post_pe_history_backfill(months: int = Query(36, ge=1, le=120)) -> dict[str, Any]:
+    """背景回補上市個股過去 months 個月、每月月底的本益比（估值河流圖要用歷史本益比推參考本益比）。"""
+    from fundamentals_daily import start_pe_history_backfill
+
+    return start_pe_history_backfill(months)
+
+
+@app.get("/api/hub/fundamentals/pe-history")
+def get_pe_history(code: str | None = Query(None)) -> dict[str, Any]:
+    """code 給了回那檔存下來的歷史本益比；沒給回回補進度。"""
+    from fundamentals_daily import pe_history, pe_history_status
+
+    if code:
+        return {"status": "ok", "code": _normalize_stock_code(code), "rows": pe_history(_normalize_stock_code(code))}
+    return {"status": "ok", **pe_history_status()}
+
+
+@app.get("/api/hub/screener/stock")
+def get_screener_stock(code: str = Query(...), date: str | None = Query(None)) -> dict[str, Any]:
+    """選股系統的個股完整彙整：一檔在資料日的全部欄位。"""
+    from fastapi import HTTPException
+
+    try:
+        return screener_stock(_normalize_stock_code(code), _ma_date(date))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/hub/grail-radar")
