@@ -134,6 +134,9 @@ async def _persistent_lifespan(fastapi_app):
             from fund_umbrella import start_fund_umbrella_collector
 
             start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
+            from insider_watch import start_insider_collector
+
+            start_insider_collector()  # 內部人研究室：觀測站內部人持股異動月報鏡像（tw-groups data 分支），每天拉一次（2026-10-10 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1342,6 +1345,42 @@ def post_fund_umbrella_fetch() -> dict[str, Any]:
     import fund_umbrella
 
     return {"status": "ok", "result": fund_umbrella.fetch(), "collector": fund_umbrella.collector_status()}
+
+
+@app.get("/api/hub/insider")
+def get_insider(month: str | None = Query(None)) -> dict[str, Any]:
+    """內部人研究室（2026-10-10 使用者）：某個月（YYYY-MM，不給＝最新）董監＋經理人持股淨增減、估算金額、集中市場買賣明細，
+    疊上集保 400 張大戶比與近 4 週變化（雙買／雙賣）。"""
+    import re
+
+    import insider_watch
+    from fastapi import HTTPException
+
+    if month is not None and not re.fullmatch(r"\d{4}-\d{2}", month.strip()):
+        raise HTTPException(status_code=422, detail="month 必須是 YYYY-MM")
+    return insider_watch.overview(month.strip() if month else None)
+
+
+@app.get("/api/hub/insider/stock")
+def get_insider_stock(code: str = Query(...)) -> dict[str, Any]:
+    """查個股的內部人：每個月董監／經理人／大股東持股與增減、集中市場明細、400 張大戶每週持股比。"""
+    import re
+
+    import insider_watch
+    from fastapi import HTTPException
+
+    code = code.strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{4,6}", code):
+        raise HTTPException(status_code=422, detail="code 格式不對")
+    return insider_watch.stock(code)
+
+
+@app.post("/api/hub/insider/collect")
+def post_insider_collect() -> dict[str, Any]:
+    """馬上從鏡像拉一次（排程主機推完內部人月報會戳這裡）。"""
+    import insider_watch
+
+    return {"status": "ok", "result": insider_watch.collect()}
 
 
 @app.get("/api/hub/chip-radar/stock")
