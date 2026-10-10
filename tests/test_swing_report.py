@@ -43,7 +43,7 @@ class AnalyzeBarsTests(unittest.TestCase):
         self.assertTrue(t["crossedMa20"] and t["aboveMa20"])
         self.assertEqual(t["ma20"], 100.2)
         self.assertAlmostEqual(t["aboveMa20Pct"], 3.79, places=2)
-        self.assertEqual((t["score"], t["prevScore"]), (15, 6))    # 最後一天拉高；前一天完全平盤，內定算法仍算「創新高」6 分（近期最高＝平盤本身）
+        self.assertEqual((t["score"], t["prevScore"]), (15, 0))    # 最後一天拉高；前一天完全平盤，創新高平手不算 → 0 分
         self.assertEqual(t["threeDayLow"], 99.0)
         self.assertEqual(t["changePct"], 4.0)
         self.assertFalse(t["ma60OverHead"])
@@ -129,8 +129,8 @@ class ReportTests(unittest.TestCase):
         self.assertIn("體質轉強 合晶", r["summary"][2])
         self.assertTrue(r["summary"][-1].startswith("風險提示"))
         self.assertEqual(r["counts"], {"chips": 1, "tech": 1, "techNear": 0, "body": 1, "strong": 1, "full": 1})
-        self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["6→15"])
-        self.assertEqual(r["notes"]["jumpTop"], [{"code": "6182", "name": "合晶", "from": 6, "to": 15}])
+        self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["0→15"])
+        self.assertEqual(r["notes"]["jumpTop"], [{"code": "6182", "name": "合晶", "from": 0, "to": 15}])
         self.assertEqual(r["notes"]["sustained"], [])   # 合晶是跳升進來的，不算續強（見下面 SustainedTests 另外測沒跳升的續強情形）
 
     def test_last_week_followup(self) -> None:

@@ -58,8 +58,12 @@ TAX_PCT = 0.3                    # 證交稅％（賣出一次）
 SCOPES = ("groups", "market")
 
 OFFICIAL_HI_PERIODS = (5, 10, 20, 60, 120, 360)   # 官網式「創 6 個天期新高」
-OFFICIAL_RECENT_DAYS = 3                            # 近 n 日最高收盤落在最近 3 個交易日內就算創新高
-OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 240))   # 官網式「多頭排列加分」三項
+OFFICIAL_RECENT_DAYS = 3                            # 最近 3 個交易日的最高收盤比這個天期內更早的都高（平手不算）就算創新高
+# 官網式「多頭排列加分」三項。2026-10-10 使用者給莊爸均線分數排行頁（zhuang.tw/ma）：他寫的是 MA120>MA350（不是 240），
+# 創新高也是平手不算；拿他 10/08 前 60 名逐檔比，這樣改才對得上（240／平手算的版本差 8 檔）。日K不到 350 根就用現有的平均。
+OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 350))
+ALIGN_LONG = 350
+SCORE_VERSION = "2026-10-10"     # 算法改了就換：整張表重算
 ALGOS = ("site", "official")
 ALGO_LABELS = {"site": "本站", "official": "內定"}   # 2026-09-28 使用者：前端只用內定這套
 
@@ -83,7 +87,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
 
 RULES = [
     "進場＝符合條件那天的收盤價；D+1＝下一個有日K的交易日。日K不足 240 根算不出均線分數、不會入選。",
-    "均線分數（內定算法，滿分 15）＝收盤站上 5／10／20／60／120／240 日均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（那個天期的最高收盤落在最近 3 個交易日內）＋多頭排列加分 3 分（20 日線在 60 日線上、60 在 120 上、120 在 240 上各 1 分）。",
+    "均線分數（內定算法，滿分 15）＝收盤站上 5／10／20／60／120／240 日均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（最近 3 個交易日的最高收盤比那個天期內更早的都高，平手不算）＋多頭排列加分 3 分（20 日線在 60 日線上、60 在 120 上、120 在 350 上各 1 分）。",
     "黑K＝收盤＜開盤、紅K＝收盤＞開盤；漲跌幅跟前一天收盤比。",
     "週籌碼＝那天當時看得到的集保週（結算日早於那天的最近一週）400 張以上大戶張數比前一週的增減％；沒有資料的股，勾了這條件就不算符合。",
     "族群平均分＝該股所屬族群全部成員當天均線分數的平均。5 日均成交值＝近 5 天「收盤價×成交量」的平均（億），是估算值。",
@@ -119,7 +123,8 @@ def _schema(connection) -> None:
     )
     columns = {str(r["name"]) for r in connection.execute("PRAGMA table_info(heilong_daily)").fetchall()}
     for column, kind in (("score2", "INTEGER"), ("group_avg2", "REAL"), ("bias", "REAL"), ("out_days", "INTEGER"),
-                         ("attention", "INTEGER NOT NULL DEFAULT 0"), ("in_group", "INTEGER NOT NULL DEFAULT 1"), ("hi_len", "INTEGER")):
+                         ("attention", "INTEGER NOT NULL DEFAULT 0"), ("in_group", "INTEGER NOT NULL DEFAULT 1"), ("hi_len", "INTEGER"),
+                         ("ma_bits", "INTEGER"), ("hi_bits", "INTEGER"), ("align_n", "INTEGER")):
         if column not in columns:
             connection.execute(f"ALTER TABLE heilong_daily ADD COLUMN {column} {kind}")
     connection.execute("CREATE TABLE IF NOT EXISTS heilong_meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -286,23 +291,37 @@ def _has_futures(code: str) -> bool:
 
 # ------------------------------------------------------------------ 特徵
 
-def official_score(closes: list[float], mas: dict[int, float] | None = None) -> int | None:
-    """官網式均線分數（滿分 15）：收盤站上 5／10／20／60／120／240 日均線各 1 分；近 5／10／20／60／120／360 日的最高收盤
-    落在最近 3 個交易日內各 1 分（創新高）；20 日＞60 日、60 日＞120 日、120 日＞240 日各 1 分（多頭排列）。
-    closes 舊到新、最後一筆是當天；不足 240 根回 None（360 日新高用現有長度算）。"""
+def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> tuple[int, int, int] | None:
+    """官網式均線分數的三部分：(站上均線位元, 創新高位元, 多頭排列分)。位元第 k 位＝第 k 個天期（MA_PERIODS／OFFICIAL_HI_PERIODS 的順序）。
+    站上：收盤＞5／10／20／60／120／240 日均線；創新高：最近 3 個交易日的最高收盤＞那個天期（5／10／20／60／120／360 日，
+    不夠長用現有長度）內更早的最高收盤（平手不算）；排列：20 日＞60 日、60 日＞120 日、120 日＞350 日各 1 分。
+    closes 舊到新、最後一筆是當天；不足 240 根回 None。mas 可以先給 MA_PERIODS 的均線（350 日不給就自己算）。"""
     n = len(closes)
     if n < max(MA_PERIODS):
         return None
-    if mas is None:
-        mas = {p: sum(closes[-p:]) / p for p in MA_PERIODS}
+    mas = dict(mas) if mas else {p: sum(closes[-p:]) / p for p in MA_PERIODS}
+    if ALIGN_LONG not in mas:
+        span = min(ALIGN_LONG, n)
+        mas[ALIGN_LONG] = sum(closes[-span:]) / span
     close = closes[-1]
-    score = sum(1 for p in MA_PERIODS if close > mas[p])
-    for p in OFFICIAL_HI_PERIODS:
+    ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if close > mas[p])
+    hi_bits = 0
+    for k, p in enumerate(OFFICIAL_HI_PERIODS):
         window = closes[-p:]
-        if max(window) in window[-OFFICIAL_RECENT_DAYS:]:
-            score += 1
-    score += sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
-    return score
+        earlier = window[:-OFFICIAL_RECENT_DAYS]
+        if earlier and max(window[-OFFICIAL_RECENT_DAYS:]) > max(earlier):
+            hi_bits |= 1 << k
+    align = sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
+    return ma_bits, hi_bits, align
+
+
+def official_score(closes: list[float], mas: dict[int, float] | None = None) -> int | None:
+    """官網式均線分數（滿分 15）＝站上 6 條均線＋創 6 個天期新高＋多頭排列 3 分（細節見 official_parts）。不足 240 根回 None。"""
+    parts = official_parts(closes, mas)
+    if parts is None:
+        return None
+    ma_bits, hi_bits, align = parts
+    return bin(ma_bits).count("1") + bin(hi_bits).count("1") + align
 
 
 def _sliding_max(values: list[float], width: int) -> list[float]:
@@ -349,20 +368,25 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
     for ch in changes:
         big.append(big[-1] + (1 if ch is not None and ch > HITS_MIN_PCT else 0))
     longest = max(MA_PERIODS)
-    window_max = {p: _sliding_max(closes, p) for p in OFFICIAL_HI_PERIODS}
-    recent_max = _sliding_max(closes, OFFICIAL_RECENT_DAYS)
+    recent = OFFICIAL_RECENT_DAYS
+    # 天期內「最近 3 天以前」那段的最高收盤：寬度 p−3、結束在 i−3 的滑動最大值
+    earlier_max = {p: _sliding_max(closes, p - recent) for p in OFFICIAL_HI_PERIODS}
+    recent_max = _sliding_max(closes, recent)
     hi_len = hi_lengths(closes)
     for i, (d, o, h, l, c, v) in enumerate(bars):
         if d not in wanted:
             continue
         n = i + 1
-        score = score2 = None
+        score = score2 = ma_bits = hi_bits = align = None
         if n >= longest:
             mas = {p: (prefix[n] - prefix[n - p]) / p for p in MA_PERIODS}
-            score = ma_alignment_score(mas)
-            score2 = sum(1 for p in MA_PERIODS if c > mas[p])
-            score2 += sum(1 for p in OFFICIAL_HI_PERIODS if recent_max[i] >= window_max[p][i])
-            score2 += sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
+            score = ma_alignment_score(mas)          # 本站算法只看 MA_PERIODS，350 日線要加在後面
+            span = min(ALIGN_LONG, n)
+            mas[ALIGN_LONG] = (prefix[n] - prefix[n - span]) / span
+            ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if c > mas[p])
+            hi_bits = sum(1 << k for k, p in enumerate(OFFICIAL_HI_PERIODS) if i >= recent and recent_max[i] > earlier_max[p][i - recent])
+            align = sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
+            score2 = bin(ma_bits).count("1") + bin(hi_bits).count("1") + align
         hits = big[i + 1] - big[max(1, i - HITS_DAYS + 1)]
         values = [bars[j][4] * bars[j][5] * 1000 / 1e8 for j in range(max(0, i - VALUE_DAYS + 1), i + 1)]
         bias = None
@@ -379,6 +403,7 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             "val5": _r2(_mean(values)),
             "bias": bias,
             "hiLen": hi_len[i],
+            "maBits": ma_bits, "hiBits": hi_bits, "align": align,
         }
     return out
 
@@ -427,13 +452,14 @@ def _meta_set(connection, key: str, value: str) -> None:
 
 
 INSERT_COLUMNS = ("trade_date, stock_code, open, high, low, close, volume, prev_close, change_pct, score, hits20, val5, group_name, group_avg, "
-                  "week_pct, week_date, disposed, score2, group_avg2, bias, out_days, attention, in_group, hi_len")
+                  "week_pct, week_date, disposed, score2, group_avg2, bias, out_days, attention, in_group, hi_len, ma_bits, hi_bits, align_n")
 
 
 def _row_tuple(d: str, code: str, f: dict[str, Any]) -> tuple:
     return (d, code, f["open"], f["high"], f["low"], f["close"], f["volume"], f["prevClose"], f["changePct"], f["score"], f["hits20"], f["val5"],
             f["group"], f["groupAvg"], f["weekPct"], f["weekDate"], 1 if f["disposed"] else 0, f["score2"], f["groupAvg2"],
-            f["bias"], f["outDays"], 1 if f["attention"] else 0, 1 if f["inGroup"] else 0, f.get("hiLen"))
+            f["bias"], f["outDays"], 1 if f["attention"] else 0, 1 if f["inGroup"] else 0, f.get("hiLen"),
+            f.get("maBits"), f.get("hiBits"), f.get("align"))
 
 
 def _warm_picker() -> None:
@@ -459,14 +485,17 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
         _schema(connection)
         have = {str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM heilong_daily").fetchall()}
         missing = connection.execute(
-            "SELECT COUNT(*) FROM heilong_daily WHERE score IS NOT NULL AND (score2 IS NULL OR bias IS NULL OR hi_len IS NULL)"
+            "SELECT COUNT(*) FROM heilong_daily WHERE score IS NOT NULL AND (score2 IS NULL OR bias IS NULL OR hi_len IS NULL OR ma_bits IS NULL)"
         ).fetchone()[0]
         old_version = _meta_get(connection, "adjust_version")
+        old_score_version = _meta_get(connection, "score_version")
     reason = "force" if force else None
     if missing:
         force, reason = True, "新欄位補算"     # 官網式分數／月季乖離／創高天數剛加上：整張表補算一次
     if old_version != version:
         force, reason = True, "還原事件有變"   # 分割減資還原的事件變了：以前的價格都要重算
+    if have and old_score_version != SCORE_VERSION:
+        force, reason = True, "均線分數算法更新"   # 2026-10-10：排列第三項改 120＞350、創新高平手不算
     tail = set(target[-RECOMPUTE_TAIL:])
     todo = [d for d in target if force or d not in have or d in tail]
     result: dict[str, Any] = {"date": latest, "rebuilt": todo, "rebuiltCount": len(todo), "dates": len(target), "reason": reason}
@@ -525,7 +554,7 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
                 f["groupAvg"], f["groupAvg2"] = group_avg.get((group, d), (None, None))
                 rows.append(_row_tuple(d, code, f))
         with get_connection() as connection:
-            connection.executemany(f"INSERT INTO heilong_daily_new ({INSERT_COLUMNS}) VALUES ({','.join('?' for _ in range(24))})", rows)
+            connection.executemany(f"INSERT INTO heilong_daily_new ({INSERT_COLUMNS}) VALUES ({','.join('?' for _ in INSERT_COLUMNS.split(','))})", rows)
         total += len(rows)
     with get_connection() as connection:
         connection.execute("BEGIN")
@@ -536,6 +565,7 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
         if target:
             connection.execute("DELETE FROM heilong_daily WHERE trade_date < ?", (target[0],))
         _meta_set(connection, "adjust_version", version)
+        _meta_set(connection, "score_version", SCORE_VERSION)
         connection.execute("COMMIT")
         connection.execute("DROP TABLE IF EXISTS heilong_daily_new")
         result["rows"] = connection.execute("SELECT COUNT(*) FROM heilong_daily").fetchone()[0]
@@ -573,7 +603,7 @@ def load_rows(days: int | None = None) -> tuple[list[str], dict[str, dict[str, d
             "disposed": bool(r["disposed"]),
             "score2": r["score2"], "groupAvg2": r["group_avg2"],
             "bias": r["bias"], "outDays": r["out_days"], "attention": bool(r["attention"]), "inGroup": bool(r["in_group"]),
-            "hiLen": r["hi_len"],
+            "hiLen": r["hi_len"], "maBits": r["ma_bits"], "hiBits": r["hi_bits"], "align": r["align_n"],
         }
     return sorted(table), table
 
