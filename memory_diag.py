@@ -187,6 +187,71 @@ def top_allocations(limit: int = 25) -> list[dict[str, Any]] | None:
              "mb": round(s.size / 1024 / 1024, 1), "count": s.count} for s in stats]
 
 
+TABLE_SIZES_TTL_SECONDS = 6 * 3600
+_table_sizes: dict[str, Any] = {"computedAt": None, "at": 0.0, "running": False, "tables": None, "error": None}
+
+
+def _file_sizes() -> dict[str, Any]:
+    """資料庫檔（含 -wal／-shm）與所在磁碟（Railway volume）的大小，MB；只讀檔案資訊，很便宜。"""
+    import shutil
+
+    from database import DATABASE_PATH
+
+    path = Path(DATABASE_PATH)
+    files = {}
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(f"{path}{suffix}")
+        if p.exists():
+            files[p.name] = round(p.stat().st_size / 1024 / 1024, 1)
+    out: dict[str, Any] = {"path": str(path), "filesMb": files}
+    try:
+        usage = shutil.disk_usage(path.parent)
+        out["diskMb"] = {"total": usage.total // 1024 // 1024, "used": usage.used // 1024 // 1024, "free": usage.free // 1024 // 1024}
+    except OSError:
+        pass
+    return out
+
+
+def _compute_table_sizes() -> None:
+    from database import get_connection
+
+    try:
+        with get_connection() as connection:
+            owner = {str(r[0]): str(r[1]) for r in connection.execute("SELECT name, tbl_name FROM sqlite_master WHERE type IN ('table', 'index')")}
+            totals: dict[str, dict[str, float]] = {}
+            for name, pgsize in connection.execute("SELECT name, SUM(pgsize) FROM dbstat GROUP BY name"):
+                table = owner.get(str(name), str(name))
+                entry = totals.setdefault(table, {"tableMb": 0.0, "indexMb": 0.0})
+                entry["tableMb" if str(name) == table else "indexMb"] += (pgsize or 0) / 1024 / 1024
+        tables = sorted(({"table": t, "tableMb": round(v["tableMb"], 1), "indexMb": round(v["indexMb"], 1),
+                          "totalMb": round(v["tableMb"] + v["indexMb"], 1)} for t, v in totals.items()),
+                        key=lambda x: -x["totalMb"])
+        with _lock:
+            _table_sizes.update({"computedAt": _now(), "at": time.time(), "tables": tables, "error": None})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("table size scan failed")
+        with _lock:
+            _table_sizes.update({"error": f"{type(exc).__name__}: {exc}"[:300], "at": time.time()})
+    finally:
+        with _lock:
+            _table_sizes["running"] = False
+
+
+def table_sizes(refresh: bool = False) -> dict[str, Any]:
+    """每張表（含它的索引）佔多少 MB，大到小。要把整個資料庫檔讀一遍，所以在背景算、結果留 6 小時；
+    第一次打（或 refresh）會先回 running，過一兩分鐘再打一次就有結果。"""
+    with _lock:
+        stale = time.time() - _table_sizes["at"] > TABLE_SIZES_TTL_SECONDS
+        start = (refresh or stale) and not _table_sizes["running"]
+        if start:
+            _table_sizes["running"] = True
+        snapshot = {k: v for k, v in _table_sizes.items() if k != "at"}
+    if start:
+        threading.Thread(target=_compute_table_sizes, name="hanstock-table-sizes", daemon=True).start()
+        snapshot["running"] = True
+    return {"files": _file_sizes(), **snapshot}
+
+
 def payload(history_minutes: int = 120) -> dict[str, Any]:
     points = max(1, history_minutes * 60 // SAMPLE_SECONDS)
     with _lock:

@@ -64,8 +64,29 @@ def _schema(connection) -> None:
             holders INTEGER NOT NULL, shares INTEGER NOT NULL, pct REAL NOT NULL,
             PRIMARY KEY (data_date, stock_code, level)
         );
+        -- 主鍵以日期開頭，只按代號／級距查（黑龍回測、持股健診、12:00 名單的大戶週變化，缺合計的週）
+        -- 用不到它，會把整張幾百萬筆的表掃過好幾次；這個索引連股數一起放，查詢不用回表。
+        CREATE INDEX IF NOT EXISTS idx_tdcc_level_code_date ON tdcc_weekly (level, stock_code, data_date, shares);
         """
     )
+
+
+def _recent_tdcc_dates(connection: Any, limit: int) -> list[str]:
+    """最近 limit 個集保結算日（新到舊）：沿主鍵（日期開頭）一週一週往回跳，不用 SELECT DISTINCT 整張表。"""
+    if limit <= 0:
+        return []
+    rows = connection.execute(
+        """
+        WITH RECURSIVE weeks(d) AS (
+            SELECT MAX(data_date) FROM tdcc_weekly
+            UNION ALL
+            SELECT (SELECT MAX(data_date) FROM tdcc_weekly WHERE data_date < weeks.d) FROM weeks WHERE weeks.d IS NOT NULL
+        )
+        SELECT d FROM weeks WHERE d IS NOT NULL LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def _now_iso() -> str:
@@ -125,10 +146,9 @@ def save_tdcc(data_date: str, rows: list[tuple[str, int, int, int, float]]) -> i
             "INSERT OR REPLACE INTO tdcc_weekly (data_date, stock_code, level, holders, shares, pct) VALUES (?, ?, ?, ?, ?, ?)",
             [(data_date, code, int(level), int(holders), int(shares), float(pct)) for code, level, holders, shares, pct in rows],
         )
-        connection.execute(
-            "DELETE FROM tdcc_weekly WHERE data_date NOT IN (SELECT DISTINCT data_date FROM tdcc_weekly ORDER BY data_date DESC LIMIT ?)",
-            (TDCC_KEEP_WEEKS,),
-        )
+        keep = _recent_tdcc_dates(connection, TDCC_KEEP_WEEKS)
+        if len(keep) >= TDCC_KEEP_WEEKS:   # 只留最近 TDCC_KEEP_WEEKS 週
+            connection.execute("DELETE FROM tdcc_weekly WHERE data_date < ?", (keep[-1],))
     return len(rows)
 
 
@@ -147,7 +167,8 @@ def tdcc_weeks_without_totals() -> set[str]:
     with get_connection() as connection:
         _schema(connection)
         rows = connection.execute(
-            "SELECT data_date, SUM(CASE WHEN level = 17 THEN 1 ELSE 0 END) AS t, SUM(CASE WHEN level = 15 THEN 1 ELSE 0 END) AS b FROM tdcc_weekly GROUP BY data_date"
+            "SELECT data_date, SUM(CASE WHEN level = 17 THEN 1 ELSE 0 END) AS t, SUM(CASE WHEN level = 15 THEN 1 ELSE 0 END) AS b "
+            "FROM tdcc_weekly WHERE level IN (15, 17) GROUP BY data_date"
         ).fetchall()
     return {str(r["data_date"]) for r in rows if r["b"] and r["t"] * 2 < r["b"]}
 
@@ -156,8 +177,7 @@ def tdcc_dates(limit: int = TDCC_KEEP_WEEKS) -> list[str]:
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        rows = connection.execute("SELECT DISTINCT data_date FROM tdcc_weekly ORDER BY data_date DESC LIMIT ?", (limit,)).fetchall()
-    return [str(r["data_date"]) for r in rows]
+        return _recent_tdcc_dates(connection, limit)
 
 
 # ------------------------------------------------------------------ 解析

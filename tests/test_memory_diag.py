@@ -65,3 +65,29 @@ class MemoryDiagTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TableSizesTests(unittest.TestCase):
+    def test_table_sizes_in_background(self):
+        import tempfile
+        import time
+        from pathlib import Path
+
+        import database
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(database, "DATABASE_PATH", Path(temp_dir) / "t.db"):
+            database.initialize_database()
+            memory_diag._table_sizes.update({"at": 0.0, "running": False, "tables": None, "error": None})
+            first = memory_diag.table_sizes()
+            self.assertTrue(first["running"])
+            self.assertIn("t.db", first["files"]["filesMb"])
+            for _ in range(50):
+                if not memory_diag._table_sizes["running"]:
+                    break
+                time.sleep(0.05)
+            second = memory_diag.table_sizes()
+            self.assertFalse(second["running"])
+            self.assertIsNone(second["error"])
+            names = {row["table"] for row in second["tables"]}
+            self.assertIn("bars_1d", names)
+            self.assertFalse(any(n.startswith(("sqlite_autoindex", "idx_")) for n in names))   # 索引算在它的表底下

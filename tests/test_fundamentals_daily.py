@@ -188,3 +188,22 @@ def test_pe_history_backfill() -> None:
         assert asked == ["20260930", "20260831"]            # 7/31 已經有了
         assert (out["done"], out["failed"], out["running"]) == (["2026-09-30"], ["2026-08-31"], False)
         assert [(r["date"], r["pe"]) for r in module.pe_history("2492")] == [("2026-07-31", 28.0), ("2026-09-30", 30.5)]
+
+
+def test_tdcc_dates_and_retention_use_indexes():
+    with tempfile.TemporaryDirectory() as temp_dir, patch.object(database, "DATABASE_PATH", Path(temp_dir) / "t.db"), \
+            patch.object(module, "TDCC_KEEP_WEEKS", 3):
+        database.initialize_database()
+        days = ["2026-09-04", "2026-09-11", "2026-09-18", "2026-09-25"]
+        for day in days[:3]:
+            module.save_tdcc(day, [("2330", 15, 10, 1000, 50.0), ("2330", 17, 100, 2000, 100.0)])
+        assert module.tdcc_dates() == ["2026-09-18", "2026-09-11", "2026-09-04"]
+        assert module.tdcc_dates(2) == ["2026-09-18", "2026-09-11"]
+        assert module.tdcc_dates(0) == []
+        module.save_tdcc(days[3], [("2330", 15, 10, 1000, 50.0)])          # 第 4 週：最舊那週被刪
+        assert module.tdcc_dates(10) == ["2026-09-25", "2026-09-18", "2026-09-11"]
+        assert module.tdcc_weeks_without_totals() == {"2026-09-25"}       # 有第 15 級、沒有合計
+        with database.get_connection() as connection:
+            plan = " ".join(str(r[-1]) for r in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT data_date, SUM(shares) FROM tdcc_weekly WHERE stock_code IN ('2330') AND level IN (12, 13, 14, 15) GROUP BY data_date, stock_code"))
+        assert "idx_tdcc_level_code_date" in plan

@@ -88,6 +88,7 @@ from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import backfill_pause_reason, start_stock_bar_repair_collector
 from quote_service import get_quote_service
 from memory_diag import note_request as memory_note_request, payload as memory_payload, rss_mb, start_memory_sampler
+from memory_diag import table_sizes as memory_table_sizes
 
 
 _market_data_lifespan = app.router.lifespan_context
@@ -196,6 +197,12 @@ async def _memory_watch(request: Request, call_next):
 def get_memory_diag(minutes: int = Query(120, ge=1, le=1440)) -> dict[str, Any]:
     """記憶體診斷：程序／容器用量、每條執行緒在跑什麼、暴增紀錄、最近 minutes 分鐘的取樣。"""
     return {"status": "ok", "data": memory_payload(minutes)}
+
+
+@app.get("/api/hub/memory/tables")
+def get_memory_tables(refresh: int = Query(0)) -> dict[str, Any]:
+    """資料庫每張表（含索引）佔多少 MB；要讀整個資料庫檔，背景算、結果留 6 小時。"""
+    return {"status": "ok", "data": memory_table_sizes(refresh=bool(refresh))}
 
 
 @app.get("/api/hub/persistence/status")
