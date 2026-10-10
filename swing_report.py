@@ -502,6 +502,15 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     except Exception:  # noqa: BLE001
         logger.exception("active etf section failed")
         active_etf = None
+    try:
+        from revenue_rank import report_section as revenue_report_section   # 延遲匯入，跟 etf 一樣出錯不拖垮整份報告
+
+        revenue = revenue_report_section(as_of)
+    except Exception:  # noqa: BLE001
+        logger.exception("revenue section failed")
+        revenue = None
+    if revenue and revenue["picks"]:
+        summary.append(f"營收面（{int(revenue['month'][5:])} 月營收）首選 " + "、".join(x["name"] for x in revenue["picks"][:3]))
     if active_etf and (active_etf["sync"]["buy"] or active_etf["sync"]["sell"]):
         buys = "、".join(x["name"] for x in active_etf["sync"]["buy"][:3]) or "無"
         sells = "、".join(x["name"] for x in active_etf["sync"]["sell"][:3]) or "無"
@@ -520,11 +529,13 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "tiles": {"crossed": len(crossed), "crossedQualified": len(tech_all), "bodyJump": len(body_all), "strong": len(strong_all), "chips": len(chips_all),
                   "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full),
                   "upcoming": len(dispo["upcoming"]), "releasing": len(dispo["releasing"]),
-                  "etfSyncBuy": len(active_etf["sync"]["buy"]) if active_etf else 0, "etfSyncSell": len(active_etf["sync"]["sell"]) if active_etf else 0},
+                  "etfSyncBuy": len(active_etf["sync"]["buy"]) if active_etf else 0, "etfSyncSell": len(active_etf["sync"]["sell"]) if active_etf else 0,
+                  "revenue": revenue["qualified"] if revenue else 0},
         "disposition": dispo,
         "techSkipped": [{"code": c, "name": group_and_name(c)[1], "why": "營收年增為負"} for c in tech_skipped],
         "lastWeek": last_week,
         "activeEtf": active_etf,
+        "revenue": revenue,
         "summary": summary,
         "groups": groups,
         "picks": {"chips": chips_picks, "tech": tech_picks, "body": body_picks, "full": full_picks},
@@ -539,6 +550,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；技術面略過營收年增為負的",
             "disposition": "明日起處置＝公告起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易；觀察名單＝出獄 5 個交易日內",
             "lastWeek": f"往前 {LAST_WEEK_BACK} 個交易日那份報告的籌碼面精選，看這一週的表現：一週漲跌＝入榜那天收盤到基準日收盤；期間最高／最低收＝入榜後這幾天的收盤；法人這週＝入榜之後三大法人合計；跌破月線就是型態走弱",
+            "revenue": "當月營收（觀測站每月營收彙總表）到基準日為止已公布的公司中，年增 ≥30%；依年增高到低挑，均線分數 ≥6、成交值（收盤 × 成交量）≥5,000 萬，取前 10 檔。🚀 加速／🐢 放緩＝年增比上個月多／少 10 個百分點以上；⚠️＝年增或累計年增為負",
             "activeEtf": "五檔規模最大的台股主動式基金（統一 00981A、00403A，復華 00991A，群益 00982A、00992A），每個交易日晚上抓各投信公告的持股清單，跟前一份比：新增／加碼／減碼／刪除，張數＝股數÷1000；同步加碼＝兩檔以上一起加碼（含新增）同一檔股票，同步減碼同理",
         },
     }

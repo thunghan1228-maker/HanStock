@@ -319,6 +319,65 @@ def build_payload(month: str | None = None, now: datetime | None = None) -> dict
     return payload
 
 
+# ------------------------------------------------------------------ 籌碼日報「營收面精選」
+
+REPORT_YOY_MIN = 30.0            # 年增 ≥30%
+REPORT_SCORE_MIN = 6             # 均線分數 ≥6
+REPORT_TURNOVER_MIN = 50_000_000  # 成交值 ≥5,000 萬（收盤 × 成交張數 × 1000）
+REPORT_PICKS = 10
+
+
+def report_month(as_of: str) -> str | None:
+    """基準日當時正在公布的那個月：次月 1 號（營收最早可以公布的日子）不晚於基準日的最新月份。"""
+    return next((m for m in load_months() if _next_month_first(m) <= as_of), None)
+
+
+def report_section(as_of: str) -> dict[str, Any] | None:
+    """籌碼日報的營收面精選（2026-10-10 使用者：照莊爸波段精選日報的「營收面精選」做）：
+    當月已公布的公司中，年增 ≥30%；依年增挑，均線分數 ≥6、成交值 ≥5,000 萬，取前 10 檔。
+    公布日不確定的（每月第一次抓的那批）一律算已公布。"""
+    month = report_month(as_of)
+    if not month:
+        return None
+    meta = _meta_get(f"month:{month}") or {}
+    prev = {r["code"]: r["yoy"] for r in load_month(_prev_month(month))}
+    published = []
+    for r in load_month(month):
+        day, known = announce_day(r["first_seen"], meta.get("baseline"), month)
+        if known and day and day > as_of:
+            continue
+        published.append((r, day, known))
+    high = [x for x in published if x[0]["yoy"] is not None and x[0]["yoy"] >= REPORT_YOY_MIN]
+    from brew_launch_history import group_and_name   # 延遲匯入：brew_launch_history 啟動時會連到很多模組
+    from heilong_backtest import _schema as _heilong_schema
+
+    with get_connection() as connection:
+        _heilong_schema(connection)
+        day_rows = connection.execute("SELECT stock_code, close, volume, score2 FROM heilong_daily WHERE trade_date = ?", (as_of,)).fetchall()
+    tape = {str(r["stock_code"]).strip().upper(): r for r in day_rows}
+    picks = []
+    for r, day, known in sorted(high, key=lambda x: -x[0]["yoy"]):
+        t = tape.get(r["code"])
+        if not t or t["score2"] is None or t["score2"] < REPORT_SCORE_MIN or not t["close"]:
+            continue
+        turnover = float(t["close"]) * int(t["volume"] or 0) * 1000
+        if turnover < REPORT_TURNOVER_MIN:
+            continue
+        group, name = group_and_name(r["code"])
+        accel, decel, warn = _flags(r["yoy"], prev.get(r["code"]), r["cum_yoy"])
+        picks.append({
+            "code": r["code"], "name": r["name"] if name == r["code"] else name, "group": group, "market": MARKET_LABEL.get(r["market"], r["market"]),
+            "yoy": r["yoy"], "mom": r["mom"], "cumYoy": r["cum_yoy"], "prevYoy": prev.get(r["code"]),
+            "revYi": round(r["rev"] / 100_000, 2) if r["rev"] is not None else None,
+            "score": t["score2"], "close": float(t["close"]), "turnoverYi": round(turnover / 1e8, 2),
+            "announce": day, "known": known, "accel": accel, "decel": decel, "warn": warn,
+        })
+    return {
+        "month": month, "asOf": as_of, "published": len(published), "yoyHigh": len(high), "qualified": len(picks),
+        "picks": picks[:REPORT_PICKS], "rule": {"yoy": REPORT_YOY_MIN, "score": REPORT_SCORE_MIN, "turnoverYi": REPORT_TURNOVER_MIN / 1e8},
+    }
+
+
 def stock_detail(code: str) -> dict[str, Any]:
     """查個股營收：每個月的年增、月增、累計年增、月營收、公布日、公布隔日漲跌。"""
     code = str(code or "").strip().upper()
