@@ -643,8 +643,11 @@ def _close_on(series: list[tuple[str, float]], day: str | None) -> float | None:
     return found
 
 
-def _pct(a: float | None, b: float | None) -> float | None:
-    return round((b / a - 1) * 100, 1) if a and b else None
+def _pct(a: float | None, b: float | None, digits: int | None = 1) -> float | None:
+    if not a or not b:
+        return None
+    value = (b / a - 1) * 100
+    return round(value, digits) if digits is not None else value
 
 
 def weekly_report(week: str | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
@@ -677,9 +680,9 @@ def _weekly(radar: Radar, day: str, fetcher: Callable[[str], Any] | None) -> dic
     since = (date.fromisoformat(oldest or prev or day) - timedelta(days=10)).isoformat()
     closes = _closes(sorted(set(buy) | set(sell) | set(pbuy) | set(psell)), since)
 
-    def chg(code: str, a: str | None, b: str | None) -> float | None:
+    def chg(code: str, a: str | None, b: str | None, digits: int | None = 1) -> float | None:
         series = closes.get(code) or []
-        return _pct(_close_on(series, a), _close_on(series, b)) if a and b else None
+        return _pct(_close_on(series, a), _close_on(series, b), digits) if a and b else None
 
     def label(code: str) -> str | None:
         """卡片上的族群標籤：第一個族群在前、其他接在後面（莊爸：千元/矽光子）；不排名的族群（功率半導體…）不標。"""
@@ -737,14 +740,16 @@ def _weekly(radar: Radar, day: str, fetcher: Callable[[str], Any] | None) -> dic
     recon = None
     if prev:
         def side(codes: list[str]) -> dict[str, Any]:
-            rows = [{**radar.info(c), "group": label(c), "chg": chg(c, prev, day)} for c in codes]
-            rows = [r for r in rows if r["chg"] is not None]
+            # 平均用沒四捨五入的漲跌（莊爸 10/08 買超 32 檔平均 +3.06%；先取一位再平均會變 +3.05%）
+            raw = {c: chg(c, prev, day, None) for c in codes}
+            rows = [{**radar.info(c), "group": label(c), "chg": round(raw[c], 1)} for c in codes if raw[c] is not None]
             ranked = sorted(rows, key=lambda r: (-r["chg"], r["code"]))
-            return {"count": len(codes), "priced": len(rows), "avg": round(sum(r["chg"] for r in rows) / len(rows), 2) if rows else None,
+            priced = [v for v in raw.values() if v is not None]
+            return {"count": len(codes), "priced": len(rows), "avg": round(sum(priced) / len(priced), 2) if priced else None,
                     "up": sum(1 for r in rows if r["chg"] > 0), "best": ranked[:RECON_TOP],
                     "worst": ranked[-RECON_BOTTOM:] if len(ranked) > RECON_TOP else []}
-        tx = _pct(taiex_close(prev, fetcher), taiex_close(day, fetcher))
-        recon = {"from": prev, "to": day, "buy": side(pbuy), "sell": side(psell), "taiex": round(tx, 2) if tx is not None else None}
+        tx = _pct(taiex_close(prev, fetcher), taiex_close(day, fetcher), 2)      # 加權指數取兩位（莊爸：同期加權 +1.73%）
+        recon = {"from": prev, "to": day, "buy": side(pbuy), "sell": side(psell), "taiex": tx}
 
     top = ranking[0] if ranking else None
     prev_names = [g["name"] for g in radar.ranked_groups(prev)] if prev else []
