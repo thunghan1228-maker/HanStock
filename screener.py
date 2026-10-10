@@ -1,6 +1,6 @@
 """選股系統・條件選股（2026-10-10 使用者：照莊爸「選股系統」做，併進「個股研究」面板）。
 
-勾要用的條件、拉門檻，列出同時符合的股票；範圍是全市場（日K裡的 4 位數代號），每一列帶齊各工具的欄位：
+勾要用的條件、拉門檻，列出同時符合的股票；範圍見 SKIP_GROUPS 上面的說明，每一列帶齊各工具的欄位：
 - 均線分數 ≥：官網式 15 分（黑龍表 score2，收盤後整表）。
 - 籌碼暴增 ≥：籌碼暴增雷達的籌碼%（3√x），用資料日之前最近一週的集保；沒上買超榜（>4）的不算符合，表上淡色顯示實際值。
 - 主動式 ETF 持有 ≥：五檔主動式 ETF 在資料日（含）之前最近一份持股裡，有幾檔持有它。
@@ -40,6 +40,10 @@ SWORD_MA_DAYS, SWORD_MA_TOP = 20, 10
 SWORD_CHIP_WEEKS, SWORD_CHIP_TOP = 9, 10
 ETF_MAX_GAP_DAYS = 8
 HIDE_GROUPS = ("千元",)
+# 篩選範圍（2026-10-10 對照莊爸名單）：族群成員，加上有股票期貨、有主動式 ETF 持有、處置中／明天起處置、上籌碼暴增買超榜的；
+# 他名單上族群外的（冠西電、天擎、中華電、日月光、泰鼎-KY）都是這幾種。只在金融股族群的、艾姆勒不算（他的範圍沒有）。
+SKIP_GROUPS = ("金融股",)
+SKIP_CODES = frozenset({"2241"})
 TAIFEX_URL = "https://www.taifex.com.tw/cht/2/stockLists"
 FUTURES_REFRESH_SECONDS = 12 * 3600
 # 期交所抓不到時的備援：小型股票期貨標的（2026-10-10 期交所清單，47 檔）；一般股票期貨用族群表的「股期標的」
@@ -287,8 +291,13 @@ def _facts(day: str, dates: list[str]) -> dict[str, Any]:
         o, c = float(r["open"] or 0), float(r["close"])
         chip = chips.get(code)
         x1, x2, xl = d1.get(code), d2.get(code), latest.get(code)
+        mine = groups.get(code, [])
+        skipped = code in SKIP_CODES or (bool(mine) and set(mine) <= set(SKIP_GROUPS))
+        in_uni = not skipped and bool(
+            [g for g in mine if g not in SKIP_GROUPS] or code in std or code in mini or etf.get(code) or code in jailed or code in upcoming
+            or (chip is not None and chip >= CHIP_BUY_MIN))
         out.append({
-            "code": code, "name": names.get(code, code), "grp": "/".join(groups.get(code, [])),
+            "code": code, "name": names.get(code, code), "grp": "/".join(mine), "inUni": in_uni,
             "score": r["score2"], "close": c, "chg": r["change_pct"],
             "k": "red" if c > o else ("black" if c < o else "flat"),
             "chip": round(chip, 2) if chip is not None else None, "chipOn": chip is not None and chip >= CHIP_BUY_MIN,
@@ -373,8 +382,9 @@ def _match(row: dict[str, Any], p: dict[str, Any], sword: tuple[set[str], set[st
     return True
 
 
-def screen(raw: dict[str, Any] | None = None, date: str | None = None) -> dict[str, Any]:
-    """照條件篩出名單。date＝資料日（YYYY-MM-DD，不給＝最新一天）；回 rows（照均線分數高到低）與用到的資料日期。"""
+def screen(raw: dict[str, Any] | None = None, date: str | None = None, *, in_universe: bool = True) -> dict[str, Any]:
+    """照條件篩出名單。date＝資料日（YYYY-MM-DD，不給＝最新一天）；回 rows（照均線分數高到低）與用到的資料日期。
+    in_universe＝只列篩選範圍內的（個股完整彙整查單檔時不限）。"""
     p = normalize(raw or {})
     initialize_database()
     dates = _heilong_dates()
@@ -395,10 +405,11 @@ def screen(raw: dict[str, Any] | None = None, date: str | None = None) -> dict[s
     sword = None
     if p["sword"] is not None:
         sword = (set(facts["maOrder"][:p["sword"]]), set(facts["chipOrder"][:p["sword"]]))
-    rows = [r for r in facts["rows"] if _match(r, p, sword)]
+    rows = [r for r in facts["rows"] if (r["inUni"] or not in_universe) and _match(r, p, sword)]
     rows.sort(key=lambda r: (-(r["score"] if r["score"] is not None else -1), r["code"]))
     return {
-        "status": "ok", "date": day, "latest": dates[-1], "dates": dates[-LIST_DATES:], "params": p, "count": len(rows), "universe": len(facts["rows"]),
+        "status": "ok", "date": day, "latest": dates[-1], "dates": dates[-LIST_DATES:], "params": p, "count": len(rows),
+        "universe": sum(1 for r in facts["rows"] if r["inUni"]),
         "rows": rows, "next": facts["next"], "latestDate": facts["latestDate"], "chipWeek": facts["chipWeek"], "etfDates": facts["etfDates"],
         "instDays": facts["instDays"], "futSource": facts["futSource"],
     }
@@ -407,7 +418,7 @@ def screen(raw: dict[str, Any] | None = None, date: str | None = None) -> dict[s
 def stock(code: str, date: str | None = None) -> dict[str, Any]:
     """個股完整彙整：一檔在資料日的全部欄位（不套條件）。"""
     code = str(code or "").strip().upper()
-    out = screen({}, date)
+    out = screen({}, date, in_universe=False)
     row = next((r for r in out["rows"] if r["code"] == code), None)
     if row is None:
         raise LookupError(f"{code} 在 {out['date']} 沒有資料")
