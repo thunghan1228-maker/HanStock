@@ -2,7 +2,7 @@
 
 分數就是黑龍表 heilong_daily 的官網式 15 分（score2，收盤後整表時算好；站上 6 條均線、創 6 個天期新高、多頭排列 3 分，
 三部分另外存在 ma_bits／hi_bits／align_n，燈號用）。這裡只負責排名：
-- 個股分數前 60：全部族群成員（不含股期標的）照「總分高→低，同分先比 12 項本體分（站上＋新高），再照股號小到大」排
+- 個股分數前 60：全部族群成員（不含股期標的、金融股、艾姆勒）照「總分高→低，同分先比 12 項本體分（站上＋新高），再照股號小到大」排
   （跟莊爸頁一樣；10/08 他的前 60 名就是這個順序）。昨天名次＝前一個交易日同一套排法的名次（不只前 60）；
   連續上榜＝連續幾個交易日都在前 60 名（含今天）；昨天不在前 60 名＝新進榜。
 - 族群分數前十大：族群內有分數的成員平均（族內平均分），附檔數、族內最高、當天族群漲幅排名（本站族群成員平均漲跌幅排序，
@@ -30,6 +30,9 @@ HIT_TOPS = (5, 10, 20, 30)
 HIT_SHOWS = (20, 30, 50)
 RECENT_DAYS = 5                  # 前十名常客「近 5 日」
 HIDE_GROUPS = ("千元",)          # 價格帶分類，不當族群顯示
+# 2026-10-10 拿莊爸 10/08 前 60 名比：他的範圍沒有金融股（富邦金、新光金那些 14 分的都不在），也沒有艾姆勒（籌碼雷達同一份排除）
+SKIP_GROUPS = ("金融股",)
+SKIP_CODES = frozenset({"2241"})
 
 _lock = threading.Lock()
 _cache: dict[str, Any] = {"key": None, "data": None}
@@ -39,18 +42,21 @@ _cache: dict[str, Any] = {"key": None, "data": None}
 
 def _group_lists() -> dict[str, list[str]]:
     """{族群: [代號]}，照族群表順序；不含股期標的。"""
-    return {name: [str(c).strip().upper() for c, _n in members] for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES}
+    return {name: [c for c in (str(c).strip().upper() for c, _n in members) if c not in SKIP_CODES]
+            for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES and name not in SKIP_GROUPS}
 
 
 def _universe() -> tuple[dict[str, list[str]], dict[str, str]]:
-    """({代號: [所屬族群，照族群表順序]}, {代號: 股名})：全部族群成員（不含股期標的）。"""
+    """({代號: [所屬族群，照族群表順序]}, {代號: 股名})：全部族群成員（不含股期標的、金融股、艾姆勒）。"""
     groups: dict[str, list[str]] = {}
     names: dict[str, str] = {}
     for name, members in STOCK_GROUPS.items():
-        if name in SPECIAL_GROUP_NAMES:
+        if name in SPECIAL_GROUP_NAMES or name in SKIP_GROUPS:
             continue
         for code, stock_name in members:
             code = str(code).strip().upper()
+            if code in SKIP_CODES:
+                continue
             groups.setdefault(code, []).append(name)
             names.setdefault(code, str(stock_name))
     return groups, names

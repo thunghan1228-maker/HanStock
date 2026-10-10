@@ -100,8 +100,9 @@ class ScreenTests(unittest.TestCase):
 
     def test_all_rows_and_columns(self) -> None:
         out = module.screen({}, D[1])
-        self.assertEqual((out["date"], out["latest"], out["universe"], out["next"], out["latestDate"]), (D[1], D[4], 4, [D[2], D[3]], D[4]))
-        self.assertEqual([r["code"] for r in out["rows"]], ["1111", "2222", "3333", "4444"])    # 照分數排、沒分數的最後；0050 不算
+        self.assertEqual((out["date"], out["latest"], out["universe"], out["next"], out["latestDate"]), (D[1], D[4], 3, [D[2], D[3]], D[4]))
+        # 照分數排；0050 不算；4444 不在族群、沒股期／ETF／處置／籌碼榜 → 不在範圍；3333 只在千元但明天起處置 → 在範圍
+        self.assertEqual([r["code"] for r in out["rows"]], ["1111", "2222", "3333"])
         one = out["rows"][0]
         self.assertEqual((one["name"], one["grp"], one["score"], one["k"], one["chg"]), ("一號", "甲", 15, "red", 5.0))
         self.assertEqual((one["chip"], one["chipOn"], one["maHits"], one["chipHits"], one["etf"]), (6.0, True, 9, 2, 2))
@@ -124,12 +125,12 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(self.codes({"inst3": 30}), [])
         self.assertEqual(self.codes({"dispo": 5}), ["2222"])
         self.assertEqual(self.codes({"dispo": 1}), [])
-        self.assertEqual(self.codes({"exdispo": "1"}), ["1111", "4444"])   # 2222 處置中、3333 明天起處置
+        self.assertEqual(self.codes({"exdispo": "1"}), ["1111"])   # 2222 處置中、3333 明天起處置
         self.assertEqual(self.codes({"fut": "1"}), ["1111"])
         self.assertEqual(self.codes({"mini": "1"}), [])
         self.assertEqual(self.codes({"k": "black"}), ["2222"])
         self.assertEqual(self.codes({"k": "red", "kmin": 5}), ["1111", "3333"])
-        self.assertEqual(self.codes({"kmin": -10, "kmax": 3}), ["2222", "4444"])
+        self.assertEqual(self.codes({"kmin": -10, "kmax": 3}), ["2222"])
         # 雙劍：均線常客 [1111, 3333, 2222]、籌碼常客（9 週買超榜前 10）[1111 兩週, 2222 一週（9/24）, 3333 一週（10/02）]
         self.assertEqual(self.codes({"sword": 60}), ["1111", "2222", "3333"])
         self.assertEqual(self.codes({"sword": 1}), ["1111"])
@@ -150,6 +151,7 @@ class ScreenTests(unittest.TestCase):
 
     def test_stock_and_endpoints(self) -> None:
         self.assertEqual(module.stock("2222", D[1])["row"]["dispo"], 2)
+        self.assertEqual(module.stock("4444", D[1])["row"]["inUni"], False)     # 個股彙整不限範圍
         with self.assertRaises(LookupError):
             module.stock("9999")
         from fastapi.testclient import TestClient
