@@ -125,6 +125,9 @@ async def _persistent_lifespan(fastapi_app):
             start_grail_radar_collector()  # 飆股雷達：15 個聖杯邏輯照時間點算、收盤再算一次（2026-10-07 使用者）
             start_jail_collector()  # 處置監獄：證交所／櫃買注意股、處置股公告（2026-10-09 使用者）
             start_revenue_collector()  # 營收成長榜：觀測站每月營收彙總表鏡像、公布日、隔日漲跌（2026-10-09 使用者）
+            from heilong_noon import start_heilong_noon_collector
+
+            start_heilong_noon_collector()  # 創高黑龍 12:00 暫定名單：MIS 即時報價組今天K棒套同一組參數（2026-10-10 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1295,6 +1298,14 @@ def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
 @app.get("/api/hub/heilong/status")
 def get_heilong_status() -> dict[str, Any]:
     return {"status": "ok", **heilong_status()}
+
+
+@app.post("/api/hub/heilong/noon/run")
+def post_heilong_noon_run() -> dict[str, Any]:
+    """立刻算一次創高黑龍 12:00 暫定名單（盤中補算用；用的是現在的即時報價）。"""
+    from heilong_noon import collector_status as noon_status, run_noon
+
+    return {"status": "ok", "result": run_noon(), "collector": noon_status()}
 
 
 @app.post("/api/hub/heilong/rebuild")
