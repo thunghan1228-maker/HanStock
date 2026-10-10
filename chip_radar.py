@@ -80,6 +80,7 @@ CAPITAL_TAG = 1.0                 # 這週總股數變動 ≥1%（增資、減�
 # 莊爸的範圍（見最上面說明）：族群表以外、他名單上出現過的（9/18～10/08 籌碼週報＋10/08 雷達）
 ZHUANG_EXTRA = frozenset({
     "1617", "1709", "2033", "2399", "2468", "2493", "3013", "3094", "3128", "3219",   # 榮星 和益 佳大 映泰 華經 揚博 晟銘電 聯傑 昇銳 倚強科
+    "6485",                                                                           # 點序（10/02 不在族群表；我們族群表掛低軌衛星，雷達拿掉）
     "3265", "3311", "3356", "3518", "3543", "3581", "3701", "3706", "4527", "4543",   # 台星科 閎暉 奇偶 柏騰 州巧 博磊 大眾控 神達 方土霖 萬在
     "4551", "4566", "4927", "4939", "6133", "6138", "6168", "6179", "6205", "6214",   # 智伸科 時碩工業 泰鼎-KY 亞電 金橋 茂達 宏齊 亞通 詮欣 精誠
     "6226", "6227", "6228", "6257", "6517", "6532", "6584", "6603", "6667", "6669",   # 光鼎 茂綸 全譜 矽格 保勝光學 瑞耘 南俊國際 富強鑫 信紘科 緯穎
@@ -89,6 +90,28 @@ ZHUANG_SKIP = frozenset({"2241"})               # 我們族群表有、他從來
 ZHUANG_SKIP_GROUPS = ("金融股",)               # 整組不算（元大金 9/24 +5.5、群益證他都沒列）
 ZHUANG_STREAK_EXTRA = frozenset({"2340", "3035", "3680", "6225"})   # 只出現在他 10/08 連續增排行（台亞 智原 家登 天瀚，週榜當時沒算）
 ZHUANG_STREAK_SKIP = frozenset({"3543", "4927", "6691"})            # 週榜有、10/08 連續增排行沒有（州巧 泰鼎-KY 洋基工程）
+# 莊爸週報卡片上的族群標籤（2026-10-10 使用者補 10/08、10/02、9/24、9/18 放大截圖，123 檔裡 118 檔一樣），只用在籌碼週報／雷達：
+ZHUANG_GROUP_ADD = {"6226": "光電", "6168": "光電"}   # 他有掛、我們沒掛（光鼎 10/08 賣超、宏齊 10/02 整族一起動都標「光電」）
+ZHUANG_GROUP_DROP = {            # 他沒掛的（點序 10/02「不在族群表」、濱川 9/24 只標彬彬、東捷 9/18 只標設備股）
+    "6485": ("低軌衛星",), "1569": ("小電腦",), "8064": ("玻璃基板", "扇形封裝"),
+}
+# 一檔掛好幾族時「第一個族群」（他的標籤寫在前面那個；整族一起動只算第一個族群）：
+ZHUANG_PRIMARY = {
+    "6442": "千元",       # 光聖「千元/矽光子」：10/08 矽光子整族只算前鼎、聯亞
+    "6207": "玻璃基板",   # 雷科「玻璃基板/設備股」：10/02 設備股只算由田一檔
+    "3013": "機殼",       # 晟銘電；以下是我們族群表沒有的族，只當標籤（不進族群排名）
+    "3128": "小光電",     # 昇銳
+    "6214": "資訊",       # 精誠
+    "1617": "電纜",       # 榮星
+    "1709": "化學二",     # 和益
+    "2033": "鋼纜",       # 佳大
+    "3356": "小光電",     # 奇偶
+    "6228": "電腦周邊",   # 全譜
+    "2399": "便宜電腦",   # 映泰
+    "6227": "電通",       # 茂綸
+    "6669": "機殼",       # 緯穎
+    "4916": "軍工",       # 事欣科「軍工/D電腦」
+}
 
 
 def chip_value(big_now: float, big_prev: float, total_now: float) -> tuple[float, float] | None:
@@ -179,7 +202,8 @@ def _ma_scores() -> tuple[str | None, dict[str, int]]:
 
 
 def _groups() -> tuple[dict[str, list[str]], dict[str, str]]:
-    """({族群: [代號…]}, {代號: 第一個族群})，不含股期標的那份清單。"""
+    """({族群: [代號…]}, {代號: 第一個族群})，不含股期標的那份清單；照莊爸的標籤加減（ZHUANG_GROUP_ADD／DROP），
+    第一個族群照 ZHUANG_PRIMARY。"""
     members: dict[str, list[str]] = {}
     first: dict[str, str] = {}
     for name, stocks in STOCK_GROUPS.items():
@@ -191,6 +215,20 @@ def _groups() -> tuple[dict[str, list[str]], dict[str, str]]:
             codes.append(code)
             first.setdefault(code, name)
         members[name] = codes
+    for code, names in ZHUANG_GROUP_DROP.items():
+        for name in names:
+            if code in members.get(name, []):
+                members[name] = [c for c in members[name] if c != code]
+        rest = [n for n, codes in members.items() if code in codes]
+        if rest:
+            first[code] = rest[0]
+        else:
+            first.pop(code, None)
+    for code, name in ZHUANG_GROUP_ADD.items():
+        if code not in members.setdefault(name, []):
+            members[name].append(code)
+        first.setdefault(code, name)
+    first.update(ZHUANG_PRIMARY)
     return members, first
 
 
@@ -654,10 +692,11 @@ def _weekly(radar: Radar, day: str, fetcher: Callable[[str], Any] | None) -> dic
         return _pct(_close_on(series, a), _close_on(series, b)) if a and b else None
 
     def label(code: str) -> str | None:
-        for name, codes in radar.group_members.items():
-            if code in codes and name not in RANK_SKIP_GROUPS and name not in PRICE_BAND_GROUPS:
-                return name
-        return radar.group_of.get(code)
+        """卡片上的族群標籤：第一個族群在前、其他接在後面（莊爸：千元/矽光子）；不排名的族群（功率半導體…）不標。"""
+        primary = radar.group_of.get(code)
+        names = [primary] if primary else []
+        names += [n for n, codes in radar.group_members.items() if code in codes and n not in names and n not in RANK_SKIP_GROUPS]
+        return "/".join(names) or None
 
     def ups(code: str) -> int:
         per, n = radar.chips.get(code) or {}, 0
@@ -678,21 +717,24 @@ def _weekly(radar: Radar, day: str, fetcher: Callable[[str], Any] | None) -> dic
     prev_rank = {g["name"]: k for k, g in enumerate(radar.ranked_groups(prev) if prev else [], 1)}
     buy_set = set(buy)
     ranking = []
+    # 上榜的股票只算它的第一個族群（莊爸的光聖「千元/矽光子」不算進矽光子的 2 檔）
+    by_group: dict[str, list[str]] = {}
+    for c in buy:
+        if c in radar.group_of:
+            by_group.setdefault(radar.group_of[c], []).append(c)
     for k, g in enumerate(groups, 1):
-        listed = [m["code"] for m in g["members"] if m["code"] in buy_set]
+        listed = by_group.get(g["name"], [])
         pr = prev_rank.get(g["name"]) if prev else None
         move = None if not prev else ({"kind": "new"} if pr is None else {"kind": "same"} if pr == k
                                       else {"kind": "up" if pr > k else "down", "n": abs(pr - k)})
         ranking.append({"rank": k, "name": g["name"], "avg": g["avg"], "prevRank": pr, "move": move,
                         "listed": [{"code": c, "name": radar.info(c)["name"]} for c in listed], "together": len(listed) >= 2})
     rank_of = {g["name"]: g["rank"] for g in ranking}
+    avg_of = {g["name"]: g["avg"] for g in radar.group_table(day)}
     together = []
-    for g in radar.group_table(day):
-        if g["name"] in PRICE_BAND_GROUPS:
-            continue
-        listed = [m["code"] for m in g["members"] if m["code"] in buy_set]
-        if len(listed) >= 2:
-            together.append({"name": g["name"], "rank": rank_of.get(g["name"]), "prevRank": prev_rank.get(g["name"]), "avg": g["avg"],
+    for name, listed in by_group.items():
+        if len(listed) >= 2 and name not in PRICE_BAND_GROUPS and name not in RANK_SKIP_GROUPS:
+            together.append({"name": name, "rank": rank_of.get(name), "prevRank": prev_rank.get(name), "avg": avg_of.get(name, 0.0),
                              "count": len(listed), "cards": [card(c) for c in listed]})
     together.sort(key=lambda t: (t["rank"] or 99, -t["avg"], t["name"]))
     in_together = {c["code"] for t in together for c in t["cards"]}
