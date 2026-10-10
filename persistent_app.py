@@ -131,6 +131,9 @@ async def _persistent_lifespan(fastapi_app):
             from macro_calendar import start_macro_calendar_collector
 
             start_macro_calendar_collector()  # 國際大事行事曆：TradingView 經濟日曆每小時更新公布值（2026-10-10 使用者）
+            from fund_umbrella import start_fund_umbrella_collector
+
+            start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
             # 之前只有stock_bar_repair_status(唯讀查詢)被匯入，start_
             # stock_bar_repair_collector從來沒被呼叫過──main_force_backfill_
             # jobs佇列裡的工作因此永遠不會被process_main_force_backfill_job
@@ -1316,6 +1319,29 @@ def post_macro_calendar_fetch() -> dict[str, Any]:
     import macro_calendar
 
     return {"status": "ok", "result": macro_calendar.fetch()}
+
+
+@app.get("/api/hub/fund-umbrella")
+def get_fund_umbrella() -> dict[str, Any]:
+    """資金保護傘（2026-10-10 使用者）：上市融資水位（日／週／月增減、三年百分位、歷次崩盤前融資高點對照）、加權與櫃買的
+    多空轉折（月線／季線位置、明天要守的價、最近一次站上／跌破月線）、指數與融資背離，合成保護傘等級。還沒抓過就先抓一次。"""
+    import fund_umbrella
+
+    body = fund_umbrella.payload()
+    if body["status"] == "missing":
+        try:
+            fund_umbrella.fetch()
+            body = fund_umbrella.payload()
+        except Exception as exc:  # noqa: BLE001
+            body["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return body
+
+
+@app.post("/api/hub/fund-umbrella/fetch")
+def post_fund_umbrella_fetch() -> dict[str, Any]:
+    import fund_umbrella
+
+    return {"status": "ok", "result": fund_umbrella.fetch(), "collector": fund_umbrella.collector_status()}
 
 
 @app.get("/api/hub/chip-radar/stock")
