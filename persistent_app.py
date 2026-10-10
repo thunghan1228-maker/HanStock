@@ -1383,6 +1383,21 @@ def post_insider_collect() -> dict[str, Any]:
     return {"status": "ok", "result": insider_watch.collect()}
 
 
+@app.get("/api/hub/stock-profile")
+def get_stock_profile(code: str = Query(...)) -> dict[str, Any]:
+    """個股研究補強（2026-10-10 使用者）：族群／產業白話介紹、同族群與同產業公司、近 8 季季報（營收、三率、EPS、年增）、
+    近四季 EPS 與本益比。"""
+    import re
+
+    import stock_profile
+    from fastapi import HTTPException
+
+    code = code.strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{4,6}", code):
+        raise HTTPException(status_code=422, detail="code 格式不對")
+    return stock_profile.profile(code)
+
+
 @app.get("/api/hub/chip-radar/stock")
 def get_chip_radar_stock(code: str = Query(...)) -> dict[str, Any]:
     """籌碼暴增雷達的個股查詢：九週籌碼軌跡、同族群當週排名、三大法人（每週加總、近 5 日）。"""
