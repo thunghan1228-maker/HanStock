@@ -409,6 +409,69 @@ def _pe_candidate_dates(now: datetime, count: int = 3) -> list[str]:
     return out
 
 
+# 2026-10-10 估值河流圖：莊爸的分水嶺＝近 4 季 EPS × 每檔自己的參考本益比，要歷史本益比才推得出參考本益比怎麼來的。
+# 證交所 BWIBBU_d 可以查任何一天：每個月月底取一天（不是交易日就往前找），存進 stock_pe_daily（source＝twse-history）。
+PE_HISTORY_PAUSE = 3.0          # 證交所每次查詢之間停幾秒（太密會被擋）
+_pe_history: dict[str, Any] = {"running": False, "done": [], "failed": [], "startedAt": None, "finishedAt": None, "lastError": None}
+
+
+def _month_end_trading_days(months: int, today: datetime) -> list[str]:
+    out = []
+    first = today.date().replace(day=1)
+    for _ in range(months):
+        day = previous_trading_day(first)          # 上個月最後一個交易日
+        out.append(day.isoformat())
+        first = day.replace(day=1)
+    return out
+
+
+def backfill_pe_history(months: int = 36, fetcher: Callable[[str], Any] | None = None, pause: float = PE_HISTORY_PAUSE,
+                        today: datetime | None = None) -> dict[str, Any]:
+    """上市個股過去 months 個月、每月月底那天的本益比／淨值比；已經有那天資料的跳過。"""
+    fetch = fetcher or _default_fetcher
+    have = set(pe_dates("TSE", limit=5000))
+    _pe_history.update({"running": True, "done": [], "failed": [], "startedAt": _now_iso(), "finishedAt": None, "lastError": None})
+    try:
+        for day in _month_end_trading_days(max(1, min(int(months), 120)), today or datetime.now(TW_TZ)):
+            if day in have:
+                continue
+            try:
+                date_iso, rows = parse_twse_pe(fetch(TWSE_PE_URL.format(ymd=day.replace("-", ""))))
+                if not rows:
+                    raise ValueError("沒有資料")
+                save_pe(date_iso or day, "TSE", rows, "twse-history")
+                _pe_history["done"].append(date_iso or day)
+            except Exception as exc:  # noqa: BLE001
+                _pe_history["failed"].append(day)
+                _pe_history["lastError"] = f"{day}: {exc}"
+            if pause:
+                time.sleep(pause)
+    finally:
+        _pe_history.update({"running": False, "finishedAt": _now_iso()})
+    return dict(_pe_history)
+
+
+def start_pe_history_backfill(months: int = 36) -> dict[str, Any]:
+    if _pe_history["running"]:
+        return {"started": False, **_pe_history}
+    threading.Thread(target=backfill_pe_history, kwargs={"months": months}, name="hanstock-pe-history", daemon=True).start()
+    return {"started": True, "months": months}
+
+
+def pe_history_status() -> dict[str, Any]:
+    return dict(_pe_history)
+
+
+def pe_history(code: str) -> list[dict[str, Any]]:
+    """一檔所有存下來的本益比（舊到新）。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute("SELECT trade_date, market, pe, pbr FROM stock_pe_daily WHERE stock_code = ? ORDER BY trade_date",
+                                  (str(code).strip().upper(),)).fetchall()
+    return [{"date": str(r["trade_date"]), "market": r["market"], "pe": r["pe"], "pbr": r["pbr"]} for r in rows]
+
+
 def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | None = None, *, force: bool = False) -> dict[str, Any]:
     """抓一輪。範圍＝族群表內加有日K的全市場股票（持股健診要用，2026-09-28）；force＝本益比已經有當天的也重抓（範圍變大時補齊）。"""
     now = now or datetime.now(TW_TZ)

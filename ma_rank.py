@@ -226,16 +226,8 @@ def ranking(date: str | None = None) -> dict[str, Any]:
     }
 
 
-def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None) -> dict[str, Any]:
-    """前十名常客：到 date 為止近 days 個交易日，每天取前 top 名（同分並列全部算），列上榜次數最多的 show 檔。"""
-    if days not in HIT_DAYS:
-        raise ValueError(f"days 只能是 {HIT_DAYS}")
-    if top not in HIT_TOPS:
-        raise ValueError(f"top 只能是 {HIT_TOPS}")
-    if show not in HIT_SHOWS:
-        raise ValueError(f"show 只能是 {HIT_SHOWS}")
-    data = _load()
-    d = _pick_date(data, date)
+def _hit_counts(data: dict[str, Any], d: str, days: int, top: int) -> tuple[list[str], dict[str, list[bool]], list[str]]:
+    """(窗口交易日, {代號: 每天有沒有上榜}, 照上榜次數排好的代號)。同次數：先上榜的先、同一天名次前面的先。"""
     end = data["dates"].index(d) + 1
     window = data["dates"][max(0, end - days):end]
     on: dict[str, list[bool]] = {}
@@ -251,8 +243,32 @@ def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None)
                 break
             on.setdefault(code, [False] * len(window))[i] = True
             first.setdefault(code, (i, data["rank"][day][code]))
+    return window, on, sorted(on, key=lambda c: (-sum(on[c]), first[c], c))
+
+
+def regulars(days: int = 20, top: int = 10, date: str | None = None) -> list[tuple[str, int]]:
+    """均線常客整張榜（選股系統的雙劍出擊用）：[(代號, 上榜次數)]，照次數排好。date 沒有分數就回空。"""
+    data = _load()
+    try:
+        d = _pick_date(data, date)
+    except LookupError:
+        return []
+    _window, on, counted = _hit_counts(data, d, days, top)
+    return [(c, sum(on[c])) for c in counted]
+
+
+def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None) -> dict[str, Any]:
+    """前十名常客：到 date 為止近 days 個交易日，每天取前 top 名（同分並列全部算），列上榜次數最多的 show 檔。"""
+    if days not in HIT_DAYS:
+        raise ValueError(f"days 只能是 {HIT_DAYS}")
+    if top not in HIT_TOPS:
+        raise ValueError(f"top 只能是 {HIT_TOPS}")
+    if show not in HIT_SHOWS:
+        raise ValueError(f"show 只能是 {HIT_SHOWS}")
+    data = _load()
+    d = _pick_date(data, date)
+    window, on, counted = _hit_counts(data, d, days, top)
     recent = max(0, len(window) - RECENT_DAYS)
-    counted = sorted(on, key=lambda c: (-sum(on[c]), first[c], c))
     rows = []
     for code in counted[:show]:
         rec = data["byDate"][d].get(code)
