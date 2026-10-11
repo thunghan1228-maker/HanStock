@@ -174,7 +174,7 @@ def fetch_json(
         f"{url}?{query}",
         headers={
             "Accept": "application/json,text/plain,*/*",
-            "User-Agent": "HanStock/1.0 (+https://hanstock.xyz)",
+            "User-Agent": "HanStock/1.0 (+https://tw-groups.judystock.workers.dev)",
         },
     )
     last_error: Exception | None = None

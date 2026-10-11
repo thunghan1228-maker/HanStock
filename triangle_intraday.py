@@ -179,43 +179,16 @@ def _fetch_mis_batch(candidates: list[dict[str, Any]]) -> dict[str, dict[str, An
     return result
 
 
-def _fetch_live_price_batch(codes: list[str]) -> dict[str, float]:
-    input_value = urllib.parse.quote(json.dumps({"json": {"tickers": codes}}, separators=(",", ":")))
-    payload = _fetch_json(
-        f"https://www.hanstock.xyz/api/trpc/stocks.liveQuotes?input={input_value}",
-        timeout=20.0,
-    )
-    rows = (((payload or {}).get("result") or {}).get("data") or {}).get("json", {}).get("rows", [])
-    return {
-        str(row.get("code") or "").strip().upper(): float(row["price"])
-        for row in rows
-        if str(row.get("code") or "").strip() and _number(row.get("price")) is not None
-    }
-
-
 def fetch_live_daily_quotes(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     batches = [candidates[index:index + 50] for index in range(0, len(candidates), 50)]
     quotes: dict[str, dict[str, Any]] = {}
-    prices: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(batches) * 2))) as executor:
-        jobs = {}
-        for batch in batches:
-            jobs[executor.submit(_fetch_mis_batch, batch)] = "mis"
-            jobs[executor.submit(_fetch_live_price_batch, [item["stock_code"] for item in batch])] = "price"
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(batches)))) as executor:
+        jobs = [executor.submit(_fetch_mis_batch, batch) for batch in batches]
         for future in as_completed(jobs):
             try:
-                payload = future.result()
+                quotes.update(future.result())
             except Exception as exc:  # noqa: BLE001
-                logger.warning("盤中三角行情批次失敗 (%s): %s", jobs[future], exc)
-                continue
-            if jobs[future] == "mis":
-                quotes.update(payload)
-            else:
-                prices.update(payload)
-
-    for code, price in prices.items():
-        if code in quotes:
-            quotes[code]["close"] = price
+                logger.warning("盤中三角行情批次失敗 (mis): %s", exc)
     return quotes
 
 

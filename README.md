@@ -97,7 +97,7 @@ py -m pip install -r requirements.txt
 
 ## 網站 API
 
-新版已加入 FastAPI，讓 hanstock.xyz、LINE Bot 或 App 能讀取 HanStock 資料。
+新版已加入 FastAPI，讓台股族群雷達網站（tw-groups.judystock.workers.dev）、LINE Bot 或 App 能讀取 HanStock 資料。
 
 安裝套件後啟動：
 
@@ -119,7 +119,7 @@ py run_api.py
 網站跨網域來源可用環境變數調整：
 
 ```text
-HANSTOCK_CORS_ORIGINS=https://hanstock.xyz,https://www.hanstock.xyz
+HANSTOCK_CORS_ORIGINS=https://tw-groups.judystock.workers.dev
 ```
 
 注意：本機 API 只能在這台電腦上存取。要讓公開網站存取，後續仍需部署到雲端或建立安全的反向代理。
@@ -141,7 +141,7 @@ Railway 需要設定：
 
 - `HANSTOCK_SYNC_TOKEN`：自行建立一組長密碼，用來保護 Rule1 上傳 API。
 - `HANSTOCK_DATA_DIR=/data`：搭配 Railway Volume，讓最新 Rule1 JSON 可持久保存。
-- `HANSTOCK_CORS_ORIGINS=https://hanstock.xyz,https://www.hanstock.xyz`
+- `HANSTOCK_CORS_ORIGINS=https://tw-groups.judystock.workers.dev`
 
 Railway Volume 建議掛載到 `/data`。
 

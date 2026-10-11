@@ -54,7 +54,7 @@ GET /api/realtime/latest?codes=2330,2344,2408&subscribe=true
 ```html
 <script src="/realtime-radar-client.js"></script>
 <script>
-  HanStockRealtime.setApiBase('https://hanstock.xyz');
+  HanStockRealtime.setApiBase('https://hanstock-production-b872.up.railway.app');
 
   const stopPolling = HanStockRealtime.pollGroup('記憶體', {
     intervalMs: 1500,
@@ -111,10 +111,10 @@ SHIOAJI_QUOTE_STALE_SECONDS=60
 HANSTOCK_REALTIME_GROUP_MAX_CODES=100
 ```
 
-若「台股族群雷達」不是部署在 `hanstock.xyz` 同網域，請把它的正式網域加入：
+若「台股族群雷達」前端要從瀏覽器直接呼叫 HanStock API（不是經過 Cloudflare Worker 代理），請把它的網域加入：
 
 ```text
-HANSTOCK_CORS_ORIGINS=https://hanstock.xyz,https://www.hanstock.xyz,https://你的族群雷達網域
+HANSTOCK_CORS_ORIGINS=https://tw-groups.judystock.workers.dev,https://你的族群雷達網域
 ```
 
 ## 驗證順序
