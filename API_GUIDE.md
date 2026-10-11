@@ -41,7 +41,7 @@ API 已加入 CORS 標頭，方便本機網站測試。
 
 ## 重要限制
 
-`127.0.0.1` 只允許這台電腦存取。要讓 `hanstock.xyz` 從網際網路讀取，後續還需要把 API 部署到雲端，並設定 HTTPS、網域及安全限制。
+`127.0.0.1` 只允許這台電腦存取。要讓網站從網際網路讀取，需使用部署在 Railway 的 API（`https://hanstock-production-b872.up.railway.app`），並設定 HTTPS 與安全限制。
 
 ## Market Data Hub K 棒 API
 

@@ -30,7 +30,7 @@
 - 後端 tRPC：`taiwan-stock-groups/server/routers.ts` → `stocks.rule2Scan`
 
 ## 注意
-- HanStock 後端（hanstock.xyz）目前沒有 Rule2 實作
+- HanStock 後端（Railway）目前沒有 Rule2 實作
 - Rule2 完全在 taiwan-stock-groups 前端專案中實作
 
 ## 版本

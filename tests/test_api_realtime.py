@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 # api_server.py的CORS middleware在模組載入當下就讀取這個環境變數；正式
 # 環境由Railway設定成包含真正的前端網域。這裡先設好，讓gzip/CORS測試
 # 不必依賴外部環境設定就能自我驗證。
-os.environ.setdefault("HANSTOCK_CORS_ORIGINS", "https://www.hanstock.xyz,http://localhost:3000")
+os.environ.setdefault("HANSTOCK_CORS_ORIGINS", "https://tw-groups.judystock.workers.dev,http://localhost:3000")
 
 
 class FakeState:
@@ -133,7 +133,7 @@ def setUpModule():
     # api_server.py的CORS middleware在模組載入當下就讀取這個環境變數；
     # 正式環境由Railway設定成包含真正的前端網域，這裡先設好預設值，讓
     # gzip/CORS測試不必依賴外部環境設定就能自我驗證。
-    os.environ.setdefault("HANSTOCK_CORS_ORIGINS", "https://www.hanstock.xyz,http://localhost:3000")
+    os.environ.setdefault("HANSTOCK_CORS_ORIGINS", "https://tw-groups.judystock.workers.dev,http://localhost:3000")
 
     config_module = types.ModuleType("config")
     config_module.SHIOAJI_QUOTE_ENABLED = True
@@ -204,7 +204,7 @@ class RealtimeApiTests(unittest.TestCase):
     def test_large_market_response_gzip_preserves_payload_and_cors(self):
         path = "/api/realtime/group/記憶體"
         plain = self.client.get(path, headers={"Accept-Encoding": "identity"})
-        compressed = self.client.get(path, headers={"Accept-Encoding": "gzip", "Origin": "https://www.hanstock.xyz"})
+        compressed = self.client.get(path, headers={"Accept-Encoding": "gzip", "Origin": "https://tw-groups.judystock.workers.dev"})
         self.assertEqual(compressed.json(), plain.json())
         self.assertEqual(compressed.headers.get("Content-Encoding"), "gzip")
         self.assertIn("Accept-Encoding", compressed.headers.get("Vary", ""))

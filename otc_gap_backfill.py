@@ -108,7 +108,7 @@ def _default_fetcher(url: str, params: dict[str, str]) -> dict[str, Any]:
         f"{url}?{urlencode(params)}",
         headers={
             "Accept": "application/json,text/plain,*/*",
-            "User-Agent": "HanStock/1.0 (+https://hanstock.xyz)",
+            "User-Agent": "HanStock/1.0 (+https://tw-groups.judystock.workers.dev)",
         },
     )
     with urlopen(request, timeout=45) as response:  # noqa: S310
