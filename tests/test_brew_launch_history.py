@@ -446,6 +446,19 @@ class HistoryTests(unittest.TestCase):
         again = self._backfill(session="2026-09-25", days=3, now=datetime(2026, 9, 25, 0, 30, tzinfo=TW))
         self.assertEqual((again["days"][0]["brewAdded"], again["days"][0]["launchAdded"]), (0, 0))
 
+    def test_history_marks_close_above_box(self) -> None:
+        """2026-10-13 使用者：發動和曾經發動要分開——日K進來後，發動紀錄帶那天收盤、收盤還在不在箱頂上。"""
+        self._scan()  # 9/24 10:00 6207 以 125 發動（箱頂 124）
+        launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"][0]
+        self.assertNotIn("dayClose", launch)          # 日K還沒進來
+        self._insert_bars([("6207", "2026-09-24T00:00:00", 120, 126, 119, 123, 1500)])
+        launch = module.history(date="2026-09-24")["days"]["2026-09-24"]["launch"][0]
+        self.assertEqual(launch["dayClose"], 123.0)
+        self.assertFalse(launch["closeAbove"])        # 收盤 123 跌回箱頂 124 下：曾發動
+        with database.get_connection() as connection:
+            connection.execute("UPDATE bars_1d SET close = 125.5 WHERE stock_code = '6207'")
+        self.assertTrue(module.history(days=5)["days"]["2026-09-24"]["launch"][0]["closeAbove"])   # 收盤還在箱頂上：發動
+
     def test_backfill_keeps_intraday_record_and_includes_session_day_after_1530(self) -> None:
         # 盤中已經記到的那筆（10:00、125 元）不會被收盤回推蓋掉；session 當天 15:30 前不回推、之後才算
         self._scan()  # 9/24 10:00 記到 6207 發動
