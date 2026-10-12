@@ -15,6 +15,7 @@ from main_force_store import (
     load_holder_timeline,
     load_main_force_bars,
     load_main_force_ranking,
+    load_window_flips,
     main_force_storage_status,
     previous_trade_date_with_data,
     prune_old_bars,
@@ -300,6 +301,31 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(bear["firstPct"], -50.0)
         self.assertTrue(bear["still"])
         self.assertEqual(set(load_holder_timeline(trade_date, interval="5m", codes={"2317"})), {"2317"})
+
+    def test_window_flips_detect_midday_reversal(self):
+        """2026-10-13 使用者：近 30 分鐘主力翻多／翻空——前 30 分鐘主力淨賣、近 30 分鐘轉淨買才發；第一次成立發一次，要先不成立才會再發。"""
+        trade_date = taipei_trade_date(BASE_TS)
+        step = 5 * 60 * 1000
+
+        def bar(i, buy, sell, price=100_000):
+            return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * price,
+                    "main_sell_amount": sell * price, "total_amount": 1_000_000_000, "main_force_available": True}
+
+        # 2330：前 6 根一直賣（每根買 10、賣 40），接著 6 根轉買（每根買 60、賣 10）→ 第 12 根收完（近 30 分 +300、前 30 分 −180）翻多
+        bars = [bar(i, 10, 40) for i in range(6)] + [bar(6 + i, 60, 10) for i in range(6)] + [bar(12 + i, 60, 10) for i in range(3)]
+        save_main_force_bars("2330", "5m", bars)
+        # 2317：一路買，沒有「翻」
+        save_main_force_bars("2317", "5m", [bar(i, 60, 10) for i in range(15)])
+        events = load_window_flips(trade_date, interval="5m")
+        self.assertEqual([(e["code"], e["side"]) for e in events], [("2330", "bull")])
+        flip = events[0]
+        self.assertEqual(flip["ts"], BASE_TS + 12 * step)       # 第 12 根（index 11）收盤
+        self.assertEqual((flip["curNet"], flip["prevNet"]), (300, -180))
+        self.assertEqual(flip["curRatio"], 71.4)
+        self.assertEqual(flip["curNetAmount"], 30_000_000)
+        # 太小（近 30 分鐘主力買賣不到 200 張）不算
+        save_main_force_bars("1101", "5m", [bar(i, 2, 8) for i in range(6)] + [bar(6 + i, 8, 2) for i in range(6)])
+        self.assertNotIn("1101", {e["code"] for e in load_window_flips(trade_date, interval="5m")})
 
     def test_ranking_strength_pct_is_none_without_turnover_data(self):
         # 舊資料沒有total_amount欄位（或這個bar沒有主力金額），無法算百分比。

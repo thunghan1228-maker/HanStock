@@ -419,6 +419,94 @@ def load_holder_timeline(
     return out
 
 
+WINDOW_FLIP_BARS = 6              # 近 30 分鐘＝最近 6 根 5 分K
+WINDOW_FLIP_MIN_GROSS_LOTS = 200   # 近 30 分鐘主力買＋賣至少 200 張（10 筆大單），太冷清的不算
+WINDOW_FLIP_MIN_NET_LOTS = 50      # 近 30 分鐘淨買（賣）至少 50 張
+WINDOW_FLIP_MIN_RATIO = 0.2        # 近 30 分鐘淨額佔主力買賣合計 ≥ 20%（一面倒）
+WINDOW_FLIP_PREV_MIN_RATIO = 0.1   # 前 30 分鐘是反方向、淨額佔比至少 10%（原本真的在賣／買）
+WINDOW_FLIP_MIN_NET_AMOUNT = 10_000_000  # 近 30 分鐘淨額至少 1,000 萬元
+
+
+def load_window_flips(
+    trade_date: str,
+    interval: str = "5m",
+    codes: Iterable[str] | None = None,
+    window: int = WINDOW_FLIP_BARS,
+) -> list[dict[str, Any]]:
+    """近 30 分鐘主力翻多／翻空（2026-10-13 使用者）：開盤累計的「主力累計翻多空」越晚越難翻，盤中後段幾乎沒有訊號，
+    這裡改看「前 30 分鐘 vs 近 30 分鐘」——前 30 分鐘主力淨賣（淨額佔主力買賣 ≥ 10%），近 30 分鐘轉成淨買
+    （≥ 50 張、≥ 1,000 萬元、佔近 30 分鐘主力買賣 ≥ 20%，主力買賣合計 ≥ 200 張）＝翻多；反過來＝翻空。
+    每根 5 分K收完檢查一次，條件第一次成立那根發一次；之後要先不成立、再成立才會再發。最早 10:00 才有（要先有一小時的資料）。
+    回傳 [{code, name, side, ts（那根收盤時間）, curNet, prevNet, curRatio, prevRatio, curNetAmount, cumStrengthPct}]，舊到新。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    bar_ms = 5 * 60 * 1000 if interval == "5m" else 60 * 1000
+    _ensure_table()
+    code_clause = ""
+    code_params: list[str] = []
+    if codes is not None:
+        code_params = sorted({str(code).strip().upper() for code in codes if str(code).strip()})
+        if not code_params:
+            return []
+        code_clause = f" AND b.stock_code IN ({', '.join('?' for _ in code_params)})"
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT b.stock_code, b.bar_ts, b.main_buy_volume, b.main_sell_volume, b.main_buy_amount, b.main_sell_amount,
+                   b.total_amount, s.stock_name
+            FROM main_force_bars b LEFT JOIN stocks s ON s.stock_code = b.stock_code
+            WHERE b.trade_date = ? AND b.interval = ?{code_clause}
+            ORDER BY b.stock_code, b.bar_ts
+            """,
+            (trade_date, interval, *code_params),
+        ).fetchall()
+    by_code: dict[str, list[Any]] = {}
+    names: dict[str, str] = {}
+    for row in rows:
+        code = str(row["stock_code"])
+        by_code.setdefault(code, []).append(row)
+        names[code] = row["stock_name"] or code
+    events: list[dict[str, Any]] = []
+    for code, bars in by_code.items():
+        buys = [int(b["main_buy_volume"] or 0) for b in bars]
+        sells = [int(b["main_sell_volume"] or 0) for b in bars]
+        buy_amt = [float(b["main_buy_amount"] or 0) for b in bars]
+        sell_amt = [float(b["main_sell_amount"] or 0) for b in bars]
+        cum_buy = cum_sell = cum_total = 0.0
+        armed = {"bull": True, "bear": True}
+        for i, bar in enumerate(bars):
+            cum_buy += buy_amt[i]
+            cum_sell += sell_amt[i]
+            cum_total = max(cum_total, float(bar["total_amount"] or 0))
+            if i < 2 * window - 1:
+                continue
+            cur = slice(i - window + 1, i + 1)
+            prev = slice(i - 2 * window + 1, i - window + 1)
+            cur_gross = sum(buys[cur]) + sum(sells[cur])
+            prev_gross = sum(buys[prev]) + sum(sells[prev])
+            cur_net = sum(buys[cur]) - sum(sells[cur])
+            prev_net = sum(buys[prev]) - sum(sells[prev])
+            cur_net_amount = sum(buy_amt[cur]) - sum(sell_amt[cur])
+            cur_ratio = cur_net / cur_gross if cur_gross else 0.0
+            prev_ratio = prev_net / prev_gross if prev_gross else 0.0
+            for side, sign in (("bull", 1), ("bear", -1)):
+                ok = (cur_gross >= WINDOW_FLIP_MIN_GROSS_LOTS and sign * cur_net >= WINDOW_FLIP_MIN_NET_LOTS
+                      and sign * cur_ratio >= WINDOW_FLIP_MIN_RATIO and sign * cur_net_amount >= WINDOW_FLIP_MIN_NET_AMOUNT
+                      and prev_gross > 0 and -sign * prev_ratio >= WINDOW_FLIP_PREV_MIN_RATIO)
+                if ok and armed[side]:
+                    armed[side] = False
+                    pct = compute_holder_strength_pct(cum_buy, cum_sell, cum_total)
+                    events.append({
+                        "code": code, "name": names[code], "side": side, "ts": int(bar["bar_ts"]) + bar_ms,
+                        "curNet": cur_net, "prevNet": prev_net, "curRatio": round(cur_ratio * 100, 1), "prevRatio": round(prev_ratio * 100, 1),
+                        "curNetAmount": round(cur_net_amount), "cumStrengthPct": round(pct, 2) if pct is not None else None,
+                    })
+                elif not ok:
+                    armed[side] = True
+    events.sort(key=lambda e: (e["ts"], e["code"]))
+    return events
+
+
 def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str, int]:
     """單一股票依交易日彙總主力淨量，給日線圖副圖用。只涵蓋目前保留天數內
     （prune_old_bars 預設30個交易日）的資料，比這個範圍舊的交易日不會有值，
