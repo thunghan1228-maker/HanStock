@@ -1476,6 +1476,14 @@ def get_diag(code: str = Query("")) -> dict[str, Any]:
     return diag_payload(code)
 
 
+@app.get("/api/hub/dragon123")
+def get_dragon123(code: str = Query(...), days: int = Query(250)) -> dict[str, Any]:
+    """123 黑龍戰法（2026-10-12 使用者）：K線圖日線標進場點——創高黑龍的黑K，創 20 日新高後第 1／2／3 個，區 1／區 2。"""
+    from stock_checkup import dragon123_marks
+
+    return dragon123_marks(code, days)
+
+
 @app.get("/api/hub/checkup/status")
 def get_checkup_status() -> dict[str, Any]:
     return {"status": "ok", **checkup_status()}
