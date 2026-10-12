@@ -12,8 +12,10 @@ from fastapi.testclient import TestClient
 
 import brew_launch
 import brew_launch_history
+import chip_radar
 import chips_daily
 import database
+import fundamentals_daily
 import main_force_store
 import persistent_app
 import swing_report as module
@@ -64,10 +66,16 @@ class ReportTests(unittest.TestCase):
         database.initialize_database()
         main_force_store._table_ready_path = None
         main_force_store._ensure_table()
-        self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history)]
+        self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history, chip_radar)]
         for p in self.patches:
             p.start()
         brew_launch_history._group_by_code.clear()
+        chip_radar._cache.update({"at": 0.0, "key": None, "radar": None})
+        # 集保（400 張以上 12～15 級、合計 17 級）：合晶 9/11 大戶 +1%、9/18 +2%（籌碼% 3√2＝4.24 上買超榜，連 2 週）；雷科 9/18 −1%
+        for d, big_6182, big_6207 in (("2026-09-04", 30_000_000, 30_000_000), ("2026-09-11", 31_000_000, 30_000_000),
+                                      ("2026-09-18", 33_000_000, 29_000_000)):
+            fundamentals_daily.save_tdcc(d, [(c, lv, 1, sh, 0.0) for c, big in (("6182", big_6182), ("6207", big_6207), ("2330", 30_000_000))
+                                             for lv, sh in ((12, big // 2), (15, big - big // 2), (17, 100_000_000))])
         dates = trading_dates("2026-09-24", 241)
         rows = []
         # 合晶：平盤 240 天，最後一天拉 4% 站上月線（真穿月線、均線分數 0→15）
@@ -88,6 +96,7 @@ class ReportTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         brew_launch_history._group_by_code.clear()
+        chip_radar._cache.update({"at": 0.0, "key": None, "radar": None})
         for p in self.patches:
             p.stop()
         self.db_patch.stop()
@@ -111,13 +120,17 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((tech[0]["name"], tech[0]["group"], tech[0]["hot"]), ("合晶", "矽晶圓", True))
         chips = r["picks"]["chips"]
         self.assertEqual([x["code"] for x in chips], ["6182"])
-        self.assertEqual((chips[0]["inst5"], chips[0]["instStreak"], chips[0]["instToday"], chips[0]["tag"]), (5000.0, 5, 1000.0, "法人連買 5 天"))
+        self.assertEqual((chips[0]["inst5"], chips[0]["instStreak"], chips[0]["instToday"], chips[0]["tag"]), (5000.0, 5, 1000.0, "連 2 週"))
+        self.assertEqual(chips[0]["inst5VolPct"], 166.7)    # 5000 張 ÷ 5 天成交量 3000 張
+        self.assertEqual(chips[0]["radar"], {"chip": 4.2, "streak": 2, "rank": 1, "week": "2026-09-18", "listSize": 1})
         self.assertEqual((chips[0]["mf5"], chips[0]["mfStreak"]), (800, 2))
         self.assertEqual(chips[0]["risks"], [])
+        self.assertEqual(r["radar"], {"week": "2026-09-18", "hot": ["矽晶圓", "半導體", "設備股"], "buy": 1, "pool": 10})
+        self.assertEqual(r["basis"]["chipWeek"], "2026-09-18")
         body = r["picks"]["body"]
         self.assertEqual([x["code"] for x in body], ["6182"])
-        # 前一天完全平盤，內定算法算 6 分（創新高條件同值也算）；問診七科：均線／族群／法人各 2 分，總分 6
-        self.assertEqual((body[0]["tag"], body[0]["seven"], body[0]["sevenCls"]), ("問診 6 分", 6, "強勢"))
+        # 前一天完全平盤，內定算法算 6 分（創新高條件同值也算）；問診七科：均線／族群／籌碼週增（集保大戶 9/18 週增）／法人各 2 分，總分 8
+        self.assertEqual((body[0]["tag"], body[0]["seven"], body[0]["sevenCls"]), ("問診 8 分", 8, "強勢"))
         groups = {g["name"]: g for g in r["groups"]}
         self.assertEqual([g["name"] for g in r["groups"]], ["矽晶圓", "半導體", "設備股"])   # 依當天平均漲跌幅排
         self.assertEqual((groups["矽晶圓"]["aboveMa20"], groups["矽晶圓"]["members"], groups["矽晶圓"]["inst5"], groups["矽晶圓"]["rank"]), (1, 1, 5000.0, 1))
@@ -132,6 +145,28 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["0→15"])
         self.assertEqual(r["notes"]["jumpTop"], [{"code": "6182", "name": "合晶", "from": 0, "to": 15}])
         self.assertEqual(r["notes"]["sustained"], [])   # 合晶是跳升進來的，不算續強（見下面 SustainedTests 另外測沒跳升的續強情形）
+
+    def test_chips_follow_radar(self) -> None:
+        # 莊爸的籌碼面：籌碼暴增榜前 10 名、熱門族、法人 5 日買超；連續增加週數多的優先，同週數均線分數高的在前
+        for d in trading_dates("2026-09-24", 5):
+            chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
+        hot_all = {"6182": "矽晶圓", "2330": "半導體", "6207": "設備股"}
+
+        def picks(buy: list[str], streaks: dict[str, int], hot_of: dict[str, str]) -> list[str]:
+            fake = {"week": "2026-09-18", "buy": buy, "hot": sorted(set(hot_of.values())), "hotOf": hot_of,
+                    "stocks": {c: {"chip": 5.0, "streak": streaks.get(c, 1), "rank": i + 1} for i, c in enumerate(buy)}}
+            with patch.object(module, "radar_week", return_value=fake):
+                r = module.build_report("2026-09-24")
+            return [(x["code"], x["tag"], x["hot"], x["group"]) for x in r["picks"]["chips"]]
+
+        # 台積電連 3 週排在合晶（連 1 週）前面；雷科法人賣超不列
+        self.assertEqual(picks(["6182", "6207", "2330"], {"6182": 1, "6207": 5, "2330": 3}, hot_all),
+                         [("2330", "連 3 週", True, "半導體"), ("6182", "連 1 週", True, "矽晶圓")])
+        # 同週數：均線分數高的（合晶 15）在前
+        self.assertEqual([x[0] for x in picks(["2330", "6182"], {"6182": 2, "2330": 2}, hot_all)], ["6182", "2330"])
+        # 不是熱門族不列；榜上第 11 名以後不列
+        self.assertEqual([x[0] for x in picks(["6182", "2330"], {}, {"6182": "矽晶圓"})], ["6182"])
+        self.assertEqual([x[0] for x in picks([f"9{i:03d}" for i in range(10)] + ["2330", "6182"], {}, hot_all)], [])
 
     def test_last_week_followup(self) -> None:
         with patch.object(module, "_disposition_codes", return_value=set()):
