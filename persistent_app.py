@@ -892,6 +892,25 @@ def post_watchlist_save(body: dict[str, Any] = Body(default_factory=dict)) -> An
     return JSONResponse(result, status_code=409) if result["status"] == "conflict" else result
 
 
+@app.post("/api/hub/move-why")
+def post_move_why(body: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    """個股問診「今天在漲／跌什麼」的 AI 整理（2026-10-12 使用者：照莊爸「題材＝AI 整理新聞」）：body＝盤中事實＋新聞標題，
+    回主要原因、要留意、一句話。沒設 ANTHROPIC_API_KEY 回 disabled；同一份只整理一次、一天有上限。"""
+    from move_why import summarize
+
+    try:
+        return summarize(body if isinstance(body, dict) else {})
+    except ValueError as error:
+        return JSONResponse({"status": "error", "reason": str(error)}, status_code=400)
+
+
+@app.get("/api/hub/move-why/status")
+def get_move_why_status() -> dict[str, Any]:
+    from move_why import status
+
+    return {"status": "ok", **status()}
+
+
 @app.post("/api/hub/brew-launch/backfill-holder-force")
 def post_brew_launch_backfill_holder_force(
     date: str | None = Query(None),
