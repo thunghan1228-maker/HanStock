@@ -996,4 +996,4 @@ def test_industry_group_codes_excludes_futures_only_stocks():
     codes = industry_group_codes()
     futures_only = {c for c, _ in STOCK_GROUPS["股期標的"]} - {c for n, m in STOCK_GROUPS.items() if n != "股期標的" for c, _ in m}
     assert futures_only and not (futures_only & codes)
-    assert "2317" in codes and "2330" not in codes
+    assert "2317" in codes and "1216" not in codes   # 2026-10-12 台積電照莊爸放進「其他」族群，改用統一
