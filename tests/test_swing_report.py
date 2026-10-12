@@ -168,6 +168,27 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([x[0] for x in picks(["6182", "2330"], {}, {"6182": "矽晶圓"})], ["6182"])
         self.assertEqual([x[0] for x in picks([f"9{i:03d}" for i in range(10)] + ["2330", "6182"], {}, hot_all)], [])
 
+    def test_revenue_cards_outside_groups(self) -> None:
+        # 營收面入選、不在族群表的（莊爸的台汽電）也有完整卡片；但不算進族群統計、其他精選
+        import revenue_rank
+
+        dates = trading_dates("2026-09-24", 241)
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          [("8926", d + "T00:00:00", 50, 51, 49, 50, 2000) for d in dates[:-1]] + [("8926", dates[-1] + "T00:00:00", 50, 55, 50, 54, 4000)])
+        for d in dates[-5:]:
+            chips_daily.save_institutional(d, "TSE", [{"code": "8926", "name": "台汽電", "foreign": 600_000, "trust": 0, "dealer": 0, "total": 600_000}], "test")
+        section = {"month": "2026-09", "asOf": "2026-09-24", "published": 2, "yoyHigh": 2, "qualified": 2, "rule": {},
+                   "picks": [{"code": "8926", "name": "台汽電", "yoy": 1114.06}, {"code": "6182", "name": "合晶", "yoy": 40.0}]}
+        with patch.object(revenue_rank, "report_section", return_value=section):
+            r = module.build_report("2026-09-24")
+        cards = {p["code"]: p["card"] for p in r["revenue"]["picks"]}
+        self.assertEqual((cards["8926"]["tag"], cards["8926"]["close"], cards["8926"]["inst5"]), ("年增 +1114%", 54.0, 3000.0))
+        self.assertEqual(cards["8926"]["inst5VolPct"], 25.0)     # 3000 張 ÷ 5 天 12000 張
+        self.assertEqual(cards["6182"]["tag"], "年增 +40%")
+        self.assertEqual((r["basis"]["stocks"], r["basis"]["stale"]), (3, 0))
+        self.assertNotIn("8926", [x["code"] for sec in r["picks"].values() for x in sec])
+
     def test_last_week_followup(self) -> None:
         with patch.object(module, "_disposition_codes", return_value=set()):
             r = module.build_report("2026-09-24")

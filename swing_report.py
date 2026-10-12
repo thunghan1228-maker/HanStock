@@ -334,28 +334,38 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         as_of = _latest_bar_date()
     if not as_of:
         return {"status": "empty", "date": None, "reason": "還沒有日K資料"}
-    bars_by_code = _load_bars(codes, session=_next_day(as_of))
-    market_values = _load_market_values(codes, session=_next_day(as_of))
-    pe_map = latest_pe(codes)
-    rev_map = latest_revenue(codes)
-    shares = shares_map(codes)
-    tdcc = tdcc_summary(codes)
+    code_set = set(codes)
+    try:
+        from revenue_rank import report_section as revenue_report_section   # 延遲匯入，跟 etf 一樣出錯不拖垮整份報告
+
+        revenue = revenue_report_section(as_of)
+    except Exception:  # noqa: BLE001
+        logger.exception("revenue section failed")
+        revenue = None
+    # 營收面入選、但不在族群表的（台汽電、潤隆…）也載日K／法人／本益比，卡片才完整；族群統計、其他精選只看族群表
+    load = codes + [p["code"] for p in (revenue or {}).get("picks", []) if p["code"] not in code_set]
+    bars_by_code = _load_bars(load, session=_next_day(as_of))
+    market_values = _load_market_values(load, session=_next_day(as_of))
+    pe_map = latest_pe(load)
+    rev_map = latest_revenue(load)
+    shares = shares_map(load)
+    tdcc = tdcc_summary(load)
     tech: dict[str, dict[str, Any]] = {}
     stale = 0
     for code, bars in bars_by_code.items():
         if not bars or bars[-1][0] != as_of:
-            stale += 1
+            stale += code in code_set
             continue
         info = analyze_bars(bars)
         if info:
             tech[code] = info
     # 籌碼：法人 5 日（最近 5 個有資料的交易日，≤ 基準日）與主力 5 日
     inst_dates = [d for d in stored_dates(30) if d <= as_of][:INST_DAYS]
-    inst_by_date = _institutional_by_date(inst_dates, codes) if inst_dates else {}
+    inst_by_date = _institutional_by_date(inst_dates, load) if inst_dates else {}
     mf_dates = [d for d in main_force_dates(30) if d <= as_of][:INST_DAYS]
-    mf_by_date = {d: main_force_daily(d, codes) for d in mf_dates}
+    mf_by_date = {d: main_force_daily(d, load) for d in mf_dates}
     chips: dict[str, dict[str, Any]] = {}
-    for code in codes:
+    for code in load:
         entry: dict[str, Any] = {"inst5": None, "inst5Pct": None, "inst5VolPct": None, "instStreak": 0, "instToday": None, "mf5": None, "mfStreak": 0}
         totals = [(inst_by_date.get(d, {}).get(code) or {}).get("total") for d in inst_dates]
         known = [v for v in totals if v is not None]
@@ -476,7 +486,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         out["radar"] = {**rs, "week": radar["week"], "listSize": len(radar["buy"])} if rs else None
         return out
 
-    eligible = [c for c in tech if c not in skipped]
+    eligible = [c for c in tech if c in code_set and c not in skipped]
     # 籌碼面精選（2026-10-12 使用者：照莊爸的籌碼面精選）：籌碼暴增榜（集保大戶週增減，跟籌碼雷達同一份）前 10 名裡，
     # 熱門族、法人 5 日買超的；連續增加週數多的優先，同週數均線分數高的在前、再看榜上名次。
     # 莊爸 10/08：前十名裡熱門族有富喬、今國光、漢磊、前鼎、台表科、金居，前鼎法人 5 日賣超不列 → 台表科（連 4、均線 14）、
@@ -534,13 +544,6 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     except Exception:  # noqa: BLE001
         logger.exception("active etf section failed")
         active_etf = None
-    try:
-        from revenue_rank import report_section as revenue_report_section   # 延遲匯入，跟 etf 一樣出錯不拖垮整份報告
-
-        revenue = revenue_report_section(as_of)
-    except Exception:  # noqa: BLE001
-        logger.exception("revenue section failed")
-        revenue = None
     if revenue:
         # 莊爸的營收面卡片跟籌碼面一樣：均線、法人 5 日、籌碼、本益比、防守價、風險提示
         for p in revenue["picks"]:
@@ -558,11 +561,13 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "status": "ok",
         "date": as_of,
         "generatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
-        "basis": {"instDates": inst_dates, "mfDates": mf_dates, "hasInst": has_inst, "stocks": len(tech), "stale": stale,
-                  "withScore": sum(1 for t in tech.values() if t["score"] is not None),
-                  "peDate": max((r["date"] for r in pe_map.values()), default=None), "peCount": sum(1 for c in chips.values() if c.get("pe") is not None),
-                  "revenueYm": max((r["ym"] for r in rev_map.values()), default=None), "revenueCount": len(rev_map),
-                  "tdccDate": max((t["date"] for t in tdcc.values()), default=None), "tdccCount": len(tdcc), "sharesCount": len(shares),
+        "basis": {"instDates": inst_dates, "mfDates": mf_dates, "hasInst": has_inst, "stocks": sum(1 for c in tech if c in code_set), "stale": stale,
+                  "withScore": sum(1 for c, t in tech.items() if c in code_set and t["score"] is not None),
+                  "peDate": max((r["date"] for r in pe_map.values()), default=None),
+                  "peCount": sum(1 for c, x in chips.items() if c in code_set and x.get("pe") is not None),
+                  "revenueYm": max((r["ym"] for r in rev_map.values()), default=None), "revenueCount": sum(1 for c in rev_map if c in code_set),
+                  "tdccDate": max((t["date"] for t in tdcc.values()), default=None), "tdccCount": sum(1 for c in tdcc if c in code_set),
+                  "sharesCount": sum(1 for c in shares if c in code_set),
                   "chipWeek": radar["week"] if radar else None},
         "radar": {"week": radar["week"], "hot": radar["hot"], "buy": len(radar["buy"]), "pool": CHIPS_POOL_TOP} if radar else None,
         "tiles": {"crossed": len(crossed), "crossedQualified": len(tech_all), "bodyJump": len(body_all), "strong": len(strong_all), "chips": len(chips_all),
