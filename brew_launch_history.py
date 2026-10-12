@@ -651,6 +651,10 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
 # - 5 秒內直接給；30 秒內先給這份、背景再抓（同一批代號同時只抓一份）；超過 30 秒或沒有才等這次抓完。
 GROUP_QUOTES_FRESH_SECONDS = 5
 GROUP_QUOTES_STALE_SECONDS = 30
+# 收盤後／盤前／休市（2026-10-12 晚上首頁報價一直「等了 20 秒還沒回」：30 秒一過每次都要重抓 499 檔、要 10 秒，
+# worker 只等 4 秒就改直接打證交所、晚上又抓不回來）：報價不會動，2 分鐘內直接給、12 小時內先給舊的再背景抓
+GROUP_QUOTES_OFF_FRESH_SECONDS = 120
+GROUP_QUOTES_OFF_STALE_SECONDS = 12 * 3600
 GROUP_QUOTES_MAX_CODES = 600
 GROUP_QUOTES_KEEP_KEYS = 8
 _group_quotes_cache: dict[str, Any] = {"payloads": {}, "best": {}, "threads": {}}
@@ -744,10 +748,21 @@ def _refresh_group_quotes_later(codes: list[str], key: str, fetcher: Callable[[s
     thread.start()
 
 
+def _market_open(now: datetime | None = None) -> bool:
+    """交易日 08:25～13:45（盤中報價會動，快取要短）。"""
+    now = now or datetime.now(TW_TZ)
+    minutes = now.hour * 60 + now.minute
+    return 8 * 60 + 25 <= minutes <= 13 * 60 + 45 and is_trading_day(now.date())
+
+
+def _quote_windows() -> tuple[int, int]:
+    return (GROUP_QUOTES_FRESH_SECONDS, GROUP_QUOTES_STALE_SECONDS) if _market_open() else (GROUP_QUOTES_OFF_FRESH_SECONDS, GROUP_QUOTES_OFF_STALE_SECONDS)
+
+
 def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
     """證交所即時報價代抓（2026-10-06 使用者：tw-groups 那邊 Cloudflare 抓證交所一直失敗，首頁報價、醞釀／發動、刀劍空全空）。
     從這台主機抓（跟醞釀／發動掃描同一套 fetch_mis_quotes），每 80 檔一段同時抓；每檔留最新的一筆；
-    5 秒內直接給、30 秒內先給舊的再背景抓（見上面說明）。全部段落都失敗才丟例外。"""
+    盤中 5 秒內直接給、30 秒內先給舊的再背景抓；收盤後／盤前 2 分鐘內直接給、12 小時內先給舊的再背景抓。全部段落都失敗才丟例外。"""
     seen: list[str] = []
     for token in str(raw_codes or "").replace(" ", ",").split(","):
         code = token.strip().upper()
@@ -761,9 +776,10 @@ def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None
         hit = _group_quotes_cache["payloads"].get(key)
     if hit:
         age = time.time() - hit[0]
-        if age < GROUP_QUOTES_FRESH_SECONDS:
+        fresh_s, stale_s = _quote_windows()
+        if age < fresh_s:
             return hit[1]
-        if age < GROUP_QUOTES_STALE_SECONDS:
+        if age < stale_s:
             _refresh_group_quotes_later(codes, key, fetcher)
             return hit[1]
     return _fetch_group_quotes(codes, key, fetcher)

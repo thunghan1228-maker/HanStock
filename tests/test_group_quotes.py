@@ -50,8 +50,11 @@ class GroupQuotesTests(unittest.TestCase):
         self.db_patch.start()
         database.initialize_database()
         module._reset_group_quotes()
+        self.open_patch = patch.object(module, "_market_open", return_value=True)   # 測盤中的 5 秒／30 秒
+        self.open_patch.start()
 
     def tearDown(self) -> None:
+        self.open_patch.stop()
         module._reset_group_quotes()
         self.db_patch.stop()
         self.temp_dir.cleanup()
@@ -104,6 +107,32 @@ class GroupQuotesTests(unittest.TestCase):
         module._group_quotes_cache["payloads"].clear()
         nd = module.group_quotes_payload(codes, fetcher=next_day)
         self.assertEqual((sorted(nd["quotes"]), nd["quoteDate"], nd["missing"]), (["1000"], "2026-10-07", 1))
+
+    def test_off_hours_windows(self) -> None:
+        # 收盤後：快取 2 分鐘內直接給、12 小時內先給舊的再背景抓（不讓每次都等 10 秒重抓）
+        from datetime import datetime as dt
+
+        self.open_patch.stop()
+        try:
+            self.assertFalse(module._market_open(dt(2026, 10, 12, 23, 30, tzinfo=module.TW_TZ)))
+            self.assertTrue(module._market_open(dt(2026, 10, 12, 10, 0, tzinfo=module.TW_TZ)))
+            self.assertFalse(module._market_open(dt(2026, 10, 11, 10, 0, tzinfo=module.TW_TZ)))   # 週日
+            with patch.object(module, "_market_open", return_value=False):
+                codes = "1000,1001"
+                first = module.group_quotes_payload(codes, fetcher=mis_fetcher())
+                key = "1000,1001"
+                at, payload = module._group_quotes_cache["payloads"][key]
+                module._group_quotes_cache["payloads"][key] = (at - 90, payload)   # 90 秒前：收盤後還算新
+                calls: list[str] = []
+                self.assertIs(module.group_quotes_payload(codes, fetcher=mis_fetcher(calls=calls)), first)
+                self.assertEqual(calls, [])
+                module._group_quotes_cache["payloads"][key] = (at - 3600, payload)   # 一小時前：先給舊的、背景抓
+                self.assertIs(module.group_quotes_payload(codes, fetcher=mis_fetcher(calls=calls)), first)
+                th = module._group_quotes_cache["threads"].get(key)
+                th and th.join(5)
+                self.assertEqual(len(calls), 1)
+        finally:
+            self.open_patch.start()
 
     def test_partial_and_total_failure(self) -> None:
         codes = ",".join(str(1000 + i) for i in range(160))
