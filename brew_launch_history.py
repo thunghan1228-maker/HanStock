@@ -369,10 +369,27 @@ def history(*, days: int = 10, date: str | None = None) -> dict[str, Any]:
                 "SELECT DISTINCT trade_date FROM brew_launch_daily ORDER BY trade_date DESC LIMIT ?", (max(1, min(int(days), 60)),)
             ).fetchall()
             dates = [str(row["trade_date"]) for row in rows]
-        return {
-            "status": "ok", "dates": dates,
-            "days": {day: {"brew": _rows(connection, day, "brew"), "launch": _rows(connection, day, "launch")} for day in dates},
-        }
+        days_out = {day: {"brew": _rows(connection, day, "brew"), "launch": _rows(connection, day, "launch")} for day in dates}
+    for day, rows_of_day in days_out.items():
+        _attach_day_close(day, rows_of_day["launch"])
+    return {"status": "ok", "dates": dates, "days": days_out}
+
+
+def _attach_day_close(day: str, launch: list[dict[str, Any]]) -> None:
+    """發動紀錄補上那天的收盤（日K進來以後才有）：closeAbove＝收盤還站在箱頂上（收盤時仍是發動），
+    False＝盤中發動過、收盤跌回箱頂下（曾發動）。2026-10-13 使用者：發動和曾經發動要分開標示。"""
+    codes = sorted({str(r["code"]) for r in launch})
+    if not codes:
+        return
+    bars = _day_bars(codes, day)
+    for r in launch:
+        bar = bars.get(str(r["code"]))
+        if not bar:
+            continue
+        r["dayClose"] = bar[0]
+        box_high = r.get("boxHigh")
+        if box_high:
+            r["closeAbove"] = bar[0] > float(box_high)
 
 
 # ------------------------------------------------------------------ 用日K回推（上線前的日子／當天沒掃到）
