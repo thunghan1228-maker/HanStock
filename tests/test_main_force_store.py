@@ -307,7 +307,7 @@ class MainForceStoreTests(unittest.TestCase):
         trade_date = taipei_trade_date(BASE_TS)
         step = 5 * 60 * 1000
 
-        def bar(i, buy, sell, price=200_000):
+        def bar(i, buy, sell, price=300_000):
             return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * price,
                     "main_sell_amount": sell * price, "total_amount": 1_000_000_000, "main_force_available": True}
 
@@ -322,7 +322,7 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(flip["ts"], BASE_TS + 12 * step)       # 第 12 根（index 11）收盤
         self.assertEqual((flip["curNet"], flip["prevNet"]), (300, -180))
         self.assertEqual(flip["curRatio"], 71.4)
-        self.assertEqual(flip["curNetAmount"], 60_000_000)
+        self.assertEqual(flip["curNetAmount"], 90_000_000)
         # 太小（近 30 分鐘主力買賣不到 200 張）不算
         save_main_force_bars("1101", "5m", [bar(i, 2, 8) for i in range(6)] + [bar(6 + i, 8, 2) for i in range(6)])
         self.assertNotIn("1101", {e["code"] for e in load_window_flips(trade_date, interval="5m")})
@@ -333,8 +333,8 @@ class MainForceStoreTests(unittest.TestCase):
         step = 5 * 60 * 1000
 
         def bar(i, buy, sell):
-            return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * 200_000,
-                    "main_sell_amount": sell * 200_000, "total_amount": 1_000_000_000, "main_force_available": True}
+            return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * 300_000,
+                    "main_sell_amount": sell * 300_000, "total_amount": 1_000_000_000, "main_force_available": True}
 
         # 賣 6 根 → 買 6 根（第 12 根收盤翻多）→ 賣 6 根 → 買 6 根（第 24 根收盤又成立，距上次 60 分鐘，可以再發）
         pattern = [(10, 40)] * 6 + [(60, 10)] * 6 + [(10, 40)] * 6 + [(60, 10)] * 6

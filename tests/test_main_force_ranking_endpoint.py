@@ -95,7 +95,7 @@ class MainForceRankingEndpointTests(unittest.TestCase):
         trade_date = taipei_trade_date(BASE_TS)
         step = 5 * 60 * 1000
         bars = [{"ts": BASE_TS + i * step, "main_buy_volume": 10 if i < 6 else 60, "main_sell_volume": 40 if i < 6 else 10,
-                 "main_buy_amount": (10 if i < 6 else 60) * 200_000, "main_sell_amount": (40 if i < 6 else 10) * 200_000,
+                 "main_buy_amount": (10 if i < 6 else 60) * 300_000, "main_sell_amount": (40 if i < 6 else 10) * 300_000,
                  "total_amount": 1_000_000_000, "main_force_available": True} for i in range(12)]
         save_main_force_bars(official, "5m", bars)
         data = self.client.get("/api/hub/main-force/window-flips", params={"trade_date": trade_date}).json()
