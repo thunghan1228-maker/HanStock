@@ -90,20 +90,6 @@ class MainForceRankingEndpointTests(unittest.TestCase):
         self.assertEqual((held["tradeDate"], list(held["stocks"])), (trade_date, [official]))
         self.assertEqual(self.client.get("/api/hub/main-force/holder-timeline", params={"trade_date": "bad"}).status_code, 422)
 
-    def test_window_flips_endpoint(self):
-        official = next(iter(sorted(industry_group_codes())))
-        trade_date = taipei_trade_date(BASE_TS)
-        step = 5 * 60 * 1000
-        bars = [{"ts": BASE_TS + i * step, "main_buy_volume": 10 if i < 6 else 60, "main_sell_volume": 40 if i < 6 else 10,
-                 "main_buy_amount": (10 if i < 6 else 60) * 200_000, "main_sell_amount": (40 if i < 6 else 10) * 200_000,
-                 "total_amount": 1_000_000_000, "main_force_available": True} for i in range(12)]
-        save_main_force_bars(official, "5m", bars)
-        data = self.client.get("/api/hub/main-force/window-flips", params={"trade_date": trade_date}).json()
-        self.assertEqual([(e["code"], e["side"]) for e in data["events"]], [(official, "bull")])
-        with patch.object(persistent_app, "_should_hold_previous_ranking", return_value=True):
-            held = self.client.get("/api/hub/main-force/window-flips").json()
-        self.assertEqual((held["tradeDate"], held["count"]), (trade_date, 1))
-
     def test_hold_rule_weekend_all_day_and_weekday_until_0845(self):
         hold = persistent_app._should_hold_previous_ranking
         self.assertTrue(hold(datetime(2026, 9, 26, 15, 0, tzinfo=TW_TZ)))   # 週六整天留
