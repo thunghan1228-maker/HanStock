@@ -1085,6 +1085,21 @@ def get_ma_rank(date: str | None = Query(None)) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/ma-rank/strength")
+def get_ma_rank_strength(side: str = Query("strong"), date: str | None = Query(None)) -> dict[str, Any]:
+    """今日強勢股／弱勢股（2026-10-12 使用者）：族群分數前十大（弱勢＝倒數十名）裡，均線分數 ≥12（弱勢 ≤3）的股票。"""
+    from fastapi import HTTPException
+
+    from ma_rank import strength
+
+    try:
+        return strength(side, _ma_date(date))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/hub/ma-rank/hits")
 def get_ma_rank_hits(days: int = Query(20), top: int = Query(10), show: int = Query(20), date: str | None = Query(None)) -> dict[str, Any]:
     """前十名常客：近 days 個交易日（10／20／40／60），每天取前 top 名（5／10／20／30，同分並列全部算），列 show 檔（20／30／50）。"""

@@ -232,6 +232,38 @@ def ranking(date: str | None = None) -> dict[str, Any]:
     }
 
 
+# ------------------------------------------------------------------ 今日強勢股／弱勢股
+
+STRONG_MIN = 12                  # 強勢股：均線分數 ≥12（2026-10-12 使用者圈莊爸被動元件那族：天二 15、光頡 13、華新科／千如／勤凱／金山電 12，九豪 11 不圈）
+WEAK_MAX = 3                     # 弱勢股：均線分數 ≤3（倒過來：滿分 15 的最低 4 格）
+
+
+def strength(side: str = "strong", date: str | None = None) -> dict[str, Any]:
+    """今日強勢股（2026-10-12 使用者：族群分數前十大＋均線分數高，兩個條件過濾之後的股票）／今日弱勢股（倒過來：族群分數倒數十名＋均線分數低）。
+    族群照族內平均分排（跟族群分數前十大同一套），族內的股票照分數排。"""
+    if side not in ("strong", "weak"):
+        raise ValueError("side 只能是 strong 或 weak")
+    data = _load()
+    d = _pick_date(data, date)
+    recs = data["byDate"][d]
+    table = _group_table(data, d)
+    picked = table[:GROUP_TOP] if side == "strong" else list(reversed(table[-GROUP_TOP:]))
+    ok = (lambda v: v >= STRONG_MIN) if side == "strong" else (lambda v: v <= WEAK_MAX)
+    groups = []
+    for g in picked:
+        members = [c for c in dict.fromkeys(data["groupLists"].get(g["name"], [])) if c in recs and ok(recs[c]["sum"])]
+        members.sort(key=lambda c: _sort_key(c, recs[c]))
+        if side == "weak":
+            members.reverse()
+        rows = [_row(data, c, d, recs[c]) for c in members]
+        groups.append({**g, "rows": rows})
+    return {
+        "status": "ok", "side": side, "date": d, "latest": data["dates"][-1], "groupCount": len(table),
+        "rule": {"groups": GROUP_TOP, "min": STRONG_MIN, "max": WEAK_MAX},
+        "count": sum(len(g["rows"]) for g in groups), "groups": groups,
+    }
+
+
 def _hit_counts(data: dict[str, Any], d: str, days: int, top: int) -> tuple[list[str], dict[str, list[bool]], list[str]]:
     """(窗口交易日, {代號: 每天有沒有上榜}, 照上榜次數排好的代號)。同次數：先上榜的先、同一天名次前面的先。"""
     end = data["dates"].index(d) + 1
