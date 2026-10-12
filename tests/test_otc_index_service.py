@@ -77,7 +77,15 @@ class BootstrapTodayCalendarRangeTests(_TempDatabaseTestCase):
         self.assertGreater(BOOTSTRAP_CALENDAR_DAYS, 1)
 
     def test_seeds_hub_with_bars_from_a_previous_trading_day(self) -> None:
-        today = datetime.now(TW).date()
+        # 時間固定在今天 13:40：台灣 00:00～09:05 跑的話，今天 09:05 那根還在「未來」會被濾掉（CI 用 UTC，晚上 8 點後就是台灣隔天凌晨）
+        frozen = datetime.now(TW).replace(hour=13, minute=40, second=0, microsecond=0)
+
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        today = frozen.date()
         yesterday = today - timedelta(days=1)
 
         class FakeApi:
@@ -93,7 +101,8 @@ class BootstrapTodayCalendarRangeTests(_TempDatabaseTestCase):
 
         service = OtcIndexService()
         fresh_hub = OtcIndexHub()
-        with patch("otc_index_service.get_otc_index_hub", return_value=fresh_hub):
+        with patch("otc_index_service.get_otc_index_hub", return_value=fresh_hub), \
+             patch("otc_index_service.datetime", FrozenDatetime):
             result = service.bootstrap_today(FakeApi(), contract=object())
 
         self.assertTrue(result["ok"])
