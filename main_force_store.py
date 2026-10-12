@@ -422,9 +422,12 @@ def load_holder_timeline(
 WINDOW_FLIP_BARS = 6              # 近 30 分鐘＝最近 6 根 5 分K
 WINDOW_FLIP_MIN_GROSS_LOTS = 200   # 近 30 分鐘主力買＋賣至少 200 張（10 筆大單），太冷清的不算
 WINDOW_FLIP_MIN_NET_LOTS = 50      # 近 30 分鐘淨買（賣）至少 50 張
-WINDOW_FLIP_MIN_RATIO = 0.2        # 近 30 分鐘淨額佔主力買賣合計 ≥ 20%（一面倒）
-WINDOW_FLIP_PREV_MIN_RATIO = 0.1   # 前 30 分鐘是反方向、淨額佔比至少 10%（原本真的在賣／買）
-WINDOW_FLIP_MIN_NET_AMOUNT = 10_000_000  # 近 30 分鐘淨額至少 1,000 萬元
+# 2026-10-13 上線第一版（20%／10%／1,000 萬）10/07～10/12 每天 220～250 筆、同一檔一天翻 10 次，太多；
+# 照那三天調到每天 40～55 筆（跟開盤累計翻多空差不多量）：
+WINDOW_FLIP_MIN_RATIO = 0.4        # 近 30 分鐘淨額佔主力買賣合計 ≥ 40%（一面倒）
+WINDOW_FLIP_PREV_MIN_RATIO = 0.3   # 前 30 分鐘是反方向、淨額佔比至少 30%（原本真的在賣／買）
+WINDOW_FLIP_MIN_NET_AMOUNT = 50_000_000  # 近 30 分鐘淨額至少 5,000 萬元
+WINDOW_FLIP_COOLDOWN_BARS = 12     # 同一檔同方向 60 分鐘內不重複發
 
 
 def load_window_flips(
@@ -435,8 +438,9 @@ def load_window_flips(
 ) -> list[dict[str, Any]]:
     """近 30 分鐘主力翻多／翻空（2026-10-13 使用者）：開盤累計的「主力累計翻多空」越晚越難翻，盤中後段幾乎沒有訊號，
     這裡改看「前 30 分鐘 vs 近 30 分鐘」——前 30 分鐘主力淨賣（淨額佔主力買賣 ≥ 10%），近 30 分鐘轉成淨買
-    （≥ 50 張、≥ 1,000 萬元、佔近 30 分鐘主力買賣 ≥ 20%，主力買賣合計 ≥ 200 張）＝翻多；反過來＝翻空。
-    每根 5 分K收完檢查一次，條件第一次成立那根發一次；之後要先不成立、再成立才會再發。最早 10:00 才有（要先有一小時的資料）。
+    （≥ 50 張、≥ 5,000 萬元、佔近 30 分鐘主力買賣 ≥ 40%，主力買賣合計 ≥ 200 張；前 30 分鐘反方向佔比 ≥ 30%）＝翻多；反過來＝翻空。
+    每根 5 分K收完檢查一次，條件第一次成立那根發一次；之後要先不成立、再成立，而且同方向距離上次 60 分鐘以上才會再發。
+    最早 10:00 才有（要先有一小時的資料）。
     回傳 [{code, name, side, ts（那根收盤時間）, curNet, prevNet, curRatio, prevRatio, curNetAmount, cumStrengthPct}]，舊到新。"""
     if interval not in {"1m", "5m"}:
         raise ValueError(f"不支援 interval: {interval}")
@@ -474,6 +478,7 @@ def load_window_flips(
         sell_amt = [float(b["main_sell_amount"] or 0) for b in bars]
         cum_buy = cum_sell = cum_total = 0.0
         armed = {"bull": True, "bear": True}
+        last_fired = {"bull": -10**9, "bear": -10**9}
         for i, bar in enumerate(bars):
             cum_buy += buy_amt[i]
             cum_sell += sell_amt[i]
@@ -493,8 +498,9 @@ def load_window_flips(
                 ok = (cur_gross >= WINDOW_FLIP_MIN_GROSS_LOTS and sign * cur_net >= WINDOW_FLIP_MIN_NET_LOTS
                       and sign * cur_ratio >= WINDOW_FLIP_MIN_RATIO and sign * cur_net_amount >= WINDOW_FLIP_MIN_NET_AMOUNT
                       and prev_gross > 0 and -sign * prev_ratio >= WINDOW_FLIP_PREV_MIN_RATIO)
-                if ok and armed[side]:
+                if ok and armed[side] and i - last_fired[side] >= WINDOW_FLIP_COOLDOWN_BARS:
                     armed[side] = False
+                    last_fired[side] = i
                     pct = compute_holder_strength_pct(cum_buy, cum_sell, cum_total)
                     events.append({
                         "code": code, "name": names[code], "side": side, "ts": int(bar["bar_ts"]) + bar_ms,
