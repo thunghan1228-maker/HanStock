@@ -274,10 +274,10 @@ def test_backfill_stops_and_reports_when_history_quota_is_exhausted(monkeypatch)
 
 
 def test_backfill_skips_stocks_only_on_stock_futures_list(monkeypatch):
-    # 2330 只在「股期標的」清單、不在 43 個族群裡：不重播、不花歷史額度（2026-09-24 使用者）
+    # 1216 只在「股期標的」清單、不在族群裡：不重播、不花歷史額度（2026-09-24 使用者；2026-10-12 台積電放進「其他」族群，改用統一）
     monitor = new_monitor(monkeypatch)
     monkeypatch.setattr(module, "get_main_force_flip_monitor", lambda: monitor)
-    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["2330"])
+    monkeypatch.setattr(module, "list_main_force_codes_for_date", lambda trade_date, interval="1m": ["1216"])
     calls: list[str] = []
     monkeypatch.setattr(module, "get_stock_history_bars_1m", lambda code, **kwargs: calls.append(code) or {"bars": []})
     result = module.backfill_flip_signals("2026-09-18")

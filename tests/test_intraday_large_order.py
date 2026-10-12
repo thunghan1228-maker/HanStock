@@ -20,6 +20,15 @@ def test_builds_top_and_bottom_twenty_group_candidates():
     assert all(1 <= row["rank"] <= 20 for row in sell.values())
 
 
+def test_other_group_ranks_but_never_takes_subscription_slots():
+    # 2026-10-12「其他」族群 154 檔：排第一、最後一名都不拿來訂閱（190 檔名額）
+    others = [group for group in _REGULAR_GROUPS if group != "其他"]
+    for order in (["其他", *others], [*others, "其他"]):
+        buy, sell = build_group_candidates({group: index + 1 for index, group in enumerate(order)})
+        assert not any(row["group"] == "其他" for row in [*buy.values(), *sell.values()])
+        assert buy and sell
+
+
 def test_builds_live_group_ranks_from_local_stock_ticks():
     class Service:
         @staticmethod
@@ -334,7 +343,7 @@ def test_stale_stored_snapshot_triggers_recomputation(monkeypatch):
     assert status["snapshotTs"] > stale_ts
     # 新排名裡在舊排名前20找不到候選的族群成員，這裡新排名的代表股要能
     # 真的出現在候選名單，證明用的是新排名而不是繼續沿用過期的舊排名。
-    new_only_group = new_groups[-1]
+    new_only_group = [group for group in new_groups if group not in module.NO_SUBSCRIBE_GROUPS][-1]   # 「其他」不訂閱，挑別的族群
     assert new_only_group not in old_ranks or old_ranks[new_only_group] > module.GROUP_LIMIT
     new_only_codes = {code for code, _name in module.STOCK_GROUPS[new_only_group]}
     assert new_only_codes & set(module._monitor._candidates["buy"]) or new_only_codes & set(module._monitor._candidates["sell"])
