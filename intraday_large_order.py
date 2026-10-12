@@ -32,8 +32,6 @@ COOLDOWN_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_COOLDOWN_MS", "3
 # 不是「完全沒資料才補算」。
 GROUP_RANKING_STALE_MS = max(60_000, int(os.getenv("HANSTOCK_INSTANT_LARGE_GROUP_RANKING_STALE_MS", "300000")))
 EXCLUDED_GROUPS = {"股期標的", "小型股票期貨", "ETF"}
-# 「其他」族群 154 檔（2026-10-12 加）照樣排名，但不拿來訂閱即時行情：排到最前／最後時會把 190 檔訂閱名額吃掉大半
-NO_SUBSCRIBE_GROUPS = {"其他"}
 _RANKABLE_GROUP_COUNT = sum(1 for group in STOCK_GROUPS if group not in EXCLUDED_GROUPS)
 # 門檻要跟族群總數連動：族群清單只有43個時，固定要求40個等於幾乎不容許
 # 任何族群暫時沒報價，本地排名備援會動不動就整輪算失敗。
@@ -127,8 +125,6 @@ def build_group_candidates(ranks: dict[str, int]) -> tuple[dict[str, dict[str, A
     buy: dict[str, dict[str, Any]] = {}
     sell: dict[str, dict[str, Any]] = {}
     for group, members in STOCK_GROUPS.items():
-        if group in NO_SUBSCRIBE_GROUPS:
-            continue
         if group in rising:
             for ticker, name in members:
                 old = buy.get(ticker)

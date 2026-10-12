@@ -222,7 +222,7 @@ class StockFlagsEndpointTests(unittest.TestCase):
         self.assertTrue(data["stocks"]["2317"]["hasStockFutures"])
         self.assertIsNone(data["stocks"]["2881"]["marginable"])  # 沒暖到的代號是「還不知道」，不是 false
         # 只在股期標的清單、不在 43 個族群裡的股票不列（2026-09-24 使用者：只掃 43 個族群）
-        self.assertNotIn("1216", data["stocks"])   # 2026-10-12 台積電照莊爸放進「其他」族群，改用統一當例子
+        self.assertNotIn("2330", data["stocks"])
         self.assertNotIn("1101", data["stocks"])
         self.assertEqual(data["eligibilityWarmer"]["resolved"], 2)
         self.assertEqual(data["dispositionCodes"], ["8996"])
