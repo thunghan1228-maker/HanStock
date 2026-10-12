@@ -46,6 +46,16 @@ class FeatureTests(unittest.TestCase):
         o, h, l, c, v = columns(history + [(history[-1][3], history[-1][3] * 1.10, history[-1][3] * 0.995, history[-1][3] * 1.06, 3000)])
         self.assertNotIn("rsword", module.evaluate(module.compute_features(o, h, l, c, v)))
 
+    def test_cross_converge_second_type_for_strong_stocks(self) -> None:
+        """第四版：即將穿惡(收斂)多一型——漲過一段的強勢股回到月線下量縮（莊爸 10/12 的創威，60 天高低差 72%）。"""
+        chuangwei = {"c_ma20": -1.94, "h_ma20": -1.73, "v_v5": 0.3, "vma5": 1336.6, "ret3": 0.52, "ma20_ma60": 12.9, "c_ma60": 10.72,
+                     "m5_m10": -2.26, "ma10_slope": -0.28, "v_pv": 0.54, "v_v20": 0.22, "dd120": -31.01, "run60": 72.13, "ma20_slope5": 0.12}
+        self.assertTrue(module._crossconv(chuangwei))
+        # 月線只比季線高 3%：不算強勢股，第一型又卡 60 天高低差 31%
+        self.assertFalse(module._crossconv({**chuangwei, "ma20_ma60": 3.0}))
+        # 第一型照舊：整理很久（高低差 31% 以內）的股，月線比季線高 1.8% 就可以
+        self.assertTrue(module._crossconv({**chuangwei, "ma20_ma60": 3.0, "run60": 25.0, "dd120": -10.0, "v_pv": 0.7, "v_v20": 0.3}))
+
     def test_short_history_is_skipped(self) -> None:
         o, h, l, c, v = columns(uptrend(100))
         self.assertIsNone(module.compute_features(o, h, l, c, v))
