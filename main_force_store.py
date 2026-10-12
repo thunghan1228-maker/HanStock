@@ -345,6 +345,80 @@ def load_main_force_ranking(
     return results
 
 
+HOLDER_TIMELINE_MIN_NET_VOLUME = 500  # 盤中大戶力分頁的門檻：累計大單淨量 ≥ 500 張（前端 BIG_HOLDER_THRESHOLD）
+
+
+def load_holder_timeline(
+    trade_date: str,
+    interval: str = "5m",
+    codes: Iterable[str] | None = None,
+    min_net_volume: int = HOLDER_TIMELINE_MIN_NET_VOLUME,
+) -> dict[str, dict[str, Any]]:
+    """盤中大戶力每檔的「什麼時候進名單」：一根一根累加主力副圖 K 棒，累計大單淨量第一次 ≥ +min_net_volume（多）
+    ／≤ −min_net_volume（空）的那根就是進名單時間，再記那一邊的最高（最低）大戶力%、最後一根還在不在。
+    2026-10-13 使用者：盤中大戶力多／空只看得到收盤那一刻（13:20）的名單，早上進過、後來掉出去的都不見了。
+    回 {代號: {"bull": {firstTs, firstPct, peakPct, peakTs, still}, "bear": {...}}}，沒進過名單的代號不回。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    code_clause = ""
+    code_params: list[str] = []
+    if codes is not None:
+        code_params = sorted({str(code).strip().upper() for code in codes if str(code).strip()})
+        if not code_params:
+            return {}
+        code_clause = f" AND stock_code IN ({', '.join('?' for _ in code_params)})"
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT stock_code, bar_ts, main_net_volume, main_buy_amount, main_sell_amount, total_amount
+            FROM main_force_bars
+            WHERE trade_date = ? AND interval = ?{code_clause}
+            ORDER BY stock_code, bar_ts
+            """,
+            (trade_date, interval, *code_params),
+        ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    state: dict[str, Any] = {}
+
+    def finish(code: str) -> None:
+        sides = state.get("sides") or {}
+        if not sides:
+            return
+        net = state["net"]
+        for side, info in sides.items():
+            info["still"] = net >= min_net_volume if side == "bull" else net <= -min_net_volume
+        out[code] = sides
+
+    current = None
+    for row in rows:
+        code = str(row["stock_code"])
+        if code != current:
+            if current is not None:
+                finish(current)
+            current = code
+            state = {"net": 0, "buy": 0.0, "sell": 0.0, "total": 0.0, "sides": {}}
+        state["net"] += int(row["main_net_volume"] or 0)
+        state["buy"] += float(row["main_buy_amount"] or 0)
+        state["sell"] += float(row["main_sell_amount"] or 0)
+        state["total"] = max(state["total"], float(row["total_amount"] or 0))
+        net = state["net"]
+        side = "bull" if net >= min_net_volume else "bear" if net <= -min_net_volume else None
+        if side is None:
+            continue
+        pct = compute_holder_strength_pct(state["buy"], state["sell"], state["total"])
+        pct = round(pct, 2) if pct is not None else None
+        ts = int(row["bar_ts"])
+        info = state["sides"].get(side)
+        if info is None:
+            state["sides"][side] = {"firstTs": ts, "firstPct": pct, "peakPct": pct, "peakTs": ts}
+        elif pct is not None and (info["peakPct"] is None or (pct > info["peakPct"] if side == "bull" else pct < info["peakPct"])):
+            info["peakPct"], info["peakTs"] = pct, ts
+    if current is not None:
+        finish(current)
+    return out
+
+
 def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str, int]:
     """單一股票依交易日彙總主力淨量，給日線圖副圖用。只涵蓋目前保留天數內
     （prune_old_bars 預設30個交易日）的資料，比這個範圍舊的交易日不會有值，

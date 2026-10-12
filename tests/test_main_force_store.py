@@ -12,6 +12,7 @@ from main_force_store import (
     list_tracked_stock_codes,
     load_daily_main_force_net,
     load_daily_main_force_net_amount,
+    load_holder_timeline,
     load_main_force_bars,
     load_main_force_ranking,
     main_force_storage_status,
@@ -265,6 +266,40 @@ class MainForceStoreTests(unittest.TestCase):
         # (40,000,000-5,000,000)/200,000,000*100 = 17.5%；達+12%正式門檻，未達28%強力
         self.assertEqual(ranking["2330"]["strengthPct"], 17.5)
         self.assertEqual(ranking["2330"]["holderLabel"], "盤中大戶偏買")
+
+    def test_holder_timeline_keeps_morning_entries(self):
+        """2026-10-13 使用者：盤中大戶力多／空只剩收盤那一刻的名單——早上進過名單、後來掉出去的也要找得到，時間＝第一次進名單。"""
+        trade_date = taipei_trade_date(BASE_TS)
+        step = 5 * 60 * 1000
+
+        def bar(i, buy, sell, buy_amt, sell_amt, total):
+            return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy_amt,
+                    "main_sell_amount": sell_amt, "total_amount": total, "main_force_available": True}
+
+        # 2330：第 1 根 +300、第 2 根 +300（累計 600 ≥ 500 → 10:05 進多方）、第 3 根 −200（累計 400，收盤掉出去）
+        save_main_force_bars("2330", "5m", [
+            bar(0, 300, 0, 30_000_000, 0, 100_000_000),
+            bar(1, 300, 0, 30_000_000, 0, 200_000_000),
+            bar(2, 0, 200, 0, 20_000_000, 300_000_000),
+        ])
+        # 2317：一路賣，第 1 根就 −600 → 進空方，收盤還在
+        save_main_force_bars("2317", "5m", [bar(0, 0, 600, 0, 50_000_000, 100_000_000), bar(1, 0, 100, 0, 5_000_000, 150_000_000)])
+        # 1101：只有 +100，沒進名單
+        save_main_force_bars("1101", "5m", [bar(0, 100, 0, 1_000_000, 0, 50_000_000)])
+
+        timeline = load_holder_timeline(trade_date, interval="5m")
+        self.assertEqual(set(timeline), {"2330", "2317"})
+        bull = timeline["2330"]["bull"]
+        self.assertEqual(bull["firstTs"], BASE_TS + step)
+        self.assertEqual(bull["firstPct"], 30.0)            # 60,000,000 ÷ 200,000,000
+        self.assertEqual((bull["peakPct"], bull["peakTs"]), (30.0, BASE_TS + step))
+        self.assertFalse(bull["still"])                      # 收盤累計只剩 400 張
+        self.assertNotIn("bear", timeline["2330"])
+        bear = timeline["2317"]["bear"]
+        self.assertEqual(bear["firstTs"], BASE_TS)
+        self.assertEqual(bear["firstPct"], -50.0)
+        self.assertTrue(bear["still"])
+        self.assertEqual(set(load_holder_timeline(trade_date, interval="5m", codes={"2317"})), {"2317"})
 
     def test_ranking_strength_pct_is_none_without_turnover_data(self):
         # 舊資料沒有total_amount欄位（或這個bar沒有主力金額），無法算百分比。

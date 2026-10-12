@@ -17,6 +17,7 @@ from main_force_store import (
     latest_trade_date_with_data,
     load_daily_main_force_net,
     load_main_force_bars,
+    load_holder_timeline,
     load_main_force_ranking,
     main_force_storage_status,
 )
@@ -666,6 +667,35 @@ def get_main_force_ranking(
         "ranking": ranking,
         "source": "railway_sqlite_shioaji_ticks",
     }
+
+
+@app.get("/api/hub/main-force/holder-timeline")
+def get_holder_timeline(
+    trade_date: str | None = Query(None),
+    interval: str = Query("5m", pattern="^(1m|5m)$"),
+) -> dict[str, Any]:
+    """盤中大戶力每檔第一次進名單（累計大單淨量 ≥ ±500 張）的時間、那時的大戶力%、最高（最低）大戶力%、收盤還在不在。
+    2026-10-13 使用者：盤中大戶力多／空只剩收盤那一刻的名單，早上進過名單、後來掉出去的要補回來。
+    沒指定日期時跟排行一樣：今天還沒資料（午夜到開盤前）就給上一個交易日。"""
+    date = trade_date
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    else:
+        date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    codes = industry_group_codes()
+    stocks = load_holder_timeline(date, interval=interval, codes=codes)
+    held_from = None
+    if not trade_date and not stocks and _should_hold_previous_ranking(datetime.now(TW_TZ)):
+        previous = latest_trade_date_with_data(date, interval=interval)
+        if previous:
+            stocks = load_holder_timeline(previous, interval=interval, codes=codes)
+            held_from = date
+            date = previous
+    return {"status": "ok", "tradeDate": date, "heldFrom": held_from, "interval": interval, "count": len(stocks), "stocks": stocks}
 
 
 @app.get("/api/hub/index/otc/status")

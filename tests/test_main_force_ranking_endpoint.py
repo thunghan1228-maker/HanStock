@@ -72,6 +72,24 @@ class MainForceRankingEndpointTests(unittest.TestCase):
         explicit = self.client.get("/api/hub/main-force/ranking", params={"trade_date": "2000-01-03"}).json()
         self.assertEqual(explicit["ranking"], [])
 
+    def test_holder_timeline_endpoint(self):
+        """2026-10-13：盤中大戶力每檔第一次進名單的時間；不在官方族群的（ETF）不算；開盤前沿用上一個交易日。"""
+        official = next(iter(sorted(industry_group_codes())))
+        trade_date = taipei_trade_date(BASE_TS)
+        for code in (official, "00632R"):
+            save_main_force_bars(code, "5m", [{
+                "ts": BASE_TS, "main_buy_volume": 800, "main_sell_volume": 0, "main_buy_amount": 40_000_000,
+                "total_amount": 100_000_000, "main_force_available": True,
+            }])
+        data = self.client.get("/api/hub/main-force/holder-timeline", params={"trade_date": trade_date}).json()
+        self.assertEqual(list(data["stocks"]), [official])
+        self.assertEqual(data["stocks"][official]["bull"]["firstTs"], BASE_TS)
+        self.assertTrue(data["stocks"][official]["bull"]["still"])
+        with patch.object(persistent_app, "_should_hold_previous_ranking", return_value=True):
+            held = self.client.get("/api/hub/main-force/holder-timeline").json()
+        self.assertEqual((held["tradeDate"], list(held["stocks"])), (trade_date, [official]))
+        self.assertEqual(self.client.get("/api/hub/main-force/holder-timeline", params={"trade_date": "bad"}).status_code, 422)
+
     def test_hold_rule_weekend_all_day_and_weekday_until_0845(self):
         hold = persistent_app._should_hold_previous_ranking
         self.assertTrue(hold(datetime(2026, 9, 26, 15, 0, tzinfo=TW_TZ)))   # 週六整天留
