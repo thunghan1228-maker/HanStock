@@ -645,29 +645,37 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
     return out
 
 
-GROUP_QUOTES_CACHE_SECONDS = 10
+# 2026-10-12（週一盤中實測）：tw-groups 首頁每 15 秒要一次 499 檔報價。證交所好幾台主機，有的回落後 40～100 秒的舊資料，
+# 抓一次要 3～10 秒。這裡改成大家共用的報價中心：
+# - 每檔記住「最新的那一筆」（報價日期＋時間比較新才換），舊主機回的舊資料不會蓋掉新的；
+# - 5 秒內直接給；30 秒內先給這份、背景再抓（同一批代號同時只抓一份）；超過 30 秒或沒有才等這次抓完。
+GROUP_QUOTES_FRESH_SECONDS = 5
+GROUP_QUOTES_STALE_SECONDS = 30
 GROUP_QUOTES_MAX_CODES = 600
-_group_quotes_cache: dict[str, Any] = {"key": None, "at": 0.0, "payload": None}
+GROUP_QUOTES_KEEP_KEYS = 8
+_group_quotes_cache: dict[str, Any] = {"payloads": {}, "best": {}, "threads": {}}
 _group_quotes_lock = threading.Lock()
+_group_quotes_fetch_locks: dict[str, threading.Lock] = {}
 
 
-def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
-    """證交所即時報價代抓（2026-10-06 使用者：tw-groups 那邊 Cloudflare 抓證交所一直失敗，首頁報價、醞釀／發動、刀劍空全空）。
-    worker 自己抓不到時改問這裡：從這台主機抓（跟醞釀／發動掃描同一套 fetch_mis_quotes），每 80 檔一段同時抓；
-    同一批代號 10 秒內共用一份（同時進來的請求排隊等同一份，不會各自去打證交所）。全部段落都失敗才丟例外。"""
-    seen: list[str] = []
-    for token in str(raw_codes or "").replace(" ", ",").split(","):
-        code = token.strip().upper()
-        if code and 4 <= len(code) <= 6 and code.isalnum() and code not in seen:
-            seen.append(code)
-    if not seen:
-        raise ValueError("沒有代號")
-    codes = sorted(seen[:GROUP_QUOTES_MAX_CODES])
-    key = ",".join(codes)
+def _reset_group_quotes() -> None:
     with _group_quotes_lock:
-        cached = _group_quotes_cache["payload"]
-        if cached is not None and _group_quotes_cache["key"] == key and time.time() - _group_quotes_cache["at"] < GROUP_QUOTES_CACHE_SECONDS:
-            return cached
+        _group_quotes_cache.update(payloads={}, best={}, threads={})
+        _group_quotes_fetch_locks.clear()
+
+
+def _stamp(q: dict[str, Any]) -> tuple[str, str]:
+    return (str(q.get("quoteDate") or ""), str(q.get("quoteTime") or ""))
+
+
+def _fetch_group_quotes(codes: list[str], key: str, fetcher: Callable[[str], Any] | None) -> dict[str, Any]:
+    with _group_quotes_lock:
+        fetch_lock = _group_quotes_fetch_locks.setdefault(key, threading.Lock())
+    with fetch_lock:
+        with _group_quotes_lock:            # 等鎖的時候別人可能剛抓完
+            hit = _group_quotes_cache["payloads"].get(key)
+        if hit and time.time() - hit[0] < GROUP_QUOTES_FRESH_SECONDS:
+            return hit[1]
         markets = _markets(codes)
         chunks = [codes[i:i + MIS_CHUNK] for i in range(0, len(codes), MIS_CHUNK)]
         quotes: dict[str, dict[str, Any]] = {}
@@ -683,26 +691,82 @@ def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None
                     failed.append(str(exc)[:200])
         if len(failed) == len(chunks):
             raise RuntimeError(failed[0] if failed else "證交所沒有回應")
-        out: dict[str, dict[str, Any]] = {}
-        latest_date = latest_time = ""
-        for code, q in quotes.items():
-            price, prev = q.get("price"), q.get("prevClose")
-            if not price or not prev:
-                continue
-            out[code] = {
-                "price": price, "prevClose": prev, "change": round(price - prev, 4), "changePercent": (price - prev) / prev * 100,
-                "open": q.get("open"), "limitUp": bool(q.get("limitUp")), "limitDown": bool(q.get("limitDown")),
-                "volume": q.get("volume"), "name": q.get("name"),
+        with _group_quotes_lock:
+            best = _group_quotes_cache["best"]
+            for code, q in quotes.items():
+                old = best.get(code)
+                if q.get("price") and q.get("prevClose") and (old is None or _stamp(q) >= _stamp(old)):
+                    best[code] = q
+            out: dict[str, dict[str, Any]] = {}
+            latest_date = latest_time = ""
+            today = max((_stamp(best[c])[0] for c in codes if c in best), default="")
+            for code in codes:
+                q = best.get(code)
+                if not q or _stamp(q)[0] < today:      # 跨日了這段還沒抓到：不拿昨天的冒充今天
+                    continue
+                price, prev = q["price"], q["prevClose"]
+                out[code] = {
+                    "price": price, "prevClose": prev, "change": round(price - prev, 4), "changePercent": (price - prev) / prev * 100,
+                    "open": q.get("open"), "limitUp": bool(q.get("limitUp")), "limitDown": bool(q.get("limitDown")),
+                    "volume": q.get("volume"), "name": q.get("name"),
+                }
+                day, clock = _stamp(q)
+                if day > latest_date or (day == latest_date and clock > latest_time):
+                    latest_date, latest_time = day, clock
+            payload = {
+                "status": "ok", "quotes": out, "quoteDate": latest_date or None, "quoteTime": latest_time or None,
+                "missing": len(codes) - len(out), "failedChunks": len(failed), "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
             }
-            day, clock = str(q.get("quoteDate") or ""), str(q.get("quoteTime") or "")
-            if day > latest_date or (day == latest_date and clock > latest_time):
-                latest_date, latest_time = day, clock
-        payload = {
-            "status": "ok", "quotes": out, "quoteDate": latest_date or None, "quoteTime": latest_time or None,
-            "missing": len(codes) - len(out), "failedChunks": len(failed), "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
-        }
-        _group_quotes_cache.update(key=key, at=time.time(), payload=payload)
+            payloads = _group_quotes_cache["payloads"]
+            payloads[key] = (time.time(), payload)
+            for old_key in sorted(payloads, key=lambda k: payloads[k][0])[:-GROUP_QUOTES_KEEP_KEYS]:
+                payloads.pop(old_key, None)
+                _group_quotes_fetch_locks.pop(old_key, None)
         return payload
+
+
+def _refresh_group_quotes_later(codes: list[str], key: str, fetcher: Callable[[str], Any] | None) -> None:
+    def run() -> None:
+        try:
+            _fetch_group_quotes(codes, key, fetcher)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("group quotes background refresh failed: %s", exc)
+        finally:
+            with _group_quotes_lock:
+                _group_quotes_cache["threads"].pop(key, None)
+
+    with _group_quotes_lock:
+        running = _group_quotes_cache["threads"].get(key)
+        if running is not None and running.is_alive():
+            return
+        thread = threading.Thread(target=run, name="group-quotes-refresh", daemon=True)
+        _group_quotes_cache["threads"][key] = thread
+    thread.start()
+
+
+def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """證交所即時報價代抓（2026-10-06 使用者：tw-groups 那邊 Cloudflare 抓證交所一直失敗，首頁報價、醞釀／發動、刀劍空全空）。
+    從這台主機抓（跟醞釀／發動掃描同一套 fetch_mis_quotes），每 80 檔一段同時抓；每檔留最新的一筆；
+    5 秒內直接給、30 秒內先給舊的再背景抓（見上面說明）。全部段落都失敗才丟例外。"""
+    seen: list[str] = []
+    for token in str(raw_codes or "").replace(" ", ",").split(","):
+        code = token.strip().upper()
+        if code and 4 <= len(code) <= 6 and code.isalnum() and code not in seen:
+            seen.append(code)
+    if not seen:
+        raise ValueError("沒有代號")
+    codes = sorted(seen[:GROUP_QUOTES_MAX_CODES])
+    key = ",".join(codes)
+    with _group_quotes_lock:
+        hit = _group_quotes_cache["payloads"].get(key)
+    if hit:
+        age = time.time() - hit[0]
+        if age < GROUP_QUOTES_FRESH_SECONDS:
+            return hit[1]
+        if age < GROUP_QUOTES_STALE_SECONDS:
+            _refresh_group_quotes_later(codes, key, fetcher)
+            return hit[1]
+    return _fetch_group_quotes(codes, key, fetcher)
 
 
 def _markets(codes: list[str]) -> dict[str, str]:
