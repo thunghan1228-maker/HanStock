@@ -49,6 +49,7 @@ MIN_SUBJECTS = 3               # 至少三科有資料才分強勢／中等／�
 PE_HIST_DAYS = 8
 REV_HIST_MONTHS = 4
 DIAG_BARS = 120                # 問診日線圖給近 120 根
+D123_DAYS = 25                 # 健診：123 黑龍狀態看近 25 天（盤中觀察股、訊號中心用）
 TOP_KEY = "__top__"
 CROSS_KEY = "__cross__"
 DEFAULT_WEIGHTS = {"fund": 34, "chip": 33, "tech": 33}
@@ -393,7 +394,18 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
         "groupAvg2": None, "groupRank": None, "groupN": None,
         "subjects": None,
         "disposed": code in ctx["disposed"],
+        "d123": _d123_state(bars),
     }
+
+
+def _d123_state(bars: list[Bar]) -> dict[str, Any] | None:
+    """123 黑龍（dragon123）：收盤後這一波已經有幾個進場點、創 20 日新高後第幾天、前 19 天最高價，加上最近一個進場點。"""
+    if len(bars) < max(MA_PERIODS) + 1:
+        return None
+    from dragon123 import for_bars
+
+    out = for_bars(bars, D123_DAYS)
+    return {**out["state"], "last": out["marks"][-1] if out["marks"] else None}
 
 
 def rebuild(*, force: bool = False) -> dict[str, Any]:
@@ -588,8 +600,12 @@ def diag(code: str) -> dict[str, Any]:
     stock = load_rows(date, [code]).get(code)
     if not stock:
         return {"status": "missing", "reason": "本站沒有這檔的日K", "code": code, "date": date, "rules": RULES, "collector": collector_status()}
-    since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=DIAG_BARS * 2)).strftime("%Y-%m-%d")
-    bars = _load_bars([code], since=since, until=date).get(code, [])[-DIAG_BARS:]
+    since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=DIAG_BARS * 2 + 420)).strftime("%Y-%m-%d")
+    long_bars = _load_bars([code], since=since, until=date).get(code, [])
+    bars = long_bars[-DIAG_BARS:]
+    from dragon123 import for_bars, rules as d123_rules
+
+    d123 = {**for_bars(long_bars, DIAG_BARS), "rules": d123_rules()} if len(long_bars) > max(MA_PERIODS) else None
     siblings: list[dict[str, Any]] = []
     if stock["group"]:
         member_codes = _group_members().get(stock["group"], [])
@@ -601,8 +617,24 @@ def diag(code: str) -> dict[str, Any]:
     return {
         "status": "ok", "date": date, "code": code, "stock": stock, "bars": [list(b) for b in bars], "siblings": siblings, "groupInfo": group_info,
         "top": top, "cross": load_special(date, CROSS_KEY) or {"n": 0, "groups": {}},
-        "rules": RULES, "collector": collector_status(),
+        "rules": RULES, "collector": collector_status(), "d123": d123,
     }
+
+
+def dragon123_marks(code: str, days: int = 250) -> dict[str, Any]:
+    """K線圖日線用：近 days 天的 123 黑龍進場點（1／2／3、區 1／區 2）。"""
+    from dragon123 import for_bars, rules as d123_rules
+
+    code = str(code or "").strip().upper()
+    date = _latest_bar_date()
+    if not code or not date:
+        return {"status": "empty", "code": code, "marks": []}
+    days = max(20, min(int(days), 500))
+    since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=int(days * 1.5) + 420)).strftime("%Y-%m-%d")
+    bars = _load_bars([code], since=since, until=date).get(code, [])
+    if len(bars) <= max(MA_PERIODS):
+        return {"status": "short", "code": code, "date": date, "marks": [], "rules": d123_rules()}
+    return {"status": "ok", "code": code, "date": bars[-1][0], **for_bars(bars, days), "rules": d123_rules()}
 
 
 def normalize_codes(raw: str | list[str] | None) -> list[str]:

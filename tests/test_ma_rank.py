@@ -121,6 +121,21 @@ class MaRankTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.hits(7, 10, 20)
 
+    def test_strength(self) -> None:
+        # 今日強勢股：族群分數前十大裡均線分數 ≥12；弱勢股：倒數十名裡 ≤3（族群平均分低的在前）
+        out = module.strength("strong")
+        self.assertEqual((out["date"], [g["name"] for g in out["groups"]], out["count"]), (D[3], ["甲", "乙"], 5))
+        self.assertEqual([r["code"] for r in out["groups"][0]["rows"]], ["1111", "2222", "3333"])
+        with patch.object(module, "STRONG_MIN", 15):
+            self.assertEqual([[r["code"] for r in g["rows"]] for g in module.strength("strong")["groups"]], [["1111", "2222"], ["2222"]])
+        self.assertEqual(module.strength("weak")["count"], 0)
+        with patch.object(module, "WEAK_MAX", 14):
+            weak = module.strength("weak")
+            self.assertEqual([g["name"] for g in weak["groups"]], ["乙", "甲"])
+            self.assertEqual([[r["code"] for r in g["rows"]] for g in weak["groups"]], [["4444"], ["3333"]])
+        with self.assertRaises(ValueError):
+            module.strength("x")
+
     def test_query(self) -> None:
         out = module.query(code="2222")
         self.assertEqual((out["group"], [r["code"] for r in out["rows"]]), ("甲/乙", ["1111", "2222", "4444", "3333"]))
@@ -155,6 +170,9 @@ class MaRankTests(unittest.TestCase):
         self.assertEqual((r.status_code, r.json()["group"]), (200, "乙"))
         self.assertEqual(client.get("/api/hub/ma-rank/q", params={"group": "沒有"}).status_code, 404)
         self.assertEqual(client.get("/api/hub/ma-rank/q").status_code, 422)
+        r = client.get("/api/hub/ma-rank/strength", params={"side": "strong"})
+        self.assertEqual((r.status_code, r.json()["count"]), (200, 5))
+        self.assertEqual(client.get("/api/hub/ma-rank/strength", params={"side": "bad"}).status_code, 422)
 
     def test_empty(self) -> None:
         with database.get_connection() as c:

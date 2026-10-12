@@ -1085,6 +1085,21 @@ def get_ma_rank(date: str | None = Query(None)) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/ma-rank/strength")
+def get_ma_rank_strength(side: str = Query("strong"), date: str | None = Query(None)) -> dict[str, Any]:
+    """今日強勢股／弱勢股（2026-10-12 使用者）：族群分數前十大（弱勢＝倒數十名）裡，均線分數 ≥12（弱勢 ≤3）的股票。"""
+    from fastapi import HTTPException
+
+    from ma_rank import strength
+
+    try:
+        return strength(side, _ma_date(date))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/hub/ma-rank/hits")
 def get_ma_rank_hits(days: int = Query(20), top: int = Query(10), show: int = Query(20), date: str | None = Query(None)) -> dict[str, Any]:
     """前十名常客：近 days 個交易日（10／20／40／60），每天取前 top 名（5／10／20／30，同分並列全部算），列 show 檔（20／30／50）。"""
@@ -1474,6 +1489,14 @@ def get_checkup(codes: str = Query("")) -> dict[str, Any]:
 def get_diag(code: str = Query("")) -> dict[str, Any]:
     """個股問診（2026-09-28 使用者）：一檔的三面向分數、七科、防守線、近 120 根日K、同族對照、族群強度榜與今日名單、穿惡名單。"""
     return diag_payload(code)
+
+
+@app.get("/api/hub/dragon123")
+def get_dragon123(code: str = Query(...), days: int = Query(250)) -> dict[str, Any]:
+    """123 黑龍戰法（2026-10-12 使用者）：K線圖日線標進場點——創高黑龍的黑K，創 20 日新高後第 1／2／3 個，區 1／區 2。"""
+    from stock_checkup import dragon123_marks
+
+    return dragon123_marks(code, days)
 
 
 @app.get("/api/hub/checkup/status")
