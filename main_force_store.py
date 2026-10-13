@@ -346,6 +346,7 @@ def load_main_force_ranking(
 
 
 HOLDER_TIMELINE_MIN_NET_VOLUME = 500  # 盤中大戶力分頁的門檻：累計大單淨量 ≥ 500 張（前端 BIG_HOLDER_THRESHOLD）
+HOLDER_HOT_PCT = 10.0  # 今日強勢股／弱勢股的大戶力門檻：≥ +10%／≤ −10%（前端 ST_HF_MIN）
 
 
 def load_holder_timeline(
@@ -357,7 +358,10 @@ def load_holder_timeline(
     """盤中大戶力每檔的「什麼時候進名單」：一根一根累加主力副圖 K 棒，累計大單淨量第一次 ≥ +min_net_volume（多）
     ／≤ −min_net_volume（空）的那根就是進名單時間，再記那一邊的最高（最低）大戶力%、最後一根還在不在。
     2026-10-13 使用者：盤中大戶力多／空只看得到收盤那一刻（13:20）的名單，早上進過、後來掉出去的都不見了。
-    回 {代號: {"bull": {firstTs, firstPct, peakPct, peakTs, still}, "bear": {...}}}，沒進過名單的代號不回。"""
+    回 {代號: {"bull": {firstTs, firstPct, peakPct, peakTs, still}, "bear": {...}}}，沒進過名單的代號不回。
+    2026-10-13 使用者（今日強勢股要有發生時間）：另外每檔記大戶力 ≥ +10%／≤ −10% 的時間（不管張數門檻）：
+    "hot": {"upFirst", "upSince", "downFirst", "downSince"}——First＝今天第一次到、Since＝最後一根還在的話，這一次是從哪根開始
+    （中間跌回去又站回來就從站回來那根算；最後一根已經不在就是 None）。有過 hot 的代號也會回（可能沒有 bull／bear）。"""
     if interval not in {"1m", "5m"}:
         raise ValueError(f"不支援 interval: {interval}")
     _ensure_table()
@@ -383,12 +387,16 @@ def load_holder_timeline(
 
     def finish(code: str) -> None:
         sides = state.get("sides") or {}
-        if not sides:
+        hot = state.get("hot") or {}
+        if not sides and not hot.get("upFirst") and not hot.get("downFirst"):
             return
         net = state["net"]
         for side, info in sides.items():
             info["still"] = net >= min_net_volume if side == "bull" else net <= -min_net_volume
-        out[code] = sides
+        result: dict[str, Any] = dict(sides)
+        if hot.get("upFirst") or hot.get("downFirst"):
+            result["hot"] = hot
+        out[code] = result
 
     current = None
     for row in rows:
@@ -397,12 +405,22 @@ def load_holder_timeline(
             if current is not None:
                 finish(current)
             current = code
-            state = {"net": 0, "buy": 0.0, "sell": 0.0, "total": 0.0, "sides": {}}
+            state = {"net": 0, "buy": 0.0, "sell": 0.0, "total": 0.0, "sides": {},
+                     "hot": {"upFirst": None, "upSince": None, "downFirst": None, "downSince": None}}
         state["net"] += int(row["main_net_volume"] or 0)
         state["buy"] += float(row["main_buy_amount"] or 0)
         state["sell"] += float(row["main_sell_amount"] or 0)
         state["total"] = max(state["total"], float(row["total_amount"] or 0))
         net = state["net"]
+        bar_pct = compute_holder_strength_pct(state["buy"], state["sell"], state["total"])
+        if bar_pct is not None:
+            ts_hot, hot = int(row["bar_ts"]), state["hot"]
+            for key, on in (("up", bar_pct >= HOLDER_HOT_PCT), ("down", bar_pct <= -HOLDER_HOT_PCT)):
+                if on:
+                    hot[key + "First"] = hot[key + "First"] or ts_hot
+                    hot[key + "Since"] = hot[key + "Since"] or ts_hot
+                else:
+                    hot[key + "Since"] = None
         side = "bull" if net >= min_net_volume else "bear" if net <= -min_net_volume else None
         if side is None:
             continue
