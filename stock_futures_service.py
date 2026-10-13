@@ -31,7 +31,11 @@ from quote_features import STOCK_FUTURES_DISABLED_MESSAGE, stock_futures_enabled
 logger = logging.getLogger("hanstock.stock_futures")
 TW_TZ = timezone(timedelta(hours=8))
 StockFuturesMode = Literal["regular", "mini"]
-DEFAULT_POOL_SIZE = 4
+# 2026-10-13 使用者：盤中 55 個族群 499 檔都要有逐筆。主連線 190 檔＋共享池每條 198 檔，兩條就有 586 檔夠用；
+# 同一 person_id 最多 5 條連線，只開 2 條（總共 3 條）留餘裕給重新部署交接、重連。
+DEFAULT_POOL_SIZE = 2
+# 共享連線一條一條登入，中間隔幾秒，不要同時搶登入（永豐有「請 1 分鐘後再重新登入」的限流）。
+DEFAULT_POOL_LOGIN_SPACING_SECONDS = 3.0
 # Shioaji 官方單連線最多 200 個訂閱；保留 2 個安全餘裕給連線內的股期目標。
 DEFAULT_PER_CONNECTION_CAP = 198
 DEFAULT_CONTRACT_READY_TIMEOUT_SECONDS = 20.0
@@ -307,6 +311,15 @@ class StockFuturesQuoteService:
             30.0,
             600.0,
         )
+        # 現貨訂閱一次只跑一批：兩個背景工作同時送同一檔時，第二批要看到第一批訂好的結果，
+        # 不然同一檔可能被訂到兩條不同的共享連線，同一筆成交會算兩次。
+        self._stock_subscribe_lock = threading.Lock()
+        self._pool_login_spacing = _env_float(
+            "SHIOAJI_SHARED_POOL_LOGIN_SPACING_SECONDS",
+            DEFAULT_POOL_LOGIN_SPACING_SECONDS,
+            0.0,
+            30.0,
+        )
         self._pools: list[_PoolConnection] = []
         self._pool_recovery_thread: Optional[threading.Thread] = None
         self._last_pool_recovery_at = 0.0
@@ -435,6 +448,8 @@ class StockFuturesQuoteService:
             with self._lock:
                 current = len(self._pools)
             for index in range(current, self._pool_size):
+                if index > current and self._pool_login_spacing:
+                    time.sleep(self._pool_login_spacing)
                 try:
                     pool = self._create_pool_connection(index)
                 except Exception as exc:
@@ -473,6 +488,8 @@ class StockFuturesQuoteService:
                 except Exception:
                     pass
             for index in range(self._pool_size):
+                if index and self._pool_login_spacing:
+                    time.sleep(self._pool_login_spacing)
                 try:
                     fresh = self._create_pool_connection(index)
                 except Exception as exc:
@@ -656,8 +673,9 @@ class StockFuturesQuoteService:
         self,
         stock_codes: Iterable[str],
         tick_handler: Callable[[Any, Any], None],
+        quote_service: Any = None,
     ) -> dict[str, Any]:
-        """在 4 條共享連線上永久分配現貨 Tick；不使用 LRU 淘汰。"""
+        """在共享連線上永久分配現貨 Tick；不使用 LRU 淘汰。已經訂閱的回 already（重建連線後會重新訂閱）。"""
         codes = _normalize_codes(stock_codes)
         with self._lock:
             self._stock_tick_handler = tick_handler
@@ -668,6 +686,10 @@ class StockFuturesQuoteService:
             "failed": {},
             "assignments": {},
         }
+        with self._stock_subscribe_lock:
+            return self._ensure_stock_subscriptions_locked(codes, result, quote_service)
+
+    def _ensure_stock_subscriptions_locked(self, codes: list[str], result: dict[str, Any], quote_service: Any) -> dict[str, Any]:
         try:
             self._ensure_pools()
         except Exception as exc:
@@ -727,6 +749,28 @@ class StockFuturesQuoteService:
         result["per_connection_cap"] = self._per_connection_cap
         result["capacity"] = self.shared_capacity()
         return result
+
+    def has_stock_subscription(self, code: str) -> bool:
+        with self._lock:
+            return any(code in pool.stock_subscriptions for pool in self._pools)
+
+    def active_stock_codes(self) -> list[str]:
+        """共享連線上目前有訂閱的台股代號（連線重建後會清空，等下一次 ensure 重新訂閱）。"""
+        with self._lock:
+            return [code for pool in self._pools for code in pool.stock_subscriptions]
+
+    def stock_pool_status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "pool_count": len(self._pools),
+                "pool_size": self._pool_size,
+                "per_connection_cap": self._per_connection_cap,
+                "active_count": sum(len(pool.stock_subscriptions) for pool in self._pools),
+                "capacity": len(self._pools) * self._per_connection_cap,
+                "pool_counts": {str(pool.index): len(pool.stock_subscriptions) for pool in self._pools},
+                "pool_health": {str(pool.index): {"healthy": pool.healthy, "error": pool.error} for pool in self._pools},
+                "errors": dict(list(self._stock_errors.items())[:20]),
+            }
 
     def _register_mapping(self, pool_index: int, key: tuple[StockFuturesMode, str], contract: Any) -> None:
         for reverse_key, mapped in list(self._reverse_codes.items()):

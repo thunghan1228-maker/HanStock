@@ -30,6 +30,23 @@ DEFAULT_RAILWAY_STARTUP_DELAY_SECONDS = 15.0
 DEFAULT_PRIMARY_RAILWAY_PROJECT_ID = "4b2403bb-cd2d-4917-bd8f-80dffe894d00"
 
 
+def shared_stock_pool_enabled() -> bool:
+    """主連線 190 檔滿了之後，其餘台股改訂在共享連線上（2026-10-13 使用者：盤中 499 檔都要有逐筆）。
+    SHIOAJI_SHARED_STOCK_POOL_ENABLED=false 可以關掉，回到只用主連線、滿了就回「台股訂閱上限」。"""
+    return os.getenv("SHIOAJI_SHARED_STOCK_POOL_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _shared_pool_service(create: bool = False) -> Any:
+    """共享連線池（stock_futures_service）；create=False 時沒建立過就回 None，不為了查狀態去登入。"""
+    try:
+        import stock_futures_service
+    except Exception:  # noqa: BLE001
+        return None
+    if create:
+        return stock_futures_service.get_stock_futures_quote_service()
+    return stock_futures_service._service
+
+
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try: value = int(os.getenv(name, str(default)))
     except (TypeError, ValueError): value = default
@@ -157,6 +174,11 @@ class QuoteService:
             try: self.api.logout(); logger.info("Shioaji 已安全登出。")
             except Exception as exc: logger.warning("登出時發生錯誤: %s", exc)
         self.state.logged_in = False; self.state.quote_connected = False; self.state.subscribed = False
+        try:  # 共享連線也一起登出，重新部署時新舊兩台不會同時佔太多條連線
+            from stock_futures_service import shutdown_stock_futures_quote_service
+            shutdown_stock_futures_quote_service()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("共享行情連線登出時發生錯誤: %s", exc)
 
     def get_health(self) -> dict[str, Any]:
         health = self.state.to_dict(self._stale_seconds); health["quote_role"] = quote_deployment_role(); health["futures_enabled"] = False; return health
@@ -175,14 +197,35 @@ class QuoteService:
                 self.state.quote_connected = False; self.state.subscribed = False; self.state.error_message = reason
             self._last_p2p_recovery_at = now; self._trigger_reconnect(); return True
 
+    def _shared_stock_codes(self) -> list[str]:
+        pool = _shared_pool_service()
+        if pool is None: return []
+        try: return pool.active_stock_codes()
+        except Exception: return []  # noqa: BLE001
+
+    def _on_shared(self, code: str) -> bool:
+        pool = _shared_pool_service()
+        if pool is None: return False
+        try: return pool.has_stock_subscription(code)
+        except Exception: return False  # noqa: BLE001
+
     def get_stock_health(self) -> dict[str, Any]:
+        pool = _shared_pool_service()
+        try: shared = pool.stock_pool_status() if pool is not None else None
+        except Exception: shared = None  # noqa: BLE001
+        shared_codes = self._shared_stock_codes()
         with self._stock_lock:
             ts = list(self._stock_tick_timestamps.values()); latest = max(ts) if ts else None; age = round(time.time() - latest, 1) if latest else None
             main_count = sum(1 for v in self._stock_assignments.values() if v == "main")
-            return {"enabled": self.state.logged_in, "active_subscription_count": len(self._stock_subscriptions), "subscription_limit": self._stock_subscription_limit, "main_connection_limit": self._stock_subscription_limit, "main_connection_active_count": main_count, "shared_pool_active_count": 0, "shared_pool_capacity": 0, "eviction_policy": "disabled", "cached_quote_count": len(self._stock_ticks), "last_stock_quote_time": datetime.fromtimestamp(latest, TW_TZ).isoformat() if latest else None, "stock_quote_age_seconds": age, "stock_quote_stale": age is not None and age > self._stale_seconds, "active_codes": list(self._stock_subscriptions.keys()), "errors": dict(self._stock_errors)}
+            main_codes = list(self._stock_subscriptions.keys())
+            shared_capacity = shared["capacity"] if shared else 0
+            return {"enabled": self.state.logged_in, "active_subscription_count": len(main_codes) + len(shared_codes), "subscription_limit": self._stock_subscription_limit + shared_capacity, "main_connection_limit": self._stock_subscription_limit, "main_connection_active_count": main_count, "shared_pool_active_count": len(shared_codes), "shared_pool_capacity": shared_capacity, "shared_pool_enabled": shared_stock_pool_enabled(), "shared_pool": shared, "eviction_policy": "disabled", "cached_quote_count": len(self._stock_ticks), "last_stock_quote_time": datetime.fromtimestamp(latest, TW_TZ).isoformat() if latest else None, "stock_quote_age_seconds": age, "stock_quote_stale": age is not None and age > self._stale_seconds, "active_codes": main_codes + shared_codes, "errors": dict(self._stock_errors)}
 
     def get_active_stock_codes(self) -> list[str]:
-        with self._stock_lock: return list(self._stock_subscriptions.keys())
+        # 主力副圖收集器用這份名單落盤：共享連線上的股票也要算進來
+        shared_codes = self._shared_stock_codes()
+        with self._stock_lock: main_codes = list(self._stock_subscriptions.keys())
+        return main_codes + [code for code in shared_codes if code not in self._stock_subscriptions]
 
     def get_stock_quote(self, stock_code: str) -> Optional[dict[str, Any]]:
         code = str(stock_code).strip().upper()
@@ -190,7 +233,7 @@ class QuoteService:
             tick = self._stock_ticks.get(code)
             if tick is None: return None
             result = dict(tick); timestamp = self._stock_tick_timestamps.get(code); age = round(time.time() - timestamp, 1) if timestamp else None
-            result["quote_age_seconds"] = age; result["quote_stale"] = age is not None and age > self._stale_seconds; result["subscribed"] = code in self._stock_subscriptions; return result
+            result["quote_age_seconds"] = age; result["quote_stale"] = age is not None and age > self._stale_seconds; result["subscribed"] = code in self._stock_subscriptions or self._on_shared(code); return result
 
     def get_stock_quotes(self, stock_codes: Iterable[str]) -> dict[str, Optional[dict[str, Any]]]: return {str(code).strip().upper(): self.get_stock_quote(str(code)) for code in stock_codes}
 
@@ -202,7 +245,11 @@ class QuoteService:
         result={"requested":codes,"newly_subscribed":[],"already_subscribed":[],"evicted":[],"failed":{},"active_count":0,"capacity":self._stock_subscription_limit,"main_capacity":self._stock_subscription_limit,"shared_capacity":0}
         if not self.state.logged_in or self.api is None:
             result["failed"]={code:"Shioaji 尚未登入" for code in codes}; return result
+        overflow: list[str] = []
+        on_shared = set(self._shared_stock_codes())  # 已經在共享連線上的不要再訂到主連線（同一檔訂兩條，Tick 會重複算）
         for code in codes:
+            if code in on_shared:
+                overflow.append(code); continue  # 交給共享連線回「已訂閱」
             with self._stock_lock:
                 if code in self._stock_subscriptions:
                     self._stock_subscriptions[code]=time.time(); self._stock_subscriptions.move_to_end(code); result["already_subscribed"].append(code); continue
@@ -210,7 +257,7 @@ class QuoteService:
                     result["already_subscribed"].append(code); continue
                 main_count=sum(1 for v in self._stock_assignments.values() if v=="main")
                 if main_count+len(self._stock_pending) >= self._stock_subscription_limit:
-                    result["failed"][code]="台股訂閱上限"; continue
+                    overflow.append(code); continue
                 self._stock_pending.add(code)
             try: ok=self._subscribe_stock(code)
             finally:
@@ -218,8 +265,28 @@ class QuoteService:
             if ok: result["newly_subscribed"].append(code)
             else:
                 with self._stock_lock: result["failed"][code]=self._stock_errors.get(code,"訂閱失敗")
-        with self._stock_lock: result["active_count"]=len(self._stock_subscriptions)
+        if overflow:
+            # 主連線滿了：其餘的訂在共享連線上（2026-10-13 使用者：盤中 55 個族群 499 檔都要有逐筆）
+            if not shared_stock_pool_enabled():
+                result["failed"].update({code: "台股訂閱上限" for code in overflow})
+            else:
+                try:
+                    # 共享連線出錯只重建共享連線，不連帶讓主連線重連（quote_service=None）
+                    shared = _shared_pool_service(create=True).ensure_stock_subscriptions(overflow, self._handle_shared_stock_tick, quote_service=None)
+                except Exception as exc:  # noqa: BLE001
+                    shared = {"failed": {code: f"共享連線無法使用：{exc}" for code in overflow}}
+                result["newly_subscribed"].extend(shared.get("newly_subscribed", []))
+                result["already_subscribed"].extend(shared.get("already_subscribed", []))
+                result["failed"].update(shared.get("failed", {}))
+                result["shared_capacity"] = shared.get("capacity", 0)
+                result["capacity"] = self._stock_subscription_limit + result["shared_capacity"]
+        with self._stock_lock: result["main_active_count"]=len(self._stock_subscriptions)
+        result["active_count"]=result["main_active_count"]+len(self._shared_stock_codes())
         return result
+
+    def _handle_shared_stock_tick(self, exchange: Any, tick: Any) -> None:
+        """共享連線送來的台股 Tick：跟主連線同一條處理（快取＋Hub），但不拿來判斷主連線健康。"""
+        self._handle_stock_tick(exchange, tick, primary_connection=False)
 
     def _initialize(self) -> None:
         simulation=os.getenv("SHIOAJI_SIMULATION","false").lower()=="true"; self.api=sj.Shioaji(simulation=simulation); self._callbacks_api_id=None; self.state.initialized=True; logger.info("[Shioaji] 初始化成功（%s）。", "模擬模式" if simulation else "正式模式")

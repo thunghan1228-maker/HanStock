@@ -59,6 +59,7 @@ from stock_trading_eligibility import (
 from history_sources import OTC_INDEX_CODE, history_sources_status, probe_history_sources, stock_market
 from intraday_large_order_collector import start_intraday_large_order_collector, collector_status as large_order_collector_status
 from four_gate_signals_collector import start_four_gate_signals_collector
+from stock_universe_subscriber import start_stock_universe_subscriber, status as stock_universe_status
 from daily_bars_collector import collector_status as daily_bars_collector_status, start_daily_bars_collector
 from daily_bars_store import daily_bars_storage_status, latest_daily_trade_date_before, load_daily_bars
 from after_hours_fixed_price_collector import start_after_hours_fixed_price_collector
@@ -117,6 +118,7 @@ async def _persistent_lifespan(fastapi_app):
             get_otc_index_hub().set_bar_persister(save_index_bars_5m)
             start_main_force_collector()
             start_intraday_large_order_collector()
+            start_stock_universe_subscriber()  # 盤中 55 個族群 499 檔都訂逐筆（主連線滿了用共享連線，2026-10-13 使用者）
             start_four_gate_signals_collector()
             start_daily_bars_collector()
             start_after_hours_fixed_price_collector()
@@ -264,6 +266,8 @@ def get_quote_health() -> dict[str, Any]:
             # Shioaji歷史資料流量額度：kbars回補(個股主力副圖/櫃買指數)失敗時先看這裡。
             "historyQuota": history_quota.snapshot(api),
             "otcIndex": {**get_otc_index_hub().get_status(), "lastError": get_otc_index_service().last_error},
+            # 族群股票逐筆訂閱（2026-10-13）：上一輪送了幾檔、新訂幾檔、失敗幾檔
+            "universeSubscriber": stock_universe_status(),
         },
     }
 
