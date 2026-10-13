@@ -190,6 +190,21 @@ class RebuildTests(unittest.TestCase):
         again = module.rebuild()
         self.assertEqual(again["rows"], 4)
 
+    def test_checkup_for_a_stored_past_date(self) -> None:
+        """2026-10-13 使用者：形態觀察股要看昨天／前天——健診可以指定日期（表裡有存的才有）。"""
+        d = self.dates
+        module.rebuild()
+        r = module.checkup("6182", d[-1])
+        self.assertEqual((r["status"], r["date"], r["dates"], [x["code"] for x in r["rows"]]), ("ok", d[-1], [d[-1]], ["6182"]))
+        missing = module.checkup("6182", d[-2])
+        self.assertEqual(missing["status"], "empty")
+        self.assertIn("只留最近", missing["reason"])
+        from fastapi.testclient import TestClient
+        import persistent_app
+        client = TestClient(persistent_app.app)
+        self.assertEqual(client.get("/api/hub/checkup", params={"codes": "6182", "date": d[-1]}).json()["date"], d[-1])
+        self.assertEqual(client.get("/api/hub/checkup", params={"codes": "6182", "date": "bad"}).status_code, 422)
+
     def test_checkup_carries_hi_len_from_picker_table(self) -> None:
         """創高天數借創高黑選股的特徵表（2026-10-05 使用者：自選股盤後籌碼要看）。"""
         d = self.dates

@@ -1509,10 +1509,16 @@ def post_heilong_rebuild(force: int = Query(0)) -> dict[str, Any]:
 
 
 @app.get("/api/hub/checkup")
-def get_checkup(codes: str = Query("")) -> dict[str, Any]:
+def get_checkup(codes: str = Query(""), date: str | None = Query(None)) -> dict[str, Any]:
     """每日持股健診（2026-09-28 使用者）：codes＝『2481/2408,2344』這樣的股號清單，回每檔的三面向分數、綜合、防守線、
-    七科小體檢；資料是收盤後跟下午報一起算好存的。"""
-    return checkup_payload(codes)
+    七科小體檢；資料是收盤後跟下午報一起算好存的。date＝指定哪一天收盤的（只留最近 3 個交易日；形態觀察股看昨天／前天用）。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return checkup_payload(codes, date)
 
 
 @app.get("/api/hub/diag")
