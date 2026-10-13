@@ -108,6 +108,36 @@ class GroupQuotesTests(unittest.TestCase):
         nd = module.group_quotes_payload(codes, fetcher=next_day)
         self.assertEqual((sorted(nd["quotes"]), nd["quoteDate"], nd["missing"]), (["1000"], "2026-10-07", 1))
 
+    def test_no_trade_no_book_does_not_overwrite_limit_up_price(self) -> None:
+        # 2026-10-13 廣寰科：漲停鎖死（委買＝漲停價 110），之後某一輪證交所回「沒成交、也沒有委買委賣」，
+        # 只能退回開盤價 102——不能蓋掉漲停價，量照樣更新。
+        def locked(url: str):
+            return {"msgArray": [{"c": "3287", "n": "廣寰科", "z": "-", "b": "110_", "a": "-", "y": "100", "o": "102", "v": "4000",
+                                  "u": "110", "w": "90", "d": "20261013", "t": "10:31:00"}]}
+
+        def empty_book(url: str):
+            return {"msgArray": [{"c": "3287", "n": "廣寰科", "z": "-", "b": "-", "a": "-", "y": "100", "o": "102", "v": "4145",
+                                  "u": "110", "w": "90", "d": "20261013", "t": "10:51:00"}]}
+
+        first = module.group_quotes_payload("3287", fetcher=locked)["quotes"]["3287"]
+        self.assertEqual((first["price"], first["limitUp"]), (110.0, True))
+        module._group_quotes_cache["payloads"].clear()
+        later = module.group_quotes_payload("3287", fetcher=empty_book)["quotes"]["3287"]
+        self.assertEqual((later["price"], later["limitUp"], later["volume"]), (110.0, True, 4145))
+        # 一開始就只拿得到開盤價（沒有更早的資料）：照舊用開盤價，之後有委買委賣就換掉
+        module._reset_group_quotes()
+        only = module.group_quotes_payload("3287", fetcher=empty_book)["quotes"]["3287"]
+        self.assertEqual((only["price"], only["limitUp"]), (102.0, False))
+        module._group_quotes_cache["payloads"].clear()
+
+        def locked_later(url: str):
+            data = locked(url)
+            data["msgArray"][0]["t"] = "10:52:00"
+            return data
+
+        fixed = module.group_quotes_payload("3287", fetcher=locked_later)["quotes"]["3287"]
+        self.assertEqual((fixed["price"], fixed["limitUp"]), (110.0, True))
+
     def test_off_hours_windows(self) -> None:
         # 收盤後：快取 2 分鐘內直接給、12 小時內先給舊的再背景抓（不讓每次都等 10 秒重抓）
         from datetime import datetime as dt

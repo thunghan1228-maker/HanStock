@@ -301,6 +301,32 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertTrue(bear["still"])
         self.assertEqual(set(load_holder_timeline(trade_date, interval="5m", codes={"2317"})), {"2317"})
 
+    def test_holder_timeline_hot_times_for_strong_and_weak_stocks(self):
+        """2026-10-13 使用者：今日強勢股要有發生時間——大戶力 ≥ +10% 第一次到的時間、這一次站上的時間（不管 500 張門檻）。"""
+        trade_date = taipei_trade_date(BASE_TS)
+        step = 5 * 60 * 1000
+
+        def bar(i, buy_amt, sell_amt, total):
+            return {"ts": BASE_TS + i * step, "main_buy_volume": 10, "main_sell_volume": 0, "main_buy_amount": buy_amt,
+                    "main_sell_amount": sell_amt, "total_amount": total, "main_force_available": True}
+
+        # 3287：累計 +20%（第 0 根）→ +5%（第 1 根，跌破）→ +12%（第 2 根，站回來）→ 最後還在：First＝第 0 根、Since＝第 2 根
+        save_main_force_bars("3287", "5m", [
+            bar(0, 2_000_000, 0, 10_000_000),
+            bar(1, 0, 1_500_000, 10_000_000),
+            bar(2, 1_900_000, 0, 20_000_000),
+        ])
+        # 6488：一路賣到 −15%，最後還在
+        save_main_force_bars("6488", "5m", [bar(0, 0, 1_500_000, 10_000_000)])
+        # 2330：+12% 後跌回 +3%，最後不在：Since＝None
+        save_main_force_bars("2330", "5m", [bar(0, 1_200_000, 0, 10_000_000), bar(1, 0, 900_000, 10_000_000)])
+
+        timeline = load_holder_timeline(trade_date, interval="5m")
+        self.assertEqual(timeline["3287"]["hot"], {"upFirst": BASE_TS, "upSince": BASE_TS + 2 * step, "downFirst": None, "downSince": None})
+        self.assertNotIn("bull", timeline["3287"])           # 沒到 500 張，不算進盤中大戶力名單
+        self.assertEqual(timeline["6488"]["hot"]["downSince"], BASE_TS)
+        self.assertEqual((timeline["2330"]["hot"]["upFirst"], timeline["2330"]["hot"]["upSince"]), (BASE_TS, None))
+
     def test_ranking_strength_pct_is_none_without_turnover_data(self):
         # 舊資料沒有total_amount欄位（或這個bar沒有主力金額），無法算百分比。
         base_ts = BASE_TS

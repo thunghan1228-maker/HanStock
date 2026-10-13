@@ -125,11 +125,16 @@ class QuoteServiceStockTests(unittest.TestCase):
         os.environ["SHIOAJI_MAIN_STOCK_MAX_SUBSCRIPTIONS"] = "2"
         os.environ["SHIOAJI_SHARED_QUOTE_POOL_SIZE"] = "2"
         os.environ["SHIOAJI_SHARED_PER_CONNECTION_CAP"] = "100"
+        os.environ["SHIOAJI_SHARED_POOL_LOGIN_SPACING_SECONDS"] = "0"
+        os.environ.pop("SHIOAJI_SHARED_STOCK_POOL_ENABLED", None)
         os.environ["SHIOAJI_API_KEY"] = "fake-key"
         os.environ["SHIOAJI_SECRET_KEY"] = "fake-secret"
         import stock_futures_service
 
         stock_futures_service._service = None
+        # 其他測試可能先用真的 shioaji 載入過 stock_futures_service：共享連線一律用假的 API，不真的登入
+        self._sj_patch = patch.object(stock_futures_service, "sj", fake_sj)
+        self._sj_patch.start()
         self.service = module.QuoteService()
         self.service.api = FakeAPI()
         self.service.state.logged_in = True
@@ -228,6 +233,7 @@ class QuoteServiceStockTests(unittest.TestCase):
         if stock_futures_service._service is not None:
             stock_futures_service._service.shutdown()
         stock_futures_service._service = None
+        self._sj_patch.stop()
 
     def test_stock_tick_normalizes_pct_chg(self):
         data = self.service._stock_tick_to_dict(FakeExchange.TSE, FakeTick())
@@ -282,8 +288,9 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(second["already_subscribed"], ["2330"])
         self.assertEqual(len(self.service.api.subscribed), 2)
 
-    def test_capacity_full_fails_new_codes_without_eviction(self):
-        # 共用連線池已拿掉：主連線滿了，新的股票直接回「台股訂閱上限」，不踢掉舊的。
+    @patch.dict(os.environ, {"SHIOAJI_SHARED_STOCK_POOL_ENABLED": "false"}, clear=False)
+    def test_capacity_full_fails_new_codes_without_eviction_when_shared_pool_is_off(self):
+        # 共享連線關掉：主連線滿了，新的股票直接回「台股訂閱上限」，不踢掉舊的。
         self.service.ensure_stock_subscriptions(["2330", "2344"])
         result = self.service.ensure_stock_subscriptions(["2408"])
         self.assertEqual(result["newly_subscribed"], [])
@@ -292,6 +299,43 @@ class QuoteServiceStockTests(unittest.TestCase):
         self.assertEqual(result["active_count"], 2)
         self.assertNotIn(("2330", "tick"), self.service.api.unsubscribed)
         self.assertEqual(self.service.get_active_stock_codes(), ["2330", "2344"])
+
+    def test_main_full_overflows_to_shared_pool_without_eviction(self):
+        # 2026-10-13 使用者：盤中 499 檔都要有逐筆——主連線滿了改訂在共享連線上，舊的不踢掉。
+        self.service.ensure_stock_subscriptions(["2330", "2344"])
+        result = self.service.ensure_stock_subscriptions(["2408"])
+        self.assertEqual(result["newly_subscribed"], ["2408"])
+        self.assertEqual(result["failed"], {})
+        self.assertEqual(result["evicted"], [])
+        self.assertEqual(result["main_active_count"], 2)
+        self.assertEqual(result["active_count"], 3)
+        self.assertNotIn(("2408", "tick"), self.service.api.subscribed)   # 沒訂到主連線
+        self.assertEqual(self.service.get_active_stock_codes(), ["2330", "2344", "2408"])   # 主力副圖收集器看得到
+        health = self.service.get_stock_health()
+        self.assertEqual(health["main_connection_active_count"], 2)
+        self.assertEqual(health["shared_pool_active_count"], 1)
+        self.assertEqual(health["active_subscription_count"], 3)
+        self.assertEqual(health["shared_pool_capacity"], 200)   # 2 條 × 100
+        again = self.service.ensure_stock_subscriptions(["2408"])
+        self.assertEqual(again["already_subscribed"], ["2408"])
+        self.assertEqual(again["newly_subscribed"], [])
+
+    def test_code_already_on_shared_pool_is_not_subscribed_again_on_main(self):
+        # 主連線後來有空位（例如重連），已經在共享連線上的股票不能再訂一次到主連線，不然同一筆成交會算兩次。
+        self.service.ensure_stock_subscriptions(["2330", "2344", "2408"])
+        self.service._unsubscribe_stock("2344")
+        result = self.service.ensure_stock_subscriptions(["2408"])
+        self.assertEqual(result["already_subscribed"], ["2408"])
+        self.assertNotIn(("2408", "tick"), self.service.api.subscribed)
+
+    def test_shared_pool_ticks_update_quotes_without_marking_primary_healthy(self):
+        self.service.state.quote_connected = False
+        fake_hub = types.SimpleNamespace(ticks=[], on_stock_tick=lambda tick: fake_hub.ticks.append(tick["code"]))
+        with patch.object(module, "get_market_data_hub", return_value=fake_hub):
+            self.service._handle_shared_stock_tick(FakeExchange.TSE, FakeTick())
+        self.assertEqual(fake_hub.ticks, ["2330"])
+        self.assertIsNotNone(self.service.get_stock_quote("2330"))
+        self.assertFalse(self.service.state.quote_connected)
 
     def test_concurrent_batches_do_not_exceed_main_connection_limit(self):
         original_subscribe = self.service.api.subscribe
@@ -309,12 +353,11 @@ class QuoteServiceStockTests(unittest.TestCase):
             )
 
         failed = {code: reason for result in results for code, reason in result["failed"].items()}
-        self.assertEqual(len(failed), 2)
-        self.assertTrue(all(reason == "台股訂閱上限" for reason in failed.values()))
+        self.assertEqual(failed, {})
         health = self.service.get_stock_health()
-        self.assertEqual(health["active_subscription_count"], 2)
         self.assertEqual(health["main_connection_active_count"], 2)
-        self.assertEqual(health["shared_pool_active_count"], 0)
+        self.assertEqual(health["shared_pool_active_count"], 2)
+        self.assertEqual(health["active_subscription_count"], 4)
         self.assertEqual(len(self.service.api.subscribed), 2)
 
     def test_base_contract_is_used_for_subscriptions_and_contracts_stocks_only_as_fallback(self):
@@ -353,16 +396,7 @@ class QuoteServiceStockTests(unittest.TestCase):
         result = self.service.ensure_stock_subscriptions(["BAD1"])
         self.assertIn("BAD1", result["failed"])
 
-    @patch.dict(
-        os.environ,
-        {
-            "SHIOAJI_MAIN_STOCK_MAX_SUBSCRIPTIONS": "190",
-            "SHIOAJI_SHARED_QUOTE_POOL_SIZE": "4",
-            "SHIOAJI_SHARED_PER_CONNECTION_CAP": "195",
-        },
-        clear=False,
-    )
-    def test_full_664_stock_universe_caps_at_main_limit_without_lru_eviction(self):
+    def _universe_service(self):
         import stock_futures_service
 
         if stock_futures_service._service is not None:
@@ -371,20 +405,67 @@ class QuoteServiceStockTests(unittest.TestCase):
         service = module.QuoteService()
         service.api = FakeAPI()
         service.state.logged_in = True
-        codes = [f"{1000 + index:04d}" for index in range(664)]
+        return service
+
+    @patch.dict(
+        os.environ,
+        {
+            "SHIOAJI_MAIN_STOCK_MAX_SUBSCRIPTIONS": "190",
+            "SHIOAJI_SHARED_QUOTE_POOL_SIZE": "2",
+            "SHIOAJI_SHARED_PER_CONNECTION_CAP": "198",
+        },
+        clear=False,
+    )
+    def test_full_499_stock_universe_fits_main_plus_two_shared_connections(self):
+        service = self._universe_service()
+        codes = [f"{1000 + index:04d}" for index in range(499)]
+
+        result = service.ensure_stock_subscriptions(codes)
+
+        self.assertEqual(result["failed"], {})
+        self.assertEqual(sorted(result["newly_subscribed"]), codes)
+        self.assertEqual(result["evicted"], [])
+        self.assertEqual(result["main_active_count"], 190)
+        self.assertEqual(result["active_count"], 499)
+        self.assertEqual(sorted(service.get_active_stock_codes()), codes)
+        health = service.get_stock_health()
+        self.assertEqual(health["main_connection_active_count"], 190)
+        self.assertEqual(health["shared_pool_active_count"], 309)
+        self.assertEqual(health["shared_pool"]["pool_count"], 2)
+        self.assertEqual(sorted(health["shared_pool"]["pool_counts"].values()), [154, 155])   # 平均分到兩條
+        self.assertEqual(health["eviction_policy"], "disabled")
+
+    @patch.dict(
+        os.environ,
+        {
+            "SHIOAJI_MAIN_STOCK_MAX_SUBSCRIPTIONS": "190",
+            "SHIOAJI_SHARED_QUOTE_POOL_SIZE": "2",
+            "SHIOAJI_SHARED_PER_CONNECTION_CAP": "198",
+            "SHIOAJI_SHARED_STOCK_POOL_ENABLED": "false",
+        },
+        clear=False,
+    )
+    def test_full_universe_caps_at_main_limit_when_shared_pool_is_off(self):
+        service = self._universe_service()
+        codes = [f"{1000 + index:04d}" for index in range(499)]
 
         result = service.ensure_stock_subscriptions(codes)
 
         self.assertEqual(result["newly_subscribed"], codes[:190])
         self.assertEqual(result["failed"], {code: "台股訂閱上限" for code in codes[190:]})
-        self.assertEqual(result["evicted"], [])
-        self.assertEqual(result["active_count"], 190)
         self.assertEqual(len(service.get_active_stock_codes()), 190)
         health = service.get_stock_health()
-        self.assertEqual(health["active_subscription_count"], 190)
-        self.assertEqual(health["eviction_policy"], "disabled")
-        self.assertEqual(health["main_connection_active_count"], 190)
         self.assertEqual(health["shared_pool_active_count"], 0)
+
+    def test_shutdown_logs_out_shared_connections(self):
+        import stock_futures_service
+
+        self.service.ensure_stock_subscriptions(["2330", "2344", "2408"])
+        pools = list(stock_futures_service._service._pools)
+        self.assertTrue(pools)
+        self.service.shutdown()
+        self.assertTrue(all(pool.api.logged_out for pool in pools))
+        self.assertIsNone(stock_futures_service._service)
 
 
 if __name__ == "__main__":
