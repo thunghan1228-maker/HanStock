@@ -15,7 +15,6 @@ from main_force_store import (
     load_holder_timeline,
     load_main_force_bars,
     load_main_force_ranking,
-    load_window_flips,
     main_force_storage_status,
     previous_trade_date_with_data,
     prune_old_bars,
@@ -301,50 +300,6 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(bear["firstPct"], -50.0)
         self.assertTrue(bear["still"])
         self.assertEqual(set(load_holder_timeline(trade_date, interval="5m", codes={"2317"})), {"2317"})
-
-    def test_window_flips_detect_midday_reversal(self):
-        """2026-10-13 使用者：近 30 分鐘主力翻多／翻空——前 30 分鐘主力淨賣、近 30 分鐘轉淨買才發；第一次成立發一次，要先不成立才會再發。"""
-        trade_date = taipei_trade_date(BASE_TS)
-        step = 5 * 60 * 1000
-
-        def bar(i, buy, sell, price=200_000):
-            return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * price,
-                    "main_sell_amount": sell * price, "total_amount": 1_000_000_000, "main_force_available": True}
-
-        # 2330：前 6 根一直賣（每根買 10、賣 40），接著 6 根轉買（每根買 60、賣 10）→ 第 12 根收完（近 30 分 +300、前 30 分 −180）翻多
-        bars = [bar(i, 10, 40) for i in range(6)] + [bar(6 + i, 60, 10) for i in range(6)] + [bar(12 + i, 60, 10) for i in range(3)]
-        save_main_force_bars("2330", "5m", bars)
-        # 2317：一路買，沒有「翻」
-        save_main_force_bars("2317", "5m", [bar(i, 60, 10) for i in range(15)])
-        events = load_window_flips(trade_date, interval="5m")
-        self.assertEqual([(e["code"], e["side"]) for e in events], [("2330", "bull")])
-        flip = events[0]
-        self.assertEqual(flip["ts"], BASE_TS + 12 * step)       # 第 12 根（index 11）收盤
-        self.assertEqual((flip["curNet"], flip["prevNet"]), (300, -180))
-        self.assertEqual(flip["curRatio"], 71.4)
-        self.assertEqual(flip["curNetAmount"], 60_000_000)
-        # 太小（近 30 分鐘主力買賣不到 200 張）不算
-        save_main_force_bars("1101", "5m", [bar(i, 2, 8) for i in range(6)] + [bar(6 + i, 8, 2) for i in range(6)])
-        self.assertNotIn("1101", {e["code"] for e in load_window_flips(trade_date, interval="5m")})
-
-    def test_window_flips_cooldown_60_minutes(self):
-        """同一檔同方向 60 分鐘內不重複發（第一版一天翻 10 次）。"""
-        trade_date = taipei_trade_date(BASE_TS)
-        step = 5 * 60 * 1000
-
-        def bar(i, buy, sell):
-            return {"ts": BASE_TS + i * step, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * 200_000,
-                    "main_sell_amount": sell * 200_000, "total_amount": 1_000_000_000, "main_force_available": True}
-
-        # 賣 6 根 → 買 6 根（第 12 根收盤翻多）→ 賣 6 根 → 買 6 根（第 24 根收盤又成立，距上次 60 分鐘，可以再發）
-        pattern = [(10, 40)] * 6 + [(60, 10)] * 6 + [(10, 40)] * 6 + [(60, 10)] * 6
-        save_main_force_bars("2330", "5m", [bar(i, b, s) for i, (b, s) in enumerate(pattern)])
-        bull = [e for e in load_window_flips(trade_date, interval="5m") if e["side"] == "bull"]
-        self.assertEqual([e["ts"] for e in bull], [BASE_TS + 12 * step, BASE_TS + 24 * step])
-        # 翻多後馬上大賣 15 分鐘、又買回來：45 分鐘後條件又成立，但還不到 60 分鐘，不發
-        save_main_force_bars("2317", "5m", [bar(i, b, s) for i, (b, s) in enumerate([(10, 40)] * 6 + [(60, 10)] * 6 + [(0, 200)] * 3 + [(60, 10)] * 6)])
-        bull2317 = [e for e in load_window_flips(trade_date, interval="5m") if e["code"] == "2317" and e["side"] == "bull"]
-        self.assertEqual(len(bull2317), 1)
 
     def test_ranking_strength_pct_is_none_without_turnover_data(self):
         # 舊資料沒有total_amount欄位（或這個bar沒有主力金額），無法算百分比。

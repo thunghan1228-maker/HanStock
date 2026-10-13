@@ -19,7 +19,6 @@ from main_force_store import (
     load_main_force_bars,
     load_holder_timeline,
     load_main_force_ranking,
-    load_window_flips,
     main_force_storage_status,
 )
 from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pending_backfill_jobs, queue_backfill_for_all_group_stocks, request_main_force_backfill
@@ -697,31 +696,6 @@ def get_holder_timeline(
             held_from = date
             date = previous
     return {"status": "ok", "tradeDate": date, "heldFrom": held_from, "interval": interval, "count": len(stocks), "stocks": stocks}
-
-
-@app.get("/api/hub/main-force/window-flips")
-def get_window_flips(trade_date: str | None = Query(None)) -> dict[str, Any]:
-    """近 30 分鐘主力翻多／翻空（2026-10-13 使用者）：前 30 分鐘主力淨賣、近 30 分鐘轉淨買＝翻多，反過來＝翻空
-    （門檻見 main_force_store.load_window_flips）。沒指定日期時跟排行一樣，開盤前沿用上一個交易日。"""
-    date = trade_date
-    if date:
-        try:
-            datetime.strptime(date, "%Y-%m-%d")
-        except ValueError as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
-    else:
-        date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    codes = industry_group_codes()
-    events = load_window_flips(date, codes=codes)
-    held_from = None
-    if not trade_date and not events and _should_hold_previous_ranking(datetime.now(TW_TZ)):
-        previous = latest_trade_date_with_data(date, interval="5m")
-        if previous:
-            events = load_window_flips(previous, codes=codes)
-            held_from = date
-            date = previous
-    return {"status": "ok", "tradeDate": date, "heldFrom": held_from, "count": len(events), "events": events}
 
 
 @app.get("/api/hub/index/otc/status")
