@@ -162,8 +162,22 @@ class CollectAndPayloadTests(unittest.TestCase):
         self.assertEqual(lk["streak"]["mf"], -1)
         self.assertEqual(data["stocks"]["3016"]["mf"], None)   # 那天沒有主力資料
         self.assertEqual(data["stocks"]["3016"]["close"], None)
+        self.assertIsNone(tsmc["score"])   # 黑龍表還沒整理那天：均線分數空著
+        # 2026-10-13 使用者：放空籌碼的均線分數欄都是「—」——每檔附上那天收盤的均線分數（黑龍表 score2）與是否站上月線
+        import heilong_backtest
+        with database.get_connection() as connection:
+            heilong_backtest._schema(connection)
+            insert = ("INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, score2, ma_bits) "
+                      "VALUES (?, ?, 1, 1, 1, 1, 1, ?, ?)")
+            connection.executemany(insert, [("2026-09-24", "2330", 13, 0b111111), ("2026-09-24", "6207", 3, 0b000011),
+                                            ("2026-09-23", "2330", 9, 0b000111)])
+        data = module.chips_daily()
+        self.assertEqual((data["stocks"]["2330"]["score"], data["stocks"]["2330"]["aboveMa20"]), (13, True))
+        self.assertEqual((data["stocks"]["6207"]["score"], data["stocks"]["6207"]["aboveMa20"]), (3, False))   # 5、10 日線上，月線下
+        self.assertIsNone(data["stocks"]["3016"]["score"])
         # 指定日期
         yesterday = module.chips_daily("2026-09-23")
+        self.assertEqual(yesterday["stocks"]["2330"]["score"], 9)   # 往日也有那天的均線分數
         self.assertEqual(yesterday["stocks"]["2330"]["foreign"], 300.0)
         self.assertEqual(yesterday["stocks"]["2330"]["streak"]["foreign"], 1)
 

@@ -348,6 +348,14 @@ def report_section(as_of: str) -> dict[str, Any] | None:
             continue
         published.append((r, day, known))
     high = [x for x in published if x[0]["yoy"] is not None and x[0]["yoy"] >= REPORT_YOY_MIN]
+    # 2026-10-13 使用者（莊爸波段精選日報）：營收面只看「上一個交易日之後到基準日」新公布的那批——
+    # 「9 月營收・10/13 公布 1 檔，年增 ≥30% 0 檔」；完整名單看營收成長榜。公布日不確定的（第一次抓的那批）不算新公布。
+    from trading_days import previous_trading_day
+
+    since = previous_trading_day(date.fromisoformat(as_of)).isoformat()
+    fresh = [x for x in published if x[2] and x[1] and since < x[1] <= as_of]
+    fresh_codes = {x[0]["code"] for x in fresh}
+    fresh_high = [x for x in fresh if x[0]["yoy"] is not None and x[0]["yoy"] >= REPORT_YOY_MIN]
     from brew_launch_history import group_and_name   # 延遲匯入：brew_launch_history 啟動時會連到很多模組
     from heilong_backtest import _schema as _heilong_schema
 
@@ -372,9 +380,12 @@ def report_section(as_of: str) -> dict[str, Any] | None:
             "score": t["score2"], "close": float(t["close"]), "turnoverYi": round(turnover / 1e8, 2),
             "announce": day, "known": known, "accel": accel, "decel": decel, "warn": warn,
         })
+    new_picks = [p for p in picks if p["code"] in fresh_codes]
     return {
         "month": month, "asOf": as_of, "published": len(published), "yoyHigh": len(high), "qualified": len(picks),
         "picks": picks[:REPORT_PICKS], "rule": {"yoy": REPORT_YOY_MIN, "score": REPORT_SCORE_MIN, "turnoverYi": REPORT_TURNOVER_MIN / 1e8},
+        "since": since, "newPublished": len(fresh), "newYoyHigh": len(fresh_high), "newQualified": len(new_picks),
+        "newPicks": new_picks[:REPORT_PICKS],
     }
 
 

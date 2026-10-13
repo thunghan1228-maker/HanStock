@@ -134,12 +134,16 @@ class ReportTests(unittest.TestCase):
         groups = {g["name"]: g for g in r["groups"]}
         self.assertEqual([g["name"] for g in r["groups"]], ["矽晶圓", "半導體", "設備股"])   # 依當天平均漲跌幅排
         self.assertEqual((groups["矽晶圓"]["aboveMa20"], groups["矽晶圓"]["members"], groups["矽晶圓"]["inst5"], groups["矽晶圓"]["rank"]), (1, 1, 5000.0, 1))
-        self.assertEqual(groups["矽晶圓"]["judge"], "資金已進、型態已翻，只挑籌碼連續上榜者")
-        self.assertEqual(groups["設備股"]["judge"], "資金未進、型態未翻：先看族群再看個股")
+        # 2026-10-13 莊爸 10/14 報告：精選族群寫當天族群均漲
+        self.assertEqual(groups["矽晶圓"]["judge"], "資金已進、型態已翻；族群 09/24 均漲 +4.0%")
+        self.assertEqual((groups["矽晶圓"]["featured"], groups["矽晶圓"]["featuredOrder"]), (True, 0))
+        # 設備股：籌碼雷達熱門族（週籌碼先進）、法人 5 日賣超、站上月線不到一半 → 低檔醞釀
+        self.assertEqual(groups["設備股"]["judge"], "週籌碼先進、法人 5 日賣超、價格未表態：屬「低檔醞釀」非「發動」，只挑族內已站上月線者")
         self.assertIn("資金主軸在已站上月線的族群：矽晶圓", r["summary"][0])
-        self.assertIn("籌碼面首選 合晶；技術面首選 合晶", r["summary"][1])
-        self.assertIn("均線新滿分 合晶", r["summary"][2])
-        self.assertIn("體質轉強 合晶", r["summary"][2])
+        self.assertEqual(r["summary"][1], "籌碼進、法人未跟：半導體、設備股 —— 低檔醞釀，等站上月線再進")
+        self.assertIn("籌碼面首選 合晶；技術面首選 合晶", r["summary"][2])
+        self.assertIn("均線新滿分 合晶", r["summary"][3])
+        self.assertIn("體質轉強 合晶", r["summary"][3])
         self.assertTrue(r["summary"][-1].startswith("風險提示"))
         self.assertEqual(r["counts"], {"chips": 1, "tech": 1, "techNear": 0, "body": 1, "strong": 1, "full": 1})
         self.assertEqual([x["tag"] for x in r["picks"]["full"]], ["0→15"])
@@ -239,10 +243,43 @@ class ReportTests(unittest.TestCase):
             self.assertIn("dates", body)
             self.assertEqual(client.post("/api/hub/swing-report/refresh").json()["status"], "ok")
 
+    def test_disposition_from_jail(self) -> None:
+        # 2026-10-13：處置動態改用處置監獄帳本（全市場）；9/24 基準、下一個交易日 9/29（9/25 中秋節、9/28 教師節）
+        import disposition_jail as jail
+
+        def punish(code: str, start: str, end: str) -> dict:
+            return {"code": code, "start": start, "end": end, "market": "TSE", "name": f"N{code}", "announce": start,
+                    "condition": "連續三次", "measure": "第一次處置", "days": 10, "minutes": 5, "content": ""}
+
+        jail.save_punishes([
+            punish("6182", "2026-09-29", "2026-10-09"),   # 明日起處置
+            punish("6207", "2026-09-14", "2026-09-24"),   # 明日出獄
+            punish("2330", "2026-09-14", "2026-09-24"),   # 期滿但 9/29 又被再次處置：不算出獄
+            punish("2330", "2026-09-29", "2026-10-09"),
+            punish("3008", "2026-09-08", "2026-09-22"),   # 9/23 出獄，到 9/29 是出獄第 3 天
+        ])
+        d = module.disposition_from_jail("2026-09-24")
+        self.assertEqual((d["source"], d["nextTradingDay"]), ("jail", "2026-09-29"))
+        self.assertEqual([x["code"] for x in d["upcoming"]], ["2330", "6182"])
+        self.assertEqual([x["code"] for x in d["releasing"]], ["6207"])
+        self.assertEqual([x["code"] for x in d["active"]], ["2330", "6207"])
+        self.assertEqual([(x["code"], x["daysOut"]) for x in d["watch"]], [("3008", 3)])
+        self.assertEqual(d["upcoming"][1]["group"], "矽晶圓")
+        self.assertEqual(d["high"], [])
+        # 報告用帳本（全市場），不是只看族群表
+        r = module.build_report("2026-09-24")
+        self.assertEqual((r["tiles"]["upcoming"], r["tiles"]["releasing"]), (2, 1))
+        self.assertEqual(r["readDate"], "2026-09-29")
+
     def test_refresh_window(self) -> None:
         self.assertTrue(module._in_refresh_window(datetime(2026, 9, 24, 15, 10, tzinfo=TW)))
         self.assertFalse(module._in_refresh_window(datetime(2026, 9, 24, 14, 0, tzinfo=TW)))
         self.assertFalse(module._in_refresh_window(datetime(2026, 9, 25, 16, 0, tzinfo=TW)))   # 中秋節
+        # 晚上 21:05～23:35、早上 07:30～08:30（交易日）
+        self.assertTrue(module._in_evening_window(datetime(2026, 9, 24, 21, 30, tzinfo=TW)))
+        self.assertTrue(module._in_evening_window(datetime(2026, 9, 24, 7, 45, tzinfo=TW)))
+        self.assertFalse(module._in_evening_window(datetime(2026, 9, 24, 20, 0, tzinfo=TW)))
+        self.assertFalse(module._in_evening_window(datetime(2026, 9, 25, 21, 30, tzinfo=TW)))   # 中秋節
 
 
 class SustainedTests(unittest.TestCase):
