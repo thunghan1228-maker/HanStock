@@ -88,26 +88,26 @@ class SlotTests(unittest.TestCase):
         return datetime(2026, 10, 7, hour, minute, second, tzinfo=TW)
 
     def test_due_slots_window(self) -> None:
-        self.assertEqual(module.ALL_SLOTS, ["11:50", "12:50", "13:10", "13:35", "14:50"])
-        self.assertEqual(module.due_slots(self.at("11:49:50"), set()), [])
-        self.assertEqual(module.due_slots(self.at("11:50:10"), set()), ["11:50"])
-        self.assertEqual(module.due_slots(self.at("11:50:20"), {"11:50"}), [])
+        self.assertEqual(module.ALL_SLOTS, ["12:00", "13:00", "13:20", "13:45", "15:00"])
+        self.assertEqual(module.due_slots(self.at("11:59:50"), set()), [])
+        self.assertEqual(module.due_slots(self.at("12:00:10"), set()), ["12:00"])
+        self.assertEqual(module.due_slots(self.at("12:00:20"), {"12:00"}), [])
         # 盤中時間點過了 8 分鐘不補（報價已經是後來的）
-        self.assertEqual(module.due_slots(self.at("11:59:00"), set()), [])
-        self.assertEqual(module.due_slots(self.at("12:50:05"), {"11:50"}), ["12:50"])
-        self.assertEqual(module.due_slots(self.at("13:10:30"), {"11:50", "12:50"}), ["13:10"])
+        self.assertEqual(module.due_slots(self.at("12:09:00"), set()), [])
+        self.assertEqual(module.due_slots(self.at("13:00:05"), {"12:00"}), ["13:00"])
+        self.assertEqual(module.due_slots(self.at("13:20:30"), {"12:00", "13:00"}), ["13:20"])
         # 收盤後的時間點用最後報價，晚一點也補
-        self.assertEqual(module.due_slots(self.at("16:00:00"), set()), ["13:35", "14:50"])
+        self.assertEqual(module.due_slots(self.at("16:00:00"), set()), ["13:45", "15:00"])
 
-    def test_every_logic_runs_ten_minutes_before_zhuang(self) -> None:
-        """2026-10-08 使用者：以莊爸的時點為主、全部提早 10 分鐘——波段（穿山鱷龍、飛龍戰法）13:00／15:00 → 12:50／14:50，
-        隔日沖（黑龍短沖含 R劍、黑飛舞家族）12:00／13:20／13:45 → 11:50／13:10／13:35。"""
+    def test_every_logic_runs_at_zhuang_time_points(self) -> None:
+        """2026-10-13 使用者：時間點跟莊爸一樣——波段（穿山鱷龍、飛龍戰法）13:00／15:00，
+        隔日沖（黑龍短沖含 R劍、黑飛舞家族）12:00／13:20／13:45（10/08～10/13 曾經各提早 10 分鐘）。"""
         self.assertEqual(len(module.LOGICS), 15)
         swing = {logic["key"] for logic in module.LOGICS if logic["kind"] == "波段"}
         self.assertEqual(swing, {"cross2022", "breakred", "crossconv", "fly3", "flyburst", "flybreak", "red3"})
         for logic in module.LOGICS:
             self.assertTrue(logic["desc"] and logic["calibration"])
-            self.assertEqual(logic["times"], ["12:50", "14:50"] if logic["kind"] == "波段" else ["11:50", "13:10", "13:35"])
+            self.assertEqual(logic["times"], ["13:00", "15:00"] if logic["kind"] == "波段" else ["12:00", "13:20", "13:45"])
 
 
 class StoreTests(unittest.TestCase):
@@ -152,13 +152,13 @@ class StoreTests(unittest.TestCase):
             heilong_backtest._schema(connection)
             insert = "INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, score2) VALUES (?, ?, 1, 1, 1, 1, 1, ?)"
             connection.executemany(insert, [(self.days[-1], "2368", 13), (self.days[-2], "2368", 7)])
-        now = today.replace(hour=11, minute=50, second=10, tzinfo=TW)
-        result = module.run_slot("11:50", now=now, fetcher=fetcher)
+        now = today.replace(hour=12, minute=0, second=10, tzinfo=TW)
+        result = module.run_slot("12:00", now=now, fetcher=fetcher)
         self.assertEqual(result["counts"]["rsword"], 1)
         self.assertIn("tse_2368.tw", requested[0])
         self.assertNotIn("0050", requested[0])   # ETF 不算
         payload = module.day_payload(today.date().isoformat())
-        run = payload["runs"]["rsword"]["11:50"]
+        run = payload["runs"]["rsword"]["12:00"]
         self.assertEqual(run["n"], 1)
         self.assertEqual(run["stocks"][0]["c"], "2368")
         self.assertEqual(run["stocks"][0]["n"], "金像電")
@@ -177,19 +177,19 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(payload["dates"][0], "2026-10-08")
             self.assertIn(self.days[-1], payload["dates"])
             self.assertEqual(payload["runs"], {})
-            self.assertEqual(payload["nextSlot"], "11:50")
+            self.assertEqual(payload["nextSlot"], "12:00")
             self.assertIsNone(module.day_payload(self.days[-1])["nextSlot"])   # 看往日不給下一輪
         with patch.object(module, "_now", return_value=datetime(2026, 10, 11, 10, 0, tzinfo=TW)):   # 星期日：照舊看最近有資料那天
             self.assertEqual(module.day_payload()["date"], self.days[-1])
-        self.assertEqual(module._next_slot(datetime(2026, 10, 8, 13, 10, tzinfo=TW)), "13:35")
-        self.assertEqual(module._next_slot(datetime(2026, 10, 8, 14, 0, tzinfo=TW)), "14:50")
+        self.assertEqual(module._next_slot(datetime(2026, 10, 8, 13, 20, tzinfo=TW)), "13:45")
+        self.assertEqual(module._next_slot(datetime(2026, 10, 8, 14, 0, tzinfo=TW)), "15:00")
         self.assertEqual(module._next_slot(datetime(2026, 10, 8, 15, 0, tzinfo=TW)), "收盤")
 
     def test_payload_hides_runs_from_old_time_points(self) -> None:
         day = self.days[-1]
-        module._save(day, "13:20", {"rsword": [{"c": "2368"}]}, "mis")    # 改時間點以前的盤中輪次
-        module._save(day, "13:10", {"rsword": []}, "mis")
-        self.assertEqual(set(module.day_payload(day)["runs"]["rsword"]), {"13:10"})
+        module._save(day, "13:10", {"rsword": [{"c": "2368"}]}, "mis")    # 改時間點以前的盤中輪次（10/08～10/13 提早 10 分鐘那時候）
+        module._save(day, "13:20", {"rsword": []}, "mis")
+        self.assertEqual(set(module.day_payload(day)["runs"]["rsword"]), {"13:20"})
 
     def test_recompute_also_redoes_older_saved_close_lists(self) -> None:
         """條件改版：存著的「收盤」名單（就算超過回推天數）全部用新條件重算。"""
