@@ -41,6 +41,7 @@ MA_STRONG_MIN = 8              # 均線轉強：跳升後至少 8 分
 DEV5_WARN_PCT = 15.0           # 與 5 日線乖離 ≥15% 提示
 CHIPS_POOL_TOP = 10            # 籌碼面：籌碼暴增榜（籌碼雷達）前 10 名裡挑（2026-10-12 使用者：照莊爸的籌碼面精選）
 CHIPS_STREAK_MIN = 3           # 籌碼面第二層：不在榜上前 10，但熱門族、籌碼連續增加 ≥3 週（2026-10-13 莊爸：天二科技、光頡）
+CHIPS_TIER2_CHIP_MIN = 3.0     # 第二層這一週的籌碼% 也要 ≥3%（天二科技 3.8%、光頡 4.6% 有；聯寶連 9 週但只 +0.4%、台光電 +1.5% 莊爸沒列）
 HOT_GROUP_RANK = 10            # 族群當天漲幅前 10（集保週資料還沒有時，個股卡片的熱門族退回用這個）
 PE_SANE_MAX = 500              # 本益比超過這個當異常值，不算族群均值
 WATCH_DAYS = 5                 # 觀察名單：出獄 ≤5 個交易日
@@ -566,7 +567,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     # 但熱門族、籌碼連續增加 ≥3 週、法人 5 日買超）：排在榜上那幾檔後面，連續週數多的在前
     tier2 = [c for c, rs in radar_stocks.items()
              if c in eligible_set and c not in chips_all and c in hot_of and (rs.get("streak") or 0) >= CHIPS_STREAK_MIN
-             and (rs.get("chip") or 0) > 0 and (chips.get(c, {}).get("inst5") or 0) > 0]
+             and (rs.get("chip") or 0) >= CHIPS_TIER2_CHIP_MIN and (chips.get(c, {}).get("inst5") or 0) > 0]
     tier2.sort(key=lambda c: (-radar_stocks[c]["streak"], -(tech[c]["score"] or 0), -(radar_stocks[c]["chip"] or 0)))
     chips_all += tier2
     chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_all[:PICK_LIMIT]]
@@ -695,7 +696,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份，用基準日當下最新的集保週）前 {CHIPS_POOL_TOP} 名裡，"
                      "屬於熱門族、法人 5 日買超的；連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
-                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、法人 5 日買超的。"
+                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}%、法人 5 日買超的。"
                      "觀察名單＝出獄 5 個交易日內、籌碼% 是正的",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
             "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
