@@ -56,6 +56,9 @@ class AnalyzeBarsTests(unittest.TestCase):
         self.assertEqual(module._risks(t, {"inst5": -3.0, "instToday": -1.0}, True),
                          ["處置中", "季線 53.93 在頭上", "漲停後與 5 日線乖離 19%", "法人 5 日仍為賣超"])
         self.assertEqual(module._risks({"ma60OverHead": False, "dev5Pct": 2.0}, {"inst5": 10.0, "instToday": -2.0}, False), ["法人今天轉賣超"])
+        # 本益比高於族群均值 1.5 倍才提示（莊爸 10/14：天二科技 69 vs 44 有；光頡 52 vs 44 沒有）
+        self.assertEqual(module._risks({}, {"pe": 69.35, "peGroupAvg": 44.0}, False), ["本益比 69 高於族群均值 44"])
+        self.assertEqual(module._risks({}, {"pe": 52.03, "peGroupAvg": 44.0}, False), [])
 
 
 class ReportTests(unittest.TestCase):
@@ -122,7 +125,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([x["code"] for x in chips], ["6182"])
         self.assertEqual((chips[0]["inst5"], chips[0]["instStreak"], chips[0]["instToday"], chips[0]["tag"]), (5000.0, 5, 1000.0, "連 2 週"))
         self.assertEqual(chips[0]["inst5VolPct"], 166.7)    # 5000 張 ÷ 5 天成交量 3000 張
-        self.assertEqual(chips[0]["radar"], {"chip": 4.2, "streak": 2, "rank": 1, "week": "2026-09-18", "listSize": 1})
+        self.assertEqual(chips[0]["radar"], {"chip": 4.2, "chip2": 4.24, "streak": 2, "rank": 1, "week": "2026-09-18", "listSize": 1})
         self.assertEqual((chips[0]["mf5"], chips[0]["mfStreak"]), (800, 2))
         self.assertEqual(chips[0]["risks"], [])
         self.assertEqual(r["radar"], {"week": "2026-09-18", "hot": ["矽晶圓", "半導體", "設備股"], "buy": 1, "pool": 10})
@@ -192,6 +195,11 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}})], ["2330", "6182"])
         # 處置中的不列（像 10/13 的聯茂）
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}}, {"2330"})], ["6182"])
+        # 門檻用兩位小數比：一位小數 3.0、其實 2.96 的不列
+        self.assertEqual(picks({"6182": {"chip": 3.0, "chip2": 2.96, "streak": 3, "rank": None}}), [])
+        # 營收年增為負的不列（像 10/13 的先進光 −37%）
+        with patch.object(module, "latest_revenue", return_value={"6182": {"yoy": -37.2, "ym": "2026-09"}}):
+            self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [])
 
     def test_revenue_cards_outside_groups(self) -> None:
         # 營收面入選、不在族群表的（莊爸的台汽電）也有完整卡片；但不算進族群統計、其他精選
@@ -287,6 +295,14 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([(x["code"], x["daysOut"]) for x in d["watch"]], [("3008", 3)])
         self.assertEqual(d["upcoming"][1]["group"], "矽晶圓")
         self.assertEqual(d["high"], [])
+        # 籌碼面觀察名單：出獄 5 天內、籌碼% ≥2%（兩位小數比：1.97% 不列）
+        def watch(chip2: float) -> list:
+            fake = {"week": "2026-09-18", "buy": [], "hot": [], "hotOf": {}, "stocks": {"3008": {"chip": round(chip2, 1), "chip2": chip2, "streak": 1, "rank": None}}}
+            with patch.object(module, "radar_week", return_value=fake):
+                return module.build_report("2026-09-24")["chipsWatch"]
+
+        self.assertEqual(watch(1.97), [])
+        self.assertEqual(watch(2.4), [{"code": "3008", "name": "N3008", "daysOut": 3, "chip": 2.4}])
         # 報告用帳本（全市場），不是只看族群表
         r = module.build_report("2026-09-24")
         self.assertEqual((r["tiles"]["upcoming"], r["tiles"]["releasing"]), (2, 1))
