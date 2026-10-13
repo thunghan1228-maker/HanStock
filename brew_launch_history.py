@@ -717,6 +717,13 @@ def _fetch_group_quotes(codes: list[str], key: str, fetcher: Callable[[str], Any
             for code, q in quotes.items():
                 old = best.get(code)
                 if q.get("price") and q.get("prevClose") and (old is None or _stamp(q) >= _stamp(old)):
+                    if (old is not None and q.get("priceSource") == "fallback" and old.get("priceSource") != "fallback"
+                            and _stamp(old)[0] == _stamp(q)[0]):
+                        # 2026-10-13 使用者：廣寰科漲停鎖死卻顯示 +6.39%——證交所偶爾回「這一盤沒成交、也沒有委買委賣」，
+                        # 只能退回開盤價，會把同一天已經有的成交價／委買價（漲停價）蓋掉，畫面在漲停跟開盤價之間跳。
+                        # 這種只拿得到開盤價的，價格沿用上一筆有成交或委買委賣的，只更新量跟時間。
+                        q = {**q, "price": old["price"], "limitUp": old.get("limitUp"), "limitDown": old.get("limitDown"),
+                             "priceSource": old.get("priceSource")}
                     best[code] = q
             out: dict[str, dict[str, Any]] = {}
             latest_date = latest_time = ""
