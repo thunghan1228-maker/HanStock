@@ -40,6 +40,7 @@ MA_JUMP_MIN = 3                # 均線轉強：均線分數比前一交易日�
 MA_STRONG_MIN = 8              # 均線轉強：跳升後至少 8 分
 DEV5_WARN_PCT = 15.0           # 與 5 日線乖離 ≥15% 提示
 CHIPS_POOL_TOP = 10            # 籌碼面：籌碼暴增榜（籌碼雷達）前 10 名裡挑（2026-10-12 使用者：照莊爸的籌碼面精選）
+CHIPS_STREAK_MIN = 3           # 籌碼面第二層：不在榜上前 10，但熱門族、籌碼連續增加 ≥3 週（2026-10-13 莊爸：天二科技、光頡）
 HOT_GROUP_RANK = 10            # 族群當天漲幅前 10（集保週資料還沒有時，個股卡片的熱門族退回用這個）
 PE_SANE_MAX = 500              # 本益比超過這個當異常值，不算族群均值
 WATCH_DAYS = 5                 # 觀察名單：出獄 ≤5 個交易日
@@ -47,6 +48,9 @@ LAST_WEEK_BACK = 5             # 上一週那一組：往前 5 個交易日那�
 POLL_SECONDS = 15 * 60
 REFRESH_START_MINUTE = 15 * 60 + 5    # 交易日 15:05 起重算今天的
 REFRESH_END_MINUTE = 18 * 60
+# 2026-10-13 使用者（莊爸每個交易日晚上 9 點更新、給隔天盤前讀）：處置公告、上櫃處置、主動式 ETF 持股晚上才齊，
+# 晚上 21:05～23:35 每 30 分鐘再算一次；隔天早上 07:30～08:30 再補一次（上櫃鏡像常常半夜才到）
+EVENING_WINDOWS = ((21 * 60 + 5, 23 * 60 + 35), (7 * 60 + 30, 8 * 60 + 30))
 
 
 # ------------------------------------------------------------------ 儲存
@@ -124,6 +128,67 @@ def disposition_sections(as_of: str, codes: set[str]) -> dict[str, Any]:
             releasing.append(item)
         active.append(item)
     return {"nextTradingDay": next_td, "upcoming": upcoming, "releasing": releasing, "active": active, "watch": watch}
+
+
+def disposition_from_jail(as_of: str) -> dict[str, Any] | None:
+    """處置動態改用處置監獄的帳本（2026-10-13 使用者：照莊爸「入獄／出獄／嫌疑＝監獄盤後帳本」）：全市場，不只族群表。
+    明日起處置＝處置起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易（同一檔又被再次處置、期間接著的，
+    以最後一次為準，不算出獄——天擎 10/06～10/13 又 10/12～10/16 → 10/19 才出獄）；處置中＝基準日還在關；
+    觀察名單＝出獄 5 個交易日內，「出獄第 N 天」照盤前讀那天（下一個交易日）算；高機率處置＝監獄用基準日收盤推算明天門檻、
+    機率高、還沒被關的嫌疑股。帳本讀不到回 None（改用舊的處置紀錄）。"""
+    import disposition_jail as jail   # 延遲匯入：jail 會讀黑龍表
+
+    next_td = next_trading_day(as_of).isoformat()
+    since = (datetime.strptime(as_of, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
+    try:
+        punishes = jail.load_punishes(since)
+    except Exception:  # noqa: BLE001
+        logger.exception("jail punishes failed")
+        return None
+    if not punishes:
+        return None
+    by_code: dict[str, list[dict[str, Any]]] = {}
+    for p in punishes:
+        p["release"] = jail.release_day(p["end"])
+        by_code.setdefault(p["code"], []).append(p)
+
+    def still_jailed(code: str, day: str) -> bool:
+        return any(q["start"] <= day <= q["end"] for q in by_code.get(code, []))
+
+    def item(p: dict[str, Any]) -> dict[str, Any]:
+        group, name = group_and_name(p["code"])
+        return {"code": p["code"], "name": p["name"] or name, "group": group if group and name != p["code"] else None,
+                "market": jail.MARKET_LABEL.get(p["market"], p["market"]), "start": p["start"], "end": p["end"], "releaseDay": p["release"],
+                "reason": " ".join(x for x in (p.get("condition"), p.get("measure")) if x) or None,
+                "minutes": p.get("minutes"), "days": p.get("days")}
+
+    upcoming, releasing, active, watch = {}, {}, {}, {}
+    for p in punishes:
+        code = p["code"]
+        if p["start"] == next_td and (code not in upcoming or p["end"] > upcoming[code]["end"]):
+            upcoming[code] = item(p)
+        if p["release"] == next_td and not still_jailed(code, next_td):
+            releasing[code] = item(p)
+        if p["start"] <= as_of <= p["end"] and (code not in active or p["end"] > active[code]["end"]):
+            active[code] = item(p)
+        if p["release"] <= as_of and not still_jailed(code, next_td):
+            n = jail.count_trading_days(p["release"], next_td)
+            if n <= WATCH_DAYS and (code not in watch or n < watch[code]["daysOut"]):
+                watch[code] = {**item(p), "daysOut": n}
+    high: list[dict[str, Any]] = []
+    try:
+        payload = jail.build_payload()
+        if payload.get("status") == "ok" and payload.get("dataDate") == as_of:
+            for x in payload.get("suspects") or []:
+                if x.get("high") and not x.get("jailed") and x["code"] not in upcoming:
+                    group, _name = group_and_name(x["code"])
+                    high.append({"code": x["code"], "name": x.get("name"), "group": group, "status": x.get("status"),
+                                 "lines": [ln.get("text") for ln in (x.get("lines") or []) if ln.get("text")][:2]})
+    except Exception:  # noqa: BLE001
+        logger.exception("jail suspects failed")
+    order = lambda d: sorted(d.values(), key=lambda e: e["code"])  # noqa: E731
+    return {"nextTradingDay": next_td, "source": "jail", "upcoming": order(upcoming), "releasing": order(releasing),
+            "active": order(active), "watch": sorted(watch.values(), key=lambda e: (e["daysOut"], e["code"])), "high": high}
 
 
 def save_report(payload: dict[str, Any]) -> None:
@@ -306,7 +371,8 @@ def radar_week(as_of: str) -> dict[str, Any] | None:
         return None
     buy, _sell = radar.lists(week)
     rank = {c: i + 1 for i, c in enumerate(buy)}
-    hot = [g["name"] for g in radar.ranked_groups(week)[:chip_radar.HOT_GROUPS]]
+    hot_groups = radar.ranked_groups(week)[:chip_radar.HOT_GROUPS]
+    hot = [g["name"] for g in hot_groups]
     hot_of: dict[str, str] = {}
     for name in hot:
         for c in radar.group_members.get(name, []):
@@ -322,7 +388,8 @@ def radar_week(as_of: str) -> dict[str, Any] | None:
                 break
             streak += 1
         stocks[code] = {"chip": chip_radar.chip_one_decimal(radar.xs[code][week]), "streak": streak, "rank": rank.get(code)}
-    return {"week": week, "buy": buy, "hot": hot, "hotOf": hot_of, "stocks": stocks}
+    return {"week": week, "buy": buy, "hot": hot, "hotOf": hot_of, "stocks": stocks,
+            "groups": [{"name": g["name"], "avg": g["avg"]} for g in hot_groups]}   # 熱門族的週籌碼（族群裡籌碼% 最高 5 檔平均）
 
 
 def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None = None) -> dict[str, Any]:
@@ -495,6 +562,13 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     chips_all = [c for c in (radar["buy"][:CHIPS_POOL_TOP] if radar else [])
                  if c in eligible_set and c in hot_of and (chips.get(c, {}).get("inst5") or 0) > 0]
     chips_all.sort(key=lambda c: (-radar_stocks[c]["streak"], -(tech[c]["score"] or 0), radar_stocks[c]["rank"] or 99))
+    # 第二層（2026-10-13 莊爸 10/14 報告：台表科、今國光之後還有天二科技連 5 週、光頡連 3 週——不在暴增榜前 10，
+    # 但熱門族、籌碼連續增加 ≥3 週、法人 5 日買超）：排在榜上那幾檔後面，連續週數多的在前
+    tier2 = [c for c, rs in radar_stocks.items()
+             if c in eligible_set and c not in chips_all and c in hot_of and (rs.get("streak") or 0) >= CHIPS_STREAK_MIN
+             and (rs.get("chip") or 0) > 0 and (chips.get(c, {}).get("inst5") or 0) > 0]
+    tier2.sort(key=lambda c: (-radar_stocks[c]["streak"], -(tech[c]["score"] or 0), -(radar_stocks[c]["chip"] or 0)))
+    chips_all += tier2
     chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_all[:PICK_LIMIT]]
     # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數
     crossed = [c for c in eligible if tech[c]["crossedMa20"]]
@@ -522,11 +596,28 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                  for c in strong_all if c not in body_all and (tech[c]["prevScore"] or 0) >= SUSTAIN_MIN_PREV]
     sustained.sort(key=lambda x: (x["total"], x["score"] or 0), reverse=True)
     sustained = sustained[:8]
-    # 今日摘要
+    # 今日摘要（2026-10-13 照莊爸 10/14 報告的六點：資金主軸、籌碼進法人未跟、籌碼／技術首選、體質／均線、月營收、風險提示）
     main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] > 0]
     main_groups.sort(key=lambda g: g["inst5"], reverse=True)
-    brewing_groups = [g for g in groups if g["inst5"] > 0 and g["aboveRatio"] < 0.5]
-    brewing_groups.sort(key=lambda g: g["inst5"], reverse=True)
+    # 籌碼進、法人未跟：籌碼雷達的熱門族（週籌碼先進）裡，站上月線不到一半的（價格未表態）；週籌碼高的在前
+    radar_groups = {g["name"]: g for g in (radar.get("groups") or [])} if radar else {}
+    brewing_groups = [g for g in groups if g["name"] in radar_groups and g["aboveRatio"] < 0.5]
+    for g in groups:
+        rg = radar_groups.get(g["name"])
+        g["chipWeek"] = rg["avg"] if rg else None
+        g["chipHot"] = bool(rg)
+    brewing_groups.sort(key=lambda g: g["chipWeek"] or 0, reverse=True)
+    if not brewing_groups:   # 集保週資料還沒有：退回法人先進、型態未翻
+        brewing_groups = sorted((g for g in groups if g["inst5"] > 0 and g["aboveRatio"] < 0.5), key=lambda g: g["inst5"], reverse=True)
+    featured = [g["name"] for g in main_groups[:3]] + [g["name"] for g in brewing_groups[:2]]
+    for g in groups:
+        g["featured"] = g["name"] in featured
+        g["featuredOrder"] = featured.index(g["name"]) if g["name"] in featured else None
+        if g["name"] in [x["name"] for x in brewing_groups[:2]] and radar_groups:
+            inst_text = "法人 5 日賣超" if g["inst5"] < 0 else "法人 5 日未跟"
+            g["judge"] = f"週籌碼先進、{inst_text}、價格未表態：屬「低檔醞釀」非「發動」，只挑族內已站上月線者"
+        elif g["name"] in featured:
+            g["judge"] = f"資金已進、型態已翻；族群 {as_of[5:].replace('-', '/')} 均漲 {g['avgChange']:+.1f}%" + ("。價值面有支撐" if (g.get("revenueYoyMedian") or 0) > 0 else "")
     names = lambda cards: "、".join(x["name"] for x in cards)  # noqa: E731
     summary: list[str] = []
     if not has_inst:
@@ -534,10 +625,17 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     summary.append(("資金主軸在已站上月線的族群：" + "、".join(g["name"] for g in main_groups[:3]) + " —— 法人同步買超")
                    if main_groups else "今天沒有族群同時「多數站上月線」又「法人 5 日買超」，資金沒有明顯主軸")
     if brewing_groups:
-        summary.append("法人先進、型態未翻：" + "、".join(g["name"] for g in brewing_groups[:2]) + " —— 低檔醞釀，等站上月線再進")
+        summary.append(("籌碼進、法人未跟：" if radar_groups else "法人先進、型態未翻：") + "、".join(g["name"] for g in brewing_groups[:2]) + " —— 低檔醞釀，等站上月線再進")
     summary.append("籌碼面首選 " + (names(chips_picks[:2]) or "無") + "；技術面首選 " + (names(tech_picks[:3]) or "無"))
     summary.append("體質轉強 " + (names(body_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:3]) or "無"))
-    dispo = disposition_sections(as_of, set(codes))
+    dispo = disposition_from_jail(as_of) or disposition_sections(as_of, set(codes))
+    # 籌碼面的觀察名單：出獄 5 個交易日內、籌碼% 是正的（莊爸：嘉晶 出獄第 2 天，籌碼 +3.0%）
+    chips_watch = []
+    for e in dispo.get("watch") or []:
+        rs = radar_stocks.get(e["code"])
+        if rs and (rs.get("chip") or 0) > 0:
+            chips_watch.append({"code": e["code"], "name": e["name"], "daysOut": e["daysOut"], "chip": rs["chip"]})
+    chips_watch.sort(key=lambda x: (x["daysOut"], -x["chip"]))
     last_week = _last_week_followup(as_of, _week_ago_report(as_of), bars_by_code, tech, inst_dates, inst_by_date)
     try:
         active_etf = etf_report_section(as_of)
@@ -549,14 +647,21 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         for p in revenue["picks"]:
             if p["code"] in tech:
                 p["card"] = card(p["code"], f"年增 +{p['yoy']:.0f}%")
-    if revenue and revenue["picks"]:
+        for p in revenue.get("newPicks") or []:
+            if p["code"] in tech and "card" not in p:
+                p["card"] = card(p["code"], f"年增 +{p['yoy']:.0f}%")
+    if revenue and "newPublished" in revenue:
+        md_ = lambda d: d[5:].replace("-", "/")  # noqa: E731
+        line = f"月營收：{md_(revenue['since'])} 之後到 {md_(as_of)} 公布 {revenue['newPublished']} 檔，年增 ≥{revenue['rule']['yoy']:g}% 有 {revenue['newYoyHigh']} 檔"
+        if revenue["newPicks"]:
+            line += "；首選 " + "、".join(x["name"] for x in revenue["newPicks"][:3])
+        summary.append(line)
+    elif revenue and revenue["picks"]:
         summary.append(f"營收面（{int(revenue['month'][5:])} 月營收）首選 " + "、".join(x["name"] for x in revenue["picks"][:3]))
-    if active_etf and (active_etf["sync"]["buy"] or active_etf["sync"]["sell"]):
-        buys = "、".join(x["name"] for x in active_etf["sync"]["buy"][:3]) or "無"
-        sells = "、".join(x["name"] for x in active_etf["sync"]["sell"][:3]) or "無"
-        summary.append(f"主動式基金（{active_etf['date'][5:].replace('-', '/')}）同步加碼 {buys}；同步減碼 {sells}")
     risk_lines = [f"{x['name']} {r}" for x in chips_picks + tech_picks + body_picks for r in x["risks"]]
-    summary.append("風險提示：" + ("；".join(risk_lines[:4]) if risk_lines else "精選名單沒有特別的風險提示"))
+    # 剛出獄的（出獄 3 個交易日內）：依規則觀察三日
+    risk_lines += [f"{x['name']} 出獄第 {x['daysOut']} 天，依規則觀察三日" for x in chips_watch if x["daysOut"] <= 3]
+    summary.append("風險提示：" + ("；".join(risk_lines[:5]) if risk_lines else "精選名單沒有特別的風險提示"))
     return {
         "status": "ok",
         "date": as_of,
@@ -574,7 +679,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                   "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full),
                   "upcoming": len(dispo["upcoming"]), "releasing": len(dispo["releasing"]),
                   "etfSyncBuy": len(active_etf["sync"]["buy"]) if active_etf else 0, "etfSyncSell": len(active_etf["sync"]["sell"]) if active_etf else 0,
-                  "revenue": revenue["qualified"] if revenue else 0},
+                  "revenue": revenue["qualified"] if revenue else 0, "highRisk": len(dispo.get("high") or [])},
         "disposition": dispo,
         "techSkipped": [{"code": c, "name": group_and_name(c)[1], "why": "營收年增為負"} for c in tech_skipped],
         "lastWeek": last_week,
@@ -583,6 +688,8 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "summary": summary,
         "groups": groups,
         "picks": {"chips": chips_picks, "tech": tech_picks, "body": body_picks, "full": full_picks},
+        "chipsWatch": chips_watch,
+        "readDate": next_trading_day(as_of).isoformat(),
         "notes": {"jumpTop": jump_top, "sustained": sustained},
         "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
@@ -769,13 +876,26 @@ def _in_refresh_window(now: datetime) -> bool:
     return REFRESH_START_MINUTE <= minute <= REFRESH_END_MINUTE
 
 
+def _in_evening_window(now: datetime) -> bool:
+    """交易日晚上 21:05～23:35、早上 07:30～08:30（早上那段重算的是前一個交易日收盤那份，給今天盤前讀）。"""
+    if not is_trading_day(now):
+        return False
+    minute = now.hour * 60 + now.minute
+    return any(start <= minute <= end for start, end in EVENING_WINDOWS)
+
+
 def _loop() -> None:
     time.sleep(90)   # 讓其他收集器先跑（日K、法人）
     run_once()
     last_window_run: str | None = None
+    last_evening_run = 0.0
     while True:
         time.sleep(POLL_SECONDS)
         now = datetime.now(TW_TZ)
+        if _in_evening_window(now) and time.time() - last_evening_run >= 30 * 60 - 60:
+            run_once(now)
+            last_evening_run = time.time()
+            continue
         if _in_refresh_window(now):
             run_once(now)
             last_window_run = now.strftime("%Y-%m-%d")
