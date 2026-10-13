@@ -365,6 +365,19 @@ def _streak(values: list[int | None]) -> int:
     return n * sign
 
 
+def _ma_scores(trade_date: str) -> dict[str, dict[str, Any]]:
+    """那天收盤的均線分數（2026-10-13 使用者：放空籌碼的均線分數欄都是「—」）：黑龍表 heilong_daily 的 score2
+    （內定算法：站上 6 條均線＋創 6 個天期新高＋多頭排列 3 分，滿分 15，全站同一套），ma_bits 第 3 位＝收盤站上月線。
+    黑龍表收盤後跟籌碼日報一起整理；讀不到（表還沒建、那天還沒整理）就回空的，前端照舊顯示「—」。"""
+    try:
+        with get_connection() as connection:
+            rows = connection.execute("SELECT stock_code, score2, ma_bits FROM heilong_daily WHERE trade_date = ?", (trade_date,)).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    return {str(r["stock_code"]).strip().upper(): {"score": r["score2"], "aboveMa20": None if r["ma_bits"] is None else bool(int(r["ma_bits"]) & 4)}
+            for r in rows if r["score2"] is not None}
+
+
 def chips_daily(trade_date: str | None = None) -> dict[str, Any]:
     """一天的盤後籌碼：只回 55 個族群的股票。date 沒給就用最新有法人資料的那天（都沒有就用最新有主力資料的那天）。"""
     from brew_launch_history import group_and_name
@@ -383,6 +396,7 @@ def chips_daily(trade_date: str | None = None) -> dict[str, Any]:
     inst = _institutional_by_date(inst_window, codes)
     mf_by_date = {d: main_force_daily(d, codes) for d in mf_window}
     quotes = daily_quotes(trade_date, codes)
+    scores = _ma_scores(trade_date)
     today_inst = inst.get(trade_date, {})
     today_mf = mf_by_date.get(trade_date, {})
     stocks: dict[str, Any] = {}
@@ -403,6 +417,9 @@ def chips_daily(trade_date: str | None = None) -> dict[str, Any]:
         for m in MEASURES:
             entry[m] = round(row_inst[m] / 1000, 1) if row_inst else None   # 張
         entry["mf"] = row_mf
+        sc = scores.get(code)
+        entry["score"] = sc["score"] if sc else None            # 那天收盤的均線分數（內定 15 分）
+        entry["aboveMa20"] = sc["aboveMa20"] if sc else None    # 那天收盤在月線之上
         stocks[code] = entry
     with get_connection() as connection:
         _schema(connection)
