@@ -234,7 +234,7 @@ class MainForceBackfillJobTests(unittest.TestCase):
                 request_main_force_backfill("2455", date, now=self.now)
 
     def test_request_for_a_stock_outside_the_43_groups_does_not_queue_a_job(self):
-        # 使用者 2026-09-23：主力歷史每日回補只補我們的43個官方族群，其他股票不要回補。
+        # 使用者 2026-09-23：主力歷史每日回補只補我們的55個官方族群，其他股票不要回補。
         # "9999"不在任何族群裡；不該建立任何工作，也不該碰資料庫（不然使用者隨便搜尋
         # 一檔股票查歷史就又排進了永久追蹤的回補佇列）。
         result = request_main_force_backfill("9999", "2026-09-08", now=self.now)
@@ -260,7 +260,7 @@ class MainForceBackfillJobTests(unittest.TestCase):
         self.assertIsNone(process_main_force_backfill_job(now=self.now + 1, backfill=never_called))
 
     def test_batch_and_explicit_queueing_for_group_stocks_are_unaffected(self):
-        # "2455"是43個官方族群成員之一：既有的批次/明確要求排隊行為不受這次限縮影響。
+        # "2455"是55個官方族群成員之一：既有的批次/明確要求排隊行為不受這次限縮影響。
         self.assertTrue(main_force_backfill_jobs_module._in_official_groups("2455"))
         self.assertTrue(request_main_force_backfill("2455", "2026-09-08", now=self.now)["queued"])
         self.assertEqual(process_main_force_backfill_job(now=self.now, backfill=lambda *a, **kw: dict(self.success))["status"],

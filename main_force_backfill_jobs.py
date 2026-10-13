@@ -13,13 +13,13 @@ TW_TZ = timezone(timedelta(hours=8))
 
 
 def _in_official_groups(code: str) -> bool:
-    """這檔股票是不是在 stock_groups.py 的 43 個官方族群裡。使用者 2026-09-23 要求主力歷史
-    每日回補只補這個範圍：逐檔打 Shioaji 歷史 kbars／逐筆是額度最大消耗者之一，43 個族群
+    """這檔股票是不是在 stock_groups.py 的 55 個官方族群裡。使用者 2026-09-23 要求主力歷史
+    每日回補只補這個範圍：逐檔打 Shioaji 歷史 kbars／逐筆是額度最大消耗者之一，55 個族群
     以外的股票（例如使用者搜尋、任意打開的個股）不在我們固定追蹤的範圍，不需要每天背景回補。
     即時開圖當下的資料（get_resilient_stock_bars）不受影響，這裡只管背景排程這條路徑。"""
     import stock_groups
     code = str(code).strip().upper()
-    return any(  # 股期標的是特殊清單不是族群，不算（2026-09-24 使用者：只掃 43 個族群）
+    return any(  # 股期標的是特殊清單不是族群，不算（2026-09-24 使用者：只掃 55 個族群）
         code == str(member_code).strip().upper()
         for name, members in stock_groups.STOCK_GROUPS.items() if name not in stock_groups.SPECIAL_GROUP_NAMES
         for member_code, _name in members
@@ -42,7 +42,7 @@ def request_main_force_backfill(code, trade_date, *, now=None):
     if not today - timedelta(days=400) <= requested_date <= today:
         raise ValueError("主力回補日期須在過去 400 天內，且不可為未來日期")
     if not _in_official_groups(code):
-        # 不建工作、不碰資料庫：這檔不在我們固定追蹤的43個族群，背景回補不管它。
+        # 不建工作、不碰資料庫：這檔不在我們固定追蹤的55個族群，背景回補不管它。
         return {"queued": False, "status": "not_in_official_groups", "attempts": 0,
                 "nextAttemptAt": None, "result": None}
     # The API validates the ticker before entering this function.

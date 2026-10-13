@@ -56,7 +56,7 @@ def compute_group_daily_changes(days: int = 3, *, today: str | None = None) -> d
     days = max(1, min(int(days), 10))
     groups = {name: members for name, members in STOCK_GROUPS.items() if name not in EXCLUDED_GROUPS}
     # 收盤價要涵蓋全部官方族群成員（含只在股期標的清單裡的，例如 2330）：前端三個大戶力分頁看
-    # 昨天／前天時，盤中大戶力的平面排行也要有那天的成交價；族群平均仍只算 43 個一般族群。
+    # 昨天／前天時，盤中大戶力的平面排行也要有那天的成交價；族群平均仍只算 55 個一般族群。
     codes = sorted({str(code).strip().upper() for members in STOCK_GROUPS.values() for code, _name in members})
     closes: dict[str, dict[str, float]] = {}
     for code, day, close in _load_rows(codes, today=today):

@@ -292,7 +292,7 @@ def main_force_threshold() -> dict[str, Any]:
 def _group_stock_codes() -> list[str]:
     from stock_groups import industry_group_codes
 
-    return sorted(industry_group_codes())  # 只標 43 個族群的股票（股期標的清單不是族群）
+    return sorted(industry_group_codes())  # 只標 55 個族群的股票（股期標的清單不是族群）
 
 
 @app.get("/api/hub/stock-flags")
@@ -645,8 +645,8 @@ def get_main_force_ranking(
             raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
     else:
         date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    # 只排 43 個一般族群裡的股票：收集器也會追蹤開過圖的 ETF 等族群外的代號，使用者 2026-09-23
-    # 要求排行不要出現 ETF；2026-09-24 再要求只看 43 個族群（股期標的清單不算）。
+    # 只排 55 個一般族群裡的股票：收集器也會追蹤開過圖的 ETF 等族群外的代號，使用者 2026-09-23
+    # 要求排行不要出現 ETF；2026-09-24 再要求只看 55 個族群（股期標的清單不算）。
     codes = industry_group_codes()
     ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=codes)
     held_from = None
@@ -838,7 +838,7 @@ def get_otc_index_strength() -> dict[str, Any]:
 
 @app.get("/api/hub/group-daily-changes")
 def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[str, Any]:
-    """43 個族群最近幾個交易日的平均漲跌幅與名次（昨天、前天…），給盤中打 333 的 188 做多／199 做空
+    """55 個族群最近幾個交易日的平均漲跌幅與名次（昨天、前天…），給盤中打 333 的 188 做多／199 做空
     名單與 ⚔️🔪 標記用；來源是官方日K，半小時快取。"""
     from group_daily_changes import get_group_daily_changes
 
@@ -870,7 +870,7 @@ def get_session_close_endpoint() -> dict[str, Any]:
 
 @app.get("/api/hub/brew-launch")
 def get_brew_launch_endpoint(codes: str | None = Query(None, description="只回這些代號（逗號分隔），查特定個股用")) -> dict[str, Any]:
-    """醞釀／發動選股（43 個族群成員）：每檔的近 10 日箱頂／箱底、六條均線與均線分數、給前端用即時價
+    """醞釀／發動選股（55 個族群成員）：每檔的近 10 日箱頂／箱底、六條均線與均線分數、給前端用即時價
     重算均線的部分和、5 日均量、發行張數，以及上一個交易日收盤是否符合「醞釀」；「發動」要用即時價量，
     由前端判斷。來源是官方日K＋市值，半小時快取。"""
     from brew_launch import get_brew_launch
@@ -941,7 +941,7 @@ def post_brew_launch_backfill_holder_force(
 
 @app.get("/api/hub/chips/daily")
 def get_chips_daily(date: str | None = Query(None)) -> dict[str, Any]:
-    """盤後籌碼排行（第一步）：43 個族群股票那一天的主力大單淨額、三大法人買賣超（張）、連續天數、收盤與漲跌幅。
+    """盤後籌碼排行（第一步）：55 個族群股票那一天的主力大單淨額、三大法人買賣超（張）、連續天數、收盤與漲跌幅。
     date 沒給就是最新有法人資料的交易日。使用者 2026-09-25：盤後籌碼排行先做。"""
     if date:
         try:
