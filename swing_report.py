@@ -182,7 +182,7 @@ def disposition_from_jail(as_of: str) -> dict[str, Any] | None:
             for x in payload.get("suspects") or []:
                 if x.get("high") and not x.get("jailed") and x["code"] not in upcoming:
                     group, _name = group_and_name(x["code"])
-                    high.append({"code": x["code"], "name": x.get("name"), "group": group, "status": x.get("status"),
+                    high.append({"code": x["code"], "name": x.get("name"), "group": group, "market": x.get("market"), "status": x.get("status"),
                                  "lines": [ln.get("text") for ln in (x.get("lines") or []) if ln.get("text")][:2]})
     except Exception:  # noqa: BLE001
         logger.exception("jail suspects failed")
@@ -694,14 +694,18 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份，用基準日當下最新的集保週）前 {CHIPS_POOL_TOP} 名裡，"
-                     "屬於熱門族、法人 5 日買超的；連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前",
+                     "屬於熱門族、法人 5 日買超的；連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
+                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、法人 5 日買超的。"
+                     "觀察名單＝出獄 5 個交易日內、籌碼% 是正的",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
             "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、法人今天轉賣超、本益比高於族群均值、營收年增為負、處置中",
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；"
                     "籌碼 +x%＝籌碼雷達的籌碼%（同一週）；法人 5 日佔量＝三大法人 5 日買賣超 ÷ 這 5 天成交量；熱門族＝籌碼雷達族群排名前 5（族群裡籌碼% 最高 5 檔平均）；技術面略過營收年增為負的",
-            "disposition": "明日起處置＝公告起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易；觀察名單＝出獄 5 個交易日內",
+            "disposition": "全市場（處置監獄的帳本）。明日起處置＝公告起始日是下一個交易日；明日出獄＝處置期滿、下一個交易日恢復正常交易"
+                           "（期滿又被再次處置、期間接著的不算出獄）；觀察名單＝出獄 5 個交易日內；高機率處置＝處置監獄用基準日收盤推算、"
+                           "明天再觸發就會被處置的嫌疑股",
             "lastWeek": f"往前 {LAST_WEEK_BACK} 個交易日那份報告的籌碼面精選，看這一週的表現：一週漲跌＝入榜那天收盤到基準日收盤；期間最高／最低收＝入榜後這幾天的收盤；法人這週＝入榜之後三大法人合計；跌破月線就是型態走弱",
             "revenue": "當月營收（觀測站每月營收彙總表）到基準日為止已公布的公司中，年增 ≥30%；依年增高到低挑，均線分數 ≥6、成交值（收盤 × 成交量）≥5,000 萬，取前 10 檔。🚀 加速／🐢 放緩＝年增比上個月多／少 10 個百分點以上；⚠️＝年增或累計年增為負",
             "activeEtf": "五檔規模最大的台股主動式基金（統一 00981A、00403A，復華 00991A，群益 00982A、00992A），每個交易日晚上抓各投信公告的持股清單，跟前一份比：新增／加碼／減碼／刪除，張數＝股數÷1000；同步加碼＝兩檔以上一起加碼（含新增）同一檔股票，同步減碼同理",
