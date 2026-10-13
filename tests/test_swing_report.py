@@ -178,10 +178,10 @@ class ReportTests(unittest.TestCase):
             chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
         hot_all = {"6182": "矽晶圓", "2330": "半導體"}
 
-        def picks(stocks: dict[str, dict]) -> list[tuple[str, str]]:
+        def picks(stocks: dict[str, dict], disposed: set[str] | None = None) -> list[tuple[str, str]]:
             fake = {"week": "2026-09-18", "buy": [], "hot": sorted(set(hot_all.values())), "hotOf": hot_all, "stocks": stocks}
             with patch.object(module, "radar_week", return_value=fake):
-                r = module.build_report("2026-09-24")
+                r = module.build_report("2026-09-24", disposition_codes=disposed)
             return [(x["code"], x["tag"]) for x in r["picks"]["chips"]]
 
         # 台積電連 9 週但這週只 +1.5%（像聯寶、台光電）不列；合晶連 3 週 +3.5%（像光頡）列
@@ -190,6 +190,8 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(picks({"6182": {"chip": 5.0, "streak": 2, "rank": None}}), [])
         # 都夠的話，連續週數多的在前
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}})], ["2330", "6182"])
+        # 處置中的不列（像 10/13 的聯茂）
+        self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}}, {"2330"})], ["6182"])
 
     def test_revenue_cards_outside_groups(self) -> None:
         # 營收面入選、不在族群表的（莊爸的台汽電）也有完整卡片；但不算進族群統計、其他精選
