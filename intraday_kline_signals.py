@@ -634,7 +634,7 @@ def backfill_today_kline_signals(
     from stock_history_service import get_stock_history_bars_5m
 
     trade_date = trade_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    # 只重算 43 個一般族群的股票（2026-09-24 使用者：不在族群裡的不要掃，浪費 Shioaji 歷史額度）
+    # 只重算 55 個一般族群的股票（2026-09-24 使用者：不在族群裡的不要掃，浪費 Shioaji 歷史額度）
     codes = sorted({
         str(code).strip().upper()
         for name, stocks in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES

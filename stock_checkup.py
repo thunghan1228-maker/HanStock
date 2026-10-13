@@ -677,15 +677,30 @@ def _hi_lens(codes: list[str], trade_date: str) -> dict[str, int]:
     return out
 
 
-def checkup(codes: str | list[str] | None) -> dict[str, Any]:
+def checkup_dates() -> list[str]:
+    """健診表裡有存的交易日（新的在前，最多 KEEP_DATES 天）。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        return [str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM checkup_daily ORDER BY trade_date DESC").fetchall()]
+
+
+def checkup(codes: str | list[str] | None, date: str | None = None) -> dict[str, Any]:
+    """date 不給＝最新一天；給了就拿那一天收盤的健診（2026-10-13 使用者：形態觀察股要看昨天／前天的選股結果；表裡只留最近 KEEP_DATES 天）。"""
     wanted = normalize_codes(codes)
-    date = latest_date()
+    dates = checkup_dates()
+    if date:
+        if date not in dates:
+            return {"status": "empty", "reason": f"沒有 {date} 的健診資料（只留最近 {KEEP_DATES} 個交易日）", "codes": wanted, "dates": dates,
+                    "rules": RULES, "collector": collector_status()}
+    else:
+        date = latest_date()
     if not date:
         return {"status": "empty", "reason": "還沒有健診資料（收盤後會自動建）", "codes": wanted, "rules": RULES, "collector": collector_status()}
     rows = load_rows(date, wanted) if wanted else {}
     hi = _hi_lens([c for c in wanted if c in rows], date)
     return {
-        "status": "ok", "date": date, "codes": wanted,
+        "status": "ok", "date": date, "dates": dates, "codes": wanted,
         "rows": [{**rows[c], "hiLen": hi.get(c)} for c in wanted if c in rows],
         "missing": [c for c in wanted if c not in rows],
         "weights": DEFAULT_WEIGHTS, "rules": RULES, "collector": collector_status(),

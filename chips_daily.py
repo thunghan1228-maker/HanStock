@@ -366,7 +366,7 @@ def _streak(values: list[int | None]) -> int:
 
 
 def chips_daily(trade_date: str | None = None) -> dict[str, Any]:
-    """一天的盤後籌碼：只回 43 個族群的股票。date 沒給就用最新有法人資料的那天（都沒有就用最新有主力資料的那天）。"""
+    """一天的盤後籌碼：只回 55 個族群的股票。date 沒給就用最新有法人資料的那天（都沒有就用最新有主力資料的那天）。"""
     from brew_launch_history import group_and_name
 
     inst_dates = stored_dates(STREAK_DAYS)
