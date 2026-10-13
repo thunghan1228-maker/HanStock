@@ -565,8 +565,9 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     chips_all.sort(key=lambda c: (-radar_stocks[c]["streak"], -(tech[c]["score"] or 0), radar_stocks[c]["rank"] or 99))
     # 第二層（2026-10-13 莊爸 10/14 報告：台表科、今國光之後還有天二科技連 5 週、光頡連 3 週——不在暴增榜前 10，
     # 但熱門族、籌碼連續增加 ≥3 週、法人 5 日買超）：排在榜上那幾檔後面，連續週數多的在前
+    # 處置中的不列（分盤交易；10/13 聯茂處置到 10/19、籌碼剛好 +3.0%，莊爸沒列）
     tier2 = [c for c, rs in radar_stocks.items()
-             if c in eligible_set and c not in chips_all and c in hot_of and (rs.get("streak") or 0) >= CHIPS_STREAK_MIN
+             if c in eligible_set and c not in chips_all and c not in disposed and c in hot_of and (rs.get("streak") or 0) >= CHIPS_STREAK_MIN
              and (rs.get("chip") or 0) >= CHIPS_TIER2_CHIP_MIN and (chips.get(c, {}).get("inst5") or 0) > 0]
     tier2.sort(key=lambda c: (-radar_stocks[c]["streak"], -(tech[c]["score"] or 0), -(radar_stocks[c]["chip"] or 0)))
     chips_all += tier2
@@ -696,7 +697,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份，用基準日當下最新的集保週）前 {CHIPS_POOL_TOP} 名裡，"
                      "屬於熱門族、法人 5 日買超的；連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
-                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}%、法人 5 日買超的。"
+                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}%、法人 5 日買超、不在處置中的。"
                      "觀察名單＝出獄 5 個交易日內、籌碼% 是正的",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
             "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
