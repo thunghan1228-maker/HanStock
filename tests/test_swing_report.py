@@ -55,7 +55,8 @@ class AnalyzeBarsTests(unittest.TestCase):
         t = {"ma60OverHead": True, "ma60": 53.93, "dev5Pct": 19.0, "limitUp": True}
         self.assertEqual(module._risks(t, {"inst5": -3.0, "instToday": -1.0}, True),
                          ["處置中", "季線 53.93 在頭上", "漲停後與 5 日線乖離 19%", "法人 5 日仍為賣超"])
-        self.assertEqual(module._risks({"ma60OverHead": False, "dev5Pct": 2.0}, {"inst5": 10.0, "instToday": -2.0}, False), ["法人今天轉賣超"])
+        # 法人今天轉賣超不算風險（2026-10-14：莊爸 10/14 光頡法人今天賣超，卡片沒有提示）
+        self.assertEqual(module._risks({"ma60OverHead": False, "dev5Pct": 2.0}, {"inst5": 10.0, "instToday": -2.0}, False), [])
         # 本益比高於族群均值 1.5 倍才提示（莊爸 10/14：天二科技 69 vs 44 有；光頡 52 vs 44 沒有）
         self.assertEqual(module._risks({}, {"pe": 69.35, "peGroupAvg": 44.0}, False), ["本益比 69 高於族群均值 44"])
         self.assertEqual(module._risks({}, {"pe": 52.03, "peGroupAvg": 44.0}, False), [])
@@ -197,6 +198,11 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}}, {"2330"})], ["6182"])
         # 門檻用兩位小數比：一位小數 3.0、其實 2.96 的不列
         self.assertEqual(picks({"6182": {"chip": 3.0, "chip2": 2.96, "streak": 3, "rank": None}}), [])
+        # 剛出獄 5 天內的只放觀察名單，不列精選（像 10/13 的嘉晶）
+        out = {"nextTradingDay": "2026-09-29", "upcoming": [], "releasing": [], "active": [], "high": [],
+               "watch": [{"code": "6182", "name": "合晶", "daysOut": 2}]}
+        with patch.object(module, "disposition_from_jail", return_value=out):
+            self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [])
         # 營收年增為負的不列（像 10/13 的先進光 −37%）
         with patch.object(module, "latest_revenue", return_value={"6182": {"yoy": -37.2, "ym": "2026-09"}}):
             self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [])
