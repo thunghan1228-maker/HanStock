@@ -58,7 +58,7 @@ BACKFILL_DAYS = max(0, int(os.getenv("HANSTOCK_GRAIL_RADAR_BACKFILL_DAYS", "20")
 TSE_DAY_MIN = 500
 OTC_DAY_RATIO = 0.9
 MA_PERIODS = (5, 10, 20, 60, 120, 240)
-RULES_VERSION = 5               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
+RULES_VERSION = 6               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
 # 2026-10-13 使用者：時間點改成跟莊爸一樣（10/08 起原本每個提早 10 分鐘：11:50／12:50／13:10／13:35／14:50）
 SWING_TIMES = ["13:00", "15:00"]               # 波段：13:00、15:00（15:00 用收盤後的最後報價），另有官方日K的「收盤」
 OVERNIGHT_TIMES = ["12:00", "13:20", "13:45"]  # 隔日沖：12:00、13:20、13:45（13:45 用收盤後的最後報價）
@@ -81,7 +81,7 @@ def _cross2022(f: dict[str, Any]) -> bool:
 def _breakred(f: dict[str, Any]) -> bool:
     return (f["body"] >= 0.2 and f["l_pl"] <= -0.1 and f["l_ma20"] <= 0 and f["h_ma20"] >= -1.6 and f["c_ma20"] <= 2.97
             and f["ma20_ma60"] >= 0.8 and f["c_m5_prev"] <= 0.4 and f["c_ma240"] >= 2.8 and f["dd60"] >= -15.4
-            and f["vma5"] >= 262.5 and f["l_ma5"] <= -1.05 and f["chg"] >= -0.55 and f["close_pos"] >= 0.55
+            and f["vma5"] >= 262.5 and f["l_ma5"] <= -2.5 and f["chg"] >= -0.55 and f["close_pos"] >= 0.55
             and f["below_cnt20"] <= 12)
 
 
@@ -106,18 +106,18 @@ def _rsword(f: dict[str, Any]) -> bool:
 
 def _xdragon(f: dict[str, Any]) -> bool:
     return (-7 <= f["chg"] < 0 and f["black"] and f["c_m5_prev"] >= 4.5 and f["ma5_slope"] >= 0.95 and f["l_ma5"] >= -0.2
-            and f["hiago20"] <= 1 and f["range"] >= 3.6 and f["lshadow"] <= 3 and f["ma20_ma60"] >= -0.2
+            and f["hiago20"] <= 1 and f["range"] >= 4.2 and f["lshadow"] <= 2.9 and f["ma20_ma60"] >= -0.2
             and f["ma20_slope5"] >= 0.1 and f["c_ma60"] >= 4.2 and f["vol"] >= 1900)
 
 
 def _panther(f: dict[str, Any]) -> bool:
-    return (f["hiago120"] == 0 and f["body"] <= -1.8 and f["chg"] >= -3 and f["h_ph"] >= 2 and f["c_m5_prev"] >= 8.98 and f["ma5_ma20"] <= 29.7
+    return (f["hiago120"] == 0 and f["body"] <= -1.8 and f["chg"] >= -3 and f["h_ph"] >= 2 and f["c_m5_prev"] >= 11.9 and f["ma5_ma20"] <= 29.7
             and f["vol"] >= 4500 and f["c_ma20"] <= 31.4)
 
 
 def _shadow(f: dict[str, Any]) -> bool:
-    return (f["lshadow"] >= 2.6 and not f["l_ge_pl"] and f["body"] <= 2.6 and f["chg"] >= -3 and f["c_ma5"] <= 1.8
-            and f["z_min5"] >= 0.7 and f["c_ma60"] >= 8.6 and f["vol"] >= 950 and f["chg_max4"] >= 0 and f["v_v20"] >= 0.45
+    return (f["lshadow"] >= 2.6 and not f["l_ge_pl"] and f["body"] <= 2.6 and f["chg"] >= -3 and f["c_ma5"] <= 0.66
+            and f["z_min5"] >= 0.47 and f["c_ma60"] >= 8.6 and f["vol"] >= 950 and f["chg_max4"] >= 0 and f["v_v20"] >= 0.45
             and f["ma20_ma60"] <= 27.1 and f["ma5_slope"] <= 3)
 
 
@@ -125,7 +125,7 @@ def _bfw2021(f: dict[str, Any]) -> bool:
     return (f["prev_black"] and f["c_m5_prev"] >= 2.2 and f["hiago60"] <= 1 and f["newhi_cnt3"] >= 2 and not f["h_gt_ph"]
             and f["v_pv"] <= 1.1 and -5.5 <= f["body"] <= 6 and f["vol_prev"] >= 5000 and f["ret3"] >= 0.2 and f["run20"] >= 10
             and f["l_ma10"] <= 18 and f["hup_max20"] <= 16.27 and f["bw"] <= 62.605 and f["bw_min10"] >= 6.3
-            and f["h_ma20"] >= 9.1 and f["above5_cnt3"] >= 3)
+            and f["h_ma20"] >= 9.1 and f["above5_cnt3"] >= 3 and f["dd120"] >= -15.9)
 
 
 def _bfw905(f: dict[str, Any]) -> bool:
@@ -146,23 +146,23 @@ def _bfwfut(f: dict[str, Any]) -> bool:
 
 def _fly3(f: dict[str, Any]) -> bool:
     return (f["nh60_2"] and f["launch_chg"] >= 4.5 and f["chg_prev"] <= 3.3 and f["ret3"] <= 12 and f["above5_cnt3"] == 3
-            and f["vma5"] >= 297 and f["chg_3"] >= -0.5)
+            and f["vma5"] >= 297 and f["chg_3"] >= -0.56 and f["ma60_slope5"] >= 0)
 
 
 def _flyburst(f: dict[str, Any]) -> bool:
-    return (f["hiago120"] == 0 and f["chg"] >= 4.8 and f["v_v5"] >= 2.5 and f["hup_max20"] <= 11 and f["bw_min10"] <= 24.2
+    return (f["hiago120"] == 0 and f["chg"] >= 4.8 and f["v_v5"] >= 2.5 and f["hup_max20"] <= 11.4 and f["bw_min10"] <= 24.2
             and f["vol"] >= 2850 and f["ma20_ma60"] >= 2 and f["c_m5_prev"] >= 1.5 and f["c_ma120"] <= 47.81)
 
 
 def _flybreak(f: dict[str, Any]) -> bool:
     return (f["hiago60"] == 0 and f["chg"] >= 5.7 and f["close_pos"] >= 0.4 and f["chg_prev"] <= 3.5 and f["bw"] <= 25
-            and f["c_ma120"] >= 7.6 and f["c_ma240"] >= 14.2 and f["ma60_slope"] >= 0.1 and f["vol_prev"] >= 64
+            and f["c_ma120"] >= 7.2 and f["c_ma240"] >= 14.2 and f["ma60_slope"] >= 0.1 and f["vol_prev"] >= 64
             and f["range"] <= 12.5 and f["chg_2"] >= -2.5 and f["hiago120"] <= 118 and f["c_m5_prev"] <= 7.3)
 
 
 def _red3(f: dict[str, Any]) -> bool:
     return (f["consec_red"] >= 3 and f["c_ma5"] >= 1.2 and f["c_ma20"] >= 5 and f["spread3"] <= 5.8
-            and 0.2 <= f["close_pos"] <= 0.98 and f["chg_prev"] <= 12.6 and f["chg_max4"] <= 8.5 and f["dd60"] <= -1.6
+            and 0.47 <= f["close_pos"] <= 0.98 and f["chg_prev"] <= 12.6 and f["chg_max4"] <= 8.5 and f["dd60"] <= -1.6
             and f["c_ma240"] >= -1 and f["ma60_ma120"] >= -8.4 and f["vol"] >= 900 and f["z_min5"] <= 0.4 and f["ushadow"] <= 3.85
             and f["run20"] >= 11)
 
@@ -181,6 +181,13 @@ def _red3(f: dict[str, Any]) -> bool:
 # 極限黑龍不收跌超過 7% 的、超黑豹不收跌超過 3% 的（莊爸 10/13 沒有全友、台表科）、神下影近 4 天有一天沒跌就算（南電）、
 # 黑飛舞 2021 最窄帶寬 6.3%（松瑞藥）、飛龍紅爆量 2850 張（敦陽科）。改完 10/13 抓到 54/61（89%）、準 54/71（76%），10/12 不變（68/76），
 # 往日 17 天 925 檔多 13 檔、少 14 檔。三日飛龍、極限黑龍、劍飛舞還有幾檔對不起來，但再調會把往日名單改亂，先不動。
+# 第六版（2026-10-14 晚上，使用者給莊爸 10/14 全名單截圖）：第五版在 10/14 抓到 51/67（76%）、準 51/78（65%）；R劍 21/21 全中。
+# 這次 10/12、10/13、10/14 三天一起調（每個條件只在「三天加起來比較好、往日名單不大亂」才改）：突破惡紅低點跌破 5 日線 2.5%、
+# 極限黑龍振幅 4.2%／下影 2.9%、超黑豹昨收在 5 日線上 11.9%、神下影收盤最多在 5 日線上 0.66%／月線上 0.47 個標準差（台嘉碩）、
+# 黑飛舞 2021 離 120 日高點 15.9% 以內、三日飛龍季線 5 天內沒往下彎、三天前跌 0.56% 以內（泰鼎）、飛龍紅爆超出布林上緣 11.4%（國喬）、
+# 飛龍突破半年線上 7.2%（台玻）、三紅劍收在振幅 47% 以上。改完 10/14 抓到 55/67（82%）、準 55/74（74%）；10/13 54/61、準 54/65（原 54/71）；
+# 10/12 67/76（少 1 檔）、準 67/74（原 68/89）；往日 17 天 909 檔變動 64 檔。三日飛龍 10/14 還有 6 檔（昨天大漲的台亞、海德威、鈺鎧等）
+# 對不起來——放寬「昨天漲 3.3% 以內」會讓 10/12、10/13 多出更多不是莊爸的，先不動。
 LOGICS: list[dict[str, Any]] = [
     {"key": "cross2022", "saintId": 57, "name": "波段穿惡2022版本", "kind": "波段", "rule": _cross2022, "times": SWING_TIMES,
      "desc": "穿惡：昨天收在月線（20日線）下、今天收盤站回月線，收在 5 日線上 0.75% 以上、最高超過月線 1.6%、振幅 2.86% 以上；"
@@ -190,7 +197,7 @@ LOGICS: list[dict[str, Any]] = [
      "calibration": {"recall": 86, "precision": 90}},
     {"key": "breakred", "saintId": 57, "name": "即將突破惡(紅)", "kind": "波段", "rule": _breakred, "times": SWING_TIMES,
      "desc": "回測月線收紅：今天收紅K（收比開高 0.2% 以上）、跌幅 0.55% 以內、收在當天振幅 55% 以上；"
-             "低點跌破昨天低點、跌破 5 日線 1.05% 以上、碰到月線，最高不低於月線 1.6%、收盤在月線 +2.97% 以內；"
+             "低點跌破昨天低點、跌破 5 日線 2.5% 以上、碰到月線，最高不低於月線 1.6%、收盤在月線 +2.97% 以內；"
              "昨天收盤在 5 日線 +0.4% 以內；"
              "月線比季線高 0.8% 以上、收盤比年線高 2.8% 以上、離 60 日高點 15.4% 以內、近 20 天收在月線下最多 12 天；"
              "5 日均量 262.5 張以上。",
@@ -207,25 +214,25 @@ LOGICS: list[dict[str, Any]] = [
              "收盤比月線高 5% 以上、月線 5 天內下彎不到 2.1%；量 1000 張以上。",
      "calibration": {"recall": 100, "precision": 97}},
     {"key": "xdragon", "saintId": 32, "name": "隔日沖-極限黑龍", "kind": "隔日沖", "rule": _xdragon, "times": OVERNIGHT_TIMES,
-     "desc": "強勢股換手收黑：今天收黑K而且下跌（跌幅 7% 以內）、低點最多跌破 5 日線 0.2%、振幅 3.6% 以上、下影線 3% 以內；"
+     "desc": "強勢股換手收黑：今天收黑K而且下跌（跌幅 7% 以內）、低點最多跌破 5 日線 0.2%、振幅 4.2% 以上、下影線 2.9% 以內；"
              "昨天收盤在 5 日線上 4.5% 以上、5 日線還在往上（比昨天高 0.95% 以上）、20 日新高在今天或昨天；"
              "月線最多比季線低 0.2% 而且 5 天內往上、收盤比季線高 4.2% 以上；量 1900 張以上。",
      "calibration": {"recall": 97, "precision": 88}},
     {"key": "panther", "saintId": 32, "name": "超黑豹2023版", "kind": "隔日沖", "rule": _panther, "times": OVERNIGHT_TIMES,
      "desc": "創 120 日新高的長黑：今天最高是 120 日新高、比昨天最高再高 2% 以上，但收長黑（收比開低 1.8% 以上）、跌幅 3% 以內；"
-             "昨天收盤在 5 日線上 8.98% 以上、5 日線離月線 29.7% 以內、收盤離月線 31.4% 以內；"
+             "昨天收盤在 5 日線上 11.9% 以上、5 日線離月線 29.7% 以內、收盤離月線 31.4% 以內；"
              "量 4500 張以上。",
      "calibration": {"recall": 100, "precision": 100}},
     {"key": "shadow", "saintId": 32, "name": "隔日沖-神下影", "kind": "隔日沖", "rule": _shadow, "times": OVERNIGHT_TIMES,
-     "desc": "強勢股長下影：下影線 2.6% 以上、低點跌破昨天低點、實體 2.6% 以內、跌幅 3% 以內、收盤離 5 日線 1.8% 以內、5 日線一天漲不到 3%；"
-             "近 5 天收盤都在月線上方（至少 0.7 個標準差）、近 4 天有一天沒跌、收盤比季線高 8.6% 以上、月線離季線 27.1% 以內；"
+     "desc": "強勢股長下影：下影線 2.6% 以上、低點跌破昨天低點、實體 2.6% 以內、跌幅 3% 以內、收盤最多在 5 日線上 0.66%、5 日線一天漲不到 3%；"
+             "近 5 天收盤都在月線上方（至少 0.47 個標準差）、近 4 天有一天沒跌、收盤比季線高 8.6% 以上、月線離季線 27.1% 以內；"
              "量 950 張以上、有 20 日均量 45%。",
      "calibration": {"recall": 89, "precision": 89}},
     {"key": "bfw2021", "saintId": 24, "name": "黑飛舞小波段2021版", "kind": "隔日沖", "rule": _bfw2021, "times": OVERNIGHT_TIMES,
      "desc": "黑飛舞：昨天收黑K而且大量（5000 張以上），但收盤還在 5 日線上 2.2% 以上；"
              "今天最高沒超過昨天、量最多是昨天 1.1 倍、不是長黑（收比開低 5.5% 以內）也不是長紅（收比開高 6% 以內）；"
              "60 日新高在今天或昨天、近 3 天有 2 天創 20 日新高、近 3 天都收在 5 日線上、3 天漲 0.2% 以上；"
-             "最高比月線高 9.1% 以上、低點離 10 日線 18% 以內；"
+             "最高比月線高 9.1% 以上、低點離 10 日線 18% 以內、離 120 日高點 15.9% 以內；"
              "20 天高低差 10% 以上、近 20 天最多超出布林上緣 16.27%、布林帶寬 62.6% 以內、近 10 天最窄帶寬 6.3% 以上。",
      "calibration": {"recall": 91, "precision": 100}},
     {"key": "bfw905", "saintId": 24, "name": "黑飛舞905", "kind": "隔日沖", "rule": _bfw905, "times": OVERNIGHT_TIMES,
@@ -246,24 +253,24 @@ LOGICS: list[dict[str, Any]] = [
              "收盤比季線高 4.5% 以上、60 天高低差 40.5% 以上、近 20 天曾衝出布林上緣 3.3% 以上、近 10 天最多 2 天收在月線下。",
      "calibration": {"recall": 85, "precision": 100}},
     {"key": "fly3", "saintId": 30, "name": "三日飛龍", "kind": "波段", "rule": _fly3, "times": SWING_TIMES,
-     "desc": "三日飛龍：兩天前創 60 日新高，而且兩、三天前有一天漲 4.5% 以上（發動）、三天前沒跌超過 0.5%；"
+     "desc": "三日飛龍：兩天前創 60 日新高，而且兩、三天前有一天漲 4.5% 以上（發動）、三天前沒跌超過 0.56%、季線 5 天內沒往下彎；"
              "之後整理：昨天漲 3.3% 以內、3 天漲幅 12% 以內、近 3 天都收在 5 日線上；5 日均量 297 張以上。",
      "calibration": {"recall": 84, "precision": 79}},
     {"key": "flyburst", "saintId": 30, "name": "飛龍紅爆2022版", "kind": "波段", "rule": _flyburst, "times": SWING_TIMES,
      "desc": "飛龍紅爆：今天最高是 120 日新高、漲 4.8% 以上、爆量（5 日均量 2.5 倍以上、2850 張以上）；"
              "昨天收盤在 5 日線上 1.5% 以上、月線比季線高 2% 以上、收盤離半年線 47.81% 以內；"
-             "近 10 天布林帶寬曾縮到 24.2% 以內（從整理區噴出）、近 20 天最多超出布林上緣 11%。",
+             "近 10 天布林帶寬曾縮到 24.2% 以內（從整理區噴出）、近 20 天最多超出布林上緣 11.4%。",
      "calibration": {"recall": 100, "precision": 100}},
     {"key": "flybreak", "saintId": 30, "name": "飛龍突破2023版", "kind": "波段", "rule": _flybreak, "times": SWING_TIMES,
      "desc": "飛龍突破：今天最高是 60 日新高、漲 5.7% 以上（漲停也算）、振幅 12.5% 以內、收在當天振幅 4 成以上；"
              "昨天漲 3.5% 以內、昨收離 5 日線 7.3% 以內、兩天前跌幅 2.5% 以內；"
              "布林帶寬 25% 以內（從整理區突破）；"
-             "收盤比半年線高 7.6%、比年線高 14.2% 以上、季線往上（另有兩條很寬的條件：昨天有量、120 日高點不在最舊那一天）。",
+             "收盤比半年線高 7.2%、比年線高 14.2% 以上、季線往上（另有兩條很寬的條件：昨天有量、120 日高點不在最舊那一天）。",
      "calibration": {"recall": 100, "precision": 96}},
     {"key": "red3", "saintId": 30, "name": "三紅劍小波段", "kind": "波段", "rule": _red3, "times": SWING_TIMES,
      "desc": "三紅劍：連續 3 天以上收紅K、收在 5 日線上 1.2%、月線上 5% 以上；"
              "5/10/20 日線糾結在 5.8% 以內、近 5 天有一天收盤離月線不到 0.4 個標準差（剛從月線附近上來）；"
-             "收在當天振幅 2 成～98%、上影線 3.85% 以內、昨天漲 12.6% 以內、近 4 天沒有單日漲 8.5% 以上；"
+             "收在當天振幅 47%～98%、上影線 3.85% 以內、昨天漲 12.6% 以內、近 4 天沒有單日漲 8.5% 以上；"
              "20 天高低差 11% 以上、離 60 日高點至少回 1.6%、收盤最多低於年線 1%、季線沒有比半年線低超過 8.4%；"
              "量 900 張以上。",
      "calibration": {"recall": 88, "precision": 91}},
