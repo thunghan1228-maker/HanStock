@@ -256,6 +256,21 @@ class RadarTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.stock("9999")
 
+    def test_latest_chips(self) -> None:
+        # 2026-10-15 使用者：首頁族群成分股視窗加「本週籌碼%」——最新一週每檔 [籌碼%, 連續同方向週數（負＝連減）, 買超榜名次]
+        out = module.latest_chips()
+        self.assertEqual((out["status"], out["week"], out["prevWeek"]), ("ok", "2026-10-02", "2026-09-24"))
+        chips = out["chips"]
+        self.assertEqual(chips["2484"], [8.19, 5, 2])      # 希華：9/4 起連 5 週增（8/28 減）、買超榜第 2
+        self.assertEqual(chips["3042"], [4.68, 6, 6])      # 晶技：六週都增
+        self.assertEqual(chips["1727"], [-7.28, -2, None])  # 中華化：連 2 週減
+        self.assertEqual(chips["8182"][:2], [2.01, 2])      # 加高：9/18 持平就斷
+        self.assertNotIn("0050", chips)                     # ETF 不在範圍
+        with database.get_connection() as c:
+            c.execute("DELETE FROM tdcc_weekly")
+        module._cache.update({"at": 0.0, "key": None, "radar": None})
+        self.assertEqual(module.latest_chips()["status"], "empty")
+
     def test_endpoints(self) -> None:
         from fastapi.testclient import TestClient
 
@@ -270,6 +285,8 @@ class RadarTests(unittest.TestCase):
         r = client.get("/api/hub/chip-radar/stock", params={"code": "2484"})
         self.assertEqual((r.status_code, r.json()["chip"]), (200, 8.19))
         self.assertEqual(client.get("/api/hub/chip-radar/stock", params={"code": "9999"}).status_code, 404)
+        r = client.get("/api/hub/chip-radar/latest")
+        self.assertEqual((r.status_code, r.json()["chips"]["2484"][0]), (200, 8.19))
         with patch.object(module, "taiex_close", lambda day, fetcher=None: None):     # 不連證交所
             r = client.get("/api/hub/chip-radar/weekly", params={"week": "2026-09-24"})
             self.assertEqual((r.status_code, r.json()["week"], r.json()["recon"]["taiex"]), (200, "2026-09-24", None))

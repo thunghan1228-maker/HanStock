@@ -474,6 +474,29 @@ def payload(week: str | None = None) -> dict[str, Any]:
     }
 
 
+def latest_chips() -> dict[str, Any]:
+    """最新一週每檔的籌碼%（2026-10-15 使用者：首頁點族群跳出的成分股視窗加「本週籌碼%」一欄）：
+    族群範圍內每檔 [籌碼%, 連續同方向週數（正＝連增、負＝連減）, 買超榜名次或 null]，前端一次抓、整族一起顯示。"""
+    radar = load_radar()
+    if not radar.dates:
+        return {"status": "empty", "message": "還沒有集保週資料", "chips": {}}
+    day = radar.dates[0]
+    chips: dict[str, list[Any]] = {}
+    for code, per in radar.chips.items():
+        if code not in radar.universe or day not in per:
+            continue
+        value = per[day]
+        sign = (value > 0) - (value < 0)
+        streak = 0
+        for d in radar.dates:
+            v = per.get(d)
+            if v is None or not sign or (v > 0) - (v < 0) != sign:
+                break
+            streak += 1
+        chips[code] = [value, streak * sign, radar.rank(code, day)]
+    return {"status": "ok", "week": day, "prevWeek": radar.prev_date(day), "chips": chips}
+
+
 def stock(code: str) -> dict[str, Any]:
     radar = load_radar()
     code = str(code or "").strip().upper()

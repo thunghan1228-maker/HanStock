@@ -39,7 +39,7 @@ from swing_report import run_once as run_swing_report, start_swing_report_collec
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
 from heilong_picker import payload as picker_payload
-from chip_radar import payload as chip_radar_payload, stock as chip_radar_stock, weekly_report as chip_weekly_report
+from chip_radar import latest_chips as chip_radar_latest, payload as chip_radar_payload, stock as chip_radar_stock, weekly_report as chip_weekly_report
 from grail_radar import collector_status as grail_radar_status, day_payload as grail_radar_payload, run_close as grail_radar_run_close
 from ma_rank import hits as ma_rank_hits, query as ma_rank_query, ranking as ma_rank_payload
 from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, stock as screener_stock
@@ -1085,6 +1085,12 @@ def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
         return chip_radar_payload(week or None)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/hub/chip-radar/latest")
+def get_chip_radar_latest() -> dict[str, Any]:
+    """最新一週每檔的籌碼%（2026-10-15 使用者：首頁族群成分股視窗加「本週籌碼%」）：{代號: [籌碼%, 連續同方向週數（負＝連減）, 買超榜名次]}。"""
+    return chip_radar_latest()
 
 
 @app.get("/api/hub/chip-radar/weekly")
