@@ -13,8 +13,8 @@
 - 上榜累積榜：每週買超榜前十名記一筆；視窗內（全部／近 6 週／近 4 週，跟老師的選單一樣）擠進前十的次數、近 4 週次數、平均籌碼%、
   分數（＝那幾週籌碼% 加總＝次數 × 平均）、最佳名次。「全部」跟老師一樣從 06/18 那週算起（他寫「全部 17 週
   06/18～10/08」，2026-10-10），之後每週多一週，最多一年。
-- 族群排名比較：族群裡籌碼% 最高的 5 檔平均（老師的石英 +3.46% ＝ 前 5 檔平均，對得上），前十族群；「千元」是價格帶，
-  算進前十但不列（老師：千元是價格帶不列，所以他常常只列 9 族）；金融股、功率半導體他沒有，不排。
+- 族群排名比較：族群裡籌碼% 最高的 5 檔平均（老師的石英 +3.46% ＝ 前 5 檔平均，對得上），前十族群；「千元」以前照老師雷達頁
+  不列，2026-10-15 使用者要列（老師的族群籌碼排名圖千元排第 5）；金融股、功率半導體他沒有，不排。
   （2026-10-10 照他的族群清單補齊族群表後，9/24、10/02、10/08 的前十跟他一模一樣。）
 - 連續增排行：六週內至少五週增（可漏一週）、連三週都增；都用窗口平均排序（同分照沒四捨五入的 3√x 平均，
   老師的聯傑／穩懋都是 3.01、精誠／天二…的先後這樣才對得上），各取前 20。
@@ -70,7 +70,7 @@ ALL_SINCE = "2026-06-18"          # 累積榜「全部」從這週算起（老�
 ALL_MAX = 52                      # 「全部」最多一年
 HOT_GROUPS = 5
 RANK_SKIP_GROUPS = ("金融股", "功率半導體")   # 族群排名不算（老師的族群表沒有：他的漢磊、穩懋只標矽晶圓、PA；功率半導體 9/24 算起來第一）
-PRICE_BAND_GROUPS = ("千元",)                          # 算進前十、但不列（老師：千元是價格帶不列）
+PRICE_BAND_GROUPS: tuple[str, ...] = ()               # 算進前十、但不列的族群；2026-10-15 使用者：千元也要列（老師 10/8 族群籌碼排名千元第 5 名 +3.77%）
 INST_WEEKS = 5
 INST_DAYS = 5
 CACHE_SECONDS = 60.0
@@ -339,7 +339,7 @@ class Radar:
         return out
 
     def ranked_groups(self, day: str) -> list[dict[str, Any]]:
-        """畫面上的族群排名：前十（含千元）再拿掉千元。"""
+        """畫面上的族群排名：前十（PRICE_BAND_GROUPS 裡的不列；2026-10-15 起千元也列）。"""
         return [g for g in self.group_table(day)[:GROUP_SHOW] if g["name"] not in PRICE_BAND_GROUPS]
 
     # 連續增 -----------------------------------------------------------
@@ -472,6 +472,29 @@ def payload(week: str | None = None) -> dict[str, Any]:
         "cumulative": radar.cumulative(day),
         "hot": radar.hot(day, groups),
     }
+
+
+def latest_chips() -> dict[str, Any]:
+    """最新一週每檔的籌碼%（2026-10-15 使用者：首頁點族群跳出的成分股視窗加「本週籌碼%」一欄）：
+    族群範圍內每檔 [籌碼%, 連續同方向週數（正＝連增、負＝連減）, 買超榜名次或 null]，前端一次抓、整族一起顯示。"""
+    radar = load_radar()
+    if not radar.dates:
+        return {"status": "empty", "message": "還沒有集保週資料", "chips": {}}
+    day = radar.dates[0]
+    chips: dict[str, list[Any]] = {}
+    for code, per in radar.chips.items():
+        if code not in radar.universe or day not in per:
+            continue
+        value = per[day]
+        sign = (value > 0) - (value < 0)
+        streak = 0
+        for d in radar.dates:
+            v = per.get(d)
+            if v is None or not sign or (v > 0) - (v < 0) != sign:
+                break
+            streak += 1
+        chips[code] = [value, streak * sign, radar.rank(code, day)]
+    return {"status": "ok", "week": day, "prevWeek": radar.prev_date(day), "chips": chips}
 
 
 def stock(code: str) -> dict[str, Any]:
