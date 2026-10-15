@@ -142,6 +142,9 @@ async def _persistent_lifespan(fastapi_app):
             from fund_umbrella import start_fund_umbrella_collector
 
             start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
+            from futures_chips import start_futures_chips_collector
+
+            start_futures_chips_collector()  # 外資空單：台指期／小台／微台／台指選三大法人未平倉、P/C、三大法人現貨（2026-10-15 使用者）
             from insider_watch import start_insider_collector
 
             start_insider_collector()  # 內部人研究室：觀測站內部人持股異動月報鏡像（tw-groups data 分支），每天拉一次（2026-10-10 使用者）
@@ -1420,6 +1423,29 @@ def post_fund_umbrella_fetch() -> dict[str, Any]:
     import fund_umbrella
 
     return {"status": "ok", "result": fund_umbrella.fetch(), "collector": fund_umbrella.collector_status()}
+
+
+@app.get("/api/hub/futures-chips")
+def get_futures_chips() -> dict[str, Any]:
+    """外資空單（2026-10-15 使用者：照老師「外資空單 × 散戶小台・微台 × 加權指數」）：外資台指期淨未平倉與增減、投信／自營淨、
+    外資買權／賣權淨未平倉、散戶小台／微台淨未平倉與多空比、全市場 P/C、上市三大法人現貨買賣超，附近一年每天的序列。還沒抓過就先抓一次。"""
+    import futures_chips
+
+    body = futures_chips.payload()
+    if body["status"] == "missing":
+        try:
+            futures_chips.fetch()
+            body = futures_chips.payload()
+        except Exception as exc:  # noqa: BLE001
+            body["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return body
+
+
+@app.post("/api/hub/futures-chips/fetch")
+def post_futures_chips_fetch() -> dict[str, Any]:
+    import futures_chips
+
+    return {"status": "ok", "result": futures_chips.fetch(), "collector": futures_chips.collector_status()}
 
 
 @app.get("/api/hub/insider")
