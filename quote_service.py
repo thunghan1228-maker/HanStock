@@ -266,7 +266,7 @@ class QuoteService:
             else:
                 with self._stock_lock: result["failed"][code]=self._stock_errors.get(code,"訂閱失敗")
         if overflow:
-            # 主連線滿了：其餘的訂在共享連線上（2026-10-13 使用者：盤中 55 個族群 499 檔都要有逐筆）
+            # 主連線滿了：其餘的訂在共享連線上（2026-10-13 使用者：盤中 67 個族群 576 檔都要有逐筆）
             if not shared_stock_pool_enabled():
                 result["failed"].update({code: "台股訂閱上限" for code in overflow})
             else:

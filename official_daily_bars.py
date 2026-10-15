@@ -499,7 +499,7 @@ def _yahoo_otc_fill(
     """櫃買中心被擋、FinMind 也拿不到（2026-09-23 付費方案到期）的日子：逐檔用 Yahoo 日K補上櫃。
     只打真的缺那幾天的代號（中途被部署打斷，下一輪只補剩下的；很久沒日K的下市股不打），
     每檔一個請求涵蓋它缺的日子，往前多抓兩週跟已經有的官方日K對收盤價，對不上那檔就不寫；
-    55 個族群的上櫃股先補，失敗的隔一下再試一輪。
+    67 個族群的上櫃股先補，失敗的隔一下再試一輪。
     同一天 3 小時內不重打（收集器每小時一輪）；今天要 14:30 以後才補（Yahoo 當天日K那時才是最終值）。"""
     from daily_bars_history_backfill import _existing_closes, _prices_match, fetch_yahoo_daily
     from otc_gap_backfill import _known_stock_names
