@@ -50,6 +50,7 @@ FINMIND = {
         {"date": D1, "contract_date": "202610", "trading_session": "position", "open_interest": 108789},
         {"date": D2, "contract_date": "202610", "trading_session": "position", "open_interest": 139783}]},
     ("TaiwanStockPrice", "TAIEX"): {"data": [{"date": D1, "close": 48625.83}, {"date": D2, "close": 46969.87}]},
+    ("TaiwanStockPrice", "TPEx"): {"data": [{"date": D1, "close": 420.13}, {"date": D2, "close": 396.90}]},
     ("TaiwanStockTotalInstitutionalInvestors", None): {"data": [
         {"date": D2, "name": "Foreign_Investor", "buy": 100e8, "sell": 3125.55e8},
         {"date": D2, "name": "Foreign_Dealer_Self", "buy": 0, "sell": 0},
@@ -98,6 +99,12 @@ class FuturesChipsTests(unittest.TestCase):
         self.assertEqual(pc["pc_oi"], {D2: 60.84, D1: 74.44})
 
     def test_fetch_and_payload_match_teacher(self) -> None:
+        import fund_umbrella
+
+        with database.get_connection() as conn:
+            fund_umbrella._schema(conn)
+            conn.executemany("INSERT INTO fund_umbrella_series (series, trade_date, value) VALUES ('margin', ?, ?)",
+                             [("2026-10-13", 6449.79), ("2026-10-14", 6515.67)])
         pages = []
         module.fetch(fetcher=finmind, pc_fetcher=lambda a, b: pages.append((a, b)) or PC_PAGE, now=self.now)
         self.assertTrue(len(pages) >= 14)                              # 第一次抓 400 天，分段每段不超過 30 天
@@ -107,7 +114,7 @@ class FuturesChipsTests(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual((body["asOf"], body["prevDate"]), (D2, D1))
         c = body["cards"]
-        self.assertEqual(c["taiex"], {"value": 46969.87, "chg": -1655.96, "pct": -3.41})
+        self.assertEqual(c["taiex"], {"value": 46969.87, "chg": -1655.96, "pct": -3.41, "date": D2})
         self.assertEqual(c["txForeign"], {"value": -97582, "prev": -86814, "chg": -10768})
         self.assertEqual((c["txTrust"]["value"], c["txDealer"]["value"]), (78929, 6894))
         self.assertEqual((c["callForeign"]["value"], c["callForeign"]["chg"]), (-169, 186))
@@ -121,6 +128,19 @@ class FuturesChipsTests(unittest.TestCase):
         last = body["series"][-1]
         self.assertEqual((last["d"], last["f"], last["fc"], last["mr"], last["pc"]), (D2, -97582, -10768, 15111, 60.84))
         self.assertIsNone(body["series"][0]["fc"])                       # 第一天沒有前一天可以比
+        # 散戶多單＝全市場未平倉 − 法人多單、散戶空單＝全市場 − 法人空單；櫃買指數；融資（資金保護傘那份，常常晚一天）
+        self.assertEqual((c["mtxLong"], c["mtxShort"]), (44732 - 2500, 44732 - 17611))
+        self.assertEqual(c["mtxLong"] - c["mtxShort"], c["mtxRetail"]["value"])
+        self.assertEqual((c["tmfLong"] - c["tmfShort"]), c["tmfRetail"]["value"])
+        self.assertEqual(c["tpex"], {"value": 396.9, "chg": -23.23, "pct": -5.53, "date": D2})
+        self.assertEqual(c["pcVol"], 74.99)
+        self.assertEqual(c["margin"]["value"], 6515.67)
+        self.assertEqual((c["margin"]["date"], c["margin"]["d1"]), ("2026-10-14", 65.88))
+        self.assertIsNone(c["otcMargin"])
+        self.assertEqual(body["fresh"]["margin"], "2026-10-14")
+        self.assertEqual(body["fresh"]["futures"], D2)
+        self.assertEqual((last["o"], last["m"], last["ml"]), (396.9, None, 44732 - 2500))
+        self.assertEqual(body["series"][-2]["m"], 6515.67)
 
     def test_pc_retry_and_failure_kept_separate(self) -> None:
         calls = {"n": 0}
@@ -140,6 +160,23 @@ class FuturesChipsTests(unittest.TestCase):
             module.fetch(fetcher=finmind, pc_fetcher=lambda a, b: (_ for _ in ()).throw(OSError("down")), now=self.now)
         self.assertIn("down", module.collector_status()["pcError"])      # P/C 掛了不影響其他數字
         self.assertEqual(module.payload(now=self.now)["cards"]["txForeign"]["value"], -97582)
+
+    def test_new_series_trigger_full_history(self) -> None:
+        # 之後新加的序列（櫃買指數、散戶多空單）資料庫裡還沒有：整段重抓，不是只補最近 10 天
+        with database.get_connection() as conn:
+            module._schema(conn)
+            conn.execute("INSERT INTO futures_chips_series (series, trade_date, value) VALUES ('tx_f', ?, -1)", (D2,))
+        starts = []
+
+        def spy(params: dict[str, str]) -> dict:
+            starts.append(params["start_date"])
+            return finmind(params)
+
+        module.fetch(fetcher=spy, pc_fetcher=lambda a, b: PC_PAGE, now=self.now)
+        self.assertEqual(set(starts), {(self.now.date() - module.timedelta(days=module.HISTORY_DAYS)).isoformat()})
+        starts.clear()
+        module.fetch(fetcher=spy, pc_fetcher=lambda a, b: PC_PAGE, now=self.now)     # 都有了：只補最近幾天
+        self.assertEqual(set(starts), {(date.fromisoformat(D2) - module.timedelta(days=module.REFETCH_DAYS)).isoformat()})
 
     def test_missing_and_due(self) -> None:
         self.assertEqual(module.payload(now=self.now)["status"], "missing")
