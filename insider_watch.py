@@ -1,4 +1,4 @@
-"""內部人研究室（2026-10-10 使用者：照莊爸「內部人研究室 INSIDER WATCH」做，但不只三檔，上市櫃全部）。
+"""內部人研究室（2026-10-10 使用者：照老師「內部人研究室 INSIDER WATCH」做，但不只三檔，上市櫃全部）。
 
 資料：公開資訊觀測站「董事、監察人、經理人及百分之十以上大股東股權異動彙總表」（IRB110，每月 15 日申報截止後約第三週出來），
 觀測站擋正式站主機，走 tw-groups data 分支鏡像（tpex/insider-YYYY-MM.json，.github/workflows/insider-mops.yml）：

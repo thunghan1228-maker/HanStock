@@ -47,7 +47,7 @@ class FeatureTests(unittest.TestCase):
         self.assertNotIn("rsword", module.evaluate(module.compute_features(o, h, l, c, v)))
 
     def test_cross_converge_second_type_for_strong_stocks(self) -> None:
-        """第四版：即將穿惡(收斂)多一型——漲過一段的強勢股回到月線下量縮（莊爸 10/12 的創威，60 天高低差 72%）。"""
+        """第四版：即將穿惡(收斂)多一型——漲過一段的強勢股回到月線下量縮（老師 10/12 的創威，60 天高低差 72%）。"""
         chuangwei = {"c_ma20": -1.94, "h_ma20": -1.73, "v_v5": 0.3, "vma5": 1336.6, "ret3": 0.52, "ma20_ma60": 12.9, "c_ma60": 10.72,
                      "m5_m10": -2.26, "ma10_slope": -0.28, "v_pv": 0.54, "v_v20": 0.22, "dd120": -31.01, "run60": 72.13, "ma20_slope5": 0.12}
         self.assertTrue(module._crossconv(chuangwei))
@@ -100,7 +100,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(module.due_slots(self.at("16:00:00"), set()), ["13:45", "15:00"])
 
     def test_every_logic_runs_at_zhuang_time_points(self) -> None:
-        """2026-10-13 使用者：時間點跟莊爸一樣——波段（穿山鱷龍、飛龍戰法）13:00／15:00，
+        """2026-10-13 使用者：時間點跟老師一樣——波段（穿山鱷龍、飛龍戰法）13:00／15:00，
         隔日沖（黑龍短沖含 R劍、黑飛舞家族）12:00／13:20／13:45（10/08～10/13 曾經各提早 10 分鐘）。"""
         self.assertEqual(len(module.LOGICS), 15)
         swing = {logic["key"] for logic in module.LOGICS if logic["kind"] == "波段"}

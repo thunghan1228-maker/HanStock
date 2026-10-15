@@ -1,4 +1,4 @@
-"""籌碼暴增雷達：籌碼% 公式（對照莊爸截圖的真實數字）、本週買超／賣超榜與 ⭐、族群前 5 平均、連續增、累積榜、個股查詢。"""
+"""籌碼暴增雷達：籌碼% 公式（對照老師截圖的真實數字）、本週買超／賣超榜與 ⭐、族群前 5 平均、連續增、累積榜、個股查詢。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class FormulaTests(unittest.TestCase):
         # 聯一光電 3441 9/11：只多 0.01% → 3√0.01 ＝ 0.3
         self.assertEqual(module.chip_value(100_000 + 4_004, 100_000, 40_039_920)[1], 0.3)
         self.assertIsNone(module.chip_value(1, 1, 0))
-        # 榜單一位小數：眾達-KY 10/02 x＝4.20，3√4.20＝6.148 → 6.1（莊爸也是 6.1；先取兩位 6.15 再取一位會變 6.2）
+        # 榜單一位小數：眾達-KY 10/02 x＝4.20，3√4.20＝6.148 → 6.1（老師也是 6.1；先取兩位 6.15 再取一位會變 6.2）
         self.assertEqual(module.chip_value(4_200_000, 0, 100_000_000), (4.2, 6.15))
         self.assertEqual(module.chip_one_decimal(4.2), 6.1)
         self.assertEqual(module.chip_one_decimal(-1.55), -1.6)
@@ -80,7 +80,7 @@ class RadarTests(unittest.TestCase):
             return out + [(code, 12, 1, b // 4, 0.0), (code, 15, 1, b - b // 4, 0.0), (code, 17, 1000, total, 100.0)]
         rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "4806", 70_000_000, 30_000_000 - 28_000_000)
         rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "3013", 104_000_000, 30_000_000 + 4_347_200)
-        # 佳大：私募 5000 萬股都給大戶 → 總股數 1.5 億、大戶 8000 萬 → x＝33.33 → 3√x＝17.32，照算（莊爸也照列）
+        # 佳大：私募 5000 萬股都給大戶 → 總股數 1.5 億、大戶 8000 萬 → x＝33.33 → 3√x＝17.32，照算（老師也照列）
         rows_by_week["2026-10-02"] = edit(rows_by_week["2026-10-02"], "2033", 150_000_000, 80_000_000)
         # 益航：上週只有大戶股數＋比例（30%，回推總股數 1 億），這週總股數 8400 萬、大戶變 8000 萬 → 減少 16% 不進排行
         rows_by_week["2026-09-24"] = [r for r in rows_by_week["2026-09-24"] if not (r[0] == "2601" and r[1] == 17)]
@@ -108,7 +108,7 @@ class RadarTests(unittest.TestCase):
         week = out["lists"][0]
         self.assertEqual(week["date"], "2026-10-02")
         # 買超榜：籌碼% ≥ 4 → 佳大（私募 +50%）17.32、希華 8.19、晟銘電（股本 +4%，x＝4.18）6.13、九豪 3√3.19＝5.36、千如 3√2.85＝5.06、
-        # 晶技 3√2.43＝4.68；ETF 不在；佳大、晟銘電不在族群表但在莊爸的範圍（ZHUANG_EXTRA）；益航不在範圍，列在「範圍外」
+        # 晶技 3√2.43＝4.68；ETF 不在；佳大、晟銘電不在族群表但在老師的範圍（ZHUANG_EXTRA）；益航不在範圍，列在「範圍外」
         self.assertEqual([(r["code"], r["chip"]) for r in week["buy"]],
                          [("2033", 17.32), ("2484", 8.19), ("3013", 6.13), ("6127", 5.36), ("3236", 5.06), ("3042", 4.68)])
         self.assertEqual([r["rank"] for r in week["buy"]], [1, 2, 3, 4, 5, 6])
@@ -127,11 +127,11 @@ class RadarTests(unittest.TestCase):
         cap = next(r for r in week["buy"] if r["code"] == "3013")
         self.assertEqual((cap["chip"], cap["capital"]), (6.13, 4.0))     # 股本 +4%：照列、標出來
         trail = module.stock("4806")["trail"]
-        self.assertEqual((trail[0]["chip"], trail[0]["capital"]), (-40.0, -30.0))     # 減資照算（莊爸：奇偶 9/18 減資 15% 照列）
+        self.assertEqual((trail[0]["chip"], trail[0]["capital"]), (-40.0, -30.0))     # 減資照算（老師：奇偶 9/18 減資 15% 照列）
         self.assertEqual(week["buy"][1]["group"], "石英")
         self.assertEqual(len(out["lists"]), 6)        # 最多 8 週，這裡只有 6 週可比
 
-        # 族群：石英前 5 檔（8.19、4.68、3√1.11＝3.16、3√0.45＝2.01、−0.73）平均 3.46，跟莊爸的石英 +3.46% 一樣算法
+        # 族群：石英前 5 檔（8.19、4.68、3√1.11＝3.16、3√0.45＝2.01、−0.73）平均 3.46，跟老師的石英 +3.46% 一樣算法
         groups = {g["name"]: g for g in out["groups"]}
         self.assertEqual(groups["石英"]["avg"], 3.46)
         self.assertEqual([m["code"] for m in groups["石英"]["members"]][:2], ["2484", "3042"])
@@ -171,7 +171,7 @@ class RadarTests(unittest.TestCase):
 
     def test_skipped_week_small_capital_cut_and_all_window(self) -> None:
         # 方土霖 4527：9/24 那週減資停止過戶、集保查無資料 → 10/02 改跟 9/18 比；總股數 7615 萬 → 6854 萬（−10%）、
-        # 大戶 51,420,250 → 45,529,718 → x −8.59（莊爸 10/08 賣超榜 −8.6%），籌碼% 不大照列
+        # 大戶 51,420,250 → 45,529,718 → x −8.59（老師 10/08 賣超榜 −8.6%），籌碼% 不大照列
         for d in WEEKS[:5]:
             fundamentals_daily.save_tdcc(d, [("4527", 12, 4, 4_257_487, 0.0), ("4527", 15, 17, 47_162_763, 0.0),
                                              ("4527", 17, 4000, 76_152_370, 100.0)])
@@ -184,7 +184,7 @@ class RadarTests(unittest.TestCase):
                          (-8.59, -8.6, "2026-09-18", -10.0))
         self.assertIsNone(sell["1727"]["vs"])
         stock = module.stock("4527")
-        self.assertFalse(stock["outside"])          # 方土霖在莊爸的範圍（他 10/08 賣超榜有）
+        self.assertFalse(stock["outside"])          # 方土霖在老師的範圍（他 10/08 賣超榜有）
         self.assertEqual((stock["trail"][0]["vs"], stock["trail"][1]["chip"]), ("2026-09-18", None))
         # 累積榜「全部」：06/18 起有幾週就幾週（這裡 6 週），不足 16 週時一樣給全部
         cum = out["cumulative"]
@@ -217,7 +217,7 @@ class RadarTests(unittest.TestCase):
                          [("被動元件", 1, ["6127", "3236"]), ("石英", 2, ["2484", "3042"])])
         nine = out["together"][0]["cards"][0]
         self.assertEqual((nine["chip1"], nine["week"], nine["after"], nine["close"], nine["star"], nine["ups"]), (5.4, 20.0, None, 60.0, True, 2))   # 9/24、10/02 連兩週增
-        # 佳大、晟銘電不在這裡的族群表（正式族群表裡是鋼鐵、機殼）→ 不在族群表，但在莊爸的範圍
+        # 佳大、晟銘電不在這裡的族群表（正式族群表裡是鋼鐵、機殼）→ 不在族群表，但在老師的範圍
         self.assertEqual(out["single"], [])
         self.assertEqual([c["code"] for c in out["nogroup"]], ["2033", "3013"])
         sell = out["sell"][0]

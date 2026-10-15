@@ -1,6 +1,6 @@
-"""處置監獄（2026-10-09 使用者：照莊爸「處置股・出獄與嫌疑名單」zhuang.tw/prison 一模一樣做到我們網站）。
+"""處置監獄（2026-10-09 使用者：照老師「處置股・出獄與嫌疑名單」zhuang.tw/prison 一模一樣做到我們網站）。
 
-資料全部用證交所／櫃買中心的公開公告（不抓莊爸網站）：
+資料全部用證交所／櫃買中心的公開公告（不抓老師網站）：
 - 上市：證交所「公布注意有價證券資訊」announcement/notice、「公布處置有價證券資訊」announcement/punish（正式站直抓，可指定期間）
 - 上櫃：櫃買中心 bulletin/attention、bulletin/disposal；櫃買擋正式站主機，走 tw-groups data 分支鏡像
   tpex/jail-attention.json、tpex/jail-disposal.json（排程主機每個交易日晚上抓最近 150 天）
@@ -17,7 +17,7 @@
   第二款（30/60/90 日起迄漲跌持續超標，收紅就再中）。門檻數字取自證交所第四條異常標準詳細數據（115.08.03 版），
   上櫃的從櫃買實際公告的數字反推（8/10 新制後：第一款最低 30.02%、23.38%＋價差 40.5 元；第三／四款 27%；週轉率 5%）
 - 今日第一次第一款：資料日觸及第一款、前 9 個交易日都沒有第一款（出獄後重新算：關完之前的第一款不算，耀穎 10/08）
-- 個股處置前科索引／查詢：處置迄日在近 95 天內、或近 25 個交易日內被注意過的股票（照莊爸 10/08 的 293 檔反推），
+- 個股處置前科索引／查詢：處置迄日在近 95 天內、或近 25 個交易日內被注意過的股票（照老師 10/08 的 293 檔反推），
   每檔的處置紀錄、注意日期與款別、明天判定
 
 累積天數只算最近一次處置公告「之後」的注意（公告那天以前的已經用掉了）；第九款以後的不算進累積
@@ -54,7 +54,7 @@ TWSE_PUNISH_URL = ("https://www.twse.com.tw/rwd/zh/announcement/punish?querytype
 MIRROR_ATTENTION = "jail-attention.json"
 MIRROR_DISPOSAL = "jail-disposal.json"
 HISTORY_DAYS = 150          # 第一次啟動回補幾天（30 營業日累積＋90 日前科索引）
-INDEX_PUNISH_DAYS = 95      # 前科索引：處置迄日在近 95 天內（莊爸 10/08：迄日 7/06 有、7/03 沒有）
+INDEX_PUNISH_DAYS = 95      # 前科索引：處置迄日在近 95 天內（老師 10/08：迄日 7/06 有、7/03 沒有）
 INDEX_NOTICE_DAYS = 25      # 　　　　　或近 25 個交易日內被注意過（9/02 以後有、9/01 沒有）
 KEEP_DAYS = 400
 POLL_SECONDS = 15 * 60
@@ -787,7 +787,7 @@ def _build(now: datetime) -> dict[str, Any]:
 
 
 def copy_text(next_day: str, suspects: list[dict[str, Any]]) -> str:
-    """可直接複製貼上（照莊爸的格式）。"""
+    """可直接複製貼上（照老師的格式）。"""
     out = [f"{md(next_day)}({weekday_label(next_day)})"]
     for high, title in ((True, "⚠️高機率會關~\n[-5% 以上或者量很難躲]"), (False, "⚠️有機會躲過")):
         rows = [s for s in suspects if s["high"] == high]
