@@ -31,7 +31,7 @@ from quote_features import STOCK_FUTURES_DISABLED_MESSAGE, stock_futures_enabled
 logger = logging.getLogger("hanstock.stock_futures")
 TW_TZ = timezone(timedelta(hours=8))
 StockFuturesMode = Literal["regular", "mini"]
-# 2026-10-13 使用者：盤中 55 個族群 499 檔都要有逐筆。主連線 190 檔＋共享池每條 198 檔，兩條就有 586 檔夠用；
+# 2026-10-13 使用者：盤中族群股票都要有逐筆。主連線 190 檔＋共享池每條 198 檔，兩條就有 586 檔（2026-10-15 補到 67 個族群 576 檔，只剩 10 檔空間）；
 # 同一 person_id 最多 5 條連線，只開 2 條（總共 3 條）留餘裕給重新部署交接、重連。
 DEFAULT_POOL_SIZE = 2
 # 共享連線一條一條登入，中間隔幾秒，不要同時搶登入（永豐有「請 1 分鐘後再重新登入」的限流）。
