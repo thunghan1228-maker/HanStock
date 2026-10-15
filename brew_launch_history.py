@@ -640,6 +640,15 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 price = bid if bid and not ask else ask if ask and not bid else round((bid + ask) / 2, 4) if bid and ask else None
                 source = "book"
             if price is None:
+                # 2026-10-15 天二科技跌停鎖死整個早上，證交所回的這盤沒成交、委買委賣也全是 "-"，退回開盤價 156 顯示成 -4%（其實 146.5 跌停）。
+                # 沒成交也沒委買委賣、但今天最低＝跌停價（或最高＝漲停價）：幾乎一定是鎖在那個價，就用跌停／漲停價。
+                low, high = _num(item.get("l")), _num(item.get("h"))
+                limit_up, limit_down = _num(item.get("u")), _num(item.get("w"))
+                if limit_down is not None and low is not None and abs(low - limit_down) < 1e-6:
+                    price, source = limit_down, "limit"
+                elif limit_up is not None and high is not None and abs(high - limit_up) < 1e-6:
+                    price, source = limit_up, "limit"
+            if price is None:
                 # 沒成交也沒委買委賣：只剩開盤價／最高／最低／昨收可以填，不是現在的價格（scan_once 不拿它判斷回落）
                 price = _num(item.get("o")) or _num(item.get("h")) or _num(item.get("l")) or prev_close
                 source = "fallback"
