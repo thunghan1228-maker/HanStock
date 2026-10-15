@@ -43,6 +43,7 @@ UPDATE_SLOTS = ((15, 40), (17, 40), (20, 40))
 POLL_SECONDS = 10 * 60
 CHART_DAYS = 250
 INST = {"外資": "f", "投信": "t", "自營商": "d"}
+REQUIRED_SERIES = ("tx_f", "tpex", "mtx_il", "tmf_il")
 SPOT = {"Foreign_Investor": "spot_f", "Foreign_Dealer_Self": "spot_f", "Investment_Trust": "spot_t",
         "Dealer_self": "spot_d", "Dealer_Hedging": "spot_d", "total": "spot_total"}
 
@@ -96,6 +97,17 @@ def parse_inst_net(payload: Any) -> dict[str, dict[str, float]]:
         key = INST.get(r.get("institutional_investors"))
         if key and r.get("date"):
             out[key][r["date"]] = float(r.get("long_open_interest_balance_volume") or 0) - float(r.get("short_open_interest_balance_volume") or 0)
+    return out
+
+
+def parse_inst_long_short(payload: Any) -> dict[str, dict[str, float]]:
+    """期貨三大法人合計的多方、空方未平倉口數（算散戶多單＝全市場未平倉 − 法人多單、散戶空單＝全市場 − 法人空單）。"""
+    out: dict[str, dict[str, float]] = {"long": {}, "short": {}}
+    for r in _rows(payload):
+        if INST.get(r.get("institutional_investors")) and r.get("date"):
+            d = r["date"]
+            out["long"][d] = out["long"].get(d, 0.0) + float(r.get("long_open_interest_balance_volume") or 0)
+            out["short"][d] = out["short"].get(d, 0.0) + float(r.get("short_open_interest_balance_volume") or 0)
     return out
 
 
@@ -169,26 +181,31 @@ def fetch(*, fetcher: Callable[[dict[str, str]], Any] | None = None, pc_fetcher:
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        last = _last_date(connection, "tx_f")
+        lasts = [_last_date(connection, x) for x in REQUIRED_SERIES]   # 新加的序列（櫃買、散戶多空單）沒有歷史就整段重抓
+        last = None if any(x is None for x in lasts) else min(lasts)
         last_pc = _last_date(connection, "pc_oi")
     today = now.date()
     start = (today - timedelta(days=HISTORY_DAYS)) if not last else (date.fromisoformat(last) - timedelta(days=REFETCH_DAYS))
     s = start.isoformat()
     got: dict[str, dict[str, float]] = {}
     for fid in ("TX", "MTX", "TMF"):
-        nets = parse_inst_net(call({"dataset": "TaiwanFuturesInstitutionalInvestors", "data_id": fid, "start_date": s}))
+        payload_inst = call({"dataset": "TaiwanFuturesInstitutionalInvestors", "data_id": fid, "start_date": s})
+        nets = parse_inst_net(payload_inst)
         if fid == "TX":
             got.update({"tx_" + k: v for k, v in nets.items()})
-        else:   # 小台／微台只要三大法人合計
+        else:   # 小台／微台只要三大法人合計（淨、多方、空方）
             total: dict[str, float] = {}
             for v in nets.values():
                 for d, x in v.items():
                     total[d] = total.get(d, 0.0) + x
             got[fid.lower() + "_inst"] = total
+            ls = parse_inst_long_short(payload_inst)
+            got[fid.lower() + "_il"], got[fid.lower() + "_is"] = ls["long"], ls["short"]
             got[fid.lower() + "_oi"] = parse_total_oi(call({"dataset": "TaiwanFuturesDaily", "data_id": fid, "start_date": s}))
     opt = parse_option_foreign(call({"dataset": "TaiwanOptionInstitutionalInvestors", "data_id": "TXO", "start_date": s}))
     got["txo_fc"], got["txo_fp"] = opt["call"], opt["put"]
     got["taiex"] = parse_index(call({"dataset": "TaiwanStockPrice", "data_id": "TAIEX", "start_date": s}))
+    got["tpex"] = parse_index(call({"dataset": "TaiwanStockPrice", "data_id": "TPEx", "start_date": s}))
     got.update(parse_spot(call({"dataset": "TaiwanStockTotalInstitutionalInvestors", "start_date": s})))
     if not got["tx_f"] or not got["taiex"]:
         raise RuntimeError("台指期三大法人或加權指數抓到 0 筆")
@@ -264,9 +281,48 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
         chg = cur - before if cur is not None and before is not None else None
         return {"value": _r(cur, digits), "prev": _r(before, digits), "chg": _r(chg, digits)}
 
+    def retail_ls(kind: str, d: str) -> tuple[float | None, float | None]:
+        oi, il, ish = val(kind + "_oi", d), val(kind + "_il", d), val(kind + "_is", d)
+        return (oi - il if oi is not None and il is not None else None, oi - ish if oi is not None and ish is not None else None)
+
+    def index_card(series: dict[str, float]) -> dict[str, Any] | None:
+        ds = sorted(series)
+        if len(ds) < 2:
+            return None
+        cur, before = series[ds[-1]], series[ds[-2]]
+        return {"value": round(cur, 2), "chg": round(cur - before, 2), "pct": round((cur / before - 1) * 100, 2), "date": ds[-1]}
+
+    # 融資：跟「資金保護傘」同一份（證交所、櫃買中心每天晚上 21:40 後才公布，所以常常比期貨籌碼晚一天）
+    try:
+        import fund_umbrella
+
+        fu = fund_umbrella._load()
+    except Exception:  # noqa: BLE001
+        fu = {}
+    margin, otc_margin = fu.get("margin", {}), fu.get("otc_margin", {})
+
+    def margin_card(series: dict[str, float]) -> dict[str, Any] | None:
+        ds = sorted(series)
+        if len(ds) < 2:
+            return None
+        cur = series[ds[-1]]
+
+        def back(k: int) -> float | None:
+            return round(cur - series[ds[-1 - k]], 2) if len(ds) > k else None
+
+        return {"value": round(cur, 2), "date": ds[-1], "d1": back(1), "d5": back(5), "d20": back(20)}
+
+    tpex = data.get("tpex", {})
     t_cur, t_prev = taiex[as_of], taiex[prev]
+    mtx_ls, mtx_ls_prev, tmf_ls = retail_ls("mtx", as_of), retail_ls("mtx", prev), retail_ls("tmf", as_of)
+    spot_dates = sorted(data.get("spot_total", {}))
     cards = {
-        "taiex": {"value": round(t_cur, 2), "chg": round(t_cur - t_prev, 2), "pct": round((t_cur / t_prev - 1) * 100, 2)},
+        "taiex": {"value": round(t_cur, 2), "chg": round(t_cur - t_prev, 2), "pct": round((t_cur / t_prev - 1) * 100, 2), "date": as_of},
+        "tpex": index_card(tpex),
+        "margin": margin_card(margin),
+        "otcMargin": margin_card(otc_margin),
+        "mtxLong": _r(mtx_ls[0]), "mtxShort": _r(mtx_ls[1]), "tmfLong": _r(tmf_ls[0]), "tmfShort": _r(tmf_ls[1]),
+        "pcVol": _r(val("pc_vol", as_of), 2),
         "txForeign": card(val("tx_f", as_of), val("tx_f", prev)),
         "txTrust": card(val("tx_t", as_of), val("tx_t", prev)),
         "txDealer": card(val("tx_d", as_of), val("tx_d", prev)),
@@ -280,6 +336,10 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
         "spot": {"foreign": _r(val("spot_f", as_of), 2), "trust": _r(val("spot_t", as_of), 2), "dealer": _r(val("spot_d", as_of), 2),
                  "total": _r(val("spot_total", as_of), 2), "date": as_of if val("spot_total", as_of) is not None else None},
     }
+    # 每份資料最新到哪一天（畫面上的 ✅／⏳ 標籤）
+    fresh = {"futures": as_of, "taiex": max(taiex) if taiex else None, "tpex": max(tpex) if tpex else None,
+             "spot": spot_dates[-1] if spot_dates else None, "margin": max(margin) if margin else None,
+             "otcMargin": max(otc_margin) if otc_margin else None}
     series = []
     for i, d in enumerate(days[-(CHART_DAYS + 1):]):
         if i == 0 and len(days) > CHART_DAYS:
@@ -291,12 +351,14 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
             "it": _r(val("tx_t", d)), "dl": _r(val("tx_d", d)), "call": _r(val("txo_fc", d)), "put": _r(val("txo_fp", d)),
             "mr": _r(retail("mtx", d)), "tr": _r(retail("tmf", d)), "mq": ratio("mtx", d), "tq": ratio("tmf", d), "pc": _r(val("pc_oi", d), 2),
             "sf": _r(val("spot_f", d), 2), "st": _r(val("spot_t", d), 2), "sd": _r(val("spot_d", d), 2), "s": _r(val("spot_total", d), 2),
+            "o": _r(tpex.get(d), 2), "m": _r(margin.get(d), 2), "mo": _r(otc_margin.get(d), 2), "pv": _r(val("pc_vol", d), 2),
+            "ml": _r(retail_ls("mtx", d)[0]), "ms": _r(retail_ls("mtx", d)[1]), "tl": _r(retail_ls("tmf", d)[0]), "ts": _r(retail_ls("tmf", d)[1]),
         })
     return {
         "status": "ok", "asOf": as_of, "prevDate": prev, "updatedAt": _state.get("lastFetch"), "now": now.isoformat(timespec="seconds"),
-        "pcError": _state.get("pcError"), "cards": cards, "series": series,
-        "source": "FinMind 公開資料（期交所三大法人期貨／選擇權未平倉、小台微台全市場未平倉、加權指數、證交所上市三大法人買賣金額）"
-                  "＋期交所臺指選擇權 Put/Call Ratio；每個交易日 15:40 更新（17:40、20:40 補抓）",
+        "pcError": _state.get("pcError"), "cards": cards, "series": series, "fresh": fresh,
+        "source": "期交所三大法人期貨未平倉、期貨每日行情（全市場未平倉只算一般盤、排除價差單）、三大法人選擇權買賣權、Put/Call Ratio；"
+                  "證交所加權指數、三大法人買賣金額統計、信用交易統計；櫃買中心櫃買指數、上櫃融資融券餘額（經 FinMind 公開資料整理）",
     }
 
 
