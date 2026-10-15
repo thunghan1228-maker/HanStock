@@ -429,7 +429,7 @@ def _pe_candidate_dates(now: datetime, count: int = 3) -> list[str]:
     return out
 
 
-# 2026-10-10 估值河流圖：莊爸的分水嶺＝近 4 季 EPS × 每檔自己的參考本益比，要歷史本益比才推得出參考本益比怎麼來的。
+# 2026-10-10 估值河流圖：老師的分水嶺＝近 4 季 EPS × 每檔自己的參考本益比，要歷史本益比才推得出參考本益比怎麼來的。
 # 證交所 BWIBBU_d 可以查任何一天：每個月月底取一天（不是交易日就往前找），存進 stock_pe_daily（source＝twse-history）。
 PE_HISTORY_PAUSE = 3.0          # 證交所每次查詢之間停幾秒（太密會被擋）
 _pe_history: dict[str, Any] = {"running": False, "done": [], "failed": [], "startedAt": None, "finishedAt": None, "lastError": None}

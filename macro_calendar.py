@@ -1,4 +1,4 @@
-"""國際大事行事曆（2026-10-10 使用者：照莊爸 zhuang.tw/calendar 做，含名詞小學堂）。
+"""國際大事行事曆（2026-10-10 使用者：照老師 zhuang.tw/calendar 做，含名詞小學堂）。
 
 資料：TradingView 公開經濟日曆（economic-calendar.tradingview.com，網站小工具用的那支），美國／中國／日本／歐元區，
 有預期值、前值，公布後有公布值；時間一律換成台灣時間。挑會影響台股的重要事件，翻成中文、標星等（★★★ 大事）；
@@ -357,7 +357,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
 }
 GLOSSARY_EXTRA = ("unemp", "dotplot", "basics", "dst")   # 沒有直接對應事件，但小學堂一律列出
 
-# 公司法說／財報：慣例時間，待公司公告確認（2026-10-10 照莊爸行事曆）
+# 公司法說／財報：慣例時間，待公司公告確認（2026-10-10 照老師行事曆）
 COMPANY_EVENTS: list[dict[str, Any]] = [
     {"date": "2026-10-14", "time": "13:00", "country": "EU", "zh": "歐 艾司摩爾 ASML 財報", "period": "Q3", "stars": 2, "key": "earnings",
      "note": "公布時間為慣例時間，待確認"},

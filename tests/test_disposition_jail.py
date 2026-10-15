@@ -134,7 +134,7 @@ class ThresholdTests(DbTestCase):
         self.add_bars("8111", [80.0, 82, 84, 86, 88, 90, 93.7], volume=17017)
         th = module.thresholds("8111", "OTC", "2026-10-08", need_any=True, recent_clauses={6}, verb="被關", shares=109_103_000)
         volume_lines = [line for line in th["lines"] if line["kind"] == "volume"]
-        self.assertEqual(volume_lines[-1]["lots"], 5455)       # 第六款：週轉率 5%＝5,455.15 張 → 「> 5,455 張」（莊爸同）
+        self.assertEqual(volume_lines[-1]["lots"], 5455)       # 第六款：週轉率 5%＝5,455.15 張 → 「> 5,455 張」（老師同）
         self.assertIn("成交量 > 5,455 張", volume_lines[-1]["text"])
         self.assertTrue(volume_lines[-1]["passed"])
         self.assertEqual(module._lots_over(5455.0), 5454)      # 剛好整數：5,455 張就達標 → 「> 5,454」

@@ -136,7 +136,7 @@ class DbTests(unittest.TestCase):
         self.assertEqual((sec["month"], sec["published"], sec["yoyHigh"], sec["qualified"]), ("2026-09", 4, 2, 1))
         pick = sec["picks"][0]   # 晶豪科年增也 ≥30%，但成交值 271 × 100 張 ＝ 2,710 萬不夠
         self.assertEqual((pick["code"], pick["yoy"], pick["score"], pick["turnoverYi"], pick["accel"], pick["revYi"]), ("2408", 576.62, 12, 197.43, True, 451.0))
-        # 2026-10-13（莊爸「10/13 公布 1 檔，年增 ≥30% 0 檔」）：只算上一個交易日之後新公布的；第一次抓就在的不算新公布
+        # 2026-10-13（老師「10/13 公布 1 檔，年增 ≥30% 0 檔」）：只算上一個交易日之後新公布的；第一次抓就在的不算新公布
         self.assertEqual((sec["since"], sec["newPublished"], sec["newYoyHigh"], sec["newQualified"], sec["newPicks"]), ("2026-10-07", 1, 0, 0, []))
         self.assertEqual(module.report_section("2026-10-06")["newPublished"], 1)
         early = module.report_section("2026-10-05")   # 中美晶 10/06、立碁 10/08 才公布；晶豪科是第一次抓就在（公布日不確定）算已公布

@@ -55,9 +55,9 @@ class AnalyzeBarsTests(unittest.TestCase):
         t = {"ma60OverHead": True, "ma60": 53.93, "dev5Pct": 19.0, "limitUp": True}
         self.assertEqual(module._risks(t, {"inst5": -3.0, "instToday": -1.0}, True),
                          ["處置中", "季線 53.93 在頭上", "漲停後與 5 日線乖離 19%", "法人 5 日仍為賣超"])
-        # 法人今天轉賣超不算風險（2026-10-14：莊爸 10/14 光頡法人今天賣超，卡片沒有提示）
+        # 法人今天轉賣超不算風險（2026-10-14：老師 10/14 光頡法人今天賣超，卡片沒有提示）
         self.assertEqual(module._risks({"ma60OverHead": False, "dev5Pct": 2.0}, {"inst5": 10.0, "instToday": -2.0}, False), [])
-        # 本益比高於族群均值 1.5 倍才提示（莊爸 10/14：天二科技 69 vs 44 有；光頡 52 vs 44 沒有）
+        # 本益比高於族群均值 1.5 倍才提示（老師 10/14：天二科技 69 vs 44 有；光頡 52 vs 44 沒有）
         self.assertEqual(module._risks({}, {"pe": 69.35, "peGroupAvg": 44.0}, False), ["本益比 69 高於族群均值 44"])
         self.assertEqual(module._risks({}, {"pe": 52.03, "peGroupAvg": 44.0}, False), [])
 
@@ -138,7 +138,7 @@ class ReportTests(unittest.TestCase):
         groups = {g["name"]: g for g in r["groups"]}
         self.assertEqual([g["name"] for g in r["groups"]], ["矽晶圓", "半導體", "設備股"])   # 依當天平均漲跌幅排
         self.assertEqual((groups["矽晶圓"]["aboveMa20"], groups["矽晶圓"]["members"], groups["矽晶圓"]["inst5"], groups["矽晶圓"]["rank"]), (1, 1, 5000.0, 1))
-        # 2026-10-13 莊爸 10/14 報告：精選族群寫當天族群均漲
+        # 2026-10-13 老師 10/14 報告：精選族群寫當天族群均漲
         self.assertEqual(groups["矽晶圓"]["judge"], "資金已進、型態已翻；族群 09/24 均漲 +4.0%")
         self.assertEqual((groups["矽晶圓"]["featured"], groups["矽晶圓"]["featuredOrder"]), (True, 0))
         # 設備股：籌碼雷達熱門族（週籌碼先進）、法人 5 日賣超、站上月線不到一半 → 低檔醞釀
@@ -155,7 +155,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(r["notes"]["sustained"], [])   # 合晶是跳升進來的，不算續強（見下面 SustainedTests 另外測沒跳升的續強情形）
 
     def test_chips_follow_radar(self) -> None:
-        # 莊爸的籌碼面：籌碼暴增榜前 10 名、熱門族、法人 5 日買超；連續增加週數多的優先，同週數均線分數高的在前
+        # 老師的籌碼面：籌碼暴增榜前 10 名、熱門族、法人 5 日買超；連續增加週數多的優先，同週數均線分數高的在前
         for d in trading_dates("2026-09-24", 5):
             chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
         hot_all = {"6182": "矽晶圓", "2330": "半導體", "6207": "設備股"}
@@ -177,7 +177,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([x[0] for x in picks([f"9{i:03d}" for i in range(10)] + ["2330", "6182"], {}, hot_all)], [])
 
     def test_chips_tier2(self) -> None:
-        # 2026-10-13 莊爸 10/14 報告：暴增榜前 10 之後，補熱門族、籌碼連續增加 ≥3 週、這一週籌碼% ≥3%、法人 5 日買超的
+        # 2026-10-13 老師 10/14 報告：暴增榜前 10 之後，補熱門族、籌碼連續增加 ≥3 週、這一週籌碼% ≥3%、法人 5 日買超的
         for d in trading_dates("2026-09-24", 5):
             chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
         hot_all = {"6182": "矽晶圓", "2330": "半導體"}
@@ -208,7 +208,7 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [])
 
     def test_revenue_cards_outside_groups(self) -> None:
-        # 營收面入選、不在族群表的（莊爸的台汽電）也有完整卡片；但不算進族群統計、其他精選
+        # 營收面入選、不在族群表的（老師的台汽電）也有完整卡片；但不算進族群統計、其他精選
         import revenue_rank
 
         dates = trading_dates("2026-09-24", 241)

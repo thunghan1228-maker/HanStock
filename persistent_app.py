@@ -1055,7 +1055,7 @@ def get_price_adjust_events(limit: int = Query(200, ge=1, le=2000)) -> dict[str,
 
 @app.get("/api/hub/picker")
 def get_picker(request: Request) -> dict[str, Any]:
-    """創高黑選股（2026-10-04 使用者：照莊爸 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、
+    """創高黑選股（2026-10-04 使用者：照老師 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、
     每日新進、條件池）／perf（實績：各種出場方式）／rules；其餘查詢參數是模組參數（見 heilong_picker.DEFAULTS），
     date＝看哪一天、week＝每週名單看第幾週、lists＝使用者改過的名單『週一:代號,代號;…』、stars＝設成優先的代號。"""
     from fastapi import HTTPException
@@ -1074,7 +1074,7 @@ def get_picker(request: Request) -> dict[str, Any]:
 
 @app.get("/api/hub/chip-radar")
 def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
-    """籌碼暴增雷達（2026-10-04 使用者：照莊爸 zhuang.tw/radar 做）：集保週資料的大戶增減，本週買超／賣超榜（最近 8 週）、
+    """籌碼暴增雷達（2026-10-04 使用者：照老師 zhuang.tw/radar 做）：集保週資料的大戶增減，本週買超／賣超榜（最近 8 週）、
     上榜累積榜、族群排名、連續增排行、熱門股。week＝看哪一週（集保結算日 YYYY-MM-DD），不給＝最新一週。"""
     from fastapi import HTTPException
 
@@ -1086,7 +1086,7 @@ def get_chip_radar(week: str | None = Query(None)) -> dict[str, Any]:
 
 @app.get("/api/hub/chip-radar/weekly")
 def get_chip_weekly(week: str | None = Query(None)) -> dict[str, Any]:
-    """籌碼週報（2026-10-10 使用者：照莊爸雷達頁的「籌碼週報・可回看 4 週」做）：本週摘要、上週榜對帳、族群排名、
+    """籌碼週報（2026-10-10 使用者：照老師雷達頁的「籌碼週報・可回看 4 週」做）：本週摘要、上週榜對帳、族群排名、
     整族一起動、單獨上榜、賣超。week＝集保結算日 YYYY-MM-DD，不給＝最新一週；weeks 回最近 4 週可以切。"""
     from fastapi import HTTPException
 
@@ -1109,7 +1109,7 @@ def _ma_date(date: str | None) -> str | None:
 
 @app.get("/api/hub/ma-rank")
 def get_ma_rank(date: str | None = Query(None)) -> dict[str, Any]:
-    """均線分數排行（2026-10-10 使用者：照莊爸 zhuang.tw/ma 做）：個股分數前 60（昨天名次、連續上榜）＋族群分數前十大。
+    """均線分數排行（2026-10-10 使用者：照老師 zhuang.tw/ma 做）：個股分數前 60（昨天名次、連續上榜）＋族群分數前十大。
     date＝選股日期 YYYY-MM-DD，不給＝最新一天；dates 回最近 20 個交易日可以切。"""
     from fastapi import HTTPException
 
@@ -1162,7 +1162,7 @@ def get_ma_rank_query(code: str | None = Query(None), group: str | None = Query(
 
 @app.get("/api/hub/river")
 def get_river(q: str = Query(...)) -> dict[str, Any]:
-    """估值河流圖・本站版（2026-10-10 使用者：照莊爸估值河流圖做）：q＝股號或股名；分水嶺＝近 4 季 EPS × 同族群本益比中位數，
+    """估值河流圖・本站版（2026-10-10 使用者：照老師估值河流圖做）：q＝股號或股名；分水嶺＝近 4 季 EPS × 同族群本益比中位數，
     四區 ×0.618／0.8／1.2／1.382，附河道歷史、本益比、淨值比、近月營收。"""
     from fastapi import HTTPException
 
@@ -1192,7 +1192,7 @@ def get_river_ma10() -> dict[str, Any]:
 
 @app.get("/api/hub/etf-radar")
 def get_etf_radar(date: str | None = Query(None)) -> dict[str, Any]:
-    """主動式 ETF 持股雷達（2026-10-10 使用者：照莊爸 zhuang.tw/etf 做，併進籌碼日報）：五檔卡片、今天／這一週五檔合計
+    """主動式 ETF 持股雷達（2026-10-10 使用者：照老師 zhuang.tw/etf 做，併進籌碼日報）：五檔卡片、今天／這一週五檔合計
     加碼出貨前十（依金額）、最多人共同持有、資金潮汐；date＝回測那一天。"""
     from etf_radar import overview
 
@@ -1227,7 +1227,7 @@ def get_etf_radar_stock(q: str = Query(...)) -> dict[str, Any]:
 
 @app.get("/api/hub/screener")
 def get_screener(request: Request, date: str | None = Query(None)) -> dict[str, Any]:
-    """選股系統・條件選股（2026-10-10 使用者：照莊爸選股系統做，併進個股研究）：score／chip／etf／inst3／inst5／sword／dispo
+    """選股系統・條件選股（2026-10-10 使用者：照老師選股系統做，併進個股研究）：score／chip／etf／inst3／inst5／sword／dispo
     門檻，fut／mini／exdispo＝1 勾選，k＝any／red／black 與 kmin／kmax 漲跌幅區間；date＝資料日（回測指定日）。"""
     from fastapi import HTTPException
 
@@ -1271,7 +1271,7 @@ def get_screener_stock(code: str = Query(...), date: str | None = Query(None)) -
 
 @app.get("/api/hub/grail-radar")
 def get_grail_radar(date: str | None = Query(None)) -> dict[str, Any]:
-    """飆股雷達（2026-10-07 使用者：照莊爸 App 的飆股雷達做）：紫殺四個聖杯 15 個邏輯，每個邏輯照固定時間點
+    """飆股雷達（2026-10-07 使用者：照老師 App 的飆股雷達做）：紫殺四個聖杯 15 個邏輯，每個邏輯照固定時間點
     （盤中用證交所即時報價、收盤用官方日K）篩出來的名單。date＝看哪一天（YYYY-MM-DD），不給＝最新有資料的一天。"""
     from fastapi import HTTPException
 
@@ -1302,7 +1302,7 @@ def post_grail_radar_run_close(date: str = Query(...), force: bool = Query(False
 
 @app.get("/api/hub/jail")
 def get_jail() -> dict[str, Any]:
-    """處置監獄（2026-10-09 使用者：照莊爸「處置股・出獄與嫌疑名單」做）：一週出獄時間表、犯罪集團、今日入獄、
+    """處置監獄（2026-10-09 使用者：照老師「處置股・出獄與嫌疑名單」做）：一週出獄時間表、犯罪集團、今日入獄、
     嫌疑名單（明天門檻）、今日第一次第一款、前科索引。資料是證交所／櫃買中心的注意股、處置股公告。"""
     return jail_payload()
 
@@ -1333,7 +1333,7 @@ def post_jail_collect(days: int | None = Query(None, ge=1, le=400)) -> dict[str,
 
 @app.get("/api/hub/revenue")
 def get_revenue(month: str | None = Query(None)) -> dict[str, Any]:
-    """營收成長榜（2026-10-09 使用者：照莊爸「每月營收成長榜」做）：某個營收月份（YYYY-MM，不給＝最新）全部已公布公司的
+    """營收成長榜（2026-10-09 使用者：照老師「每月營收成長榜」做）：某個營收月份（YYYY-MM，不給＝最新）全部已公布公司的
     年增、月增、累計年增、月營收、收盤、成交量、公布日、公布隔日漲跌、上月年增；加上歷月「公布→隔日」統計。"""
     import re
 
@@ -1370,7 +1370,7 @@ def post_revenue_collect() -> dict[str, Any]:
 
 @app.get("/api/hub/macro-calendar")
 def get_macro_calendar() -> dict[str, Any]:
-    """國際大事行事曆（2026-10-10 使用者：照莊爸 zhuang.tw/calendar 做）：美／中／日／歐重要數據與央行會議（台灣時間、星等、
+    """國際大事行事曆（2026-10-10 使用者：照老師 zhuang.tw/calendar 做）：美／中／日／歐重要數據與央行會議（台灣時間、星等、
     前值／預期／公布）、台指期結算、美股季度結算、公司法說，加上名詞小學堂。還沒抓過（剛部署）就先抓一次。"""
     import macro_calendar
 
