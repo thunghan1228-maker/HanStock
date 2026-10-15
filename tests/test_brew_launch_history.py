@@ -726,6 +726,16 @@ class FetchMisQuotesLimitPriceTests(unittest.TestCase):
         fallback = self._fetch([{**base, "z": "-", "b": "-", "a": "-"}])["2330"]
         self.assertEqual((fallback["priceSource"], fallback["price"]), ("fallback", 101.0))
 
+    def test_no_trade_no_book_but_low_at_limit_down_uses_limit_price(self) -> None:
+        # 2026-10-15 天二科技：跌停鎖死、這盤沒成交、委買委賣全是 "-"，以前退回開盤價 156（-4%），其實是跌停 146.5
+        base = {"c": "6834", "y": "162.5", "u": "178.5", "w": "146.5", "o": "156.0", "h": "158.0", "l": "146.5",
+                "d": "20261015", "t": "12:20:59", "v": "12530", "z": "-", "b": "-", "a": "-"}
+        q = module.fetch_mis_quotes(["6834"], {"6834": "TSE"}, fetcher=lambda url: {"msgArray": [base]})["6834"]
+        self.assertEqual((q["price"], q["priceSource"], q["limitDown"]), (146.5, "limit", True))
+        up = {**base, "h": "178.5", "l": "155.0"}
+        q = module.fetch_mis_quotes(["6834"], {"6834": "TSE"}, fetcher=lambda url: {"msgArray": [up]})["6834"]
+        self.assertEqual((q["price"], q["priceSource"], q["limitUp"]), (178.5, "limit", True))
+
     def test_book_mid_price_has_no_float_noise(self) -> None:
         # 2026-10-05 千附：委買委賣平均算出 69.30000000000001（委買 69.2／委賣 69.4），比箱頂 69.3 大一點點就被當成過箱頂
         base = {"c": "2330", "y": "68.4", "u": "75.2", "w": "61.6", "d": "20261005", "t": "13:20:55", "v": "1249"}
