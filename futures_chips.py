@@ -305,10 +305,10 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
         ds = sorted(series)
         if len(ds) < 2:
             return None
-        cur = series[ds[-1]]
+        cur = round(series[ds[-1]], 2)
 
-        def back(k: int) -> float | None:
-            return round(cur - series[ds[-1 - k]], 2) if len(ds) > k else None
+        def back(k: int) -> float | None:   # 先各自取兩位再相減（老師 10/14 當日 +65.88，不先取會變 +65.89）
+            return round(cur - round(series[ds[-1 - k]], 2), 2) if len(ds) > k else None
 
         return {"value": round(cur, 2), "date": ds[-1], "d1": back(1), "d5": back(5), "d20": back(20)}
 
