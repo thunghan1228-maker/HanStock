@@ -101,5 +101,22 @@ class StockFuturesBoardTests(unittest.TestCase):
         self.assertEqual(resp.json()["status"], "error")
 
 
+
+class SnapshotApiTests(unittest.TestCase):
+    def test_snapshot_api_works_when_stock_futures_subscriptions_disabled(self) -> None:
+        # 正式環境關掉股期即時訂閱（名額留給現貨逐筆），Snapshot 不訂閱，照樣要拿得到共享連線
+        import stock_futures_service as sfs
+
+        service = sfs.StockFuturesQuoteService(api_factory=lambda: object())
+        service._stock_futures_enabled = False
+        pool_api = object()
+        service._pools = [SimpleNamespace(healthy=False, api=object()), SimpleNamespace(healthy=True, api=pool_api)]
+        with patch.object(service, "_ensure_pools", lambda: None):
+            self.assertIs(service.snapshot_api(), pool_api)
+            service._pools = [SimpleNamespace(healthy=False, api=object())]
+            with self.assertRaises(RuntimeError):
+                service.snapshot_api()
+
+
 if __name__ == "__main__":
     unittest.main()
