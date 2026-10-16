@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import database
 import heilong_backtest
+import financials
 import river as module
 from fundamentals_daily import _schema as fund_schema, save_pe
 
@@ -50,6 +52,7 @@ class RiverTests(unittest.TestCase):
             c.execute("INSERT INTO stock_revenue_monthly (stock_code, ym, revenue, yoy_pct, mom_pct, market, updated_at) VALUES ('2492', '2026-08', 4568665, 45.5, 2.8, 'TSE', 'x')")
             c.execute("INSERT INTO stock_revenue_monthly (stock_code, ym, revenue, yoy_pct, mom_pct, market, updated_at) VALUES ('2492', '2026-07', 4440000, 42.0, 1.0, 'TSE', 'x')")
         module._cache.update({"key": None, "at": 0.0, "data": None})
+        financials._cache.update({"key": None, "singles": None})
 
     def tearDown(self) -> None:
         self.groups.stop()
@@ -114,6 +117,32 @@ class RiverTests(unittest.TestCase):
             self.assertEqual(module.query("華新科")["stock"]["groupMap"]["group"], "被動元件")
             self.assertIsNone(module.group_map("股期標的"))
 
+    def test_financial_eps_and_top_queries(self) -> None:
+        # 金山電有財報：單季 25Q3 1.0、25Q4 0.5、26Q1 0.5、26Q2 0.5 → 近 4 季 2.5，收 50 → 本益比 20（交易所的 10 不用）
+        cum = {"2025Q2": (100.0, 10.0, 0.5), "2025Q3": (200.0, 20.0, 1.5), "2025Q4": (300.0, 30.0, 2.0),
+               "2026Q1": (100.0, 10.0, 0.5), "2026Q2": (220.0, 40.0, 1.0)}
+        for season, (rev, opi, eps) in cum.items():
+            financials.save_season(season, [{"code": "8042", "name": "金山電", "market": "otc", "revenue": rev, "opIncome": opi, "eps": eps}], "t")
+        rows = module.load()["rows"]
+        jin = rows["8042"]
+        self.assertEqual((jin["pe"], jin["eps4"], jin["epsFrom"], jin["epsAsOf"]), (20.0, 2.5, "財報", "26Q2"))
+        self.assertEqual((jin["ref"], jin["dist"], jin["zone"]), (25.0, -20.0, 2))     # 被動本益比 40／30／20／20 → 中位數 25
+        self.assertEqual(rows["2492"]["epsFrom"], "本益比")
+        st = module.query("8042")["stock"]
+        self.assertEqual(st["quarters"], [{"label": "25Q3", "eps": 1.0}, {"label": "25Q4", "eps": 0.5}, {"label": "26Q1", "eps": 0.5}, {"label": "26Q2", "eps": 0.5}])
+        self.assertEqual(st["margins"], [{"label": "26Q1", "margin": 10.0}, {"label": "26Q2", "margin": 25.0}])
+        # 本週查詢排行
+        now = datetime(2026, 10, 16, 21, 0)
+        self.assertTrue(module.record_hit("2492", now))
+        self.assertTrue(module.record_hit("2492", now))
+        self.assertTrue(module.record_hit("8042", now))
+        self.assertFalse(module.record_hit("ZZZZ", now))
+        self.assertTrue(module.record_hit("2472", datetime(2026, 10, 9, 21, 0)))    # 8 天前，不算
+        top = module.top_queries(now=now)
+        self.assertEqual([(r["code"], r["count"]) for r in top["rows"]], [("2492", 2), ("8042", 1)])
+        self.assertEqual((top["rows"][0]["yoy"], top["rows"][0]["eps"]), (45.5, None))
+        self.assertEqual((top["rows"][1]["eps"], top["rows"][1]["epsLabel"], top["rows"][1]["zoneName"]), (0.5, "26Q2", "便宜"))
+
     def test_endpoints(self) -> None:
         from fastapi.testclient import TestClient
 
@@ -125,6 +154,9 @@ class RiverTests(unittest.TestCase):
         self.assertEqual(client.get("/api/hub/river", params={"q": "zzz"}).status_code, 404)
         self.assertEqual(client.get("/api/hub/river/ma10").json()["count"], 3)
         self.assertTrue(client.get("/api/hub/river/list").json()["stocks"])
+        hit = client.get("/api/hub/river/hit", params={"code": "2492"})
+        self.assertEqual((hit.json()["counted"], hit.headers["cache-control"]), (True, "no-store"))
+        self.assertEqual(client.get("/api/hub/river/top").json()["rows"][0]["code"], "2492")
 
 
 if __name__ == "__main__":

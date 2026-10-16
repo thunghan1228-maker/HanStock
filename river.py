@@ -119,9 +119,36 @@ def _refs(pe: dict[str, dict[str, Any]]) -> tuple[dict[str, float], float | None
     return refs, market
 
 
+def _fin_eps4() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """({代號: 財報近 4 季 EPS}, {代號: 單季（新到舊）})；財報表還沒有資料就都空的。"""
+    from financials import all_singles, eps4_of
+
+    try:
+        singles = all_singles()
+    except Exception:  # noqa: BLE001
+        return {}, {}
+    out = {}
+    for code, rows in singles.items():
+        got = eps4_of(rows)
+        if got:
+            out[code] = got
+    return out, singles
+
+
 def _build() -> dict[str, Any]:
     pe, pe_date = _latest_pe()
     closes, scores, price_date = _latest_closes()
+    # 2026-10-16 使用者：近 4 季 EPS 跟對方一樣用財報（最近 4 個單季相加），財報一公布就跟上；
+    # 沒有財報資料的（剛上市、財報鏡像還沒到）照舊用交易所本益比換算
+    fin, _singles = _fin_eps4()
+    eff: dict[str, dict[str, Any]] = {}
+    for code, info in pe.items():
+        f, close = fin.get(code), closes.get(code)
+        if f and close:
+            eff[code] = {**info, "pe": round(close / f["eps4"], 2) if f["eps4"] > 0 else None, "fin": f}
+        else:
+            eff[code] = info
+    pe = eff
     refs, market = _refs(pe)
     groups = _groups_of()
     names = _names()
@@ -135,14 +162,15 @@ def _build() -> dict[str, Any]:
         ref = refs.get(group) if group else market
         row: dict[str, Any] = {"code": code, "name": names.get(code, code), "group": "/".join(mine), "refGroup": group or "全市場",
                                "price": close, "priceDate": price_date, "pe": info["pe"], "pbr": info["pbr"], "peDate": info["date"],
-                               "score": scores.get(code), "ref": ref}
+                               "score": scores.get(code), "ref": ref,
+                               "epsFrom": "財報" if info.get("fin") else "本益比", "epsAsOf": (info.get("fin") or {}).get("label")}
         value = _valid_pe(info["pe"])
         if info["pbr"]:
             row["bps"] = round(close / float(info["pbr"]), 2)
         if value is None or not ref:
             row.update({"noVal": True, "why": "thin" if info["pe"] and float(info["pe"]) > PE_MAX else "loss"})
         else:
-            eps4 = close / value
+            eps4 = info["fin"]["eps4"] if info.get("fin") else close / value
             s = eps4 * ref
             z = zone_of(close, s)
             row.update({"noVal": False, "eps4": round(eps4, 2), "s": round(s, 1), "bounds": [round(s * r, 1) for r in RATIOS],
@@ -188,7 +216,9 @@ def _resolve(text: str, rows: dict[str, dict[str, Any]]) -> str | None:
 
 
 def _history(code: str, ref: float, days: int = CHART_DAYS) -> dict[str, Any]:
-    """近 days 根日K收盤，加上每天的河道（當時的近 4 季 EPS × 現在的族群本益比；沒本益比的日子沿用前一個）。"""
+    """近 days 根日K收盤，加上每天的河道（當時的近 4 季 EPS × 現在的族群本益比；沒本益比的日子沿用前一個）。
+    有財報的季：從那一季的公布期限（5/15、8/14、11/14、隔年 3/31）起改用財報的近 4 季 EPS；更早的照交易所本益比換算。"""
+    from financials import all_singles, eps4_steps
     from fundamentals_daily import pe_history
 
     with get_connection() as connection:
@@ -198,11 +228,17 @@ def _history(code: str, ref: float, days: int = CHART_DAYS) -> dict[str, Any]:
     bars = sorted((str(r["d"]), float(r["close"])) for r in rows)
     closes = dict(bars)
     eps_points = []
+    fin_steps = eps4_steps(all_singles().get(code) or [])
+    first_fin = fin_steps[0][0] if fin_steps else None
     for p in pe_history(code):
         value = _valid_pe(p["pe"])
         close = closes.get(p["date"])
-        if value and close:
+        if value and close and (first_fin is None or p["date"] < first_fin):
             eps_points.append((p["date"], close / value))
+    for start, eps4 in fin_steps:   # 財報那幾季：公布期限當天（遇假日就是之後第一根日K）起換
+        if eps4 > 0:
+            eps_points.append((start, eps4))
+    eps_points.sort()
     dates, close_list, bands = [], [], [[] for _ in RATIOS]
     quarters: list[dict[str, Any]] = []
     j, eps = 0, None
@@ -273,6 +309,9 @@ def query(text: str) -> dict[str, Any]:
     if not row["noVal"]:
         row["chart"] = _history(code, row["ref"])
     row["groupPe"] = {"group": row["refGroup"], "pe": row["ref"]}
+    singles = _fin_eps4()[1].get(code) or []
+    row["quarters"] = [{"label": q["label"], "eps": q["eps"]} for q in reversed(singles[:4])]          # 舊到新，最近 4 季
+    row["margins"] = [{"label": q["label"], "margin": q["margin"]} for q in reversed(singles[:2]) if q["margin"] is not None]
     first = row["group"].split("/")[0] if row["group"] else ""
     row["groupMap"] = group_map(row["refGroup"] if row["refGroup"] != "全市場" else first, data) if (row["group"]) else None
     return {"status": "ok", "stock": row, "peDate": data["peDate"], "priceDate": data["priceDate"]}
@@ -290,3 +329,59 @@ def ma10(min_score: int = MA10_MIN_SCORE) -> dict[str, Any]:
 
 def stock_list() -> list[dict[str, str]]:
     return [{"code": c, "name": r["name"]} for c, r in sorted(load()["rows"].items())]
+
+
+# ------------------------------------------------------------------ 本週查詢排行（2026-10-16 使用者：照對方「本週查詢排行」）
+# 河流圖的查詢在 Cloudflare 有 5 分鐘快取，後端看不到每一次，所以前端每查一次另外打 /api/river-hit 記一筆。
+TOP_DAYS = 7
+TOP_LIMIT = 12
+
+
+def _hits_schema(connection) -> None:
+    connection.execute("CREATE TABLE IF NOT EXISTS river_hits (day TEXT NOT NULL, code TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, code))")
+
+
+def record_hit(code: str, now: Any = None) -> bool:
+    from datetime import datetime, timedelta, timezone
+
+    code = str(code or "").strip().upper()
+    if code not in load()["rows"]:
+        return False
+    day = (now or datetime.now(timezone(timedelta(hours=8)))).date().isoformat()
+    with get_connection() as connection:
+        _hits_schema(connection)
+        connection.execute("INSERT INTO river_hits (day, code, n) VALUES (?, ?, 1) ON CONFLICT(day, code) DO UPDATE SET n = n + 1", (day, code))
+    return True
+
+
+def top_queries(days: int = TOP_DAYS, limit: int = TOP_LIMIT, now: Any = None) -> dict[str, Any]:
+    """近 days 天被查最多次的股票：收盤、最新一季單季 EPS、最近一個月營收年增、目前位置、查詢次數。"""
+    from datetime import datetime, timedelta, timezone
+
+    today = (now or datetime.now(timezone(timedelta(hours=8)))).date()
+    since = (today - timedelta(days=days - 1)).isoformat()
+    initialize_database()
+    with get_connection() as connection:
+        _hits_schema(connection)
+        hits = connection.execute("SELECT code, SUM(n) AS n FROM river_hits WHERE day >= ? GROUP BY code ORDER BY n DESC, code LIMIT ?",
+                                  (since, limit)).fetchall()
+        codes = [str(h["code"]) for h in hits]
+        yoy: dict[str, float | None] = {}
+        if codes:
+            marks = ",".join("?" * len(codes))
+            for r in connection.execute(f"""SELECT stock_code, yoy_pct FROM stock_revenue_monthly m WHERE stock_code IN ({marks})
+                                            AND ym = (SELECT MAX(ym) FROM stock_revenue_monthly x WHERE x.stock_code = m.stock_code)""", codes):
+                yoy[str(r["stock_code"])] = r["yoy_pct"]
+    data = load()
+    singles = _fin_eps4()[1]
+    rows = []
+    for h in hits:
+        code = str(h["code"])
+        r = data["rows"].get(code)
+        if not r:
+            continue
+        q = (singles.get(code) or [None])[0]
+        rows.append({"code": code, "name": r["name"], "price": r["price"], "eps": q["eps"] if q else None, "epsLabel": q["label"] if q else None,
+                     "yoy": yoy.get(code), "zone": None if r["noVal"] else r["zone"], "zoneName": None if r["noVal"] else r["zoneName"],
+                     "count": int(h["n"])})
+    return {"status": "ok", "days": days, "since": since, "rows": rows}

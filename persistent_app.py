@@ -133,6 +133,9 @@ async def _persistent_lifespan(fastapi_app):
             start_grail_radar_collector()  # 飆股雷達：15 個聖杯邏輯照時間點算、收盤再算一次（2026-10-07 使用者）
             start_jail_collector()  # 處置監獄：證交所／櫃買注意股、處置股公告（2026-10-09 使用者）
             start_revenue_collector()  # 營收成長榜：觀測站每月營收彙總表鏡像、公布日、隔日漲跌（2026-10-09 使用者）
+            from financials import start_financials_collector
+
+            start_financials_collector()  # 每季財報：觀測站綜合損益表彙總報表鏡像，河流圖的單季 EPS、營益率、近 4 季 EPS（2026-10-16 使用者）
             from heilong_noon import start_heilong_noon_collector
 
             start_heilong_noon_collector()  # 創高黑龍 12:00 暫定名單：MIS 即時報價組今天K棒套同一組參數（2026-10-10 使用者）
@@ -1233,6 +1236,37 @@ def get_river_ma10() -> dict[str, Any]:
     from river import ma10
 
     return ma10()
+
+
+@app.get("/api/hub/river/hit")
+def get_river_hit(code: str = Query(...)) -> JSONResponse:
+    """河流圖每查一檔記一筆（本週查詢排行用；/api/river 有 Cloudflare 快取，後端看不到每一次，前端另外打這個）。"""
+    from river import record_hit
+
+    return JSONResponse({"status": "ok", "counted": record_hit(code)}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/hub/river/top")
+def get_river_top() -> dict[str, Any]:
+    """本週查詢排行：近 7 天被查最多次的 12 檔（收盤、最新一季單季 EPS、營收年增、目前位置、查詢次數）。"""
+    from river import top_queries
+
+    return top_queries()
+
+
+@app.get("/api/hub/financials/status")
+def get_financials_status() -> dict[str, Any]:
+    from financials import collector_status
+
+    return {"status": "ok", **collector_status()}
+
+
+@app.post("/api/hub/financials/collect")
+def post_financials_collect() -> dict[str, Any]:
+    """馬上從鏡像拉一次每季財報（排程主機推完綜合損益表彙總報表會戳這裡）。"""
+    from financials import run_collect
+
+    return {"status": "ok", "result": run_collect()}
 
 
 @app.get("/api/hub/etf-radar")
