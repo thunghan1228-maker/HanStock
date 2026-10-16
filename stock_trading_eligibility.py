@@ -119,6 +119,93 @@ def has_stock_futures(code: str) -> bool:
     return str(code).strip().upper() in _FUTURES_UNDERLYING_CODES
 
 
+# ---------------------------------------------------------------------------
+# 股票期貨種類（2026-10-16 使用者：K 線圖要標「有股期」「有小型股期」）
+# 掃一遍永豐期貨合約，記下每檔標的有沒有標準型股期、小型股期；合約一天才變一次，幾小時掃一次就好。
+# ---------------------------------------------------------------------------
+FUTURES_KIND_REFRESH_SECONDS = max(600, int(os.getenv("HANSTOCK_FUTURES_KIND_SECONDS", "21600")))
+_futures_kinds: dict[str, dict[str, bool]] = {}
+_futures_kinds_status: dict[str, Any] = {"lastRunAt": None, "underlyings": 0, "mini": 0, "error": None}
+_futures_kinds_last_run: Optional[float] = None
+
+
+def _is_mini_futures(contract: Any) -> bool:
+    """小型股票期貨：名稱有「小型」，或契約單位 100 股（標準型 2000 股）。跟 stock_futures_service 同一套判斷。"""
+    if "小型" in str(getattr(contract, "name", "") or ""):
+        return True
+    for attr in ("unit", "contract_size", "multiplier"):
+        value = _float_or_none(getattr(contract, attr, None))
+        if value is not None and abs(value - 100.0) < 1e-9:
+            return True
+    return False
+
+
+def _iter_futures_contracts(futures: Any) -> Iterable[Any]:
+    """api.Contracts.Futures 是「商品類別 → 各月合約」兩層；兩層都用迭代取，取不到就略過。"""
+    try:
+        categories = list(futures)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[Any] = []
+    for category in categories:
+        try:
+            out.extend(list(category))
+        except TypeError:
+            out.append(category)
+    return out
+
+
+def refresh_futures_kinds(*, service: Any = None, force: bool = False) -> dict[str, Any]:
+    global _futures_kinds_last_run
+    now = time.monotonic()
+    if not force and _futures_kinds_last_run is not None and now - _futures_kinds_last_run < FUTURES_KIND_REFRESH_SECONDS:
+        with _cache_lock:
+            return dict(_futures_kinds_status)
+    status: dict[str, Any] = {"lastRunAt": datetime.now(TW_TZ).isoformat(timespec="seconds"), "underlyings": 0, "mini": 0, "error": None}
+    try:
+        resolved_service = service if service is not None else _default_service()
+        api = getattr(resolved_service, "api", None)
+        futures = getattr(getattr(api, "Contracts", None), "Futures", None)
+        if futures is None:
+            status["error"] = "api 未登入或期貨合約還沒下載"
+        else:
+            kinds: dict[str, dict[str, bool]] = {}
+            for contract in _iter_futures_contracts(futures):
+                underlying = str(getattr(contract, "underlying_code", "") or "").strip().upper()
+                if not underlying or not underlying[:4].isdigit():
+                    continue   # 指數、商品期貨沒有股票標的
+                entry = kinds.setdefault(underlying, {"regular": False, "mini": False})
+                entry["mini" if _is_mini_futures(contract) else "regular"] = True
+            if kinds:
+                _futures_kinds_last_run = now
+                status["underlyings"] = len(kinds)
+                status["mini"] = sum(1 for entry in kinds.values() if entry["mini"])
+                with _cache_lock:
+                    _futures_kinds.clear()
+                    _futures_kinds.update(kinds)
+            else:
+                status["error"] = "期貨合約裡找不到股票期貨"
+    except Exception as exc:  # noqa: BLE001
+        status["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        logger.warning("[Eligibility] 股票期貨種類查詢失敗: %s", exc)
+    with _cache_lock:
+        _futures_kinds_status.update(status)
+        return dict(_futures_kinds_status)
+
+
+def stock_futures_kinds(code: str) -> Optional[dict[str, bool]]:
+    """{"regular": 有標準型股期, "mini": 有小型股期}；期貨合約還沒掃過回 None（不知道）。"""
+    with _cache_lock:
+        if not _futures_kinds:
+            return None
+        return dict(_futures_kinds.get(str(code).strip().upper(), {"regular": False, "mini": False}))
+
+
+def futures_kinds_status() -> dict[str, Any]:
+    with _cache_lock:
+        return dict(_futures_kinds_status)
+
+
 def _today() -> str:
     return datetime.now(TW_TZ).strftime("%Y-%m-%d")
 
@@ -504,6 +591,7 @@ def warm_trading_eligibility(codes: Iterable[str], *, service: Any = None) -> di
     _reset_paths()
     credit_status = refresh_credit_flags(codes, service=service)
     _apply_credit_to_cache()
+    refresh_futures_kinds(service=service)
     resolved = unknown = 0
     for code in codes:
         try:
