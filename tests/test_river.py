@@ -98,8 +98,8 @@ class RiverTests(unittest.TestCase):
         groups = dict(GROUPS, 被動元件=GROUPS["被動元件"] + [("9999", "虧損股"), ("1111", "太薄股"), ("3026", "沒資料")],
                       記憶體=GROUPS["記憶體"] + [("5555", "薄利股")])
         with database.get_connection() as c:
-            c.execute("INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, score2) VALUES (?, '5555', 1, 1, 1, 70, 1, 8)", (D,))
-        save_pe(D, "TSE", [{"code": "5555", "pe": 70.0, "pbr": None, "yield": None}], "twse")
+            c.execute("INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, score2) VALUES (?, '5555', 1, 1, 1, 120, 1, 8)", (D,))
+        save_pe(D, "TSE", [{"code": "5555", "pe": 120.0, "pbr": None, "yield": None}], "twse")
         module._cache.update({"key": None, "at": 0.0, "data": None})
         with patch.object(module, "STOCK_GROUPS", groups):
             m = module.group_map("被動元件")
@@ -110,7 +110,7 @@ class RiverTests(unittest.TestCase):
             mem = module.group_map("記憶體")          # 記憶體現在 3 檔有本益比 → 族群中位數 20
             self.assertEqual((mem["ref"], mem["refFrom"]), (20.0, "族群"))
             weak = {r["code"]: r["weak"] for r in mem["rows"]}
-            self.assertEqual((weak["5555"], weak["2408"]), (True, False))   # 本益比 60 倍以上＝基準參考弱
+            self.assertEqual((weak["5555"], weak["2408"]), (True, False))   # 本益比 100 倍以上＝基準參考弱
             self.assertEqual(module.query("華新科")["stock"]["groupMap"]["group"], "被動元件")
             self.assertIsNone(module.group_map("股期標的"))
 

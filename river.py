@@ -28,7 +28,7 @@ GROUP_MIN = 3                   # 族群至少幾檔有本益比才用族群中�
 HIDE_GROUPS = ("千元",)          # 價格帶分類，不當族群
 MA10_MIN_SCORE = 10             # 「均線分數 ≥10 × 便宜區」
 CHART_DAYS = 800                # 圖最多畫幾根日K（約三年）
-WEAK_PE = 60.0                  # 內部河流：本益比 60 倍以上＝獲利偏薄，拿近 4 季 EPS 當基準不穩（⚠ 基準參考弱）
+WEAK_PE = 100.0                 # 內部河流：本益比 100 倍以上＝獲利偏薄，拿近 4 季 EPS 當基準不穩（⚠ 基準參考弱）
 CACHE_SECONDS = 600.0
 
 _lock = threading.Lock()
