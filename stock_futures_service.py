@@ -1163,9 +1163,8 @@ class StockFuturesQuoteService:
         return True
 
     def snapshot_api(self) -> Any:
-        """給一次性 Snapshot 用的共享連線（股票期貨價格板，不佔訂閱名額）。"""
-        if not self._stock_futures_enabled:
-            raise RuntimeError(STOCK_FUTURES_DISABLED_MESSAGE)
+        """給一次性 Snapshot 用的共享連線（股票期貨價格板，不佔訂閱名額）。
+        正式環境關掉的是股期「即時訂閱」（名額留給現貨逐筆）；Snapshot 不訂閱，關掉時照樣可以用。"""
         self._ensure_pools()
         with self._lock:
             for pool in self._pools:
