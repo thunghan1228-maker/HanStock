@@ -24,11 +24,11 @@ _cache: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
 
 
 def _groups() -> dict[str, list[str]]:
-    from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
+    from stock_groups import STOCK_GROUPS, UNRANKED_GROUP_NAMES
 
     return {
         name: [str(code).strip().upper() for code, _name in members]
-        for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES
+        for name, members in STOCK_GROUPS.items() if name not in UNRANKED_GROUP_NAMES
     }
 
 
