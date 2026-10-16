@@ -173,6 +173,13 @@ class PayloadTests(DbTestCase):
         self.assertNotIn("6708", days["2026-10-14"])         # 第一次的迄日 10/13 隔天其實還在關
         self.assertIn("6213", days["2026-10-20"])
         self.assertTrue(next(d for w in p["weeks"] for d in w["days"] if d["date"] == "2026-10-09")["closed"])
+        # 首頁即將出關／已出關：今天往前、往後各 5 個交易日（10/09 休市不算）
+        rdays = [d["date"] for d in p["releaseDays"]]
+        self.assertEqual((rdays[0], rdays[-1], len(rdays)), ("2026-10-02", "2026-10-16", 10))
+        self.assertNotIn("2026-10-09", rdays)
+        self.assertNotIn("2026-10-19", rdays)                 # 天擎 10/19 出關在第 6 個交易日，不在窗內
+        late = module.build_payload(datetime(2026, 10, 19, 21, 0, tzinfo=TW))
+        self.assertIn(("2026-10-19", ["6708"]), [(d["date"], [s["code"] for s in d["stocks"]]) for d in late["releaseDays"]])
         self.assertEqual([(j["code"], j["minutes"], j["daysLeft"]) for j in p["newJail"]], [("6708", 2, 6)])
         self.assertEqual([f["code"] for f in p["firstTime"]], ["3236", "6708"])   # 華新科 10/07 也有第一款，不算第一次
         suspect = next(s for s in p["suspects"] if s["code"] == "5228")

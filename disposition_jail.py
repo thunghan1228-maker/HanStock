@@ -687,6 +687,17 @@ def _build(now: datetime) -> dict[str, Any]:
         weeks.append({"label": label, "range": f"{md(start.isoformat())}~{md((start + timedelta(days=4)).isoformat())}", "days": days})
     pending = sum(1 for p in real_releases if p["release"] > data_day)
 
+    # 首頁「即將出關／已出關」（2026-10-16 使用者）：今天往前 5 個交易日到往後 5 個交易日每天出關的股；
+    # 週一晚上公告進來後，上面的週表從本週一開始，看不到上週四、五出關的，這裡另外給
+    window = set(trading_days_back(today.isoformat(), 5))
+    cur = today
+    for _ in range(5):
+        cur = next_trading_day(cur)
+        window.add(cur.isoformat())
+    release_days = [{"date": day, "md": md(day), "weekday": weekday_label(day),
+                     "stocks": [{"code": p["code"], "name": p["name"]} for p in sorted(releases.get(day, []), key=lambda p: p["code"])]}
+                    for day in sorted(window)]
+
     # 下一個交易日還在關的（含今天剛公告的）；同一檔有好幾筆蓋到就用最晚出獄那筆
     def covering(day: str) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
@@ -778,7 +789,7 @@ def _build(now: datetime) -> dict[str, Any]:
     payload = {
         "status": "ok", "dataDate": data_day, "nextDay": next_day, "nextMd": md(next_day), "nextWeekday": weekday_label(next_day),
         "marketDates": latest, "updatedAt": _state.get("lastCollect"),
-        "weeks": weeks, "pendingCount": pending, "gangs": gang_list, "newJail": new_jail,
+        "weeks": weeks, "releaseDays": release_days, "pendingCount": pending, "gangs": gang_list, "newJail": new_jail,
         "suspects": suspects, "suspectCounts": {"high": sum(s["high"] for s in suspects), "low": sum(not s["high"] for s in suspects)},
         "firstTime": first_time, "index": index, "copyText": copy_text(next_day, suspects),
         "jailedNow": len(jailed_now), "jailedNext": len(jailed_next),
