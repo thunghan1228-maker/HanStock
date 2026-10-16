@@ -1162,6 +1162,17 @@ class StockFuturesQuoteService:
                 logger.debug("[Stock Futures] 即時 K 棒聚合失敗: %s", exc)
         return True
 
+    def snapshot_api(self) -> Any:
+        """給一次性 Snapshot 用的共享連線（股票期貨價格板，不佔訂閱名額）。"""
+        if not self._stock_futures_enabled:
+            raise RuntimeError(STOCK_FUTURES_DISABLED_MESSAGE)
+        self._ensure_pools()
+        with self._lock:
+            for pool in self._pools:
+                if pool.healthy:
+                    return pool.api
+        raise RuntimeError("股期共享連線還沒準備好")
+
     def get_quotes(self, quote_service: Any, underlying_codes: Iterable[str], mode: StockFuturesMode, *, subscribe: bool = True) -> dict[str, Any]:
         codes = _normalize_codes(underlying_codes)
         if not self._stock_futures_enabled:

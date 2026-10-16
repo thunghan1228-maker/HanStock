@@ -862,6 +862,18 @@ def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[
     return get_group_daily_changes(days)
 
 
+@app.get("/api/hub/stock-futures-board")
+def get_stock_futures_board_endpoint() -> Any:
+    """股票期貨價格板（2026-10-16 使用者：首頁「股票期貨排名(155)」照老師用股期價格算）：
+    族群裡有股期的標的各取標準型 R1 近月的成交價／漲跌幅，加台指期 R1；永豐 Snapshot 一次抓一批，不佔訂閱名額，60 秒快取。"""
+    from stock_futures_board import get_stock_futures_board
+
+    try:
+        return get_stock_futures_board()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"status": "error", "error": str(exc)[:300], "quotes": {}, "tx": None}, status_code=503)
+
+
 @app.get("/api/hub/group-rank-checkpoints")
 def get_group_rank_checkpoints_endpoint(date: str | None = Query(None, description="YYYY-MM-DD，不給＝今天")) -> Any:
     """67 族今天每半小時的族群名次（09:05、09:30、10:00…）：老師族群明細最下面「今天23-3-11-24」那排，
