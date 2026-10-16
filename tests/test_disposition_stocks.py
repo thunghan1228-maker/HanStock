@@ -243,18 +243,43 @@ class StockFlagsEndpointTests(unittest.TestCase):
 
         eligibility_module.clear_trading_eligibility_cache()
         with patch.object(eligibility_module, "start_trading_eligibility_warmer", lambda provider: False), \
-                patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False):
+                patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False), \
+                patch.object(persistent_app, "disposition_status", lambda: {"sources": {"shioaji": {"ok": False}, "twse": {"ok": True}, "tpex": {"ok": False}}}):
             eligibility_module.warm_trading_eligibility(["3661", "2317"], service=SimpleNamespace(api=SimpleNamespace(contracts=Contracts())))
             resp = self.client.get("/api/hub/stock-flags")
         eligibility_module.clear_trading_eligibility_cache()
         data = resp.json()
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(data["stocks"]["3661"]["disposition"])  # 公告清單是空的，靠個股資訊列的處置等級
+        self.assertTrue(data["stocks"]["3661"]["disposition"])  # 公告清單沒抓齊，靠個股資訊列的處置等級
         self.assertEqual(data["stocks"]["3661"]["dispositionReason"], "永豐合約處置等級 1")
         self.assertFalse(data["stocks"]["2317"]["disposition"])
         self.assertEqual(data["dispositionCodes"], ["3661"])
         self.assertEqual(data["dispositionLevelCodes"], ["3661"])
         self.assertEqual(data["counts"]["disposition"], 1)
+
+    def test_disposition_level_ignored_when_official_list_fetched(self) -> None:
+        # 2026-10-16：和益 10/15 處置到期，永豐合約的處置等級隔天還是 1；公告清單抓得到時以公告為準
+        import stock_trading_eligibility as eligibility_module
+        from types import SimpleNamespace
+
+        class Contracts:
+            def get(self, code):
+                return SimpleNamespace(code=code)
+
+            def info(self, base):
+                return SimpleNamespace(day_trade="No", margin_loan_ratio=0.6, short_margin_ratio=0.9, disposition_level=1 if base.code == "1709" else 0)
+
+        eligibility_module.clear_trading_eligibility_cache()
+        with patch.object(eligibility_module, "start_trading_eligibility_warmer", lambda provider: False), \
+                patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False), \
+                patch.object(persistent_app, "disposition_status", lambda: {"sources": {"shioaji": {"ok": True}, "twse": {"ok": True}, "tpex": {"ok": False}}}):
+            eligibility_module.warm_trading_eligibility(["1709"], service=SimpleNamespace(api=SimpleNamespace(contracts=Contracts())))
+            resp = self.client.get("/api/hub/stock-flags")
+        eligibility_module.clear_trading_eligibility_cache()
+        data = resp.json()
+        self.assertFalse(data["stocks"]["1709"]["disposition"])
+        self.assertIsNone(data["stocks"]["1709"]["dispositionReason"])
+        self.assertEqual(data["dispositionLevelCodes"], ["1709"])   # 診斷用：合約等級照列
 
 
 if __name__ == "__main__":
