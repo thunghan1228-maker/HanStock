@@ -34,6 +34,7 @@ class StockFuturesBoardTests(unittest.TestCase):
         module._contracts.clear()
         module._contract_failures.clear()
         module._cache.update({"at": 0.0, "value": None})
+        module._tx_day["quote"] = None
 
     def test_snapshot_prices_and_tx(self) -> None:
         contracts = {"2330": contract("CDFR1", "CDFK6"), "2317": contract("DHFR1", "DHFK6")}
@@ -90,6 +91,21 @@ class StockFuturesBoardTests(unittest.TestCase):
         with patch("stock_groups.STOCK_GROUPS", groups), patch("stock_trading_eligibility.has_stock_futures", lambda c: c in {"2330", "2886", "2454"}):
             self.assertEqual(module.board_underlyings(), ["2330"])
 
+    def test_snapshot_time_is_local_and_tx_uses_day_close_after_hours(self) -> None:
+        local_ns = lambda h, m: int((__import__("datetime").datetime(2026, 10, 16, h, m, tzinfo=__import__("datetime").timezone.utc)).timestamp() * 1e9)  # noqa: E731
+        tx = contract("TXFR1", "TXFK6")
+        day = {"TXFR1": SimpleNamespace(code="TXFR1", close=47284.0, change_price=800.0, change_rate=1.72, total_volume=1, ts=local_ns(13, 44))}
+        out = module.compute_board(FakeApi(day, tx=tx), [], resolver=lambda *a: None, now=1.0)
+        self.assertEqual(out["tx"]["time"], "2026-10-16T13:44:00+08:00")   # 不多加 8 小時
+        self.assertEqual(out["tx"]["session"], "day")
+        night = {"TXFR1": SimpleNamespace(code="TXFR1", close=46793.0, change_price=-491.0, change_rate=-1.04, total_volume=1, ts=local_ns(22, 5))}
+        out = module.compute_board(FakeApi(night, tx=tx), [], resolver=lambda *a: None, now=2.0)
+        self.assertEqual(out["tx"]["changePct"], 1.72)                       # 收盤後空方線用白天盤收盤
+        self.assertEqual(out["tx"]["session"], "day-close")
+        module._tx_day["quote"] = None
+        out = module.compute_board(FakeApi(night, tx=tx), [], resolver=lambda *a: None, now=3.0)
+        self.assertEqual(out["tx"]["session"], "night")                      # 沒記到白天盤就照樣給夜盤、標出來
+
     def test_endpoint_returns_503_on_error(self) -> None:
         from fastapi.testclient import TestClient
 
@@ -99,7 +115,6 @@ class StockFuturesBoardTests(unittest.TestCase):
             resp = TestClient(persistent_app.app).get("/api/hub/stock-futures-board")
         self.assertEqual(resp.status_code, 503)
         self.assertEqual(resp.json()["status"], "error")
-
 
 
 class SnapshotApiTests(unittest.TestCase):

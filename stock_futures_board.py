@@ -4,7 +4,7 @@
 空方線切在當下台指期漲跌附近（10/15 08:48 切在 -1.06% 和 -1.17% 之間，那天開盤前台指期約 -1.1%）。
 
 做法：族群（不算排名的除外）裡有股票期貨的標的，每檔取標準型股期 R1 近月合約，用永豐 Snapshot 一次抓一批成交價／漲跌幅，
-外加台指期 R1；不佔即時訂閱名額（共享連線的訂閱幾乎被全市場現貨逐筆用滿）。快取 60 秒，老師的機器人也是幾分鐘才更新一次。
+外加台指期 R1（收盤後給白天盤最後一筆，不給夜盤）；不佔即時訂閱名額（共享連線的訂閱幾乎被全市場現貨逐筆用滿）。快取 60 秒，老師的機器人也是幾分鐘才更新一次。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ _fetch_lock = threading.Lock()
 _cache: dict[str, Any] = {"at": 0.0, "value": None}
 _contracts: dict[str, tuple[Any, float]] = {}
 _contract_failures: dict[str, float] = {}
+_tx_day: dict[str, Any] = {"quote": None}   # 白天盤最後一筆台指期：收盤後（夜盤時間）空方線用它，老師收盤那份是照日盤收盤畫的
 
 
 def board_underlyings() -> list[str]:
@@ -50,7 +51,8 @@ def _num(value: Any) -> Optional[float]:
     return out if out == out else None
 
 
-def _snap_time(snapshot: Any) -> Optional[str]:
+def _snap_dt(snapshot: Any) -> Optional[datetime]:
+    """Snapshot.ts 是「台灣當地時間」當成 UTC 的時間戳（13:44 收盤那筆換算出來會是 21:44），不能再加 8 小時。"""
     raw = _num(getattr(snapshot, "ts", None))
     if not raw or raw <= 0:
         return None
@@ -59,9 +61,16 @@ def _snap_time(snapshot: Any) -> Optional[str]:
     elif raw > 1e12:
         raw /= 1e3
     try:
-        return datetime.fromtimestamp(raw, TW_TZ).isoformat(timespec="seconds")
+        return datetime.fromtimestamp(raw, timezone.utc).replace(tzinfo=TW_TZ)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def _in_day_session(dt: Optional[datetime]) -> bool:
+    if dt is None:
+        return False
+    hm = dt.strftime("%H:%M")
+    return "08:45" <= hm <= "13:45"
 
 
 def _quote_from_snapshot(snapshot: Any) -> Optional[dict[str, Any]]:
@@ -79,7 +88,8 @@ def _quote_from_snapshot(snapshot: Any) -> Optional[dict[str, Any]]:
         "changePct": round(rate, 3) if rate is not None else None,
         "reference": reference,
         "volume": _num(getattr(snapshot, "total_volume", None)),
-        "time": _snap_time(snapshot),
+        "time": (_snap_dt(snapshot) or datetime.now(TW_TZ)).isoformat(timespec="seconds"),
+        "session": "day" if _in_day_session(_snap_dt(snapshot)) else "night",
     }
 
 
@@ -118,6 +128,17 @@ def _tx_contract(api: Any) -> Any:
         if contract is not None:
             return contract
     return None
+
+
+def _pick_tx(quote: dict[str, Any]) -> dict[str, Any]:
+    """白天盤就記下來直接用；夜盤時間改給白天最後一筆（沒記到就照樣給夜盤，標 session=night）。"""
+    if quote.get("session") == "day":
+        _tx_day["quote"] = dict(quote)
+        return quote
+    saved = _tx_day.get("quote")
+    if saved:
+        return dict(saved, session="day-close")
+    return quote
 
 
 def compute_board(
@@ -162,7 +183,7 @@ def compute_board(
             if quote is None:
                 continue
             if code == "__TX__":
-                tx_quote = quote
+                tx_quote = _pick_tx(quote)
             else:
                 quote["futuresCode"] = str(getattr(contract, "target_code", "") or getattr(contract, "code", "") or "")
                 quotes[code] = quote
