@@ -14,10 +14,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database import get_connection, initialize_database
-from stock_groups import STOCK_GROUPS
+from stock_groups import STOCK_GROUPS, UNRANKED_GROUP_NAMES
 
 TW_TZ = timezone(timedelta(hours=8))
-EXCLUDED_GROUPS = {"股期標的"}  # 不是產業族群，是股票期貨標的清單
+EXCLUDED_GROUPS = UNRANKED_GROUP_NAMES  # 股期標的（股票期貨標的清單）＋老師沒有的功率半導體、散裝、金融股，不算族群名次
 CACHE_SECONDS = 1800
 LOOKBACK_CALENDAR_DAYS = 30
 _cache_lock = threading.Lock()
