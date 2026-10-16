@@ -311,6 +311,10 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
     from stock_trading_eligibility import has_stock_futures
 
     disposition = get_disposition_map()
+    # 2026-10-16：公告清單抓得到時以公告為準。永豐合約的處置等級會慢一天（和益 10/15 處置到期，10/16 等級還是 1，
+    # 刀劍空因此把它當處置股排掉），只在公告清單抓不到時才拿來補：永豐 punish（上市上櫃都有）或證交所＋櫃買中心都成功就算抓得到。
+    sources = disposition_status().get("sources") or {}
+    official_ok = bool((sources.get("shioaji") or {}).get("ok")) or all((sources.get(k) or {}).get("ok") for k in ("twse", "tpex"))
     codes = _group_stock_codes()
     start_trading_eligibility_warmer(_group_stock_codes)  # 沒被 lifespan 啟動（例如測試環境）也能自救
     stocks: dict[str, Any] = {}
@@ -319,7 +323,7 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
             "marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": has_stock_futures(code),
         }
         item = disposition.get(code)
-        level = int(info.get("dispositionLevel") or 0)
+        level = int(info.get("dispositionLevel") or 0) if not official_ok else 0
         # 公告清單沒抓到（TPEx 被擋 403 之類）時，永豐個股資訊列的處置等級也算處置中。
         info["disposition"] = bool(item) or level > 0
         info["dispositionUntil"] = item.get("end") if item else None
