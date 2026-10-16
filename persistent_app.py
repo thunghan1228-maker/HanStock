@@ -862,6 +862,20 @@ def get_group_daily_changes_endpoint(days: int = Query(3, ge=1, le=10)) -> dict[
     return get_group_daily_changes(days)
 
 
+@app.get("/api/hub/group-rank-checkpoints")
+def get_group_rank_checkpoints_endpoint(date: str | None = Query(None, description="YYYY-MM-DD，不給＝今天")) -> Any:
+    """67 族今天每半小時的族群名次（09:05、09:30、10:00…）：老師族群明細最下面「今天23-3-11-24」那排，
+    馬火多(30) 只收最近一次沒有往下掉的族群。用資料庫已存的每檔 5 分 K 算，60 秒快取。"""
+    from group_rank_checkpoints import get_group_rank_checkpoints
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return JSONResponse({"status": "error", "error": "date 必須是 YYYY-MM-DD"}, status_code=422)
+    return get_group_rank_checkpoints(date)
+
+
 @app.get("/api/hub/group-quotes")
 def get_group_quotes_endpoint(codes: str = Query("", description="代號，逗號分隔（最多 600 檔）")) -> Any:
     """證交所即時報價代抓（2026-10-06 使用者：tw-groups 首頁報價在使用者那邊一直抓不到，醞釀／發動、刀劍空全空）。
