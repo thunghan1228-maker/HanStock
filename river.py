@@ -28,6 +28,7 @@ GROUP_MIN = 3                   # 族群至少幾檔有本益比才用族群中�
 HIDE_GROUPS = ("千元",)          # 價格帶分類，不當族群
 MA10_MIN_SCORE = 10             # 「均線分數 ≥10 × 便宜區」
 CHART_DAYS = 800                # 圖最多畫幾根日K（約三年）
+WEAK_PE = 100.0                 # 內部河流：本益比 100 倍以上＝獲利偏薄，拿近 4 季 EPS 當基準不穩（⚠ 基準參考弱）
 CACHE_SECONDS = 600.0
 
 _lock = threading.Lock()
@@ -237,6 +238,31 @@ def _revenue(code: str) -> dict[str, Any]:
     return {"rev": recent, "ytd": ytd}
 
 
+def group_map(group: str, data: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """內部河流（2026-10-16 使用者：照老師 VIP 版「同族各檔釘在河道上」）：同族群每檔用同一把 PE 尺（族群本益比中位數），
+    距分水嶺％＝本益比 ÷ 族群本益比 − 1（＝股價 ÷（近 4 季 EPS × 族群本益比）− 1），族內可以直接比。
+    虧損、獲利太薄、沒有本益比資料的列 nv（飛魚・無本益比）；由貴到便宜排。族群不到 3 檔有本益比就用全市場中位數。"""
+    data = data or load()
+    members = STOCK_GROUPS.get(group) or []
+    if not members or group in SPECIAL_GROUP_NAMES or group in HIDE_GROUPS:
+        return None
+    ref = data["refs"].get(group) or data["market"]
+    rows = []
+    for code, name in members:
+        code = str(code).strip().upper()
+        r = data["rows"].get(code)
+        item: dict[str, Any] = {"code": code, "name": (r or {}).get("name") or str(name)}
+        pe = _valid_pe(r["pe"]) if r else None
+        if pe is None or not ref:
+            item.update({"nv": True, "why": (r or {}).get("why") or "none"})
+        else:
+            ratio = pe / ref
+            item.update({"nv": False, "dist": round((ratio - 1) * 100, 1), "zone": zone_of(ratio, 1.0), "weak": pe >= WEAK_PE})
+        rows.append(item)
+    rows.sort(key=lambda x: (x["nv"], -(x.get("dist") or 0), x["code"]))
+    return {"group": group, "ref": ref, "refFrom": "族群" if data["refs"].get(group) else "全市場", "rows": rows}
+
+
 def query(text: str) -> dict[str, Any]:
     data = load()
     code = _resolve(text, data["rows"])
@@ -247,6 +273,8 @@ def query(text: str) -> dict[str, Any]:
     if not row["noVal"]:
         row["chart"] = _history(code, row["ref"])
     row["groupPe"] = {"group": row["refGroup"], "pe": row["ref"]}
+    first = row["group"].split("/")[0] if row["group"] else ""
+    row["groupMap"] = group_map(row["refGroup"] if row["refGroup"] != "全市場" else first, data) if (row["group"]) else None
     return {"status": "ok", "stock": row, "peDate": data["peDate"], "priceDate": data["priceDate"]}
 
 
