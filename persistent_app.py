@@ -308,7 +308,7 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
     每一列標註用；一次回全部，前端幾分鐘抓一次就好。融資券旗標由背景每分鐘更新的快取供應（合約
     清單還沒下載完時為 null，之後幾輪內會填滿），這裡只讀快取、不查合約，不會卡住回 502；
     處置股來自 TWSE／TPEx 官方公告，抓取狀態放在 disposition 裡。"""
-    from stock_trading_eligibility import has_stock_futures
+    from stock_trading_eligibility import futures_kinds_status, has_stock_futures, stock_futures_kinds
 
     disposition = get_disposition_map()
     # 2026-10-16：公告清單抓得到時以公告為準。永豐合約的處置等級會慢一天（和益 10/15 處置到期，10/16 等級還是 1，
@@ -322,6 +322,10 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         info = peek_trading_eligibility(code) or {
             "marginable": None, "shortable": None, "dayTradeEligible": None, "hasStockFutures": has_stock_futures(code),
         }
+        kinds = stock_futures_kinds(code)
+        # 2026-10-16：有股期＝原本的「股期標的」清單或永豐期貨合約有標準型股期；有小型股期只看期貨合約（還沒掃過＝None，不標）
+        info["hasStockFutures"] = bool(info.get("hasStockFutures")) or bool(kinds and kinds.get("regular"))
+        info["hasMiniStockFutures"] = kinds.get("mini") if kinds is not None else None
         item = disposition.get(code)
         level = int(info.get("dispositionLevel") or 0) if not official_ok else 0
         # 公告清單沒抓到（TPEx 被擋 403 之類）時，永豐個股資訊列的處置等級也算處置中。
@@ -335,6 +339,7 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         "marginable": sum(1 for info in stocks.values() if info.get("marginable")),
         "shortable": sum(1 for info in stocks.values() if info.get("shortable")),
         "dayTradeEligible": sum(1 for info in stocks.values() if info.get("dayTradeEligible")),
+        "miniStockFutures": sum(1 for info in stocks.values() if info.get("hasMiniStockFutures")),
         "disposition": sum(1 for info in stocks.values() if info.get("disposition")),
         "attention": sum(1 for info in stocks.values() if info.get("attention")),
         "total": len(stocks),
@@ -354,6 +359,7 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         # 官方注意股（永豐個股資訊列的 attention_flag，交易所當天公布注意交易資訊的股票）
         "attentionCodes": sorted(code for code, info in stocks.items() if info.get("attention")),
         "disposition": disposition_status(),
+        "futuresKinds": futures_kinds_status(),
         # 診斷：背景暖機上一輪對一檔合約的檢查結果（合約型別、contracts.info 欄位、各條路的耗時），
         # 融資券旗標全是 null／false 時看這裡；請求路徑本身不碰 Shioaji。
         "debug": contract_debug(sample_code) if sample_code else None,

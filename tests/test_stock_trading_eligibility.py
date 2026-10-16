@@ -364,5 +364,51 @@ class TradingEligibilityTests(unittest.TestCase):
         self.assertFalse(second["marginable"])
 
 
+class FuturesKindsTests(unittest.TestCase):
+    """2026-10-16：從永豐期貨合約判斷每檔有沒有標準型股期、小型股期。"""
+
+    def setUp(self):
+        module._futures_kinds.clear()
+        module._futures_kinds_last_run = None
+
+    tearDown = setUp
+
+    def _service(self, contracts):
+        from types import SimpleNamespace
+
+        categories = {}
+        for c in contracts:
+            categories.setdefault(c.category, []).append(c)
+        return SimpleNamespace(api=SimpleNamespace(Contracts=SimpleNamespace(Futures=list(categories.values()))))
+
+    def _contract(self, category, name, underlying, unit=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(category=category, name=name, underlying_code=underlying, unit=unit)
+
+    def test_marks_regular_and_mini_stock_futures(self):
+        service = self._service([
+            self._contract("CDF", "台積電期貨", "2330"), self._contract("QFF", "小型台積電期貨", "2330"),
+            self._contract("DHF", "鴻海期貨", "2317"), self._contract("XYZ", "某股期", "1303", unit=100),
+            self._contract("TXF", "臺股期貨", ""), self._contract("MXF", "小型臺指", "#001"),
+        ])
+        status = module.refresh_futures_kinds(service=service, force=True)
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["underlyings"], 3)
+        self.assertEqual(status["mini"], 2)
+        self.assertEqual(module.stock_futures_kinds("2330"), {"regular": True, "mini": True})
+        self.assertEqual(module.stock_futures_kinds("2317"), {"regular": True, "mini": False})
+        self.assertEqual(module.stock_futures_kinds("1303"), {"regular": False, "mini": True})   # 契約單位 100 股＝小型
+        self.assertEqual(module.stock_futures_kinds("1101"), {"regular": False, "mini": False})
+
+    def test_unknown_until_contracts_scanned(self):
+        from types import SimpleNamespace
+
+        self.assertIsNone(module.stock_futures_kinds("2330"))
+        status = module.refresh_futures_kinds(service=SimpleNamespace(api=None), force=True)
+        self.assertIn("未登入", status["error"])
+        self.assertIsNone(module.stock_futures_kinds("2330"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -281,6 +281,26 @@ class StockFlagsEndpointTests(unittest.TestCase):
         self.assertIsNone(data["stocks"]["1709"]["dispositionReason"])
         self.assertEqual(data["dispositionLevelCodes"], ["1709"])   # 診斷用：合約等級照列
 
+    def test_stock_flags_report_mini_stock_futures(self) -> None:
+        # 2026-10-16：K 線圖要標「有小型股期」；期貨合約還沒掃過時不標（None）
+        import stock_trading_eligibility as eligibility_module
+
+        eligibility_module.clear_trading_eligibility_cache()
+        kinds = {"2330": {"regular": True, "mini": True}, "1101": {"regular": False, "mini": False}}
+        with patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False), \
+                patch.object(persistent_app, "_group_stock_codes", lambda: ["2330", "1101"]), \
+                patch.object(eligibility_module, "stock_futures_kinds", lambda code: kinds.get(code, {"regular": False, "mini": False})):
+            data = self.client.get("/api/hub/stock-flags").json()
+        self.assertTrue(data["stocks"]["2330"]["hasMiniStockFutures"])
+        self.assertTrue(data["stocks"]["2330"]["hasStockFutures"])
+        self.assertFalse(data["stocks"]["1101"]["hasMiniStockFutures"])
+        self.assertEqual(data["counts"]["miniStockFutures"], 1)
+        with patch.object(persistent_app, "start_trading_eligibility_warmer", lambda provider: False), \
+                patch.object(persistent_app, "_group_stock_codes", lambda: ["2330"]), \
+                patch.object(eligibility_module, "stock_futures_kinds", lambda code: None):
+            data = self.client.get("/api/hub/stock-flags").json()
+        self.assertIsNone(data["stocks"]["2330"]["hasMiniStockFutures"])
+
 
 if __name__ == "__main__":
     unittest.main()
