@@ -23,7 +23,7 @@ from database import get_connection, initialize_database
 logger = logging.getLogger(__name__)
 TW_TZ = timezone(timedelta(hours=8))
 MIRROR_INDEX = "fin-index.json"
-KEEP_SEASONS = 9
+KEEP_SEASONS = 12
 POLL_SECONDS = 30 * 60
 FIELDS = ("name", "market", "revenue", "opIncome", "eps")
 
