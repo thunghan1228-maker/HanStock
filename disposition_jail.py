@@ -54,6 +54,7 @@ TWSE_PUNISH_URL = ("https://www.twse.com.tw/rwd/zh/announcement/punish?querytype
 MIRROR_ATTENTION = "jail-attention.json"
 MIRROR_DISPOSAL = "jail-disposal.json"
 HISTORY_DAYS = 150          # 第一次啟動回補幾天（30 營業日累積＋90 日前科索引）
+RELEASED_DAYS = 60          # 機器人 628 出獄股：近幾天出獄的
 INDEX_PUNISH_DAYS = 95      # 前科索引：處置迄日在近 95 天內（老師 10/08：迄日 7/06 有、7/03 沒有）
 INDEX_NOTICE_DAYS = 25      # 　　　　　或近 25 個交易日內被注意過（9/02 以後有、9/01 沒有）
 KEEP_DAYS = 400
@@ -81,7 +82,7 @@ _CN = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "�
 CLAUSE_RE = re.compile(r"第([一二三四五六七八九十]+)款")
 DAYS_RE = re.compile(r"(?:﹝|〔|起)\s*([0-9一二三四五六七八九十]+)\s*個營業日")
 MINUTES_RE = re.compile(r"約每\s*([0-9一二三四五六七八九十]+)\s*分鐘")
-CODE_RE = re.compile(r"[1-9]\d{3}")
+CODE_RE = re.compile(r"[1-9]\d{3}|91\d{4}")   # 一般股票＋6 碼 TDR（911608 明輝-DR 也會被處置，2026-10-17 使用者對照）
 WEEKDAYS = "一二三四五六日"
 
 _state: dict[str, Any] = {"lastCollect": None, "lastError": None, "result": None, "backfilled": False}
@@ -709,6 +710,22 @@ def _build(now: datetime) -> dict[str, Any]:
     jailed_next = covering(next_day)
     jailed_now = covering(data_day)
 
+    # 機器人 628「出獄股」（2026-10-17 使用者）：近 60 天出獄、現在沒在關的，每檔取最後一次出獄日
+    released_cut = (_d(data_day) - timedelta(days=RELEASED_DAYS)).isoformat()
+    last_release: dict[str, dict[str, Any]] = {}
+    for p in real_releases:
+        if released_cut <= p["release"] <= data_day and p["code"] not in jailed_next and p["release"] > last_release.get(p["code"], {}).get("release", ""):
+            last_release[p["code"]] = p
+    released = [{"code": c, "name": p["name"], "release": p["release"]}
+                for c, p in sorted(last_release.items(), key=lambda kv: (kv[1]["release"], kv[0]), reverse=True)]
+
+    # 今日提醒「分盤交易」表（2026-10-17 使用者）：資料日或下一個交易日還在關的每一檔，處置期間、幾分鐘撮合一次、哪天解鎖
+    jailed_list = []
+    for code, p in sorted({**jailed_now, **jailed_next}.items(), key=lambda kv: (kv[1]["release"], kv[0])):
+        jailed_list.append({"code": code, "name": p["name"], "market": MARKET_LABEL.get(p["market"], p["market"]),
+                            "start": p["start"], "end": p["end"], "release": p["release"], "releaseMd": md(p["release"]),
+                            "minutes": p["minutes"], "measure": p["measure"], "new": p["new"]})
+
     # 犯罪集團：資料日還在關＋剛公告入獄的（「被關或即將被關」，彰源 10/12 出獄也算）；我們的族群，
     # 不在任何族群的就用官方產業別（彰源、佳大＝鋼鐵）
     gangs: dict[str, list[dict[str, Any]]] = {}
@@ -792,7 +809,7 @@ def _build(now: datetime) -> dict[str, Any]:
         "weeks": weeks, "releaseDays": release_days, "pendingCount": pending, "gangs": gang_list, "newJail": new_jail,
         "suspects": suspects, "suspectCounts": {"high": sum(s["high"] for s in suspects), "low": sum(not s["high"] for s in suspects)},
         "firstTime": first_time, "index": index, "copyText": copy_text(next_day, suspects),
-        "jailedNow": len(jailed_now), "jailedNext": len(jailed_next),
+        "jailedNow": len(jailed_now), "jailedNext": len(jailed_next), "jailedList": jailed_list, "released": released,
     }
     return payload
 

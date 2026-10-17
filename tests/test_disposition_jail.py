@@ -77,6 +77,9 @@ class ParseTests(unittest.TestCase):
         otc = module.parse_punish_payload(TPEX_DISPOSAL, "OTC")
         self.assertEqual([(r["code"], r["name"], r["start"], r["days"], r["minutes"]) for r in otc],
                          [("6708", "天擎", "2026-10-12", 5, 2), ("6708", "天擎", "2026-10-06", 5, 2)])   # 轉換公司債 47602 不收
+        tdr = {**TWSE_PUNISH, "data": [[1, "115/10/16", "911608", "明輝-DR", 1, "連續三次", "115/10/19～115/10/23", "第一次處置",
+                                        "（約每二分鐘撮合一次）", ""]]}
+        self.assertEqual([(r["code"], r["minutes"]) for r in module.parse_punish_payload(tdr, "TSE")], [("911608", 2)])   # 6 碼 TDR 也收
 
 
 class AccumulationTests(unittest.TestCase):
@@ -153,7 +156,9 @@ class PayloadTests(DbTestCase):
                     [1, "5228", "鈺鎧", 3, "累積之最後成交價漲幅達36%(第一款)", "115/10/08", "61.3", "", ""],
                     [1, "6708", "天擎", 3, "累積之最後成交價漲幅達36%(第一款)", "115/10/08", "69.2", "", ""]]}
             if "jail-disposal" in url:
-                return {"fields": TPEX_DISPOSAL["tables"][0]["fields"], "data": TPEX_DISPOSAL["tables"][0]["data"]}
+                return {"fields": TPEX_DISPOSAL["tables"][0]["fields"], "data": TPEX_DISPOSAL["tables"][0]["data"] + [
+                    [1, "115/09/22", "4760", "勤凱(../x.html)", 1, "115/09/23~115/09/29", "連續3個營業日", "第一次處置",
+                     "...(約每5分鐘撮合一次)", "50", "N/A", ""]]}
             if "notice" in url:
                 return TWSE_NOTICE
             if "punish" in url:
@@ -181,6 +186,13 @@ class PayloadTests(DbTestCase):
         late = module.build_payload(datetime(2026, 10, 19, 21, 0, tzinfo=TW))
         self.assertIn(("2026-10-19", ["6708"]), [(d["date"], [s["code"] for s in d["stocks"]]) for d in late["releaseDays"]])
         self.assertEqual([(j["code"], j["minutes"], j["daysLeft"]) for j in p["newJail"]], [("6708", 2, 6)])
+        # 今日提醒「分盤交易」：還在關的每一檔，依解鎖日排；天擎用最後一次（再次處置）的期間
+        jl = {j["code"]: j for j in p["jailedList"]}
+        self.assertEqual((jl["6708"]["start"], jl["6708"]["end"], jl["6708"]["release"], jl["6708"]["minutes"], jl["6708"]["new"]),
+                         ("2026-10-12", "2026-10-16", "2026-10-19", 2, True))
+        self.assertEqual([j["release"] for j in p["jailedList"]], sorted(j["release"] for j in p["jailedList"]))
+        # 機器人 628 出獄股：勤凱 9/29 迄 → 9/30 出獄；天擎、聯茂還在關不算
+        self.assertEqual([(r["code"], r["release"]) for r in p["released"]], [("4760", "2026-09-30")])
         self.assertEqual([f["code"] for f in p["firstTime"]], ["3236", "6708"])   # 華新科 10/07 也有第一款，不算第一次
         suspect = next(s for s in p["suspects"] if s["code"] == "5228")
         self.assertEqual(suspect["status"], "連2 第一款 警告")
