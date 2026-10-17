@@ -181,6 +181,11 @@ class PayloadTests(DbTestCase):
         late = module.build_payload(datetime(2026, 10, 19, 21, 0, tzinfo=TW))
         self.assertIn(("2026-10-19", ["6708"]), [(d["date"], [s["code"] for s in d["stocks"]]) for d in late["releaseDays"]])
         self.assertEqual([(j["code"], j["minutes"], j["daysLeft"]) for j in p["newJail"]], [("6708", 2, 6)])
+        # 今日提醒「分盤交易」：還在關的每一檔，依解鎖日排；天擎用最後一次（再次處置）的期間
+        jl = {j["code"]: j for j in p["jailedList"]}
+        self.assertEqual((jl["6708"]["start"], jl["6708"]["end"], jl["6708"]["release"], jl["6708"]["minutes"], jl["6708"]["new"]),
+                         ("2026-10-12", "2026-10-16", "2026-10-19", 2, True))
+        self.assertEqual([j["release"] for j in p["jailedList"]], sorted(j["release"] for j in p["jailedList"]))
         self.assertEqual([f["code"] for f in p["firstTime"]], ["3236", "6708"])   # 華新科 10/07 也有第一款，不算第一次
         suspect = next(s for s in p["suspects"] if s["code"] == "5228")
         self.assertEqual(suspect["status"], "連2 第一款 警告")

@@ -709,6 +709,13 @@ def _build(now: datetime) -> dict[str, Any]:
     jailed_next = covering(next_day)
     jailed_now = covering(data_day)
 
+    # 今日提醒「分盤交易」表（2026-10-17 使用者）：資料日或下一個交易日還在關的每一檔，處置期間、幾分鐘撮合一次、哪天解鎖
+    jailed_list = []
+    for code, p in sorted({**jailed_now, **jailed_next}.items(), key=lambda kv: (kv[1]["release"], kv[0])):
+        jailed_list.append({"code": code, "name": p["name"], "market": MARKET_LABEL.get(p["market"], p["market"]),
+                            "start": p["start"], "end": p["end"], "release": p["release"], "releaseMd": md(p["release"]),
+                            "minutes": p["minutes"], "measure": p["measure"], "new": p["new"]})
+
     # 犯罪集團：資料日還在關＋剛公告入獄的（「被關或即將被關」，彰源 10/12 出獄也算）；我們的族群，
     # 不在任何族群的就用官方產業別（彰源、佳大＝鋼鐵）
     gangs: dict[str, list[dict[str, Any]]] = {}
@@ -792,7 +799,7 @@ def _build(now: datetime) -> dict[str, Any]:
         "weeks": weeks, "releaseDays": release_days, "pendingCount": pending, "gangs": gang_list, "newJail": new_jail,
         "suspects": suspects, "suspectCounts": {"high": sum(s["high"] for s in suspects), "low": sum(not s["high"] for s in suspects)},
         "firstTime": first_time, "index": index, "copyText": copy_text(next_day, suspects),
-        "jailedNow": len(jailed_now), "jailedNext": len(jailed_next),
+        "jailedNow": len(jailed_now), "jailedNext": len(jailed_next), "jailedList": jailed_list,
     }
     return payload
 
