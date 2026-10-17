@@ -27,7 +27,42 @@ _fetch_lock = threading.Lock()
 _cache: dict[str, Any] = {"at": 0.0, "value": None}
 _contracts: dict[str, tuple[Any, float]] = {}
 _contract_failures: dict[str, float] = {}
-_tx_day: dict[str, Any] = {"quote": None}   # 白天盤最後一筆台指期：收盤後（夜盤時間）空方線用它，老師收盤那份是照日盤收盤畫的
+_tx_day: dict[str, Any] = {"quote": None, "loaded": False}   # 白天盤最後一筆台指期：收盤後（夜盤時間）空方線用它，老師收盤那份是照日盤收盤畫的
+TX_DAY_KEY = "tx_day_quote"   # 也存進資料庫：晚上重新部署、週末重啟後還拿得到白天盤收盤（2026-10-17）
+
+
+def _meta_schema(connection) -> None:
+    connection.execute("CREATE TABLE IF NOT EXISTS stock_futures_board_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+
+
+def _save_tx_day(quote: dict[str, Any]) -> None:
+    import json
+
+    from database import get_connection, initialize_database
+
+    try:
+        initialize_database()
+        with get_connection() as connection:
+            _meta_schema(connection)
+            connection.execute("INSERT OR REPLACE INTO stock_futures_board_meta (key, value) VALUES (?, ?)", (TX_DAY_KEY, json.dumps(quote, ensure_ascii=False)))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Futures Board] 存白天盤台指期失敗：%s", exc)
+
+
+def _load_tx_day() -> Optional[dict[str, Any]]:
+    import json
+
+    from database import get_connection, initialize_database
+
+    try:
+        initialize_database()
+        with get_connection() as connection:
+            _meta_schema(connection)
+            row = connection.execute("SELECT value FROM stock_futures_board_meta WHERE key = ?", (TX_DAY_KEY,)).fetchone()
+        return json.loads(row["value"]) if row else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Futures Board] 讀白天盤台指期失敗：%s", exc)
+        return None
 
 
 def board_underlyings() -> list[str]:
@@ -131,10 +166,15 @@ def _tx_contract(api: Any) -> Any:
 
 
 def _pick_tx(quote: dict[str, Any]) -> dict[str, Any]:
-    """白天盤就記下來直接用；夜盤時間改給白天最後一筆（沒記到就照樣給夜盤，標 session=night）。"""
+    """白天盤就記下來直接用；夜盤時間改給白天最後一筆（記憶體沒有就讀資料庫；都沒有才照樣給夜盤，標 session=night）。"""
     if quote.get("session") == "day":
-        _tx_day["quote"] = dict(quote)
+        changed = (_tx_day.get("quote") or {}).get("time") != quote.get("time")
+        _tx_day.update({"quote": dict(quote), "loaded": True})
+        if changed:
+            _save_tx_day(quote)
         return quote
+    if _tx_day.get("quote") is None and not _tx_day.get("loaded"):
+        _tx_day.update({"quote": _load_tx_day(), "loaded": True})
     saved = _tx_day.get("quote")
     if saved:
         return dict(saved, session="day-close")

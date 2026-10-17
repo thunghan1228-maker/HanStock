@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import database
 import stock_futures_board as module
 
 
@@ -31,10 +34,17 @@ def contract(code, target):
 
 class StockFuturesBoardTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
         module._contracts.clear()
         module._contract_failures.clear()
         module._cache.update({"at": 0.0, "value": None})
-        module._tx_day["quote"] = None
+        module._tx_day.update({"quote": None, "loaded": False})
+
+    def tearDown(self) -> None:
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
 
     def test_snapshot_prices_and_tx(self) -> None:
         contracts = {"2330": contract("CDFR1", "CDFK6"), "2317": contract("DHFR1", "DHFK6")}
@@ -102,9 +112,14 @@ class StockFuturesBoardTests(unittest.TestCase):
         out = module.compute_board(FakeApi(night, tx=tx), [], resolver=lambda *a: None, now=2.0)
         self.assertEqual(out["tx"]["changePct"], 1.72)                       # 收盤後空方線用白天盤收盤
         self.assertEqual(out["tx"]["session"], "day-close")
-        module._tx_day["quote"] = None
+        module._tx_day.update({"quote": None, "loaded": False})              # 晚上重新部署：記憶體清空
         out = module.compute_board(FakeApi(night, tx=tx), [], resolver=lambda *a: None, now=3.0)
-        self.assertEqual(out["tx"]["session"], "night")                      # 沒記到白天盤就照樣給夜盤、標出來
+        self.assertEqual((out["tx"]["changePct"], out["tx"]["session"]), (1.72, "day-close"))   # 從資料庫讀回白天盤收盤
+        with database.get_connection() as connection:
+            connection.execute("DELETE FROM stock_futures_board_meta")
+        module._tx_day.update({"quote": None, "loaded": False})
+        out = module.compute_board(FakeApi(night, tx=tx), [], resolver=lambda *a: None, now=4.0)
+        self.assertEqual(out["tx"]["session"], "night")                      # 都沒記到白天盤就照樣給夜盤、標出來
 
     def test_endpoint_returns_503_on_error(self) -> None:
         from fastapi.testclient import TestClient
