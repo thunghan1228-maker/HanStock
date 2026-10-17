@@ -156,7 +156,9 @@ class PayloadTests(DbTestCase):
                     [1, "5228", "鈺鎧", 3, "累積之最後成交價漲幅達36%(第一款)", "115/10/08", "61.3", "", ""],
                     [1, "6708", "天擎", 3, "累積之最後成交價漲幅達36%(第一款)", "115/10/08", "69.2", "", ""]]}
             if "jail-disposal" in url:
-                return {"fields": TPEX_DISPOSAL["tables"][0]["fields"], "data": TPEX_DISPOSAL["tables"][0]["data"]}
+                return {"fields": TPEX_DISPOSAL["tables"][0]["fields"], "data": TPEX_DISPOSAL["tables"][0]["data"] + [
+                    [1, "115/09/22", "4760", "勤凱(../x.html)", 1, "115/09/23~115/09/29", "連續3個營業日", "第一次處置",
+                     "...(約每5分鐘撮合一次)", "50", "N/A", ""]]}
             if "notice" in url:
                 return TWSE_NOTICE
             if "punish" in url:
@@ -189,6 +191,8 @@ class PayloadTests(DbTestCase):
         self.assertEqual((jl["6708"]["start"], jl["6708"]["end"], jl["6708"]["release"], jl["6708"]["minutes"], jl["6708"]["new"]),
                          ("2026-10-12", "2026-10-16", "2026-10-19", 2, True))
         self.assertEqual([j["release"] for j in p["jailedList"]], sorted(j["release"] for j in p["jailedList"]))
+        # 機器人 628 出獄股：勤凱 9/29 迄 → 9/30 出獄；天擎、聯茂還在關不算
+        self.assertEqual([(r["code"], r["release"]) for r in p["released"]], [("4760", "2026-09-30")])
         self.assertEqual([f["code"] for f in p["firstTime"]], ["3236", "6708"])   # 華新科 10/07 也有第一款，不算第一次
         suspect = next(s for s in p["suspects"] if s["code"] == "5228")
         self.assertEqual(suspect["status"], "連2 第一款 警告")
