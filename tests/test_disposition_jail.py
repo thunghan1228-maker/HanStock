@@ -77,6 +77,9 @@ class ParseTests(unittest.TestCase):
         otc = module.parse_punish_payload(TPEX_DISPOSAL, "OTC")
         self.assertEqual([(r["code"], r["name"], r["start"], r["days"], r["minutes"]) for r in otc],
                          [("6708", "天擎", "2026-10-12", 5, 2), ("6708", "天擎", "2026-10-06", 5, 2)])   # 轉換公司債 47602 不收
+        tdr = {**TWSE_PUNISH, "data": [[1, "115/10/16", "911608", "明輝-DR", 1, "連續三次", "115/10/19～115/10/23", "第一次處置",
+                                        "（約每二分鐘撮合一次）", ""]]}
+        self.assertEqual([(r["code"], r["minutes"]) for r in module.parse_punish_payload(tdr, "TSE")], [("911608", 2)])   # 6 碼 TDR 也收
 
 
 class AccumulationTests(unittest.TestCase):

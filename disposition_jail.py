@@ -81,7 +81,7 @@ _CN = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "�
 CLAUSE_RE = re.compile(r"第([一二三四五六七八九十]+)款")
 DAYS_RE = re.compile(r"(?:﹝|〔|起)\s*([0-9一二三四五六七八九十]+)\s*個營業日")
 MINUTES_RE = re.compile(r"約每\s*([0-9一二三四五六七八九十]+)\s*分鐘")
-CODE_RE = re.compile(r"[1-9]\d{3}")
+CODE_RE = re.compile(r"[1-9]\d{3}|91\d{4}")   # 一般股票＋6 碼 TDR（911608 明輝-DR 也會被處置，2026-10-17 使用者對照）
 WEEKDAYS = "一二三四五六日"
 
 _state: dict[str, Any] = {"lastCollect": None, "lastError": None, "result": None, "backfilled": False}
