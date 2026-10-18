@@ -548,6 +548,31 @@ def get_kill12_snapshot() -> dict[str, Any]:
     return get_intraday_kline_signal_monitor().k12_snapshot()
 
 
+@app.get("/api/hub/holder-force/recalc")
+def get_holder_force_recalc(
+    codes: str = Query(...),
+    date: str | None = Query(default=None),
+    cutoffs: str | None = Query(default=None),
+    raw: bool = Query(default=False),
+) -> Any:
+    """用歷史逐筆重算大戶%（單筆／同秒併單 × 5/7/10/20 張），對照別家工具「同秒併單 ≥7 張」的算法用。
+    只讀不寫；同一檔同一天的逐筆會快取，今天的 2 分鐘後重抓。"""
+    from daytrade_flow import resolve_trade_date
+    from holder_force_recalc import parse_cutoff, recalc
+
+    try:
+        trade_date = resolve_trade_date(date)
+        cutoff_secs = [parse_cutoff(value) for value in (cutoffs or "").split(",") if value.strip()]
+        return recalc(
+            get_quote_service(), codes.split(","), trade_date, cutoff_secs,
+            raw=raw, quota_check=history_quota.check,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=503, content={"status": "error", "error": str(exc)})
+
+
 @app.get("/api/hub/kline-signals/audit-out-of-session")
 def audit_kline_signals_out_of_session(trade_date: str | None = Query(None)) -> dict[str, Any]:
     """稽核用：列出trade_date(預設今天)裡，K線訊號家族(905/520/
