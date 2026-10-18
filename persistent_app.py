@@ -548,6 +548,25 @@ def get_kill12_snapshot() -> dict[str, Any]:
     return get_intraday_kline_signal_monitor().k12_snapshot()
 
 
+@app.get("/api/hub/big-holder")
+def get_big_holder(
+    codes: str = Query(...),
+    trade_date: str | None = Query(default=None),
+) -> Any:
+    """老師版大戶%（同秒併單 ≥7 張、開盤第一筆算賣、÷ 近 5 日平均成交值）：每檔今天累積值＋每根 5 分 K 收完時的值（回放用）。"""
+    from big_holder import payload as big_holder_payload
+
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError:
+            return JSONResponse(status_code=422, content={"status": "error", "error": "trade_date 必須是 YYYY-MM-DD"})
+    try:
+        return big_holder_payload(codes.split(","), trade_date, hub=get_market_data_hub())
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
+
+
 @app.get("/api/hub/holder-force/recalc")
 def get_holder_force_recalc(
     codes: str = Query(...),

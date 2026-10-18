@@ -45,6 +45,11 @@ BAR_INTERVAL_MS = BAR_INTERVAL_5M_MS
 # 金額門檻預設關閉，HANSTOCK_MAIN_FORCE_MIN_AMOUNT 設大於 0 才啟用。
 MAIN_FORCE_MIN_LOTS = max(1, int(os.getenv("HANSTOCK_MAIN_FORCE_MIN_LOTS", "20")))
 MAIN_FORCE_MIN_AMOUNT = max(0.0, float(os.getenv("HANSTOCK_MAIN_FORCE_MIN_AMOUNT", "0") or 0))
+# 老師版「大戶%」（2026-10-18 用 10/16 上午 39 筆對過，平均差 0.7）：同一秒、同方向的成交先併成一筆，
+# 滿 BIG_HOLDER_MIN_LOTS 張才算大戶；開盤第一筆（集合競價）一律算大戶賣；分母是近 5 日平均成交值（big_holder.py）。
+# K 棒裡另存 big_buy_amount／big_sell_amount，跟上面單筆 ≥20 張的 main_* 互不影響。
+BIG_HOLDER_MIN_LOTS = max(1, int(os.getenv("HANSTOCK_BIG_HOLDER_MIN_LOTS", "7")))
+BIG_HOLDER_OPENING_BEFORE_MINUTE = 9 * 60 + 5   # 當天第一筆在 09:05 前才當開盤那筆（重啟後半路收到的不算）
 
 
 def _bar_start_ms(ts_ms: int, interval_ms: int = BAR_INTERVAL_5M_MS) -> int:
@@ -114,6 +119,44 @@ class Bar:
     main_tick_count: int = 0
     total_amount: float = 0.0
     total_volume: int = 0
+    # 老師版大戶：已結算的同秒併單大戶買／賣金額，加上還在累積的那一秒（同一秒一定落在同一根 K 棒）
+    big_buy_amount: float = 0.0
+    big_sell_amount: float = 0.0
+    big_sec: int = -1
+    big_pend_buy_volume: int = 0
+    big_pend_buy_amount: float = 0.0
+    big_pend_sell_volume: int = 0
+    big_pend_sell_amount: float = 0.0
+
+    def _flush_big_second(self) -> None:
+        if self.big_pend_buy_volume >= BIG_HOLDER_MIN_LOTS:
+            self.big_buy_amount += self.big_pend_buy_amount
+        if self.big_pend_sell_volume >= BIG_HOLDER_MIN_LOTS:
+            self.big_sell_amount += self.big_pend_sell_amount
+        self.big_pend_buy_volume = self.big_pend_sell_volume = 0
+        self.big_pend_buy_amount = self.big_pend_sell_amount = 0.0
+
+    def _update_big(self, side: str, volume: int, amount: float, tick_sec: int, opening: bool) -> None:
+        if opening:
+            self.big_sell_amount += max(0.0, amount)
+            return
+        if side not in ("buy", "sell") or tick_sec < 0:
+            return
+        if tick_sec != self.big_sec:
+            self._flush_big_second()
+            self.big_sec = tick_sec
+        if side == "buy":
+            self.big_pend_buy_volume += volume
+            self.big_pend_buy_amount += max(0.0, amount)
+        else:
+            self.big_pend_sell_volume += volume
+            self.big_pend_sell_amount += max(0.0, amount)
+
+    def big_totals(self) -> tuple[float, float]:
+        """含還在累積那一秒（已滿門檻的才算）的大戶買、賣金額。"""
+        buy = self.big_buy_amount + (self.big_pend_buy_amount if self.big_pend_buy_volume >= BIG_HOLDER_MIN_LOTS else 0.0)
+        sell = self.big_sell_amount + (self.big_pend_sell_amount if self.big_pend_sell_volume >= BIG_HOLDER_MIN_LOTS else 0.0)
+        return buy, sell
 
     def update(
         self,
@@ -124,6 +167,8 @@ class Bar:
         amount: float = 0.0,
         total_amount: float = 0.0,
         total_volume: int = 0,
+        tick_sec: int = -1,
+        opening: bool = False,
     ) -> None:
         if self.tick_count == 0:
             self.open = price
@@ -155,8 +200,10 @@ class Bar:
             self.total_amount = total_amount
         if total_volume > self.total_volume:
             self.total_volume = total_volume
+        self._update_big(side, volume, amount, tick_sec, opening)
 
     def to_dict(self) -> dict[str, Any]:
+        big_buy, big_sell = self.big_totals()
         return {
             "ts": self.ts,
             "open": self.open,
@@ -186,6 +233,9 @@ class Bar:
             # 當日累計成交量（張，同樣來自tick本身）；跟total_amount一起可算出不受
             # 訂閱起點影響的當日VWAP，主力累計翻多空的量比也用它。
             "total_volume": self.total_volume,
+            # 老師版大戶（同秒同方向併單 ≥ BIG_HOLDER_MIN_LOTS 張，開盤第一筆算賣）
+            "big_buy_amount": round(big_buy),
+            "big_sell_amount": round(big_sell),
         }
 
 
@@ -196,11 +246,14 @@ Bar5m = Bar
 class BarAggregator:
     """Per-code 即時 K 棒聚合器。保留當日所有已完成 bar + 當前進行中 bar。"""
 
-    def __init__(self, interval_ms: int = BAR_INTERVAL_5M_MS, interval_name: str = "5m") -> None:
+    def __init__(self, interval_ms: int = BAR_INTERVAL_5M_MS, interval_name: str = "5m", track_big: bool = True) -> None:
         if interval_ms <= 0:
             raise ValueError("interval_ms 必須大於 0")
         self.interval_ms = interval_ms
         self.interval_name = interval_name
+        # 老師版大戶只算股票；台指期的 aggregator 不追蹤
+        self.track_big = track_big
+        self._big_seen: set[str] = set()
         self._lock = threading.RLock()
         # code → list of completed bars (today)
         self._completed: dict[str, list[Bar]] = defaultdict(list)
@@ -225,6 +278,7 @@ class BarAggregator:
         self._check_day_rollover()
         bar_start = _bar_start_ms(tick_ts_ms, self.interval_ms)
         completed_bar: Optional[Bar] = None
+        tick_sec = tick_ts_ms // 1000 if self.track_big else -1
 
         with self._lock:
             current = self._current.get(code)
@@ -239,15 +293,24 @@ class BarAggregator:
                 )
                 return None
 
+            opening = False
+            if self.track_big and code not in self._big_seen:
+                self._big_seen.add(code)
+                local = datetime.fromtimestamp(tick_ts_ms / 1000, TW_TZ)
+                opening = local.hour * 60 + local.minute < BIG_HOLDER_OPENING_BEFORE_MINUTE
             if current is None or current.ts != bar_start:
                 # 新 bar 開始
                 if current is not None and current.tick_count > 0:
                     self._completed[code].append(current)
                     completed_bar = current
                 self._current[code] = Bar(ts=bar_start, open=price, high=price, low=price, close=price)
-                self._current[code].update(price, volume, side, is_main_force, amount, total_amount, total_volume)
+                self._current[code].update(
+                    price, volume, side, is_main_force, amount, total_amount, total_volume, tick_sec, opening
+                )
             else:
-                current.update(price, volume, side, is_main_force, amount, total_amount, total_volume)
+                current.update(
+                    price, volume, side, is_main_force, amount, total_amount, total_volume, tick_sec, opening
+                )
 
         return completed_bar
 
@@ -287,6 +350,7 @@ class BarAggregator:
             with self._lock:
                 self._completed.clear()
                 self._current.clear()
+                self._big_seen.clear()
                 self._trade_date = today
 
 
@@ -308,8 +372,8 @@ class MarketDataHub:
         self.bars_1m = BarAggregator(BAR_INTERVAL_1M_MS, "1m")
         self.bars = BarAggregator(BAR_INTERVAL_5M_MS, "5m")
         # 台指期使用獨立 aggregator，避免與同名股票代號或股票盤別混在一起。
-        self.futures_bars_1m = BarAggregator(BAR_INTERVAL_1M_MS, "futures-1m")
-        self.futures_bars = BarAggregator(BAR_INTERVAL_5M_MS, "futures-5m")
+        self.futures_bars_1m = BarAggregator(BAR_INTERVAL_1M_MS, "futures-1m", track_big=False)
+        self.futures_bars = BarAggregator(BAR_INTERVAL_5M_MS, "futures-5m", track_big=False)
         # WebSocket subscribers: set of asyncio.Queue (one per connected client)
         self._ws_subscribers: set[asyncio.Queue] = set()
         self._ws_lock = threading.Lock()
