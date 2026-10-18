@@ -30,7 +30,12 @@ from otc_index import (
     taipei_minute_of_day,
     taipei_trade_date,
 )
-from market_data_hub import _is_main_force_trade, _trade_side
+from market_data_hub import (
+    BIG_HOLDER_MIN_LOTS,
+    BIG_HOLDER_OPENING_BEFORE_MINUTE,
+    _is_main_force_trade,
+    _trade_side,
+)
 from history_cache import HistoryCache
 from history_quota import history_quota
 from shioaji_contracts import resolve_stock_contract
@@ -195,7 +200,7 @@ def _safe_bar(raw: Any) -> Optional[dict[str, Any]]:
                 result[field] = max(0, int(raw.get(field, 0) or 0))
             except (TypeError, ValueError, OverflowError):
                 result[field] = 0
-    for field in ("main_buy_amount", "main_sell_amount"):
+    for field in ("main_buy_amount", "main_sell_amount", "big_buy_amount", "big_sell_amount"):
         if field in raw:
             try:
                 result[field] = max(0, round(float(raw.get(field, 0) or 0)))
@@ -276,6 +281,7 @@ def _historical_tick_metrics(
     simtrades = _field_values(ticks, "simtrade", "Simtrade")
     size = min(len(timestamps), len(closes), len(volumes))
     metrics: dict[int, dict[str, Any]] = {}
+    big_ticks: list[tuple[int, str, int, float]] = []
 
     for index in range(size):
         ts_ms = _shioaji_tick_to_ms(timestamps[index])
@@ -316,6 +322,8 @@ def _historical_tick_metrics(
             "tick_count": 0,
             "main_force_available": True,
             "total_amount": 0.0,
+            "big_buy_amount": 0.0,
+            "big_sell_amount": 0.0,
         })
         side = _trade_side({"tick_type": tick_type})
         row[f"{side}_volume"] += volume
@@ -340,7 +348,9 @@ def _historical_tick_metrics(
             row[f"main_{side}_amount"] += tick_amount
             row["main_tick_count"] += 1
         row["tick_count"] += 1
+        big_ticks.append((ts_ms, side, volume, tick_amount))
 
+    _attach_big_holder(metrics, big_ticks)
     for row in metrics.values():
         row["main_net_volume"] = row["main_buy_volume"] - row["main_sell_volume"]
         row["main_buy_amount"] = round(row["main_buy_amount"])
@@ -354,6 +364,36 @@ def _historical_tick_metrics(
         running_total += metrics[minute_ts]["total_amount"]
         metrics[minute_ts]["total_amount"] = round(running_total)
     return metrics
+
+
+def _attach_big_holder(
+    metrics: dict[int, dict[str, Any]],
+    ticks: list[tuple[int, str, int, float]],
+) -> None:
+    """老師版大戶（跟 market_data_hub.Bar 同一套）：同一秒、同方向的成交併成一筆，滿 BIG_HOLDER_MIN_LOTS 張
+    才算大戶買／賣；當天第一筆（09:05 前，開盤集合競價）一律算大戶賣。結果加到該秒所在的 1 分鐘。"""
+    if not ticks:
+        return
+    ticks = sorted(ticks, key=lambda tick: tick[0])
+    first_ts, _first_side, _first_volume, first_amount = ticks[0]
+    rest = ticks
+    if taipei_minute_of_day(first_ts) < BIG_HOLDER_OPENING_BEFORE_MINUTE:
+        metrics[first_ts - (first_ts % ONE_MIN_MS)]["big_sell_amount"] += first_amount
+        rest = ticks[1:]
+    seconds: dict[tuple[int, str], list[float]] = {}
+    for ts_ms, side, volume, amount in rest:
+        if side not in {"buy", "sell"}:
+            continue
+        slot = seconds.setdefault((ts_ms // 1000, side), [0, 0.0])
+        slot[0] += volume
+        slot[1] += amount
+    for (sec, side), (volume, amount) in seconds.items():
+        if volume >= BIG_HOLDER_MIN_LOTS:
+            minute_ts = sec * 1000 - (sec * 1000 % ONE_MIN_MS)
+            metrics[minute_ts][f"big_{side}_amount"] += amount
+    for row in metrics.values():
+        row["big_buy_amount"] = round(row["big_buy_amount"])
+        row["big_sell_amount"] = round(row["big_sell_amount"])
 
 
 def _attach_tick_metrics(

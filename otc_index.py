@@ -318,6 +318,9 @@ def aggregate_1m_to_5m(
                 "main_tick_count": sum(_safe_int(row.get("main_tick_count")) for row in rows),
                 "main_force_available": any(bool(row.get("main_force_available")) for row in rows),
             })
+            if any("big_buy_amount" in row for row in rows):
+                aggregated["big_buy_amount"] = round(sum(float(row.get("big_buy_amount") or 0) for row in rows))
+                aggregated["big_sell_amount"] = round(sum(float(row.get("big_sell_amount") or 0) for row in rows))
             # total_amount 是「累計到當下」的金額快照，不是流量，5分K要取
             # 這5根1分K裡最新一根「有值」的快照，不能像volume一樣加總(否則
             # 大戶力%的分母會被灌水成好幾倍)；也不能只看rows[-1]，因為ticks

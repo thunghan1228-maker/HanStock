@@ -55,6 +55,12 @@ def _ensure_table() -> None:
                 connection.execute(
                     "ALTER TABLE main_force_bars ADD COLUMN total_amount REAL NOT NULL DEFAULT 0"
                 )
+            # 老師版大戶（同秒同方向併單 ≥7 張、開盤第一筆算賣）；big_available=0 是這欄位上線前的舊資料，不是真的 0
+            for column in ("big_buy_amount", "big_sell_amount"):
+                if column not in row_columns:
+                    connection.execute(f"ALTER TABLE main_force_bars ADD COLUMN {column} REAL NOT NULL DEFAULT 0")
+            if "big_available" not in row_columns:
+                connection.execute("ALTER TABLE main_force_bars ADD COLUMN big_available INTEGER NOT NULL DEFAULT 0")
         _table_ready_path = database_path
 
 
@@ -79,6 +85,9 @@ def _rows_for_bars(
             sell_amount = max(0.0, float(bar.get("main_sell_amount", 0) or 0))
             tick_count = max(0, int(bar.get("main_tick_count", 0) or 0))
             total_amount = max(0.0, float(bar.get("total_amount", 0) or 0))
+            big_available = 1 if "big_buy_amount" in bar else 0
+            big_buy = max(0.0, float(bar.get("big_buy_amount", 0) or 0))
+            big_sell = max(0.0, float(bar.get("big_sell_amount", 0) or 0))
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if ts <= 0:
@@ -92,7 +101,7 @@ def _rows_for_bars(
             code, taipei_trade_date(ts), interval, ts,
             buy_volume, sell_volume, buy_volume - sell_volume,
             buy_amount, sell_amount, buy_amount - sell_amount,
-            tick_count, total_amount, now,
+            tick_count, total_amount, big_buy, big_sell, big_available, now,
         ))
     return rows
 
@@ -108,8 +117,8 @@ def _write_rows(rows: list[tuple[Any, ...]]) -> int:
                 stock_code, trade_date, interval, bar_ts,
                 main_buy_volume, main_sell_volume, main_net_volume,
                 main_buy_amount, main_sell_amount, main_net_amount,
-                main_tick_count, total_amount, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                main_tick_count, total_amount, big_buy_amount, big_sell_amount, big_available, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stock_code, interval, bar_ts) DO UPDATE SET
                 trade_date=excluded.trade_date,
                 main_buy_volume=excluded.main_buy_volume,
@@ -120,6 +129,9 @@ def _write_rows(rows: list[tuple[Any, ...]]) -> int:
                 main_net_amount=excluded.main_net_amount,
                 main_tick_count=excluded.main_tick_count,
                 total_amount=excluded.total_amount,
+                big_buy_amount=CASE WHEN excluded.big_available = 1 THEN excluded.big_buy_amount ELSE main_force_bars.big_buy_amount END,
+                big_sell_amount=CASE WHEN excluded.big_available = 1 THEN excluded.big_sell_amount ELSE main_force_bars.big_sell_amount END,
+                big_available=MAX(excluded.big_available, main_force_bars.big_available),
                 updated_at=excluded.updated_at
             """,
             rows,
@@ -185,7 +197,8 @@ def load_main_force_bars(
             f"""
             SELECT trade_date, bar_ts, main_buy_volume, main_sell_volume,
                    main_net_volume, main_buy_amount, main_sell_amount,
-                   main_net_amount, main_tick_count, total_amount
+                   main_net_amount, main_tick_count, total_amount,
+                   big_buy_amount, big_sell_amount, big_available
             FROM main_force_bars
             WHERE stock_code = ? AND interval = ? {date_filter}
             ORDER BY bar_ts DESC LIMIT ?
@@ -193,7 +206,11 @@ def load_main_force_bars(
             params,
         ).fetchall()
     rows = list(reversed(rows))
-    return [{
+    return [_load_row(row) for row in rows]
+
+
+def _load_row(row: Any) -> dict[str, Any]:
+    bar = {
         "trade_date": row["trade_date"], "ts": int(row["bar_ts"]),
         "main_buy_volume": int(row["main_buy_volume"]),
         "main_sell_volume": int(row["main_sell_volume"]),
@@ -205,7 +222,11 @@ def load_main_force_bars(
         # 當日累計成交金額；0可能是真的0，也可能是這個欄位上線前的舊資料。
         "total_amount": round(float(row["total_amount"] or 0)),
         "main_force_available": True,
-    } for row in rows]
+    }
+    if int(row["big_available"] or 0):
+        bar["big_buy_amount"] = round(float(row["big_buy_amount"] or 0))
+        bar["big_sell_amount"] = round(float(row["big_sell_amount"] or 0))
+    return bar
 
 
 def list_main_force_codes_for_date(trade_date: str, interval: str = "1m") -> list[str]:
