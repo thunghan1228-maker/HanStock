@@ -567,6 +567,44 @@ def get_big_holder(
         return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
 
 
+@app.post("/api/hub/big-holder/backfill")
+def post_big_holder_backfill(codes: str = Query(...), trade_date: str = Query(...)) -> Any:
+    """補某一天的老師版大戶欄位（用歷史逐筆重算，只寫回已經存在的 K 棒的 big_*；這功能上線前的日子用）。"""
+    from big_holder import backfill_day
+
+    try:
+        datetime.strptime(trade_date, "%Y-%m-%d")
+        return backfill_day(get_quote_service(), codes.split(","), trade_date, quota_check=history_quota.check)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=503, content={"status": "error", "error": str(exc)})
+
+
+@app.post("/api/hub/homework-snapshot")
+def post_homework_snapshot(body: dict[str, Any] = Body(...)) -> Any:
+    """今日功課盤中紀錄：網站前端每 5 分鐘送一份刀劍空名單（只收今天、現在這個時段，同一時段先到的算數）。"""
+    from homework_snapshots import save_snapshot
+
+    try:
+        return save_snapshot(body)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
+
+
+@app.get("/api/hub/homework-snapshots")
+def get_homework_snapshots(date: str | None = Query(default=None)) -> Any:
+    """今日功課某一天的全部 5 分鐘紀錄（回放、刀功課廣播用）；沒給日期＝今天，今天還沒有就給最近有紀錄的那天。"""
+    from homework_snapshots import load_snapshots
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return JSONResponse(status_code=422, content={"status": "error", "error": "date 必須是 YYYY-MM-DD"})
+    return load_snapshots(date)
+
+
 @app.get("/api/hub/holder-force/recalc")
 def get_holder_force_recalc(
     codes: str = Query(...),
