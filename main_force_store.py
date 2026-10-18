@@ -285,6 +285,34 @@ def classify_holder_strength(
     return round(pct, 2), label
 
 
+# 2026-10-18 使用者選「全部改成老師版」：大戶力改用老師算法（big_holder.py：同秒同方向併單 ≥7 張大戶買減賣、
+# 開盤第一筆算賣，÷ 近 5 日平均成交值）。那天的 K 棒都有老師版欄位才用新算法，這功能上線前的舊日子沿用上面的舊算法。
+# 門檻照老師：≥ +5 偏買（老師「大戶 + ≥+5 深黃＝警訊」）、≥ +10 強力買進；≤ -5 偏賣、≤ -10 強力賣出（老師「≤-10 深紫＝倒貨重點股」）。
+BIG_HOLDER_SIGNAL_PCT = 5.0
+BIG_HOLDER_STRONG_PCT = 10.0
+
+
+def classify_big_holder(net_amount: float, avg_amount: float | None, total_amount: float) -> tuple[float | None, str | None]:
+    """老師版大戶力（%, 標籤）；近 5 日均成交值算不出來（日K不足）時回 (None, None)。正式門檻（當日成交額 ≥ 1 億、
+    淨額絕對值 ≥ 3,000 萬）沿用舊的，沒過門檻時百分比照算、標籤是 None。"""
+    if not avg_amount or avg_amount <= 0:
+        return None, None
+    pct = net_amount / avg_amount * 100
+    if total_amount < HOLDER_STRENGTH_MIN_TURNOVER or abs(net_amount) < HOLDER_STRENGTH_MIN_NET_AMOUNT:
+        return round(pct, 2), None
+    if pct >= BIG_HOLDER_STRONG_PCT:
+        label = "盤中大戶強力買進"
+    elif pct >= BIG_HOLDER_SIGNAL_PCT:
+        label = "盤中大戶偏買"
+    elif pct <= -BIG_HOLDER_STRONG_PCT:
+        label = "盤中大戶強力賣出"
+    elif pct <= -BIG_HOLDER_SIGNAL_PCT:
+        label = "盤中大戶偏賣"
+    else:
+        label = None
+    return round(pct, 2), label
+
+
 def load_main_force_ranking(
     trade_date: str,
     interval: str = "5m",
@@ -322,16 +350,20 @@ def load_main_force_ranking(
                    SUM(b.main_sell_amount) AS sell_amount,
                    MAX(b.total_amount) AS total_amount,
                    MAX(b.bar_ts) AS last_ts,
+                   SUM(b.big_buy_amount) AS big_buy,
+                   SUM(b.big_sell_amount) AS big_sell,
+                   MIN(b.big_available) AS big_all,
                    s.stock_name AS stock_name
             FROM main_force_bars b
             LEFT JOIN stocks s ON s.stock_code = b.stock_code
             WHERE b.trade_date = ? AND b.interval = ?{code_clause}
             GROUP BY b.stock_code
-            ORDER BY ABS(SUM(b.main_net_volume)) DESC
+            ORDER BY ABS(SUM(b.big_buy_amount) - SUM(b.big_sell_amount)) DESC, ABS(SUM(b.main_net_volume)) DESC
             LIMIT ?
             """,
             (trade_date, interval, *code_params, limit),
         ).fetchall()
+    from big_holder import avg_turnover
     from stock_trading_eligibility import get_trading_eligibility
 
     results = []
@@ -339,8 +371,17 @@ def load_main_force_ranking(
         buy_amount = float(row["buy_amount"] or 0)
         sell_amount = float(row["sell_amount"] or 0)
         total_amount = float(row["total_amount"] or 0)
-        strength_pct, holder_label = classify_holder_strength(buy_amount, sell_amount, total_amount)
         code = row["stock_code"]
+        avg_amount = None
+        if int(row["big_all"] or 0):
+            algo = "teacher"
+            net_amount = float(row["big_buy"] or 0) - float(row["big_sell"] or 0)
+            avg_amount = avg_turnover(code, trade_date)
+            strength_pct, holder_label = classify_big_holder(net_amount, avg_amount, total_amount)
+        else:
+            algo = "single20"
+            net_amount = buy_amount - sell_amount
+            strength_pct, holder_label = classify_holder_strength(buy_amount, sell_amount, total_amount)
         # 融資/融券/可現股當沖/有股期跟大戶力本身無關，抓不到(Shioaji未登入等)
         # 就是這幾個欄位維持None，不影響大戶力排行本身。
         try:
@@ -353,11 +394,13 @@ def load_main_force_ranking(
             "netVolume": int(row["net_volume"] or 0),
             "buyVolume": int(row["buy_volume"] or 0),
             "sellVolume": int(row["sell_volume"] or 0),
-            "netAmount": round(buy_amount - sell_amount),  # 大戶買賣超金額(元)，正=買超
+            "netAmount": round(net_amount),  # 大戶買賣超金額(元)，正=買超；老師版＝同秒併單 ≥7 張的大戶淨額
             "lastTs": int(row["last_ts"]),
             "side": "buy" if (row["net_volume"] or 0) >= 0 else "sell",
             "strengthPct": strength_pct,
             "holderLabel": holder_label,
+            "holderAlgo": algo,
+            "avgAmount": round(avg_amount) if avg_amount else None,
             "marginable": eligibility["marginable"],
             "shortable": eligibility["shortable"],
             "dayTradeEligible": eligibility["dayTradeEligible"],
@@ -368,6 +411,7 @@ def load_main_force_ranking(
 
 HOLDER_TIMELINE_MIN_NET_VOLUME = 500  # 盤中大戶力分頁的門檻：累計大單淨量 ≥ 500 張（前端 BIG_HOLDER_THRESHOLD）
 HOLDER_HOT_PCT = 10.0  # 今日強勢股／弱勢股的大戶力門檻：≥ +10%／≤ −10%（前端 ST_HF_MIN）
+HOLDER_TIMELINE_PCT = 10.0  # 老師版：盤中大戶力分頁的進榜門檻改成大戶力 ≥ +10%／≤ −10%（老師「≤-10 倒貨重點」；舊算法是淨量 ≥ 500 張）
 
 
 def load_holder_timeline(
@@ -396,15 +440,28 @@ def load_holder_timeline(
     with database.get_connection() as connection:
         rows = connection.execute(
             f"""
-            SELECT stock_code, bar_ts, main_net_volume, main_buy_amount, main_sell_amount, total_amount
+            SELECT stock_code, bar_ts, main_net_volume, main_buy_amount, main_sell_amount, total_amount,
+                   big_buy_amount, big_sell_amount, big_available
             FROM main_force_bars
             WHERE trade_date = ? AND interval = ?{code_clause}
             ORDER BY stock_code, bar_ts
             """,
             (trade_date, interval, *code_params),
         ).fetchall()
+    from big_holder import avg_turnover
+
     out: dict[str, dict[str, Any]] = {}
     state: dict[str, Any] = {}
+    by_code: dict[str, list[Any]] = {}
+    for row in rows:
+        by_code.setdefault(str(row["stock_code"]), []).append(row)
+    # 老師版：那天每根 K 都有老師版欄位、算得出近 5 日均成交值的代號，進榜／站上 ±10% 都改看老師版大戶力
+    teacher_avg = {}
+    for code, code_rows in by_code.items():
+        if code_rows and all(int(r["big_available"] or 0) for r in code_rows):
+            avg = avg_turnover(code, trade_date)
+            if avg:
+                teacher_avg[code] = avg
 
     def finish(code: str) -> None:
         sides = state.get("sides") or {}
@@ -412,8 +469,13 @@ def load_holder_timeline(
         if not sides and not hot.get("upFirst") and not hot.get("downFirst"):
             return
         net = state["net"]
-        for side, info in sides.items():
-            info["still"] = net >= min_net_volume if side == "bull" else net <= -min_net_volume
+        if code in teacher_avg:
+            last_pct = state.get("lastPct")
+            for side, info in sides.items():
+                info["still"] = last_pct is not None and (last_pct >= HOLDER_TIMELINE_PCT if side == "bull" else last_pct <= -HOLDER_TIMELINE_PCT)
+        else:
+            for side, info in sides.items():
+                info["still"] = net >= min_net_volume if side == "bull" else net <= -min_net_volume
         result: dict[str, Any] = dict(sides)
         if hot.get("upFirst") or hot.get("downFirst"):
             result["hot"] = hot
@@ -426,14 +488,17 @@ def load_holder_timeline(
             if current is not None:
                 finish(current)
             current = code
-            state = {"net": 0, "buy": 0.0, "sell": 0.0, "total": 0.0, "sides": {},
+            state = {"net": 0, "buy": 0.0, "sell": 0.0, "total": 0.0, "big": 0.0, "lastPct": None, "sides": {},
                      "hot": {"upFirst": None, "upSince": None, "downFirst": None, "downSince": None}}
         state["net"] += int(row["main_net_volume"] or 0)
         state["buy"] += float(row["main_buy_amount"] or 0)
         state["sell"] += float(row["main_sell_amount"] or 0)
         state["total"] = max(state["total"], float(row["total_amount"] or 0))
+        state["big"] += float(row["big_buy_amount"] or 0) - float(row["big_sell_amount"] or 0)
         net = state["net"]
-        bar_pct = compute_holder_strength_pct(state["buy"], state["sell"], state["total"])
+        teacher = code in teacher_avg
+        bar_pct = state["big"] / teacher_avg[code] * 100 if teacher else compute_holder_strength_pct(state["buy"], state["sell"], state["total"])
+        state["lastPct"] = bar_pct
         if bar_pct is not None:
             ts_hot, hot = int(row["bar_ts"]), state["hot"]
             for key, on in (("up", bar_pct >= HOLDER_HOT_PCT), ("down", bar_pct <= -HOLDER_HOT_PCT)):
@@ -442,11 +507,13 @@ def load_holder_timeline(
                     hot[key + "Since"] = hot[key + "Since"] or ts_hot
                 else:
                     hot[key + "Since"] = None
-        side = "bull" if net >= min_net_volume else "bear" if net <= -min_net_volume else None
+        if teacher:
+            side = "bull" if bar_pct >= HOLDER_TIMELINE_PCT else "bear" if bar_pct <= -HOLDER_TIMELINE_PCT else None
+        else:
+            side = "bull" if net >= min_net_volume else "bear" if net <= -min_net_volume else None
         if side is None:
             continue
-        pct = compute_holder_strength_pct(state["buy"], state["sell"], state["total"])
-        pct = round(pct, 2) if pct is not None else None
+        pct = round(bar_pct, 2) if bar_pct is not None else None
         ts = int(row["bar_ts"])
         info = state["sides"].get(side)
         if info is None:

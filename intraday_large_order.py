@@ -171,6 +171,15 @@ def _holder_strength_pct(code: str) -> float | None:
     bars = get_market_data_hub().get_live_bars_1m(code) or []
     if not bars:
         return None
+    # 2026-10-18 使用者選「全部改成老師版」：K 棒有老師版欄位就用老師算法（同秒併單 ≥7 張大戶淨額 ÷ 近 5 日均成交值）
+    if all("big_buy_amount" in b for b in bars):
+        from big_holder import avg_turnover
+
+        avg = avg_turnover(code, datetime.now(TW_TZ).strftime("%Y-%m-%d"))
+        if not avg:
+            return None
+        net = sum(float(b.get("big_buy_amount") or 0) - float(b.get("big_sell_amount") or 0) for b in bars)
+        return net / avg * 100
     buy_amount = sum(max(0.0, float(b.get("main_buy_amount") or 0)) for b in bars)
     sell_amount = sum(max(0.0, float(b.get("main_sell_amount") or 0)) for b in bars)
     total_amount = max((float(b.get("total_amount") or 0) for b in bars), default=0.0)
