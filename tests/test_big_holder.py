@@ -111,3 +111,30 @@ def test_avg_turnover_uses_five_days_before_trade_date():
     assert value == 10 * (100 + 200 + 300 + 400 + 500) * 1000 / 5
     big_holder._avg_cache.clear()
     assert avg_turnover("2478", "2026-10-16", loader=lambda code, limit: rows[:3]) is None
+
+
+def test_backfill_day_writes_big_fields_into_existing_bars_only(monkeypatch):
+    import stock_bar_bootstrap
+    from types import SimpleNamespace
+    from big_holder import backfill_day
+
+    ticks = {
+        "ts": [datetime.fromtimestamp(ts / 1000, TW_TZ) for ts, *_ in TICKS],
+        "close": [p for _, p, _, _ in TICKS],
+        "volume": [v for _, _, v, _ in TICKS],
+        "tick_type": [1 if s == "buy" else 2 for *_, s in TICKS],
+        "amount": [p * v * 1000 for _, p, v, _ in TICKS],
+        "simtrade": [0] * len(TICKS),
+    }
+    monkeypatch.setattr(stock_bar_bootstrap, "_fetch_historical_ticks", lambda api, contract, date: ticks)
+    monkeypatch.setattr(stock_bar_bootstrap, "_resolve_stock_contract", lambda service, code: code)
+    service = SimpleNamespace(api=object(), state=SimpleNamespace(logged_in=True))
+    with tempfile.TemporaryDirectory() as tmp, patch.object(database, "DATABASE_PATH", Path(tmp) / "t.db"):
+        base = {"main_force_available": True, "main_buy_amount": 5, "main_sell_amount": 0}
+        save_main_force_bars("2478", "5m", [{**base, "ts": _ms(9, 0, 0)}])   # 只有 09:00 那根，09:05 那根沒存
+        out = backfill_day(service, ["2478"], "2026-10-16")
+        rows = load_main_force_bars("2478", "5m", trade_date="2026-10-16")
+    assert out["updated5m"] == {"2478": 1}
+    assert len(rows) == 1
+    assert rows[0]["big_buy_amount"] == 700_000 and rows[0]["big_sell_amount"] == 1_800_000
+    assert rows[0]["main_buy_amount"] == 5

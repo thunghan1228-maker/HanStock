@@ -567,6 +567,20 @@ def get_big_holder(
         return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
 
 
+@app.post("/api/hub/big-holder/backfill")
+def post_big_holder_backfill(codes: str = Query(...), trade_date: str = Query(...)) -> Any:
+    """補某一天的老師版大戶欄位（用歷史逐筆重算，只寫回已經存在的 K 棒的 big_*；這功能上線前的日子用）。"""
+    from big_holder import backfill_day
+
+    try:
+        datetime.strptime(trade_date, "%Y-%m-%d")
+        return backfill_day(get_quote_service(), codes.split(","), trade_date, quota_check=history_quota.check)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=503, content={"status": "error", "error": str(exc)})
+
+
 @app.post("/api/hub/homework-snapshot")
 def post_homework_snapshot(body: dict[str, Any] = Body(...)) -> Any:
     """今日功課盤中紀錄：網站前端每 5 分鐘送一份刀劍空名單（只收今天、現在這個時段，同一時段先到的算數）。"""

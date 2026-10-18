@@ -124,3 +124,62 @@ def payload(codes: Iterable[str], trade_date: Optional[str] = None, *, hub: Any 
         "elapsedMs": round((time.monotonic() - started) * 1000),
         "items": items,
     }
+
+
+def backfill_day(service: Any, codes: Iterable[str], trade_date: str, *, quota_check: Any = None) -> dict[str, Any]:
+    """補某一天的老師版大戶欄位：用 Shioaji 歷史逐筆算出每根 1 分／5 分 K 的大戶買賣，寫回資料庫已經存在的 K 棒
+    （只動 big_*，原本單筆 ≥20 張的主力欄位不碰；那天沒存 K 棒的股票跳過，不造假資料）。
+    2026-10-18 這功能上線前的日子（例如 10/16）都沒有老師版大戶，今日功課回放、跟老師對數字時用。"""
+    import database
+    from main_force_store import _ensure_table
+    from stock_bar_bootstrap import _fetch_historical_ticks, _historical_tick_metrics, _resolve_stock_contract
+
+    normalized = list(dict.fromkeys(str(code).strip().upper() for code in codes if str(code).strip()))
+    if not normalized:
+        raise ValueError("codes 不可空白")
+    if len(normalized) > 80:
+        raise ValueError("一次最多 80 檔")
+    if trade_date >= datetime.now(TW_TZ).strftime("%Y-%m-%d"):
+        raise ValueError("只補今天以前的日子（今天的即時 K 棒自己會算）")
+    api = getattr(service, "api", None)
+    if api is None or not bool(getattr(getattr(service, "state", None), "logged_in", False)):
+        raise RuntimeError("Shioaji 尚未登入，無法抓歷史逐筆成交")
+    _ensure_table()
+    done: dict[str, int] = {}
+    errors: dict[str, str] = {}
+    for code in normalized:
+        if quota_check is not None:
+            quota_error = quota_check(api)
+            if quota_error:
+                errors[code] = str(quota_error)
+                continue
+        try:
+            contract = _resolve_stock_contract(service, code)
+            if contract is None:
+                errors[code] = "找不到股票合約"
+                continue
+            metrics = _historical_tick_metrics(_fetch_historical_ticks(api, contract, trade_date), trade_date=trade_date)
+        except Exception as exc:  # noqa: BLE001
+            errors[code] = str(exc) or exc.__class__.__name__
+            continue
+        five: dict[int, list[float]] = {}
+        rows_1m = []
+        for minute_ts, row in metrics.items():
+            buy, sell = float(row.get("big_buy_amount") or 0), float(row.get("big_sell_amount") or 0)
+            rows_1m.append((buy, sell, code, minute_ts))
+            slot = five.setdefault(minute_ts - minute_ts % (5 * 60 * 1000), [0.0, 0.0])
+            slot[0] += buy
+            slot[1] += sell
+        rows_5m = [(buy, sell, code, ts) for ts, (buy, sell) in five.items()]
+        updated = 0
+        with database.get_connection() as connection:
+            for interval, rows in (("1m", rows_1m), ("5m", rows_5m)):
+                cursor = connection.executemany(
+                    "UPDATE main_force_bars SET big_buy_amount = ?, big_sell_amount = ?, big_available = 1 "
+                    f"WHERE stock_code = ? AND interval = '{interval}' AND bar_ts = ?",
+                    rows,
+                )
+                if interval == "5m":
+                    updated = cursor.rowcount
+        done[code] = updated
+    return {"status": "ok", "tradeDate": trade_date, "updated5m": done, "errors": errors}
