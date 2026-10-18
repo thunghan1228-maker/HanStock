@@ -72,7 +72,8 @@ def board_underlyings() -> list[str]:
 
     codes = {
         str(code).strip().upper()
-        for name, members in STOCK_GROUPS.items() if name not in UNRANKED_GROUP_NAMES
+        # 金融股 2026-10-18 放回族群名次，這裡照舊不抓（股期看板原本就沒有金融股，不多抓一批報價）
+        for name, members in STOCK_GROUPS.items() if name not in UNRANKED_GROUP_NAMES and name != "金融股"
         for code, _name in members
     }
     return sorted(code for code in codes if has_stock_futures(code))
