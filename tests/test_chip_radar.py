@@ -100,6 +100,20 @@ class RadarTests(unittest.TestCase):
         self.temp_dir.cleanup()
         module._cache.update({"at": 0.0, "key": None, "radar": None})
 
+    def test_threshold_uses_unrounded_x_and_single_holder_is_hidden_but_ranked(self) -> None:
+        # 聯傑 10/16：x＝−1.4973，取兩位 −1.50 但老師沒列；信昌電 10/16：集保只剩 1 名股東，老師榜上拿掉、名次照算
+        def rows(code: str, big: int, holders: int) -> list[tuple]:
+            return [(code, 12, holders, 0, 0.0), (code, 15, holders, big, 0.0), (code, 17, holders, TOTAL, 100.0)]
+        fundamentals_daily.save_tdcc("2026-09-24", rows("3094", 30_000_000, 900) + rows("6669", 30_000_000, 900))
+        fundamentals_daily.save_tdcc("2026-10-02", rows("3094", 30_000_000 - 1_497_276, 900) + rows("6669", 64_590_000, 1))
+        week = module.payload()["lists"][0]
+        self.assertNotIn("3094", [r["code"] for r in week["sell"]])
+        self.assertEqual(module.load_radar().xs["3094"]["2026-10-02"], -1.5)
+        self.assertNotIn("6669", [r["code"] for r in week["buy"]])
+        self.assertEqual(week["excluded"], [{"code": "6669", "name": "6669", "chip1": 17.6, "side": "buy"}])
+        self.assertEqual((week["buy"][0]["code"], week["buy"][0]["rank"]), ("2033", 2))
+        self.assertEqual(module.load_radar().rank("6669", "2026-10-02"), 1)
+
     def test_payload(self) -> None:
         out = module.payload()
         self.assertEqual(out["status"], "ok")
