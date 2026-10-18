@@ -997,3 +997,42 @@ def test_industry_group_codes_excludes_futures_only_stocks():
     futures_only = {c for c, _ in STOCK_GROUPS["股期標的"]} - {c for n, m in STOCK_GROUPS.items() if n != "股期標的" for c, _ in m}
     assert futures_only and not (futures_only & codes)
     assert "2317" in codes and "2330" not in codes
+
+
+# ---- 1️⃣2️⃣空（機器人 123）：今天曾衝高 3% 以上、5 分 K 收在 20MA 下、20MA 往下彎 ----
+def _flat_seed_monitor(monkeypatch, level: float = 100.0):
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    seeds = _yesterday_seed_bars([level] * 21)
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+    return monitor
+
+
+def test_k12_on_after_rush_then_close_below_falling_ma20(monkeypatch):
+    monitor = _flat_seed_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))      # 衝高 +4%，收在 20MA 上
+    assert monitor._states["2330"].k12_on is False
+    monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 98.5, 99))      # 收 99 < 20MA≈100.1，20MA 從 100.15 往下
+    state = monitor._states["2330"]
+    assert state.k12_on is True
+    assert state.k12_since == ts(9, 10)
+    snap = monitor.k12_snapshot()
+    assert [x["code"] for x in snap["items"]] == ["2330"]
+    item = snap["items"][0]
+    assert item["dayHighPct"] == 4.0 and item["pct"] == -1.0
+    monitor.on_bar_completed("2330", bar(9, 10, 99, 104, 99, 103.5))     # 站回 20MA 上：拿掉
+    assert monitor._states["2330"].k12_on is False
+    assert monitor.k12_snapshot()["items"] == []
+
+
+def test_k12_needs_rush_of_three_percent(monkeypatch):
+    monitor = _flat_seed_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 102.5, 100, 102))   # 最高只有 +2.5%
+    monitor.on_bar_completed("2330", bar(9, 5, 102, 102, 98.5, 99))
+    assert monitor._states["2330"].k12_on is False
+
+
+def test_k12_needs_ma20_turning_down(monkeypatch):
+    monitor = _flat_seed_monitor(monkeypatch, level=95.0)               # 昨天在 95 附近：今天 20MA 一路往上
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))
+    monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 95.5, 96))     # 收 96 > 20MA≈95.4、20MA 還在往上
+    assert monitor._states["2330"].k12_on is False

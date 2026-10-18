@@ -110,6 +110,13 @@ class _KlineState:
     fired_black_dragon: bool = False
     late_subscription: bool = False
     seed_count: int = 0  # 昨天種進來的 5 分 K 根數（MA20 跨日接續用），0 = 沒種
+    # 1️⃣2️⃣空（機器人 123）目前狀態：今天最高、現在是不是「衝高後收在 20MA 下、20MA 往下彎」
+    day_high: float | None = None
+    k12_on: bool = False
+    k12_since: int | None = None
+    last_close: float | None = None
+    last_bar_ts: int | None = None
+    last_ma20: float | None = None
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -123,6 +130,11 @@ def _moving_average(closes: list[float], length: int) -> float | None:
 MAX_PREV_BAR_AGE_DAYS = 12
 # 跨日接續 5 分 K MA20 用的種子：MA20 要 20 根、斜率再多 1 根。
 SEED_BARS = 21
+# 1️⃣2️⃣空（機器人 123，2026-10-18 使用者：照老師 10/14～10/16 二十幾份名單反推的第一版）：
+# 今天最高曾漲到 K12_MIN_RUSH_PCT% 以上（衝高）、現在 5 分 K 收在 20MA 下面、20MA 往下彎（20MA 連前幾天一起算）。
+# 進出跟老師每個時間點都對得上（站回 20MA 上就拿掉、再跌破又列回來；20MA 還平的時候不列），
+# 老師還會再挑掉一些（他怎麼判斷「1」「2」兩個高點還不知道），這版會比老師多列一點。
+K12_MIN_RUSH_PCT = 3.0
 _market_prev_cache: dict[str, str | None] = {}
 
 
@@ -397,6 +409,7 @@ class IntradayKlineSignalMonitor:
         state.bar_count += 1
         state.closes.append(close)
         state.lows.append(low)
+        self._update_k12(state, close, high, close_ts)
 
         group_name, name = _group_and_name(code)
         out: list[dict[str, Any]] = []
@@ -455,6 +468,57 @@ class IntradayKlineSignalMonitor:
         self._detect_5ma_905_cross(state, close, ma5, emit)
 
         return out
+
+    def _update_k12(self, state: _KlineState, close: float, high: float, close_ts: int) -> None:
+        """1️⃣2️⃣空的目前狀態（不發訊號、不存檔；機器人 123 用 k12_snapshot 讀）。"""
+        state.day_high = high if state.day_high is None else max(state.day_high, high)
+        state.last_close = close
+        state.last_bar_ts = close_ts
+        ma20 = _moving_average(state.closes, 20)
+        ma20_prev = _moving_average(state.closes[:-1], 20)
+        state.last_ma20 = ma20
+        rushed = (
+            state.prev_close is not None and state.prev_close > 0
+            and (state.day_high / state.prev_close - 1) * 100 >= K12_MIN_RUSH_PCT
+        )
+        on = bool(rushed and ma20 is not None and ma20_prev is not None and close < ma20 and ma20 < ma20_prev)
+        if on and not state.k12_on:
+            state.k12_since = close_ts
+        if not on:
+            state.k12_since = None
+        state.k12_on = on
+
+    def k12_snapshot(self) -> dict[str, Any]:
+        """現在符合 1️⃣2️⃣空 的股票（最新交易日）。"""
+        with self._lock:
+            states = list(self._states.items())
+        dates = [st.trade_date for _code, st in states if st.trade_date]
+        trade_date = max(dates) if dates else None
+        items = []
+        tracked = 0
+        last_ts = None
+        for code, st in states:
+            if st.trade_date != trade_date:
+                continue
+            tracked += 1
+            if st.last_bar_ts and (last_ts is None or st.last_bar_ts > last_ts):
+                last_ts = st.last_bar_ts
+            if not st.k12_on or not st.prev_close:
+                continue
+            group_name, name = _group_and_name(code)
+            items.append({
+                "code": code, "name": name, "groupName": group_name,
+                "close": st.last_close, "prevClose": st.prev_close,
+                "pct": round((st.last_close / st.prev_close - 1) * 100, 2) if st.last_close else None,
+                "dayHighPct": round((st.day_high / st.prev_close - 1) * 100, 2) if st.day_high else None,
+                "ma20": round(st.last_ma20, 4) if st.last_ma20 is not None else None,
+                "since": st.k12_since,
+            })
+        items.sort(key=lambda x: x["code"])
+        return {
+            "status": "ok", "tradeDate": trade_date, "lastBarTs": last_ts, "tracked": tracked,
+            "rushPct": K12_MIN_RUSH_PCT, "items": items,
+        }
 
     def _detect_5ma_905_cross(self, state: _KlineState, close: float, ma5: float | None, emit) -> None:
         if state.bar905_high is None:
