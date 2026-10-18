@@ -64,7 +64,12 @@ def summarize(bars: Iterable[dict[str, Any]], avg_amount: Optional[float], *, in
         series.append([label, pct])
     # 開盤那根沒有、或中間缺了沒有老師版欄位的 K 棒（例如這功能上線前的舊資料）→ 不完整，前端要標示
     complete = bool(usable) and len(usable) == len(ordered) and _bar_minute(int(usable[0]["ts"])) == FIRST_BAR_MINUTE
+    # 今日最高／最低（今日功課「最高 ≥3%」開關用；只有即時 K 棒有 OHLC，資料庫存的主力 K 棒沒有，所以可能是 None）
+    highs = [float(bar["high"]) for bar in ordered if bar.get("high")]
+    lows = [float(bar["low"]) for bar in ordered if bar.get("low")]
     return {
+        "high": max(highs) if highs else None,
+        "low": min(lows) if lows else None,
         "net": round(net),
         "avgAmount": round(avg_amount) if avg_amount else None,
         "pct": round(net / avg_amount * 100, 1) if avg_amount and usable else None,

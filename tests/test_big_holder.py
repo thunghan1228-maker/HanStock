@@ -98,6 +98,9 @@ def test_summarize_divides_by_five_day_average_and_flags_missing_bars():
     assert out["complete"] is True
     assert summarize(bars[1:], 10_000_000)["complete"] is False
     assert summarize(bars, None)["pct"] is None
+    assert out["high"] is None
+    live = [{**bars[0], "high": 103.0, "low": 99.5}, {**bars[1], "high": 101.0, "low": 98.0}]
+    assert (summarize(live, 10_000_000)["high"], summarize(live, 10_000_000)["low"]) == (103.0, 98.0)
 
 
 def test_avg_turnover_uses_five_days_before_trade_date():
