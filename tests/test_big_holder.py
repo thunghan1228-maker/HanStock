@@ -138,3 +138,27 @@ def test_backfill_day_writes_big_fields_into_existing_bars_only(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["big_buy_amount"] == 700_000 and rows[0]["big_sell_amount"] == 1_800_000
     assert rows[0]["main_buy_amount"] == 5
+
+
+def test_ranking_and_timeline_switch_to_teacher_formula_when_day_has_big_fields(monkeypatch):
+    from main_force_store import load_holder_timeline, load_main_force_ranking
+
+    monkeypatch.setattr(big_holder, "avg_turnover", lambda code, date, loader=None: 100_000_000)
+    with tempfile.TemporaryDirectory() as tmp, patch.object(database, "DATABASE_PATH", Path(tmp) / "t.db"):
+        database.initialize_database()
+        base = {"main_force_available": True, "main_buy_volume": 600, "main_buy_amount": 60_000_000, "main_sell_amount": 0, "total_amount": 300_000_000}
+        # 老師版：大戶淨額 -1,200 萬 → -12%（÷ 近 5 日均成交值 1 億）；舊算法這檔是 +20%、淨量 +600 張
+        save_main_force_bars("2478", "5m", [
+            {**base, "ts": _ms(9, 0, 0), "big_buy_amount": 0, "big_sell_amount": 4_000_000},
+            {**base, "ts": _ms(9, 5, 0), "main_buy_volume": 0, "main_buy_amount": 0, "big_buy_amount": 0, "big_sell_amount": 8_000_000},
+        ])
+        # 沒有老師版欄位的（這功能上線前的資料）照舊算法
+        save_main_force_bars("1303", "5m", [{**base, "ts": _ms(9, 0, 0)}])
+        ranking = {r["code"]: r for r in load_main_force_ranking("2026-10-16", codes=["2478", "1303"])}
+        timeline = load_holder_timeline("2026-10-16", codes=["2478", "1303"])
+    assert ranking["2478"]["holderAlgo"] == "teacher" and ranking["2478"]["strengthPct"] == -12.0
+    assert ranking["2478"]["netAmount"] == -12_000_000 and ranking["2478"]["avgAmount"] == 100_000_000
+    assert ranking["1303"]["holderAlgo"] == "single20" and ranking["1303"]["strengthPct"] == 20.0
+    assert "bull" not in timeline["2478"] and timeline["2478"]["bear"]["firstTs"] == _ms(9, 5, 0)
+    assert timeline["2478"]["bear"]["still"] is True and timeline["2478"]["bear"]["peakPct"] == -12.0
+    assert timeline["1303"]["bull"]["firstTs"] == _ms(9, 0, 0)
