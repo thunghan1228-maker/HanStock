@@ -10,6 +10,8 @@
 
 畫面上的各區塊：
 - 本週籌碼暴增榜：買超榜（籌碼% ≥ 4）、賣超榜（≤ −1.5）；連兩週都在同一邊的榜上打 ⭐；可以切最近 8 週。
+  門檻用沒取兩位的 x 比（2026-10-18 對老師 10/16：聯傑 x＝−1.4973 他沒列）。那週集保只剩 1 名股東的（減資／換股期間
+  股票全在換發帳戶，例如信昌電 10/16）榜上不列、底下註明，名次照算（跟老師一樣，他的累積榜信昌電還是第 2 名）。
 - 上榜累積榜：每週買超榜前十名記一筆；視窗內（全部／近 6 週／近 4 週，跟老師的選單一樣）擠進前十的次數、近 4 週次數、平均籌碼%、
   分數（＝那幾週籌碼% 加總＝次數 × 平均）、最佳名次。「全部」跟老師一樣從 06/18 那週算起（他寫「全部 17 週
   06/18～10/08」，2026-10-10），之後每週多一週，最多一年。
@@ -86,16 +88,22 @@ ZHUANG_EXTRA = frozenset({
     "4551", "4566", "4927", "4939", "6133", "6138", "6168", "6179", "6205", "6214",   # 智伸科 時碩工業 泰鼎-KY 亞電 金橋 茂達 宏齊 亞通 詮欣 精誠
     "6226", "6227", "6228", "6257", "6517", "6532", "6584", "6603", "6667", "6669",   # 光鼎 茂綸 全譜 矽格 保勝光學 瑞耘 南俊國際 富強鑫 信紘科 緯穎
     "6691", "6933", "7777", "8103", "8150", "8155", "8210", "8431", "9958",           # 洋基工程 AMAX-KY 能率亞洲 瀚荃 南茂 博智 勤誠 匯鑽科 世紀鋼
+    # 10/16 籌碼暴增榜新出現的（買超：智通 增你強 旭暉應材 律勝 其陽；賣超：台虹 晶宏 亞翔 遠見）
+    "8932", "3028", "6698", "3354", "3564", "8039", "3141", "6139", "3040",
 })
-ZHUANG_SKIP = frozenset({"2241"})               # 我們族群表有、他從來不列的（艾姆勒 10/08 +5.13）
+ZHUANG_SKIP = frozenset({"2241"})               # 我們族群表有、他週榜從來不列的（艾姆勒 10/08 +5.13、10/16 +6.4）
 ZHUANG_SKIP_GROUPS = ("金融股",)               # 整組不算（元大金 9/24 +5.5、群益證他都沒列）
-ZHUANG_STREAK_EXTRA = frozenset({"2340", "3035", "3680", "6225"})   # 只出現在他 10/08 連續增排行（台亞 智原 家登 天瀚，週榜當時沒算）
+# 只出現在他連續增排行的（10/08 台亞 智原 家登 天瀚，週榜當時沒算；10/16 連三週增有艾姆勒，名字欄只寫 2241）
+ZHUANG_STREAK_EXTRA = frozenset({"2340", "3035", "3680", "6225", "2241"})
 ZHUANG_STREAK_SKIP = frozenset({"3543", "4927", "6691"})            # 週榜有、10/08 連續增排行沒有（州巧 泰鼎-KY 洋基工程）
 # 老師週報卡片上的族群標籤（2026-10-10 使用者補 10/08、10/02、9/24、9/18 放大截圖，123 檔裡 118 檔一樣），只用在籌碼週報／雷達：
 ZHUANG_GROUP_ADD = {"6226": "光電", "6168": "光電"}   # 他有掛、我們沒掛（光鼎 10/08 賣超、宏齊 10/02 整族一起動都標「光電」）
-ZHUANG_GROUP_DROP = {            # 他沒掛的（點序 10/02「不在族群表」、東捷 9/18 只標設備股）
-    "6485": ("低軌衛星",), "8064": ("玻璃基板", "扇形封裝"),
+ZHUANG_GROUP_DROP = {            # 他沒掛的（點序 10/02「不在族群表」）
+    "6485": ("低軌衛星",),
 }
+# 卡片標籤跟族群成員不一樣的：東捷 9/18 卡片只標設備股，但族群排名他有算進扇形封裝（10/16 扇形封裝算上東捷 −1.17
+# 平均 +1.73，才會掉出前十、第十名換汽車零 +2.15，跟他一樣）
+ZHUANG_LABEL = {"8064": "設備股"}
 # 一檔掛好幾族時「第一個族群」（他的標籤寫在前面那個；整族一起動只算第一個族群）：
 ZHUANG_PRIMARY = {
     "6442": "千元",       # 光聖「千元/矽光子」：10/08 矽光子整族只算前鼎、聯亞
@@ -135,7 +143,7 @@ def _short(day: str) -> str:
 # ------------------------------------------------------------------ 載入
 
 def _load_tdcc(weeks: int) -> tuple[list[str], dict[str, dict[str, list[int]]]]:
-    """最近 weeks 個集保結算日（新到舊）與 {代號: {日期: [大戶股數, 總股數]}}。"""
+    """最近 weeks 個集保結算日（新到舊）與 {代號: {日期: [大戶股數, 總股數, 總人數]}}（總人數＝第 17 級人數，沒有合計是 0）。"""
     dates = tdcc_dates(weeks)
     if not dates:
         return [], {}
@@ -147,7 +155,7 @@ def _load_tdcc(weeks: int) -> tuple[list[str], dict[str, dict[str, list[int]]]]:
         _fundamentals_schema(connection)
         # +level：按日期走主鍵（只讀這幾週）；不加的話會改走 (級距, 代號, 日期) 索引、把 60 週都掃過
         rows = connection.execute(
-            f"""SELECT data_date, stock_code, level, shares, pct FROM tdcc_weekly
+            f"""SELECT data_date, stock_code, level, holders, shares, pct FROM tdcc_weekly
                 WHERE data_date IN ({','.join('?' for _ in dates)}) AND +level IN ({levels})""",
             tuple(dates),
         ).fetchall()
@@ -156,9 +164,10 @@ def _load_tdcc(weeks: int) -> tuple[list[str], dict[str, dict[str, list[int]]]]:
         if not _eligible(code):
             continue
         day = str(r["data_date"])
-        entry = out.setdefault(code, {}).setdefault(day, [0, 0])
+        entry = out.setdefault(code, {}).setdefault(day, [0, 0, 0])
         if int(r["level"]) == TOTAL_LEVEL:
             entry[1] = int(r["shares"])
+            entry[2] = int(r["holders"] or 0)
         else:
             entry[0] += int(r["shares"])
             pct[(code, day)] = pct.get((code, day), 0.0) + float(r["pct"] or 0)
@@ -238,8 +247,13 @@ class Radar:
         self.streak_universe = (self.universe | ZHUANG_STREAK_EXTRA) - ZHUANG_STREAK_SKIP
         self.chips: dict[str, dict[str, float]] = {}
         self.xs: dict[str, dict[str, float]] = {}
+        # 沒取兩位的 x，只拿來比門檻：老師 10/16 賣超榜沒有聯傑（x＝−1.4973，取兩位是 −1.50 會過 ≤ −1.5）
+        self.raw_xs: dict[str, dict[str, float]] = {}
         self.capital: dict[str, dict[str, float]] = {}      # 那週總股數變動 %（≥1% 才記）
         self.skipped: dict[str, dict[str, str]] = {}        # 上一週集保沒有這檔，改跟更早那週比：{代號: {這週: 比的那週}}
+        # 集保只剩 1 名股東的週（減資／換股／停止過戶，股票全集中在換發帳戶，籌碼增減失真）：老師 10/16 把信昌電從榜上拿掉、
+        # 底下註明，但名次照算（他的上榜累積榜信昌電還是 10/16 第 2 名），所以只在榜單上不列
+        self.single: dict[str, set[str]] = {}
         # 只跟「上一週」比：中間缺了一週（鏡像漏抓）那週就不算，不然會變成兩週的變化
         pairs = [i for i in range(len(raw_dates) - 1) if _days_between(raw_dates[i + 1], raw_dates[i]) <= MAX_WEEK_GAP_DAYS]
         for code, per in tdcc.items():
@@ -258,7 +272,10 @@ class Radar:
                 if abs(change) >= CAPITAL_TAG:
                     self.capital.setdefault(code, {})[raw_dates[i]] = change
                 self.xs.setdefault(code, {})[raw_dates[i]] = value[0]
+                self.raw_xs.setdefault(code, {})[raw_dates[i]] = (now[0] - prev[0]) / now[1] * 100
                 self.chips.setdefault(code, {})[raw_dates[i]] = value[1]
+                if now[2] == 1:
+                    self.single.setdefault(code, set()).add(raw_dates[i])
         self.dates = [d for d in raw_dates[:-1] if any(d in per for per in self.chips.values())] if len(raw_dates) > 1 else []
         self.raw_dates = raw_dates
         self._lists: dict[tuple[str, bool], tuple[list[str], list[str]]] = {}
@@ -269,10 +286,14 @@ class Radar:
         key = (day, outside)
         if key not in self._lists:
             values = [(code, per[day]) for code, per in self.chips.items() if day in per and (code in self.universe) != outside]
-            buy = [c for c, v in sorted(values, key=lambda cv: (-cv[1], cv[0])) if v >= BUY_MIN]
-            sell = [c for c, v in sorted(values, key=lambda cv: (cv[1], cv[0])) if v <= SELL_MAX]
+            raw = {code: self.raw_xs[code][day] for code, _ in values}
+            buy = [c for c, _ in sorted(values, key=lambda cv: (-cv[1], cv[0])) if raw[c] > 0 and 3 * math.sqrt(raw[c]) >= BUY_MIN]
+            sell = [c for c, _ in sorted(values, key=lambda cv: (cv[1], cv[0])) if raw[c] <= SELL_MAX]
             self._lists[key] = (buy, sell)
         return self._lists[key]
+
+    def is_single(self, code: str, day: str) -> bool:
+        return day in self.single.get(code, ())
 
     def rank(self, code: str, day: str) -> int | None:
         buy, _ = self.lists(day)
@@ -299,15 +320,18 @@ class Radar:
         def rows(codes: list[str], prev_set: set[str]) -> list[dict[str, Any]]:
             return [{**self.info(c), "chip": self.chips[c][day], "chip1": chip_one_decimal(self.xs[c][day]), "rank": i + 1,
                      "star": c in prev_set, "capital": (self.capital.get(c) or {}).get(day),
-                     "vs": (self.skipped.get(c) or {}).get(day)} for i, c in enumerate(codes)]
+                     "vs": (self.skipped.get(c) or {}).get(day)} for i, c in enumerate(codes) if not self.is_single(c, day)]
 
         out_buy, out_sell = self.lists(day, outside=True)
 
         def brief(codes: list[str]) -> list[dict[str, Any]]:
-            return [{"code": c, "name": self.info(c)["name"], "chip1": chip_one_decimal(self.xs[c][day])} for c in codes]
+            return [{"code": c, "name": self.info(c)["name"], "chip1": chip_one_decimal(self.xs[c][day])}
+                    for c in codes if not self.is_single(c, day)]
 
+        excluded = [{"code": c, "name": self.info(c)["name"], "chip1": chip_one_decimal(self.xs[c][day]), "side": side}
+                    for side, codes in (("buy", buy), ("sell", sell)) for c in codes if self.is_single(c, day)]
         return {"date": day, "label": _short(day), "buy": rows(buy, prev_buy_set), "sell": rows(sell, prev_sell_set),
-                "outside": {"buy": brief(out_buy), "sell": brief(out_sell)}}
+                "outside": {"buy": brief(out_buy), "sell": brief(out_sell)}, "excluded": excluded}
 
     def trail(self, code: str, weeks: int = CARD_WEEKS) -> list[dict[str, Any]]:
         per = self.chips.get(code) or {}
@@ -710,6 +734,8 @@ def _weekly(radar: Radar, day: str, fetcher: Callable[[str], Any] | None) -> dic
 
     def label(code: str) -> str | None:
         """卡片上的族群標籤：第一個族群在前、其他接在後面（老師：千元/矽光子）；不排名的族群（功率半導體…）不標。"""
+        if code in ZHUANG_LABEL:
+            return ZHUANG_LABEL[code]
         primary = radar.group_of.get(code)
         names = [primary] if primary else []
         names += [n for n, codes in radar.group_members.items() if code in codes and n not in names and n not in RANK_SKIP_GROUPS]
