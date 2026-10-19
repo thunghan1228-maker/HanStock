@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ GROUPS = {
 }
 D = ["2026-10-02", "2026-10-06", "2026-10-07", "2026-10-08"]
 ALL = 0b111111
+TW = timezone(timedelta(hours=8))
 
 
 def bits(n: int) -> int:
@@ -51,6 +53,12 @@ class MaRankTests(unittest.TestCase):
         self.groups_patch.start()
         self.top_patch = patch.object(module, "TOP_N", 3)
         self.top_patch.start()
+        # 預設「現在」是 10/08 收盤後（今天的整表已經有）：strength() 不會去算盤中即時分數、更不會打報價中心
+        self.now = datetime(2026, 10, 8, 18, 0, tzinfo=TW)
+        self.now_patch = patch.object(module, "_tw_now", lambda: self.now)
+        self.now_patch.start()
+        module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
+        module._live_hist.update({"day": None, "closes": {}})
         database.initialize_database()
         rows = []
         for d, recs in SCORES.items():
@@ -67,6 +75,7 @@ class MaRankTests(unittest.TestCase):
         module._cache.update({"key": None, "data": None})
 
     def tearDown(self) -> None:
+        self.now_patch.stop()
         self.top_patch.stop()
         self.groups_patch.stop()
         self.db_patch.stop()
@@ -135,6 +144,54 @@ class MaRankTests(unittest.TestCase):
             self.assertEqual([[r["code"] for r in g["rows"]] for g in weak["groups"]], [["4444"], ["3333"]])
         with self.assertRaises(ValueError):
             module.strength("x")
+
+    def _live_setup(self, prices: dict[str, float], quote_date: str = "2026-10-12"):
+        """10/12（週一）10:30：歷史日K 300 根——強勢股（1111、2222、4444、5555）一路漲、3333 一路跌；prices＝現價。"""
+        def bars(code: str) -> list:
+            up = code != "3333"
+            return [(f"d{i:03d}", 1.0, 1.0, 1.0, float(i + 1) if up else float(300 - i), 1000) for i in range(300)]
+
+        self.now = datetime(2026, 10, 12, 10, 30, tzinfo=TW)
+        payload = {"status": "ok", "quoteDate": quote_date, "quoteTime": "10:30:00",
+                   "quotes": {c: {"price": p, "prevClose": 100.0, "changePercent": p - 100.0} for c, p in prices.items()}}
+        return (patch("brew_launch_history.group_quotes_payload", return_value=payload),
+                patch.object(module, "_load_bars", side_effect=lambda codes, **kw: {c: bars(c) for c in codes}))
+
+    def test_strength_live(self) -> None:
+        # 盤中：現價當今天收盤重算——1111、2222、4444、5555 站上全部均線＋創新高＝15 分，3333 跌到 0.5＝0 分
+        q, b = self._live_setup({"1111": 400.0, "2222": 400.0, "3333": 0.5, "4444": 400.0, "5555": 400.0})
+        with q, b:
+            out = module.strength("strong")
+            self.assertEqual((out["live"], out["date"], out["latest"], out["asOf"]), (True, "2026-10-12", D[3], "10:30:00"))
+            # 乙＝(15+15)/2＝15、甲＝(15+15+0)/3＝10：族群名次乙在前；3333 只有 0 分不進強勢股；千元不列
+            self.assertEqual([(g["name"], g["avg"], g["rank"]) for g in out["groups"]], [("乙", 15.0, 1), ("甲", 10.0, 2)])
+            self.assertEqual([[r["code"] for r in g["rows"]] for g in out["groups"]], [["2222", "4444"], ["1111", "2222"]])
+            self.assertEqual((out["groups"][0]["rows"][0]["sum"], out["groups"][0]["rows"][0]["chg"], out["groups"][0]["rows"][0]["close"]), (15, 300.0, 400.0))
+            weak = module.strength("weak")
+            self.assertEqual((weak["live"], [[r["code"] for r in g["rows"]] for g in weak["groups"]]), (True, [["3333"], []]))
+            # 指定日期＝要正式的收盤分數，不算即時
+            self.assertNotIn("live", module.strength("strong", D[3]))
+
+    def test_strength_live_falls_back(self) -> None:
+        # 報價還是昨天的（開盤前／休市）：照收盤整表
+        q, b = self._live_setup({"1111": 400.0, "2222": 400.0, "3333": 0.5, "4444": 400.0, "5555": 400.0}, quote_date="2026-10-09")
+        with q, b:
+            out = module.strength("strong")
+            self.assertNotIn("live", out)
+            self.assertEqual(out["date"], D[3])
+        # 收盤整表已經有今天、或不是交易日（週六）、或 09:05 以前：都不算即時
+        for now in (datetime(2026, 10, 8, 10, 0, tzinfo=TW), datetime(2026, 10, 10, 10, 0, tzinfo=TW), datetime(2026, 10, 12, 9, 0, tzinfo=TW)):
+            q, b = self._live_setup({"1111": 400.0})
+            self.now = now
+            with q as quotes, b:
+                module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
+                self.assertNotIn("live", module.strength("strong"))
+                quotes.assert_not_called()
+        # 報價太少（5 檔只有 1 檔）也不算
+        q, b = self._live_setup({"1111": 400.0})
+        with q, b:
+            module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
+            self.assertNotIn("live", module.strength("strong"))
 
     def test_query(self) -> None:
         out = module.query(code="2222")
