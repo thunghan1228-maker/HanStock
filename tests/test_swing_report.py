@@ -229,8 +229,9 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}})], ["2330", "6182"])
         # 處置中的不列（像 10/13 的聯茂）
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}}, {"2330"})], ["6182"])
-        # 門檻用兩位小數比：一位小數 3.0、其實 2.96 的不列
-        self.assertEqual(picks({"6182": {"chip": 3.0, "chip2": 2.96, "streak": 3, "rank": None}}), [])
+        # 門檻用兩位小數比：一位小數 2.0、其實 1.96 的不列；精誠連 8 週 +2.1% 要列
+        self.assertEqual(picks({"6182": {"chip": 2.0, "chip2": 1.96, "streak": 3, "rank": None}}), [])
+        self.assertEqual(picks({"6182": {"chip": 2.1, "chip2": 2.07, "streak": 8, "rank": None}}), [("6182", "連 8 週")])
         # 剛出獄 5 天內的只放觀察名單，不列精選（像 10/13 的嘉晶）
         out = {"nextTradingDay": "2026-09-29", "upcoming": [], "releasing": [], "active": [], "high": [],
                "watch": [{"code": "6182", "name": "合晶", "daysOut": 2}]}

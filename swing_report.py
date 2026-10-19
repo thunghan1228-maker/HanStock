@@ -47,10 +47,11 @@ CHIPS_PICK_LIMIT = 4            # 籌碼面精選固定 4 檔（老師 10/08～1
 CHIPS_TOP_RANK = 3              # 籌碼暴增榜前 3 名（熱門族）一定列，不看均線和法人（老師 10/19 緯穎均線 1、法人 -10.6%、信昌電均線 6 照列；富喬、今國光均線只有 7 也列）
 CHIPS_MIN_SCORE = 12            # 其他的要均線分數 ≥12，或法人 5 日佔量 ≥10%（老師 10/19 台表科均線 9、法人 +15.2% 有列；漢磊均線 11／法人 +1.9%、倍力、汎銓沒列；10/16 天二均線 8／法人 +0.1% 沒列）
 CHIPS_MIN_INST_VOL_PCT = 10.0
+CHIPS_INST_FLOOR_PCT = -0.5     # 前 3 名以外，法人 5 日佔量不能比這個低（老師 10/15 天二 -0.2% 有列；10/14 中纖 -3.9% 沒列）
 CHIPS_DAILY_HOT_GROUPS = 10     # 籌碼面的熱門族也算當天族群漲幅前 10 名（0＝只看週籌碼熱門族）
 HOT_SKIP_GROUPS = ("千元",)     # 熱門族不算千元（老師 10/12～10/16：被動元件的天二科技、光頡標熱門族——週籌碼族群排名千元排第 5、被動元件第 6，千元算進去的話被動元件就不熱門了）
 CHIPS_STREAK_MIN = 3           # 籌碼面第二層：不在榜上前 10，但熱門族、籌碼連續增加 ≥3 週（2026-10-13 老師：天二科技、光頡）
-CHIPS_TIER2_CHIP_MIN = 3.0     # 第二層這一週的籌碼% 也要 ≥3%（天二科技 3.8%、光頡 4.6% 有；聯寶連 9 週但只 +0.4%、台光電 +1.5% 老師沒列）
+CHIPS_TIER2_CHIP_MIN = 2.0     # 第二層這一週的籌碼% 也要 ≥2%（天二科技 3.8%、光頡 4.6%、精誠連 8 週 +2.1% 有；聯寶連 9 週但只 +0.4%、台光電 +1.5% 老師沒列）
 CHIPS_WATCH_CHIP_MIN = 2.0     # 籌碼面觀察名單：出獄 5 天內、籌碼% ≥2%（老師 10/14：嘉晶 +3.0%、蔚華科 +2.4% 有；大量 +1.97%、彰源 +1.8% 沒有）
 PE_RISK_MULT = 1.5             # 本益比風險：高於族群均值 1.5 倍才提示（老師 10/14：天二科技 69 vs 44 有提示；光頡 52、今國光 39 沒有）
 HOT_GROUP_RANK = 10            # 族群當天漲幅前 10（集保週資料還沒有時，個股卡片的熱門族退回用這個）
@@ -599,7 +600,12 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     just_out = {e["code"] for e in dispo.get("watch") or []}
     def chips_ok(c: str) -> bool:
         rk = radar_stocks[c].get("rank")
-        return bool(rk and rk <= CHIPS_TOP_RANK) or (tech[c]["score"] or 0) >= CHIPS_MIN_SCORE or (chips.get(c, {}).get("inst5VolPct") or 0) >= CHIPS_MIN_INST_VOL_PCT
+        if rk and rk <= CHIPS_TOP_RANK:
+            return True
+        inst = chips.get(c, {}).get("inst5VolPct")
+        if inst is not None and inst < CHIPS_INST_FLOOR_PCT:
+            return False
+        return (tech[c]["score"] or 0) >= CHIPS_MIN_SCORE or (inst or 0) >= CHIPS_MIN_INST_VOL_PCT
     top_pool = set(radar["buy"][:CHIPS_POOL_TOP]) if radar else set()
     # 候選：榜上前 10 名，或（不在前 10 名）熱門族、籌碼連續增加 ≥3 週、這一週籌碼% ≥3%（2026-10-13 老師 10/14 報告：台表科、今國光之後還有天二科技連 5 週、光頡連 3 週）。
     # 處置中的不列（分盤交易；10/13 聯茂處置到 10/19、籌碼剛好 +3.0%，老師沒列）；剛出獄 5 天內的只放觀察名單（10/13 嘉晶連 3 週 +3.0%，老師放「觀察名單・出獄第 2 天」）
@@ -743,7 +749,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份；集保週要在日報那天收盤後已經公布，週五收盤的那週週末才公布，所以週五的日報還是看上一週）前 {CHIPS_POOL_TOP} 名裡，"
-                     "屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名一定列，其他的要均線分數 ≥12 或法人 5 日佔量 ≥10%；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
+                     "屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名一定列，其他的法人 5 日佔量不能低於 -0.5%，而且要均線分數 ≥12 或法人 5 日佔量 ≥10%；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
                      f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}% 的；法人 5 日賣超、營收年增為負的照列，只在卡片上標風險；最多列 {CHIPS_PICK_LIMIT} 檔。"
                      f"觀察名單＝出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
             "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
