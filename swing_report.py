@@ -38,6 +38,8 @@ INST_DAYS = 5                  # 法人／主力「5 日」
 TECH_MIN_ABOVE_PCT = 3.0       # 真穿月線：收盤站上月線 ≥3%
 TECH_MIN_VOLUME = 500          # 真穿月線：量 ≥500 張
 MA_JUMP_MIN = 3                # 均線轉強：均線分數比前一交易日跳升 ≥3
+MAIN_GROUP_MIN_INST5 = 10000   # 資金主軸：法人 5 日合計至少 1 萬張（老師 10/20 報告：小電組 +5.9、鋼鐵 +4.3、光學鏡頭 +3.6 萬張；能源 +0.09、資訊 +0.8 萬張沒入選）
+JUMP_TOP_MIN_SCORE = 10        # 跳升最多：跳升後的均線分數至少這個數（老師 10/20：鉅橡 5→11、建榮 7→12、東台 9→12…，沒有 3→7、2→6 這種）
 MA_STRONG_MIN = 8              # 均線轉強：跳升後至少 8 分
 DEV5_WARN_PCT = 15.0           # 與 5 日線乖離 ≥15% 提示
 CHIPS_POOL_TOP = 10            # 籌碼面：籌碼暴增榜（籌碼雷達）前 10 名裡挑（2026-10-12 使用者：照老師的籌碼面精選）
@@ -603,7 +605,8 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     new_full.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], chips.get(c, {}).get("inst5Pct") or 0), reverse=True)
     full_picks = [card(c, f"{tech[c]['prevScore']}→15") for c in new_full[:PICK_LIMIT]]
     # 跳升最多：均線分數比前一交易日跳升最多的前 5 檔（不限分數）
-    jumped = [c for c in eligible if tech[c]["score"] is not None and tech[c]["prevScore"] is not None and tech[c]["score"] > tech[c]["prevScore"]]
+    jumped = [c for c in eligible if tech[c]["score"] is not None and tech[c]["prevScore"] is not None and tech[c]["score"] > tech[c]["prevScore"]
+              and tech[c]["score"] >= JUMP_TOP_MIN_SCORE]
     jumped.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], tech[c]["score"]), reverse=True)
     jump_top = [{"code": c, "name": group_and_name(c)[1], "from": tech[c]["prevScore"], "to": tech[c]["score"]} for c in jumped[:5]]
     # 續強確認（昨日已強、今日維持）：今天問診判強勢、但不是今天才跳升的——昨天均線分數就已 ≥10
@@ -612,10 +615,12 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     sustained.sort(key=lambda x: (x["total"], x["score"] or 0), reverse=True)
     sustained = sustained[:8]
     # 今日摘要（2026-10-13 照老師 10/14 報告的六點：資金主軸、籌碼進法人未跟、籌碼／技術首選、體質／均線、月營收、風險提示）
-    main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] > 0]
-    main_groups.sort(key=lambda g: g["inst5"], reverse=True)
-    # 籌碼進、法人未跟：籌碼雷達的熱門族（週籌碼先進）裡，站上月線不到一半的（價格未表態）；週籌碼高的在前
+    # 資金主軸（2026-10-19 老師 10/20 報告：小電組、鋼鐵、光學鏡頭，沒有金融股、空運）：站上月線過半、法人 5 日買超 ≥1 萬張，
+    # 而且是「熱門族」——當天族群漲幅前 10 名，或籌碼雷達熱門族（週籌碼先進）；照收盤排名排（老師：小電組 1、鋼鐵 10、光學鏡頭 42）
     radar_groups = {g["name"]: g for g in (radar.get("groups") or [])} if radar else {}
+    main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] >= MAIN_GROUP_MIN_INST5 and (g["rank"] <= HOT_GROUP_RANK or g["name"] in radar_groups)]
+    main_groups.sort(key=lambda g: g["rank"])
+    # 籌碼進、法人未跟：籌碼雷達的熱門族（週籌碼先進）裡，站上月線不到一半的（價格未表態）；週籌碼高的在前
     brewing_groups = [g for g in groups if g["name"] in radar_groups and g["aboveRatio"] < 0.5]
     for g in groups:
         rg = radar_groups.get(g["name"])

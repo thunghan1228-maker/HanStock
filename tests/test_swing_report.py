@@ -107,8 +107,16 @@ class ReportTests(unittest.TestCase):
         self.temp_dir.cleanup()
         main_force_store._table_ready_path = None
 
-    def test_build_report(self) -> None:
+    def test_main_group_needs_hot_and_big_inst(self) -> None:
+        # 2026-10-19 老師 10/20：資金主軸只挑熱門族、法人 5 日 ≥1 萬張；法人買超不到門檻的（這份測試資料 5,000 張）不算資金主軸
         r = module.build_report("2026-09-24", disposition_codes={"6207"})
+        self.assertTrue(r["summary"][0].startswith("今天沒有族群"))
+        self.assertFalse(any(g["featured"] and g["name"] == "矽晶圓" for g in r["groups"] if g["aboveRatio"] >= 0.5))
+
+    def test_build_report(self) -> None:
+        # 資金主軸要法人 5 日 ≥1 萬張（真實盤）；這份測試資料只有 5,000 張，把門檻降下來才測得到「精選族群」的判讀文字
+        with patch.object(module, "MAIN_GROUP_MIN_INST5", 1000):
+            r = module.build_report("2026-09-24", disposition_codes={"6207"})
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["date"], "2026-09-24")
         self.assertEqual((r["basis"]["stocks"], r["basis"]["withScore"], r["basis"]["hasInst"]), (3, 2, True))
