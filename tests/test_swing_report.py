@@ -225,13 +225,16 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 1.5, "streak": 9, "rank": None}}), [("6182", "連 3 週")])
         # 連 2 週不夠
         self.assertEqual(picks({"6182": {"chip": 5.0, "streak": 2, "rank": None}}), [])
+        # 榜外的一定要均線 ≥12（允強均線 7、敦陽科均線 8 老師沒列）：這份測試資料裡台積電均線不夠，單獨一檔不列
+        self.assertEqual(picks({"2330": {"chip": 4.0, "streak": 5, "rank": None}}), [])
+        self.enterContext(patch.object(module, "CHIPS_MIN_SCORE", 0))   # 下面幾個斷言測排序、處置、出獄、門檻，不看均線
         # 都夠的話，連續週數多的在前
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}})], ["2330", "6182"])
         # 處置中的不列（像 10/13 的聯茂）
         self.assertEqual([c for c, _ in picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}, "2330": {"chip": 4.0, "streak": 5, "rank": None}}, {"2330"})], ["6182"])
-        # 門檻用兩位小數比：一位小數 2.0、其實 1.96 的不列；精誠連 8 週 +2.1% 要列
-        self.assertEqual(picks({"6182": {"chip": 2.0, "chip2": 1.96, "streak": 3, "rank": None}}), [])
-        self.assertEqual(picks({"6182": {"chip": 2.1, "chip2": 2.07, "streak": 8, "rank": None}}), [("6182", "連 8 週")])
+        # 門檻用兩位小數比：2.06 的（微星）不列，2.14 的（精誠）列
+        self.assertEqual(picks({"6182": {"chip": 2.1, "chip2": 2.06, "streak": 7, "rank": None}}), [])
+        self.assertEqual(picks({"6182": {"chip": 2.1, "chip2": 2.14, "streak": 8, "rank": None}}), [("6182", "連 8 週")])
         # 剛出獄 5 天內的只放觀察名單，不列精選（像 10/13 的嘉晶）
         out = {"nextTradingDay": "2026-09-29", "upcoming": [], "releasing": [], "active": [], "high": [],
                "watch": [{"code": "6182", "name": "合晶", "daysOut": 2}]}
