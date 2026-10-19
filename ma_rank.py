@@ -14,12 +14,21 @@
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database import get_connection, initialize_database
-from heilong_backtest import MA_PERIODS, OFFICIAL_HI_PERIODS, _schema as _heilong_schema, collector_status as _heilong_status
+from heilong_backtest import (
+    LOOKBACK_CALENDAR_DAYS, MA_PERIODS, OFFICIAL_HI_PERIODS, _load_bars, _schema as _heilong_schema, collector_status as _heilong_status, official_parts,
+)
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
+from trading_days import is_trading_day
+
+logger = logging.getLogger("hanstock.ma_rank")
+TW_TZ = timezone(timedelta(hours=8))
 
 TOP_N = 60                       # 個股分數前 60
 GROUP_TOP = 10                   # 族群分數前十大
@@ -238,13 +247,93 @@ STRONG_MIN = 12                  # 強勢股：均線分數 ≥12（2026-10-12 �
 WEAK_MAX = 3                     # 弱勢股：均線分數 ≤3（倒過來：滿分 15 的最低 4 格）
 
 
-def strength(side: str = "strong", date: str | None = None) -> dict[str, Any]:
-    """今日強勢股（2026-10-12 使用者：族群分數前十大＋均線分數高，兩個條件過濾之後的股票）／今日弱勢股（倒過來：族群分數倒數十名＋均線分數低）。
-    族群照族內平均分排（跟族群分數前十大同一套），族內的股票照分數排。"""
-    if side not in ("strong", "weak"):
-        raise ValueError("side 只能是 strong 或 weak")
-    data = _load()
-    d = _pick_date(data, date)
+# ------------------------------------------------------------------ 盤中即時分數（2026-10-19）
+# 2026-10-19 使用者：今日強勢股盤中也要用即時行情算——均線分數、族群分數、族群名次都用現價當今天收盤重算，不要等收盤後整表。
+# 做法跟收盤整表同一套（official_parts：站上 6 條均線＋創 6 個天期新高＋多頭排列），只是最後一根收盤換成現價；
+# 前面的日K用官方還原日K（到昨天），一天只讀一次；現價用報價中心（group_quotes_payload，跟首頁同一份、各處共用快取）。
+# 收盤後整表（heilong_daily 有今天）進來就以正式的為準，不再算即時。
+LIVE_TTL_SECONDS = 45            # 同一份即時結果用 45 秒（首頁每 15 秒問一次、各人共用）
+LIVE_FAIL_SECONDS = 20           # 算失敗（沒報價等）20 秒內不重算，直接用收盤整表的
+LIVE_START = (9, 5)              # 09:05 以後才有今天的成交價（開盤前報價中心回的是昨天）
+LIVE_MIN_QUOTE_RATIO = 0.5       # 今天的報價要有一半以上的成員，太少（被擋、剛開盤）不算
+_live_lock = threading.Lock()
+_live_cache: dict[str, Any] = {"day": None, "base": None, "at": 0.0, "data": None}
+_live_hist: dict[str, Any] = {"day": None, "closes": {}}
+
+
+def _tw_now() -> datetime:
+    return datetime.now(TW_TZ)
+
+
+def _history_closes(codes: list[str], day: str) -> dict[str, list[float]]:
+    """{代號: 官方還原日K收盤（舊到新，到昨天）}，一天只讀一次。"""
+    if _live_hist["day"] == day and _live_hist["closes"]:
+        return _live_hist["closes"]
+    since = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+    until = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    closes = {code: [bar[4] for bar in bars] for code, bars in _load_bars(codes, since=since, until=until, adjusted=True).items()}
+    _live_hist.update({"day": day, "closes": closes})
+    return closes
+
+
+def _build_live(data: dict[str, Any], day: str) -> dict[str, Any] | None:
+    from brew_launch_history import GROUP_QUOTES_MAX_CODES, group_quotes_payload
+
+    codes = sorted(data["groupsOf"])
+    quotes: dict[str, dict[str, Any]] = {}
+    quote_time = None
+    for start in range(0, len(codes), GROUP_QUOTES_MAX_CODES):
+        payload = group_quotes_payload(",".join(codes[start:start + GROUP_QUOTES_MAX_CODES]))
+        if payload.get("quoteDate") != day:        # 報價還是昨天的（開盤前、休市）：不算
+            return None
+        quotes.update(payload.get("quotes") or {})
+        quote_time = payload.get("quoteTime") or quote_time
+    if len(quotes) < max(1, int(len(codes) * LIVE_MIN_QUOTE_RATIO)):
+        return None
+    history = _history_closes(codes, day)
+    recs: dict[str, dict[str, Any]] = {}
+    for code, quote in quotes.items():
+        hist, price = history.get(code), quote.get("price")
+        if not hist or not price or float(price) <= 0:
+            continue
+        parts = official_parts(list(hist) + [float(price)])
+        if parts is None:                          # 日K不足 240 根（新上市等）
+            continue
+        ma_bits, hi_bits, align = parts
+        ma = [bool(ma_bits >> k & 1) for k in range(len(MA_PERIODS))]
+        hi = [bool(hi_bits >> k & 1) for k in range(len(OFFICIAL_HI_PERIODS))]
+        total = sum(ma) + sum(hi)
+        recs[code] = {"sum": total + align, "total": total, "extra": align, "ma": ma, "hi": hi, "close": float(price), "chg": quote.get("changePercent")}
+    if not recs:
+        return None
+    ranked = sorted(recs, key=lambda c: _sort_key(c, recs[c]))
+    return {**data, "dates": data["dates"] + [day], "byDate": {**data["byDate"], day: recs},
+            "order": {**data["order"], day: ranked}, "rank": {**data["rank"], day: {c: i + 1 for i, c in enumerate(ranked)}},
+            "liveAt": quote_time}
+
+
+def _live_data(data: dict[str, Any]) -> dict[str, Any] | None:
+    """今天盤中的即時分數（跟 _load 同一個結構，多一個「今天」）；不是交易日、還沒開盤、收盤整表已經有今天、報價不夠就回 None。"""
+    now = _tw_now()
+    day = now.date().isoformat()
+    if not data["dates"] or day in data["dates"] or not is_trading_day(now) or (now.hour, now.minute) < LIVE_START:
+        return None
+    base = data["dates"][-1]
+    with _live_lock:
+        cache = _live_cache
+        age = time.time() - cache["at"]
+        if cache["day"] == day and cache["base"] == base and age < (LIVE_TTL_SECONDS if cache["data"] is not None else LIVE_FAIL_SECONDS):
+            return cache["data"]
+        try:
+            live = _build_live(data, day)
+        except Exception:  # noqa: BLE001
+            logger.exception("[MA Rank] 盤中即時分數算不出來，先用收盤整表")
+            live = None
+        cache.update({"day": day, "base": base, "at": time.time(), "data": live})
+        return live
+
+
+def _strength_from(data: dict[str, Any], d: str, side: str) -> dict[str, Any]:
     recs = data["byDate"][d]
     table = _group_table(data, d)
     picked = table[:GROUP_TOP] if side == "strong" else list(reversed(table[-GROUP_TOP:]))
@@ -262,6 +351,22 @@ def strength(side: str = "strong", date: str | None = None) -> dict[str, Any]:
         "rule": {"groups": GROUP_TOP, "min": STRONG_MIN, "max": WEAK_MAX},
         "count": sum(len(g["rows"]) for g in groups), "groups": groups,
     }
+
+
+def strength(side: str = "strong", date: str | None = None) -> dict[str, Any]:
+    """今日強勢股（2026-10-12 使用者：族群分數前十大＋均線分數高，兩個條件過濾之後的股票）／今日弱勢股（倒過來：族群分數倒數十名＋均線分數低）。
+    族群照族內平均分排（跟族群分數前十大同一套），族內的股票照分數排。
+    2026-10-19：沒指定日期、而且今天盤中時，整份用現價當今天收盤即時重算（live＝True、date＝今天）；收盤整表進來後就是正式的今天。"""
+    if side not in ("strong", "weak"):
+        raise ValueError("side 只能是 strong 或 weak")
+    data = _load()
+    if not date:
+        live = _live_data(data)
+        if live is not None:
+            out = _strength_from(live, live["dates"][-1], side)
+            out.update({"live": True, "asOf": live.get("liveAt"), "latest": data["dates"][-1]})   # latest＝最新一天正式（收盤整表）的日期
+            return out
+    return _strength_from(data, _pick_date(data, date), side)
 
 
 def _hit_counts(data: dict[str, Any], d: str, days: int, top: int) -> tuple[list[str], dict[str, list[bool]], list[str]]:
