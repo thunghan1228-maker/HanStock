@@ -107,8 +107,16 @@ class ReportTests(unittest.TestCase):
         self.temp_dir.cleanup()
         main_force_store._table_ready_path = None
 
-    def test_build_report(self) -> None:
+    def test_main_group_needs_hot_and_big_inst(self) -> None:
+        # 2026-10-19 老師 10/20：資金主軸只挑熱門族、法人 5 日 ≥1 萬張；法人買超不到門檻的（這份測試資料 5,000 張）不算資金主軸
         r = module.build_report("2026-09-24", disposition_codes={"6207"})
+        self.assertTrue(r["summary"][0].startswith("今天沒有族群"))
+        self.assertFalse(any(g["featured"] and g["name"] == "矽晶圓" for g in r["groups"] if g["aboveRatio"] >= 0.5))
+
+    def test_build_report(self) -> None:
+        # 資金主軸要法人 5 日 ≥1 萬張（真實盤）；這份測試資料只有 5,000 張，把門檻降下來才測得到「精選族群」的判讀文字
+        with patch.object(module, "MAIN_GROUP_MIN_INST5", 1000):
+            r = module.build_report("2026-09-24", disposition_codes={"6207"})
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["date"], "2026-09-24")
         self.assertEqual((r["basis"]["stocks"], r["basis"]["withScore"], r["basis"]["hasInst"]), (3, 2, True))
@@ -155,7 +163,8 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(r["notes"]["sustained"], [])   # 合晶是跳升進來的，不算續強（見下面 SustainedTests 另外測沒跳升的續強情形）
 
     def test_chips_follow_radar(self) -> None:
-        # 老師的籌碼面：籌碼暴增榜前 10 名、熱門族、法人 5 日買超；連續增加週數多的優先，同週數均線分數高的在前
+        # 老師的籌碼面：籌碼暴增榜前 10 名、熱門族；連續增加週數多的優先，同週數均線分數高的在前；法人 5 日賣超的照列（只標風險）
+        self.enterContext(patch.object(module, "CHIPS_DAILY_HOT_GROUPS", 0))   # 這個測試只看週籌碼熱門族
         for d in trading_dates("2026-09-24", 5):
             chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
         hot_all = {"6182": "矽晶圓", "2330": "半導體", "6207": "設備股"}
@@ -167,17 +176,36 @@ class ReportTests(unittest.TestCase):
                 r = module.build_report("2026-09-24")
             return [(x["code"], x["tag"], x["hot"], x["group"]) for x in r["picks"]["chips"]]
 
-        # 台積電連 3 週排在合晶（連 1 週）前面；雷科法人賣超不列
+        # 連續週數多的在前；雷科法人賣超照列（老師 10/19：緯穎法人 5 日 -10.6% 也列，卡片上標風險）
         self.assertEqual(picks(["6182", "6207", "2330"], {"6182": 1, "6207": 5, "2330": 3}, hot_all),
-                         [("2330", "連 3 週", True, "半導體"), ("6182", "連 1 週", True, "矽晶圓")])
+                         [("6207", "連 5 週", True, "設備股"), ("2330", "連 3 週", True, "半導體"), ("6182", "連 1 週", True, "矽晶圓")])
         # 同週數：均線分數高的（合晶 15）在前
         self.assertEqual([x[0] for x in picks(["2330", "6182"], {"6182": 2, "2330": 2}, hot_all)], ["6182", "2330"])
         # 不是熱門族不列；榜上第 11 名以後不列
         self.assertEqual([x[0] for x in picks(["6182", "2330"], {}, {"6182": "矽晶圓"})], ["6182"])
         self.assertEqual([x[0] for x in picks([f"9{i:03d}" for i in range(10)] + ["2330", "6182"], {}, hot_all)], [])
 
+    def test_tdcc_week_available(self) -> None:
+        # 老師 10/16（週五）那份還是 10/08 那週，10/19 才換 10/16 那週；10/08（週四、隔天連假）當天就用 10/08 那週
+        f = module._tdcc_week_available
+        self.assertTrue(f("2026-10-08", "2026-10-12"))
+        self.assertFalse(f("2026-10-16", "2026-10-16"))
+        self.assertTrue(f("2026-10-16", "2026-10-19"))
+        self.assertTrue(f("2026-10-08", "2026-10-08"))
+        self.assertFalse(f("2026-10-16", "2026-10-15"))
+
+    def test_chips_limit_four(self) -> None:
+        self.enterContext(patch.object(module, "CHIPS_DAILY_HOT_GROUPS", 0))
+        codes = ["6182", "2330", "6207"]
+        fake = {"week": "2026-09-18", "buy": codes, "hot": ["x"], "hotOf": {c: "x" for c in codes},
+                "stocks": {c: {"chip": 5.0, "streak": 1, "rank": i + 1} for i, c in enumerate(codes)}}
+        with patch.object(module, "radar_week", return_value=fake), patch.object(module, "CHIPS_PICK_LIMIT", 2):
+            r = module.build_report("2026-09-24")
+        self.assertEqual(len(r["picks"]["chips"]), 2)
+
     def test_chips_tier2(self) -> None:
-        # 2026-10-13 老師 10/14 報告：暴增榜前 10 之後，補熱門族、籌碼連續增加 ≥3 週、這一週籌碼% ≥3%、法人 5 日買超的
+        # 2026-10-13 老師 10/14 報告：暴增榜前 10 之後，補熱門族、籌碼連續增加 ≥3 週、這一週籌碼% ≥3% 的
+        self.enterContext(patch.object(module, "CHIPS_DAILY_HOT_GROUPS", 0))
         for d in trading_dates("2026-09-24", 5):
             chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
         hot_all = {"6182": "矽晶圓", "2330": "半導體"}
@@ -203,9 +231,9 @@ class ReportTests(unittest.TestCase):
                "watch": [{"code": "6182", "name": "合晶", "daysOut": 2}]}
         with patch.object(module, "disposition_from_jail", return_value=out):
             self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [])
-        # 營收年增為負的不列（像 10/13 的先進光 −37%）
+        # 營收年增為負的照列（老師 10/12 GIS-KY 年增 -30% 也列，卡片上標風險）
         with patch.object(module, "latest_revenue", return_value={"6182": {"yoy": -37.2, "ym": "2026-09"}}):
-            self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [])
+            self.assertEqual(picks({"6182": {"chip": 3.5, "streak": 3, "rank": None}}), [("6182", "連 3 週")])
 
     def test_revenue_cards_outside_groups(self) -> None:
         # 營收面入選、不在族群表的（老師的台汽電）也有完整卡片；但不算進族群統計、其他精選

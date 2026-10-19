@@ -1114,9 +1114,9 @@ def get_swing_report(date: str | None = Query(None)) -> dict[str, Any]:
 
 
 @app.post("/api/hub/swing-report/refresh")
-def post_swing_report_refresh() -> dict[str, Any]:
-    """立刻重算最新一天（並補齊近幾天沒存的）。"""
-    return {"status": "ok", "result": run_swing_report()}
+def post_swing_report_refresh(rebuild_days: int = Query(0, ge=0, le=15)) -> dict[str, Any]:
+    """立刻重算最新一天（並補齊近幾天沒存的）。rebuild_days＞0＝近幾個交易日已存的也一起重算（改規則後用）。"""
+    return {"status": "ok", "result": run_swing_report(rebuild_days=rebuild_days)}
 
 
 @app.get("/api/hub/fundamentals/status")
