@@ -999,7 +999,7 @@ def test_industry_group_codes_excludes_futures_only_stocks():
     assert "2317" in codes and "2330" not in codes
 
 
-# ---- 1️⃣2️⃣空（機器人 123）：今天曾衝高 3% 以上、5 分 K 收在 20MA 下、20MA 往下彎 ----
+# ---- 1️⃣2️⃣空（機器人 123）：今天曾衝高 3% 以上＋教學頁三條件（1高、破惡均下彎、2 不過 1高） ----
 def _flat_seed_monitor(monkeypatch, level: float = 100.0):
     monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
     seeds = _yesterday_seed_bars([level] * 21)
@@ -1060,3 +1060,56 @@ def test_k12_without_any_reference_close_stays_off(monkeypatch):
     monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 98.5, 99))
     assert monitor._states["2330"].k12_on is False
     assert monitor.k12_snapshot()["items"] == []
+
+
+def test_k12_first_high_is_recent_peak_not_opening_spike(monkeypatch):
+    # 教學頁：1高 ＝ 破惡前的最高（通常不是當日最高）。信昌電 10/20 開盤衝 298，1高是 10:15 的 286。
+    monkeypatch.setattr(module, "K12_PRE_BREAK_BARS", 3)
+    monitor = _flat_seed_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 106, 100, 105))       # 開盤衝高 +6%（當日最高）
+    monitor.on_bar_completed("2330", bar(9, 5, 105, 105, 104, 104.5))
+    monitor.on_bar_completed("2330", bar(9, 10, 104.5, 104.6, 103, 104))   # 近幾根的高 104.6
+    monitor.on_bar_completed("2330", bar(9, 15, 104, 104.2, 100.5, 101))
+    monitor.on_bar_completed("2330", bar(9, 20, 101, 101, 97, 98))        # 收 98 < 20MA≈100.6：破惡、20MA 下彎
+    state = monitor._states["2330"]
+    assert state.k12_h1 == 104.6 and state.k12_on is True
+    item = monitor.k12_snapshot()["items"][0]
+    assert item["high1"] == 104.6 and item["high2"] is None
+    monitor.on_bar_completed("2330", bar(9, 25, 98, 104.8, 97.5, 98.5))    # 反彈 2 過了 1高（104.6），收盤還在 20MA 下
+    assert monitor._states["2330"].k12_on is False                        # 不打
+
+
+def test_k12_second_high_below_first_high_stays_on(monkeypatch):
+    monkeypatch.setattr(module, "K12_PRE_BREAK_BARS", 3)
+    monitor = _flat_seed_monitor(monkeypatch)
+    for args in [(9, 0, 100, 106, 100, 105), (9, 5, 105, 105, 104, 104.5), (9, 10, 104.5, 104.6, 103, 104),
+                 (9, 15, 104, 104.2, 100.5, 101), (9, 20, 101, 101, 97, 98)]:
+        monitor.on_bar_completed("2330", bar(*args))
+    monitor.on_bar_completed("2330", bar(9, 25, 98, 100, 97.5, 98.5))      # 反彈 2 = 100，不過 1高
+    state = monitor._states["2330"]
+    assert state.k12_on is True and state.k12_h2 == 100
+    assert monitor.k12_snapshot()["items"][0]["high2"] == 100
+
+
+def test_k12_second_high_over_first_high_needs_a_fresh_break(monkeypatch):
+    monkeypatch.setattr(module, "K12_PRE_BREAK_BARS", 3)
+    monitor = _flat_seed_monitor(monkeypatch)
+    for args in [(9, 0, 100, 106, 100, 105), (9, 5, 105, 105, 104, 104.5), (9, 10, 104.5, 104.6, 103, 104),
+                 (9, 15, 104, 104.2, 100.5, 101), (9, 20, 101, 101, 97, 98),
+                 (9, 25, 98, 104.8, 97.5, 98.5)]:                          # 2 過 1高：拿掉
+        monitor.on_bar_completed("2330", bar(*args))
+    monitor.on_bar_completed("2330", bar(9, 30, 98.5, 98.6, 96, 96.5))     # 還在 20MA 下，但沒有新的跌破：不列
+    assert monitor._states["2330"].k12_on is False
+    monitor.on_bar_completed("2330", bar(9, 35, 96.5, 104, 96, 103.5))     # 站回 20MA 上
+    monitor.on_bar_completed("2330", bar(9, 40, 103.5, 103.6, 95, 95.5))   # 再次跌破：重新算，1高 = 近幾根最高
+    state = monitor._states["2330"]
+    assert state.k12_on is True and state.k12_h1 == 104
+
+
+def test_k12_needs_a_break_from_above_20ma_today(monkeypatch):
+    # 昨天就一直在 20MA 下、今天沒有從 20MA 上面跌破（沒有 1高→破惡）：不列。
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0)
+    seeds = _yesterday_seed_bars([110.0] * 10 + [100.0] * 11)
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 101))        # 最高 +4%、收 101 < 20MA≈104、20MA 下彎
+    assert monitor._states["2330"].k12_on is False
