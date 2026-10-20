@@ -119,6 +119,9 @@ class _KlineState:
     last_ma20: float | None = None
     # 日K沒有昨天那根（例如信昌電 6173 日K停在 10/06）時，1️⃣2️⃣空改用昨天最後一根 5 分 K 的收盤當昨收
     k12_ref_close: float | None = None
+    k12_highs: list[float] = field(default_factory=list)  # 今天每根 5 分 K 的最高（1高用）
+    k12_h1: float | None = None   # 1高：破惡前的最高；None = 今天還沒有有效的破惡
+    k12_h2: float | None = None   # 2：破惡之後的最高（破惡那根之後才算）
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -132,11 +135,16 @@ def _moving_average(closes: list[float], length: int) -> float | None:
 MAX_PREV_BAR_AGE_DAYS = 12
 # 跨日接續 5 分 K MA20 用的種子：MA20 要 20 根、斜率再多 1 根。
 SEED_BARS = 21
-# 1️⃣2️⃣空（機器人 123，2026-10-18 使用者：照老師 10/14～10/16 二十幾份名單反推的第一版）：
-# 今天最高曾漲到 K12_MIN_RUSH_PCT% 以上（衝高）、現在 5 分 K 收在 20MA 下面、20MA 往下彎（20MA 連前幾天一起算）。
-# 進出跟老師每個時間點都對得上（站回 20MA 上就拿掉、再跌破又列回來；20MA 還平的時候不列），
-# 老師還會再挑掉一些（他怎麼判斷「1」「2」兩個高點還不知道），這版會比老師多列一點。
+# 1️⃣2️⃣空（機器人 123，2026-10-18 第一版照老師 10/14～10/16 名單反推；2026-10-20 使用者給了老師教學
+# 那一頁「12空:2 不過 1高 + 破惡均下彎」，改成照三個條件到齊才列）：
+#   ① 1高 ＝ 破惡前的最高（通常不是當日最高，開盤衝的那根高點不算）：取破惡那根往前 K12_PRE_BREAK_BARS 根
+#      （含破惡那根）的最高點。
+#   ② 破惡 ＋ 均下彎：今天 5 分 K 從 20MA 上面跌破 20MA（收盤），而且現在還收在 20MA 下、20MA 往下彎
+#      （20MA 連前幾天一起算）；站回 20MA 上，這次破惡就作廢，之後再跌破才算新的一次。
+#   ③ 反彈 2 不過 1高：破惡之後每根的最高點都沒過 1高；過了 1高就不打（拿掉），要再跌破重新算。
+# 另外保留第一版反推出來的「今天最高曾衝高 K12_MIN_RUSH_PCT% 以上」（教學頁沒寫、老師名單看起來有）。
 K12_MIN_RUSH_PCT = 3.0
+K12_PRE_BREAK_BARS = 12
 _market_prev_cache: dict[str, str | None] = {}
 
 
@@ -483,7 +491,26 @@ class IntradayKlineSignalMonitor:
         state.last_ma20 = ma20
         ref = state.prev_close or state.k12_ref_close
         rushed = bool(ref and ref > 0 and (state.day_high / ref - 1) * 100 >= K12_MIN_RUSH_PCT)
-        on = bool(rushed and ma20 is not None and ma20_prev is not None and close < ma20 and ma20 < ma20_prev)
+        state.k12_highs.append(high)
+        index = len(state.k12_highs) - 1
+        was_above = (
+            len(state.closes) >= 2 and ma20_prev is not None and state.closes[-2] >= ma20_prev
+        )
+        if ma20 is None or close >= ma20:
+            state.k12_h1 = state.k12_h2 = None                    # 站回 20MA 上：這次破惡作廢
+        elif state.k12_h1 is None:
+            if was_above:                                          # 從 20MA 上面收盤跌破：破惡
+                state.k12_h1 = max(state.k12_highs[max(0, index - K12_PRE_BREAK_BARS + 1):])
+                state.k12_h2 = None
+        else:
+            state.k12_h2 = high if state.k12_h2 is None else max(state.k12_h2, high)
+        passed_one_high = state.k12_h2 is not None and state.k12_h1 is not None and state.k12_h2 > state.k12_h1
+        if passed_one_high:
+            state.k12_h1 = state.k12_h2 = None                    # 2 過了 1高：不打，要再跌破才重新算
+        on = bool(
+            rushed and state.k12_h1 is not None and ma20 is not None and ma20_prev is not None
+            and close < ma20 and ma20 < ma20_prev
+        )
         if on and not state.k12_on:
             state.k12_since = close_ts
         if not on:
@@ -515,6 +542,7 @@ class IntradayKlineSignalMonitor:
                 "pct": round((st.last_close / ref - 1) * 100, 2) if st.last_close else None,
                 "dayHighPct": round((st.day_high / ref - 1) * 100, 2) if st.day_high else None,
                 "ma20": round(st.last_ma20, 4) if st.last_ma20 is not None else None,
+                "high1": st.k12_h1, "high2": st.k12_h2,
                 "since": st.k12_since,
             })
         items.sort(key=lambda x: x["code"])
