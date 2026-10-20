@@ -1036,3 +1036,27 @@ def test_k12_needs_ma20_turning_down(monkeypatch):
     monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))
     monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 95.5, 96))     # 收 96 > 20MA≈95.4、20MA 還在往上
     assert monitor._states["2330"].k12_on is False
+
+
+def test_k12_falls_back_to_last_seed_close_when_daily_bar_missing(monkeypatch):
+    # 2026-10-20 信昌電（6173）：日K停在 10/06 沒有昨天那根 → 沒有昨收就永遠算不出「衝高 3%」，
+    # 整天抓不到 1️⃣2️⃣空。日K沒有昨天時，改拿昨天最後一根 5 分 K 的收盤當昨收。
+    monitor = new_monitor(monkeypatch, prev_close=None)
+    seeds = _yesterday_seed_bars([100.0] * 21)
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))
+    monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 98.5, 99))
+    state = monitor._states["2330"]
+    assert state.prev_close is None and state.k12_ref_close == 100.0
+    assert state.k12_on is True
+    item = monitor.k12_snapshot()["items"][0]
+    assert item["prevClose"] == 100.0 and item["dayHighPct"] == 4.0 and item["pct"] == -1.0
+
+
+def test_k12_without_any_reference_close_stays_off(monkeypatch):
+    monitor = new_monitor(monkeypatch, prev_close=None)
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: [])
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))
+    monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 98.5, 99))
+    assert monitor._states["2330"].k12_on is False
+    assert monitor.k12_snapshot()["items"] == []

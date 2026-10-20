@@ -117,6 +117,8 @@ class _KlineState:
     last_close: float | None = None
     last_bar_ts: int | None = None
     last_ma20: float | None = None
+    # 日K沒有昨天那根（例如信昌電 6173 日K停在 10/06）時，1️⃣2️⃣空改用昨天最後一根 5 分 K 的收盤當昨收
+    k12_ref_close: float | None = None
 
 
 def _moving_average(closes: list[float], length: int) -> float | None:
@@ -309,6 +311,8 @@ class IntradayKlineSignalMonitor:
             state.seed_count = len(seeds)
             state.prev_ma20 = _moving_average(state.closes[:-1], 20)
             _sync_ma_state(state)
+            if state.prev_close is None:
+                state.k12_ref_close = seeds[-1]["close"]
         return state
 
     def _reset_for_new_day(
@@ -477,10 +481,8 @@ class IntradayKlineSignalMonitor:
         ma20 = _moving_average(state.closes, 20)
         ma20_prev = _moving_average(state.closes[:-1], 20)
         state.last_ma20 = ma20
-        rushed = (
-            state.prev_close is not None and state.prev_close > 0
-            and (state.day_high / state.prev_close - 1) * 100 >= K12_MIN_RUSH_PCT
-        )
+        ref = state.prev_close or state.k12_ref_close
+        rushed = bool(ref and ref > 0 and (state.day_high / ref - 1) * 100 >= K12_MIN_RUSH_PCT)
         on = bool(rushed and ma20 is not None and ma20_prev is not None and close < ma20 and ma20 < ma20_prev)
         if on and not state.k12_on:
             state.k12_since = close_ts
@@ -503,14 +505,15 @@ class IntradayKlineSignalMonitor:
             tracked += 1
             if st.last_bar_ts and (last_ts is None or st.last_bar_ts > last_ts):
                 last_ts = st.last_bar_ts
-            if not st.k12_on or not st.prev_close:
+            ref = st.prev_close or st.k12_ref_close
+            if not st.k12_on or not ref:
                 continue
             group_name, name = _group_and_name(code)
             items.append({
                 "code": code, "name": name, "groupName": group_name,
-                "close": st.last_close, "prevClose": st.prev_close,
-                "pct": round((st.last_close / st.prev_close - 1) * 100, 2) if st.last_close else None,
-                "dayHighPct": round((st.day_high / st.prev_close - 1) * 100, 2) if st.day_high else None,
+                "close": st.last_close, "prevClose": ref,
+                "pct": round((st.last_close / ref - 1) * 100, 2) if st.last_close else None,
+                "dayHighPct": round((st.day_high / ref - 1) * 100, 2) if st.day_high else None,
                 "ma20": round(st.last_ma20, 4) if st.last_ma20 is not None else None,
                 "since": st.k12_since,
             })
