@@ -59,7 +59,7 @@ BACKFILL_DAYS = max(0, int(os.getenv("HANSTOCK_GRAIL_RADAR_BACKFILL_DAYS", "20")
 TSE_DAY_MIN = 500
 OTC_DAY_RATIO = 0.9
 MA_PERIODS = (5, 10, 20, 60, 120, 240)
-RULES_VERSION = 8               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
+RULES_VERSION = 9               # 條件改了就加一：重新啟動時存著的「收盤」名單全部重算
 # 2026-10-13 使用者：時間點改成跟老師一樣（10/08 起原本每個提早 10 分鐘：11:50／12:50／13:10／13:35／14:50）
 SWING_TIMES = ["13:00", "15:00"]               # 波段：13:00、15:00（15:00 用收盤後的最後報價），另有官方日K的「收盤」
 OVERNIGHT_TIMES = ["12:00", "13:20", "13:45"]  # 隔日沖：12:00、13:20、13:45（13:45 用收盤後的最後報價）
@@ -107,20 +107,22 @@ def _rsword(f: dict[str, Any]) -> bool:
 
 def _xdragon(f: dict[str, Any]) -> bool:
     # 跌幅 7% 以內，或跌停鎖死（收在最低）也算（第七版：老師 10/15 收了國喬、雷笛克光學、中探針三檔跌停）
-    return (f["chg"] < 0 and (f["chg"] >= -7 or (f["chg"] <= -9.5 and f["close_pos"] == 0)) and f["black"] and f["c_m5_prev"] >= 4.5 and f["ma5_slope"] >= 0.95 and f["l_ma5"] >= -0.2
+    # 第九版（老師 10/20：新鉅科、瀧澤科 5 日線只比昨天高 0.6～0.7%）：收黑跌 4% 以上、收在最低（沒有下影線）的，5 日線往上 0.59% 以上就算
+    return (f["chg"] < 0 and (f["chg"] >= -7 or (f["chg"] <= -9.5 and f["close_pos"] == 0)) and f["black"] and f["c_m5_prev"] >= 4.5
+            and (f["ma5_slope"] >= 0.95 or (f["ma5_slope"] >= 0.59 and f["chg"] <= -4 and f["lshadow"] <= 0)) and f["l_ma5"] >= -0.2
             and f["hiago20"] <= 1 and f["range"] >= 4.2 and f["lshadow"] <= 2.9 and f["ma20_ma60"] >= -0.2
             and f["ma20_slope5"] >= 0.1 and f["c_ma60"] >= 4.2 and f["vol"] >= 1900)
 
 
 def _panther(f: dict[str, Any]) -> bool:
-    return (f["hiago120"] == 0 and f["body"] <= -1.8 and f["chg"] >= -3 and f["h_ph"] >= 2 and f["c_m5_prev"] >= 11.9 and f["ma5_ma20"] <= 29.7
+    return (f["hiago120"] == 0 and f["body"] <= -1.28 and f["chg"] >= -3 and f["h_ph"] >= 2 and f["c_m5_prev"] >= 11.9 and f["ma5_ma20"] <= 29.7
             and f["vol"] >= 4500 and f["c_ma20"] <= 31.4)
 
 
 def _shadow(f: dict[str, Any]) -> bool:
     return (f["lshadow"] >= 2.6 and not f["l_ge_pl"] and f["body"] <= 2.6 and f["chg"] >= -3 and f["c_ma5"] <= 0.66
             and f["z_min5"] >= 0.47 and f["c_ma60"] >= 8.6 and f["vol"] >= 950 and f["chg_max4"] >= 0 and f["v_v20"] >= 0.45
-            and f["ma20_ma60"] <= 27.1 and f["ma5_slope"] <= 3)
+            and f["ma20_ma60"] <= 27.1 and f["ma5_slope"] <= 3 and f["chg_3"] <= 5.5)
 
 
 def _bfw2021(f: dict[str, Any]) -> bool:
@@ -153,7 +155,7 @@ def _fly3(f: dict[str, Any]) -> bool:
 
 def _flyburst(f: dict[str, Any]) -> bool:
     return (f["hiago120"] == 0 and f["chg"] >= 7.0 and f["v_v5"] >= 2.5 and f["hup_max20"] <= 11.4 and f["bw_min10"] <= 24.2
-            and f["vol"] >= 2200 and f["ma20_ma60"] >= 1.2 and f["c_m5_prev"] >= 1.5 and f["c_ma120"] <= 47.81)
+            and f["vol"] >= 2200 and f["ma20_ma60"] >= 1.09 and f["c_m5_prev"] >= 1.5 and f["c_ma120"] <= 47.81)
 
 
 def _flybreak(f: dict[str, Any]) -> bool:
@@ -205,6 +207,14 @@ def _red3(f: dict[str, Any]) -> bool:
 # 10/12 68/76、10/13 54/61、10/14 56/67、10/15 37/48 都沒有變差；往日 18 天 893 檔變動 19 檔。
 # 還對不起來的：即將穿惡(收斂) 三檔全漏（榮星、台嘉碩、聯合再生，月線 5 天漲幅都超過 2%）、三日飛龍昨天大漲的（競國、鏵友益；放寬會多出一堆）、
 # 神下影（騰輝跌 4.9%、澤米跌 3.3%）、超黑豹華經（跌 3.5%、昨收只在 5 日線上 8.8%）、三紅劍（聯詠、威潤）、黑飛舞股期中環，再調會把往日改亂，先不動。
+# 第九版（2026-10-20 晚上，使用者給老師 10/20 全名單截圖）：第八版在 10/20 抓到 27/43、多 5 檔（飆股雷達隔日沖 13:45、波段 15:00 對老師）；
+# 10/12～10/15＋10/19＋10/20 六天一起調，只改「老師名單多抓到、往日 18 天名單不亂」的：極限黑龍收黑跌 4% 以上又收在最低的，5 日線往上放寬到 0.59%
+# （新鉅科、瀧澤科、10/13 創控；一樣條件下多出來的國光生、擎邦、澤米都不是跌 4% 以上收最低）、飛龍紅爆月線比季線高 1.09%（宏正 1.097%）、
+# 超黑豹收長黑放寬到 1.28%（富喬）、神下影加「近 3 天漲幅 5.5% 以內」（6 天裡少 3 檔不是老師的、沒有少老師的）。
+# 還對不起來的：即將穿惡(收斂) 13:00 老師 10 檔（永擎、台嘉碩、千興、福邦證、榮星、漢磊、新鋼、東鹼、彩晶、新唐）我們一檔都沒中——這 10 檔大多是
+# 「漲過一段回到月線下」的強勢股，離 120 日高點、60 日漲幅、月線斜率都超過第二型的門檻，15:00 又因量放大而消失，盤中量縮的算法還沒對上；
+# 即將突破惡(紅) 光頡（4 條不合）、波段穿惡營邦（收在 5 日線上只有 0.17%）、三日飛龍視陽（發動日只漲 3.4%）、黑飛舞聯光通、神下影天品、
+# 極限黑龍保勝光學（昨收只在 5 日線上 2.3%），再調會把往日改亂，先不動。
 LOGICS: list[dict[str, Any]] = [
     {"key": "cross2022", "saintId": 57, "name": "波段穿惡2022版本", "kind": "波段", "rule": _cross2022, "times": SWING_TIMES,
      "desc": "穿惡：昨天收在月線（20日線）下、今天收盤站回月線，收在 5 日線上 0.58% 以上、最高超過月線 1.6%、振幅 2.86% 以上；"
@@ -232,18 +242,18 @@ LOGICS: list[dict[str, Any]] = [
      "calibration": {"recall": 100, "precision": 97}},
     {"key": "xdragon", "saintId": 32, "name": "隔日沖-極限黑龍", "kind": "隔日沖", "rule": _xdragon, "times": OVERNIGHT_TIMES,
      "desc": "強勢股換手收黑：今天收黑K而且下跌（跌幅 7% 以內，或跌停鎖死）、低點最多跌破 5 日線 0.2%、振幅 4.2% 以上、下影線 2.9% 以內；"
-             "昨天收盤在 5 日線上 4.5% 以上、5 日線還在往上（比昨天高 0.95% 以上）、20 日新高在今天或昨天；"
+             "昨天收盤在 5 日線上 4.5% 以上、5 日線還在往上（比昨天高 0.95% 以上；收黑跌 4% 以上又收在最低的，0.59% 以上就算）、20 日新高在今天或昨天；"
              "月線最多比季線低 0.2% 而且 5 天內往上、收盤比季線高 4.2% 以上；量 1900 張以上。",
      "calibration": {"recall": 97, "precision": 88}},
     {"key": "panther", "saintId": 32, "name": "超黑豹2023版", "kind": "隔日沖", "rule": _panther, "times": OVERNIGHT_TIMES,
-     "desc": "創 120 日新高的長黑：今天最高是 120 日新高、比昨天最高再高 2% 以上，但收長黑（收比開低 1.8% 以上）、跌幅 3% 以內；"
+     "desc": "創 120 日新高的長黑：今天最高是 120 日新高、比昨天最高再高 2% 以上，但收長黑（收比開低 1.28% 以上）、跌幅 3% 以內；"
              "昨天收盤在 5 日線上 11.9% 以上、5 日線離月線 29.7% 以內、收盤離月線 31.4% 以內；"
              "量 4500 張以上。",
      "calibration": {"recall": 100, "precision": 100}},
     {"key": "shadow", "saintId": 32, "name": "隔日沖-神下影", "kind": "隔日沖", "rule": _shadow, "times": OVERNIGHT_TIMES,
      "desc": "強勢股長下影：下影線 2.6% 以上、低點跌破昨天低點、實體 2.6% 以內、跌幅 3% 以內、收盤最多在 5 日線上 0.66%、5 日線一天漲不到 3%；"
              "近 5 天收盤都在月線上方（至少 0.47 個標準差）、近 4 天有一天沒跌、收盤比季線高 8.6% 以上、月線離季線 27.1% 以內；"
-             "量 950 張以上、有 20 日均量 45%。",
+             "量 950 張以上、有 20 日均量 45%、近 3 天漲幅 5.5% 以內。",
      "calibration": {"recall": 89, "precision": 89}},
     {"key": "bfw2021", "saintId": 24, "name": "黑飛舞小波段2021版", "kind": "隔日沖", "rule": _bfw2021, "times": OVERNIGHT_TIMES,
      "desc": "黑飛舞：昨天收黑K而且大量（5000 張以上），但收盤還在 5 日線上 2.2% 以上；"
@@ -275,7 +285,7 @@ LOGICS: list[dict[str, Any]] = [
      "calibration": {"recall": 84, "precision": 79}},
     {"key": "flyburst", "saintId": 30, "name": "飛龍紅爆2022版", "kind": "波段", "rule": _flyburst, "times": SWING_TIMES,
      "desc": "飛龍紅爆：今天最高是 120 日新高、漲 7% 以上、爆量（5 日均量 2.5 倍以上、2200 張以上）；"
-             "昨天收盤在 5 日線上 1.5% 以上、月線比季線高 1.2% 以上、收盤離半年線 47.81% 以內；"
+             "昨天收盤在 5 日線上 1.5% 以上、月線比季線高 1.09% 以上、收盤離半年線 47.81% 以內；"
              "近 10 天布林帶寬曾縮到 24.2% 以內（從整理區噴出）、近 20 天最多超出布林上緣 11.4%。",
      "calibration": {"recall": 100, "precision": 100}},
     {"key": "flybreak", "saintId": 30, "name": "飛龍突破2023版", "kind": "波段", "rule": _flybreak, "times": SWING_TIMES,
