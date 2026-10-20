@@ -41,7 +41,7 @@ MA_JUMP_MIN = 3                # 均線轉強：均線分數比前一交易日�
 MAIN_GROUP_MIN_INST5 = 10000   # 資金主軸：法人 5 日合計至少 1 萬張（老師 10/20 報告：小電組 +5.9、鋼鐵 +4.3、光學鏡頭 +3.6 萬張；能源 +0.09、資訊 +0.8 萬張沒入選）
 JUMP_TOP_MIN_SCORE = 10        # 跳升最多：跳升後的均線分數至少這個數（老師 10/20：鉅橡 5→11、建榮 7→12、東台 9→12…，沒有 3→7、2→6 這種）
 MA_STRONG_MIN = 8              # 均線轉強：跳升後至少 8 分
-DEV5_WARN_PCT = 15.0           # 與 5 日線乖離 ≥15% 提示
+DEV5_WARN_PCT = 10.0           # 與 5 日線乖離 ≥10% 提示（老師 10/21：芯鼎 10%、聯一光 11%、今國光 13% 都有提示；原本 15）
 CHIPS_POOL_TOP = 10            # 籌碼面：籌碼暴增榜（籌碼雷達）前 10 名裡挑（2026-10-12 使用者：照老師的籌碼面精選）
 CHIPS_PICK_LIMIT = 4            # 籌碼面精選固定 4 檔（老師 10/08～10/19 七份日報每份都是 4 檔）
 CHIPS_TOP_RANK = 3              # 籌碼暴增榜前 3 名（熱門族）一定列，不看均線和法人（老師 10/19 緯穎均線 1、法人 -10.6%、信昌電均線 6 照列；富喬、今國光均線只有 7 也列）
@@ -277,6 +277,9 @@ def analyze_bars(bars: list[tuple[str, float, float, float, int]]) -> dict[str, 
     ma20 = ma[20]
     change_pct = (close / prev - 1) * 100 if prev > 0 else 0.0
     above_ma20_pct = (close / ma20 - 1) * 100 if ma20 > 0 else 0.0
+    # 「站上 +x%」老師用昨天的月線算（2026-10-21 老師日報：芯鼎 9.4、上品 5.6、佰鴻 4.8、和益 6.3，跟「收盤 ÷ 昨天的 20 日均價」四檔都對上；
+    # 用今天的月線只有 8.7、4.7、3.8、4.9）；卡片上的月線防守價還是今天的月線。
+    above_prev_ma20_pct = (close / prev_ma20 - 1) * 100 if prev_ma20 > 0 else 0.0
     avg_vol5 = _mean([float(v) for v in vols[-5:]])
     return {
         "asOf": bars[-1][0],
@@ -285,6 +288,7 @@ def analyze_bars(bars: list[tuple[str, float, float, float, int]]) -> dict[str, 
         "score": score, "prevScore": prev_score,
         "aboveMa20": close > ma20,
         "aboveMa20Pct": round(above_ma20_pct, 2),
+        "abovePrevMa20Pct": round(above_prev_ma20_pct, 2),
         "crossedMa20": prev <= prev_ma20 and close > ma20,        # 今天才站上月線
         "threeDayLow": min(lows[-3:]),
         "ma60OverHead": (ma.get(60) is not None and ma[60] > close),
@@ -313,27 +317,37 @@ def _chip2(rs: dict[str, Any]) -> float:
     return v if v is not None else (rs.get("chip") or 0)
 
 
-def _risks(t: dict[str, Any], chips: dict[str, Any], disposed: bool) -> list[str]:
+def _risks(t: dict[str, Any], chips: dict[str, Any], disposed: bool, days_out: int | None = None) -> list[str]:
+    # 順序照老師 10/21 日報：處置／出獄 → 本益比 → 營收 → 乖離 → 法人賣超 → 季線
+    # （聯一光：出獄第 2 天、本益比、乖離、法人賣超；緯穎：法人賣超、季線在頭上；芯鼎：乖離、法人賣超）
     out: list[str] = []
     if disposed:
         out.append("處置中")
+    if days_out is not None:
+        out.append(f"出獄第 {days_out} 天，依規則觀察三日")
     pe, pe_avg = chips.get("pe"), chips.get("peGroupAvg")
     if pe is not None and pe_avg and pe > pe_avg * PE_RISK_MULT:
         out.append(f"本益比 {pe:.0f} 高於族群均值 {pe_avg:.0f}")
     yoy = chips.get("revenueYoy")
     if yoy is not None and yoy < 0:
         out.append(f"營收年增 {yoy:.0f}% 為負")
-    if t.get("ma60OverHead") and t.get("ma60"):
-        out.append(f"季線 {t['ma60']:.2f} 在頭上")
     dev5 = t.get("dev5Pct")
     if dev5 is not None and dev5 >= DEV5_WARN_PCT:
         out.append(("漲停後" if t.get("limitUp") else "") + f"與 5 日線乖離 {dev5:.0f}%")
     if chips.get("inst5") is not None and chips["inst5"] < 0:
         out.append("法人 5 日仍為賣超")
+    if t.get("ma60OverHead") and t.get("ma60"):
+        out.append(f"季線 {t['ma60']:.2f} 在頭上")
     return out
 
 
-def _card(code: str, t: dict[str, Any], chips: dict[str, Any], group: str, hot: bool, disposed: bool, tag: str) -> dict[str, Any]:
+def _jump(t: dict[str, Any]) -> int | None:
+    """均線分數比前一交易日跳升幾分（算不出來是 None）。"""
+    return t["score"] - t["prevScore"] if t.get("score") is not None and t.get("prevScore") is not None else None
+
+
+def _card(code: str, t: dict[str, Any], chips: dict[str, Any], group: str, hot: bool, disposed: bool, tag: str,
+          days_out: int | None = None) -> dict[str, Any]:
     _g, name = group_and_name(code)
     return {
         "code": code, "name": name, "group": group, "hot": hot, "tag": tag,
@@ -343,7 +357,7 @@ def _card(code: str, t: dict[str, Any], chips: dict[str, Any], group: str, hot: 
         "instStreak": chips.get("instStreak", 0), "instToday": chips.get("instToday"),
         "mf5": chips.get("mf5"), "mfStreak": chips.get("mfStreak", 0),
         "defense": {"ma20": t["ma20"], "threeDayLow": t["threeDayLow"]},
-        "risks": _risks(t, chips, disposed),
+        "risks": _risks(t, chips, disposed, days_out),
         "health": chips.get("health"), "healthChecks": chips.get("healthChecks"),
         "pe": chips.get("pe"), "peGroupAvg": chips.get("peGroupAvg"), "revenueYoy": chips.get("revenueYoy"), "revenueYm": chips.get("revenueYm"),
         "weekPct": chips.get("weekPct"), "weekPp": chips.get("weekPp"), "weeks": chips.get("weeks"), "bigPct": chips.get("bigPct"), "tdccDate": chips.get("tdccDate"),
@@ -582,7 +596,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         # 熱門族＝籌碼雷達族群排名前 5（老師卡片上的熱門族：川寶的被動元件、台表科的光學鏡頭…）；還沒有集保週資料才用當天漲幅前 10
         g = hot_of.get(code) or group_of.get(code, "")
         hot = code in hot_of if radar else group_rank.get(g, 99) <= HOT_GROUP_RANK
-        out = _card(code, tech[code], chips.get(code, {}), g, hot, code in disposed, tag)
+        out = _card(code, tech[code], chips.get(code, {}), g, hot, code in disposed, tag, watch_days.get(code))
         sv = seven.get(code) or {}
         out["seven"] = sv.get("total")
         out["sevenCls"] = sv.get("cls")
@@ -598,6 +612,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     # 營收年增為負的也列（10/12 GIS-KY 年增 -30%）。處置中、剛出獄的（10/12 金居）放觀察名單，不進精選。
     dispo = disposition_from_jail(as_of) or disposition_sections(as_of, set(codes))
     just_out = {e["code"] for e in dispo.get("watch") or []}
+    watch_days = {e["code"]: e["daysOut"] for e in dispo.get("watch") or []}   # 剛出獄第幾天（卡片風險提示用）
     def chips_ok(c: str) -> bool:
         rk = radar_stocks[c].get("rank")
         if rk and rk <= CHIPS_TOP_RANK:
@@ -621,11 +636,12 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_all[:CHIPS_PICK_LIMIT]]
     # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數
     crossed = [c for c in eligible if tech[c]["crossedMa20"]]
-    tech_qualified = [c for c in crossed if tech[c]["aboveMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
+    tech_qualified = [c for c in crossed if tech[c]["abovePrevMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
     tech_skipped = [c for c in tech_qualified if (chips.get(c, {}).get("revenueYoy") or 0) < 0]   # 營收年增為負：略過
     tech_all = [c for c in tech_qualified if c not in tech_skipped]
-    tech_all.sort(key=lambda c: tech[c]["aboveMa20Pct"], reverse=True)
-    tech_picks = [card(c, f"站上 +{tech[c]['aboveMa20Pct']:.1f}%") for c in tech_all[:PICK_LIMIT]]
+    # 排序照老師 10/21：均線分數跳升多的在前（芯鼎 +5、上品 +5、佰鴻 +4、和益 +1），同分站上月線多的在前（芯鼎 9.4 > 上品 5.6）
+    tech_all.sort(key=lambda c: (_jump(tech[c]) or 0, tech[c]["abovePrevMa20Pct"]), reverse=True)
+    tech_picks = [card(c, f"站上 +{tech[c]['abovePrevMa20Pct']:.1f}%") for c in tech_all[:PICK_LIMIT]]
     # 體質轉強：問診七科判強勢，再取均線分數比前一交易日跳升 ≥3 者；七科總分高、跳得多的在前（跟學員專區日報同口徑）
     jump = lambda c: (tech[c]["score"] - tech[c]["prevScore"]) if tech[c]["score"] is not None and tech[c]["prevScore"] is not None else None  # noqa: E731
     strong_all = [c for c in eligible if seven[c]["cls"] == "強勢"]
@@ -753,7 +769,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                      "屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名一定列，其他的法人 5 日佔量不能低於 -0.5%，榜上的要均線分數 ≥12 或法人 5 日佔量 ≥10%、榜外的要均線分數 ≥12；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
                      f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}% 的；法人 5 日賣超、營收年增為負的照列，只在卡片上標風險；最多列 {CHIPS_PICK_LIMIT} 檔。"
                      f"觀察名單＝出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
-            "tech": f"今天收盤才站上月線（前一天在月線下）、站上 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身",
+            "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身；同分時均線跳升多的排前面",
             "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、本益比高於族群均值 {PE_RISK_MULT:g} 倍、營收年增為負、處置中",
