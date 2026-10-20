@@ -207,5 +207,72 @@ class MarketDataHubBarTests(unittest.TestCase):
         self.assertEqual(bars_1m[0]["high"], 101.0)
 
 
+def _ms(hour: int, minute: int, second: int = 0) -> int:
+    return int(datetime(2026, 8, 7, hour, minute, second, tzinfo=TW_TZ).timestamp() * 1000)
+
+
+class MarketDataHubBarFlushTests(unittest.TestCase):
+    """冷門股整根 5 分 K 沒成交就等不到下一筆 tick：時間到了要由背景收尾（2026-10-20，老師 09:05 的 123 有燁興）。"""
+
+    def test_thin_stock_bar_is_closed_by_time_and_not_duplicated(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2007", 7.28, 3, 9, 0, 1))
+        hub.on_stock_tick(tick("2007", 7.02, 12, 9, 0, 40))
+        self.assertEqual(hub.flush_due_stock_bars(_ms(9, 5, 2)), 0)   # 寬限時間內不收（晚到 tick 還來得及）
+        self.assertEqual(hub.flush_due_stock_bars(_ms(9, 5, 10)), 1)
+        bars = hub.get_live_bars("2007")
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0]["high"], 7.28)
+        self.assertEqual(bars[0]["close"], 7.02)
+        self.assertEqual(hub.get_hub_status()["total_bars_flushed"], 1)
+        self.assertEqual(hub.flush_due_stock_bars(_ms(9, 6, 0)), 0)   # 同一根不會收第二次
+
+    def test_late_tick_after_flush_is_ignored_and_next_bar_starts_clean(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2007", 7.10, 3, 9, 0, 1))
+        hub.flush_due_stock_bars(_ms(9, 5, 10))
+        hub.on_stock_tick(tick("2007", 6.90, 5, 9, 4, 59))             # 屬於已收尾那根的晚到 tick
+        bars = hub.get_live_bars("2007")
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0]["close"], 7.10)
+        hub.on_stock_tick(tick("2007", 7.00, 2, 9, 10, 3))             # 下一根：不能把 09:00 那根再收一次
+        bars = hub.get_live_bars("2007")
+        self.assertEqual([b["ts"] for b in bars], sorted({b["ts"] for b in bars}))
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(hub.get_hub_status()["total_bars_completed"], 1)
+
+    def test_flush_hands_bar_to_kline_signal_monitor_once(self):
+        hub = MarketDataHub()
+        hub.on_stock_tick(tick("2007", 7.28, 3, 9, 0, 1))
+        calls = []
+
+        class FakeMonitor:
+            def on_bar_completed(self, code, bar):
+                calls.append((code, bar["ts"]))
+                return []
+
+        with patch("intraday_kline_signals.get_intraday_kline_signal_monitor", lambda: FakeMonitor()), \
+                patch("stock_groups.industry_group_codes", lambda: {"2007"}):
+            hub.flush_due_stock_bars(_ms(9, 5, 10))
+            hub.flush_due_stock_bars(_ms(9, 5, 20))
+            hub.on_stock_tick(tick("2007", 7.0, 1, 9, 5, 30))      # 下一根開始，不會把 09:00 那根再送一次
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "2007")
+
+    def test_bar_ending_after_regular_session_is_not_flushed(self):
+        hub = MarketDataHub()
+        hub.bars.on_tick("2007", 7.0, 1, _ms(13, 30, 5))               # 收盤試算那根（13:30 起）不在正式盤
+        self.assertEqual(hub.flush_due_stock_bars(_ms(13, 40, 0)), 0)
+        hub.bars.on_tick("2330", 100.0, 1, _ms(13, 25, 1))             # 最後一根正式盤（13:25～13:30）要收
+        self.assertEqual(hub.flush_due_stock_bars(_ms(13, 40, 0)), 1)
+
+    def test_start_bar_flusher_only_starts_once(self):
+        hub = MarketDataHub()
+        with patch("market_data_hub.threading.Thread") as thread_cls:
+            self.assertTrue(hub.start_bar_flusher())
+            self.assertFalse(hub.start_bar_flusher())
+        thread_cls.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
