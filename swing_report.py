@@ -34,6 +34,7 @@ KEEP_DAYS = 40                 # 表裡最多留幾天
 LOOKBACK_DATES = 10            # 前端可回看的天數
 SUSTAIN_MIN_PREV = 10          # 續強確認：今天問診判強勢，而且昨天均線分數就已 ≥ 這個數（不是今天才跳上來）
 PICK_LIMIT = 5                 # 每個精選名單最多幾檔
+TECH_PICK_LIMIT = 4            # 技術面精選最多 4 檔（老師 10/21：真穿月線 6 檔、只列站上最多的 4 檔：芯鼎 9.4、和益 6.3、上品 5.6、佰鴻 4.8；乙盛-KY 3.2 沒列）
 INST_DAYS = 5                  # 法人／主力「5 日」
 TECH_MIN_ABOVE_PCT = 3.0       # 真穿月線：收盤站上月線 ≥3%
 TECH_MIN_VOLUME = 500          # 真穿月線：量 ≥500 張
@@ -639,9 +640,13 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     tech_qualified = [c for c in crossed if tech[c]["abovePrevMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
     tech_skipped = [c for c in tech_qualified if (chips.get(c, {}).get("revenueYoy") or 0) < 0]   # 營收年增為負：略過
     tech_all = [c for c in tech_qualified if c not in tech_skipped]
-    # 排序照老師 10/21：均線分數跳升多的在前（芯鼎 +5、上品 +5、佰鴻 +4、和益 +1），同分站上月線多的在前（芯鼎 9.4 > 上品 5.6）
+    # 先取站上月線最多的 TECH_PICK_LIMIT 檔，再照老師 10/21 的順序排：均線分數跳升多的在前（芯鼎 +5、上品 +5、佰鴻 +4、和益 +1），
+    # 同分站上月線多的在前（芯鼎 9.4 > 上品 5.6）
+    tech_total = len(tech_all)   # 真穿月線檔數（老師 10/21：6 檔）；精選只列其中站上最多的幾檔
+    tech_all.sort(key=lambda c: tech[c]["abovePrevMa20Pct"], reverse=True)
+    tech_all = tech_all[:TECH_PICK_LIMIT]
     tech_all.sort(key=lambda c: (_jump(tech[c]) or 0, tech[c]["abovePrevMa20Pct"]), reverse=True)
-    tech_picks = [card(c, f"站上 +{tech[c]['abovePrevMa20Pct']:.1f}%") for c in tech_all[:PICK_LIMIT]]
+    tech_picks = [card(c, f"站上 +{tech[c]['abovePrevMa20Pct']:.1f}%") for c in tech_all]
     # 體質轉強：問診七科判強勢，再取均線分數比前一交易日跳升 ≥3 者；七科總分高、跳得多的在前（跟學員專區日報同口徑）
     jump = lambda c: (tech[c]["score"] - tech[c]["prevScore"]) if tech[c]["score"] is not None and tech[c]["prevScore"] is not None else None  # noqa: E731
     strong_all = [c for c in eligible if seven[c]["cls"] == "強勢"]
@@ -747,7 +752,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                   "sharesCount": sum(1 for c in shares if c in code_set),
                   "chipWeek": radar["week"] if radar else None},
         "radar": {"week": radar["week"], "hot": radar["hot"], "buy": len(radar["buy"]), "pool": CHIPS_POOL_TOP} if radar else None,
-        "tiles": {"crossed": len(crossed), "crossedQualified": len(tech_all), "bodyJump": len(body_all), "strong": len(strong_all), "chips": len(chips_all),
+        "tiles": {"crossed": len(crossed), "crossedQualified": tech_total, "bodyJump": len(body_all), "strong": len(strong_all), "chips": len(chips_all),
                   "disposition": len([c for c in codes if c in disposed]), "newFull": len(new_full),
                   "upcoming": len(dispo["upcoming"]), "releasing": len(dispo["releasing"]),
                   "etfSyncBuy": len(active_etf["sync"]["buy"]) if active_etf else 0, "etfSyncSell": len(active_etf["sync"]["sell"]) if active_etf else 0,
@@ -763,7 +768,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "chipsWatch": chips_watch,
         "readDate": next_trading_day(as_of).isoformat(),
         "notes": {"jumpTop": jump_top, "sustained": sustained},
-        "counts": {"chips": len(chips_all), "tech": len(tech_all), "techNear": len(crossed) - len(tech_all), "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
+        "counts": {"chips": len(chips_all), "tech": tech_total, "techNear": len(crossed) - tech_total, "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份；集保週要在日報那天收盤後已經公布，週五收盤的那週週末才公布，所以週五的日報還是看上一週）前 {CHIPS_POOL_TOP} 名裡，"
                      "屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名一定列，其他的法人 5 日佔量不能低於 -0.5%，榜上的要均線分數 ≥12 或法人 5 日佔量 ≥10%、榜外的要均線分數 ≥12；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
