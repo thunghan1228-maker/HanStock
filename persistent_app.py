@@ -166,6 +166,8 @@ async def _persistent_lifespan(fastapi_app):
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
             start_disposition_collector()
+            # 冷門股整根 5 分 K 沒成交就等不到下一筆 tick 收尾：時間到了由背景執行緒收掉（123 才抓得到燁興這種）
+            get_market_data_hub().start_bar_flusher()
             start_trading_eligibility_warmer(_group_stock_codes)
             # 排全族群股票的主力副圖回補，不用等使用者自己點開每一支才觸發；
             # 純SQLite寫入(無Shioaji連線)但幾百檔股票還是有感時間，丟背景

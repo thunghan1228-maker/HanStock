@@ -52,6 +52,13 @@ BIG_HOLDER_MIN_LOTS = max(1, int(os.getenv("HANSTOCK_BIG_HOLDER_MIN_LOTS", "7"))
 BIG_HOLDER_OPENING_BEFORE_MINUTE = 9 * 60 + 5   # 當天第一筆在 09:05 前才當開盤那筆（重啟後半路收到的不算）
 
 
+# 2026-10-20：K 棒收尾要等「下一筆 tick」才會發生，冷門股整根 5 分鐘沒成交就不會有下一筆——老師 09:05 的 123 有燁興
+# （09:00 那根衝高 3.26% 又收在 20MA 下），我們卻要等它下一次成交才處理到那根。改成時間到了（K 棒結束後再等幾秒給晚到的 tick）
+# 就由背景執行緒把進行中的 K 棒收掉，走跟 tick 收尾一樣的流程。
+BAR_FLUSH_GRACE_MS = max(0, int(os.getenv("HANSTOCK_BAR_FLUSH_GRACE_MS", "4000")))
+BAR_FLUSH_POLL_SECONDS = 2.0
+
+
 def _bar_start_ms(ts_ms: int, interval_ms: int = BAR_INTERVAL_5M_MS) -> int:
     """將 timestamp (ms) 對齊到指定 K 棒週期起始點。"""
     if interval_ms <= 0:
@@ -259,6 +266,8 @@ class BarAggregator:
         self._completed: dict[str, list[Bar]] = defaultdict(list)
         # code → current (incomplete) bar
         self._current: dict[str, Bar] = {}
+        # code → 已經被 flush_due 時間到收掉的那根 K 棒起點；晚到的 tick 不能再改它，下一根開始時也不能重複收一次
+        self._closed_ts: dict[str, int] = {}
         # 當日日期（台北），用於跨日清理
         self._trade_date: str = _now_tw().strftime("%Y-%m-%d")
 
@@ -292,6 +301,10 @@ class BarAggregator:
                     current.ts,
                 )
                 return None
+            # 這根已經被時間到收掉了（flush_due），晚到的 tick 不再改它。
+            if current is not None and bar_start <= self._closed_ts.get(code, -1):
+                logger.debug("[%s] 忽略已收尾那根的晚到 tick: code=%s bar=%s", self.interval_name, code, bar_start)
+                return None
 
             opening = False
             if self.track_big and code not in self._big_seen:
@@ -300,7 +313,7 @@ class BarAggregator:
                 opening = local.hour * 60 + local.minute < BIG_HOLDER_OPENING_BEFORE_MINUTE
             if current is None or current.ts != bar_start:
                 # 新 bar 開始
-                if current is not None and current.tick_count > 0:
+                if current is not None and current.tick_count > 0 and self._closed_ts.get(code) != current.ts:
                     self._completed[code].append(current)
                     completed_bar = current
                 self._current[code] = Bar(ts=bar_start, open=price, high=price, low=price, close=price)
@@ -320,9 +333,26 @@ class BarAggregator:
             bars = [b.to_dict() for b in self._completed.get(code, [])]
             if include_current:
                 current = self._current.get(code)
-                if current and current.tick_count > 0:
+                if current and current.tick_count > 0 and self._closed_ts.get(code) != current.ts:
                     bars.append(current.to_dict())
         return bars
+
+    def flush_due(self, now_ms: int, grace_ms: int = 0, *, only_regular_session: bool = True) -> list[tuple[str, Bar]]:
+        """時間到了、卻一直等不到下一筆 tick 的進行中 K 棒（冷門股整根沒成交）：收進已完成清單並回傳 (code, bar)。
+        只收正式盤（09:00～13:30）內結束的那幾根；同一根不會收兩次，之後晚到的同一根 tick 會被忽略。"""
+        done: list[tuple[str, Bar]] = []
+        with self._lock:
+            for code, current in list(self._current.items()):
+                if current.tick_count <= 0 or self._closed_ts.get(code) == current.ts:
+                    continue
+                if current.ts + self.interval_ms + grace_ms > now_ms:
+                    continue
+                if only_regular_session and not is_regular_otc_session(current.ts):
+                    continue
+                self._completed[code].append(current)
+                self._closed_ts[code] = current.ts
+                done.append((code, current))
+        return done
 
     def get_current_bar(self, code: str) -> Optional[dict[str, Any]]:
         """取得進行中的 bar。"""
@@ -350,6 +380,7 @@ class BarAggregator:
             with self._lock:
                 self._completed.clear()
                 self._current.clear()
+                self._closed_ts.clear()
                 self._big_seen.clear()
                 self._trade_date = today
 
@@ -383,6 +414,8 @@ class MarketDataHub:
         self._total_ticks: int = 0
         self._total_bars_completed: int = 0
         self._total_bars_1m_completed: int = 0
+        self._total_bars_flushed: int = 0
+        self._flusher_started: bool = False
         self._total_futures_bars_completed: int = 0
         self._total_futures_bars_1m_completed: int = 0
 
@@ -483,20 +516,7 @@ class MarketDataHub:
             if is_regular_tick else None
         )
         if completed_bar:
-            self._total_bars_completed += 1
-            try:
-                from intraday_kline_signals import get_intraday_kline_signal_monitor
-                from stock_groups import industry_group_codes
-                if code in industry_group_codes():  # 只掃 67 個族群的股票（開過圖的 ETF／股期標的不掃）
-                    get_intraday_kline_signal_monitor().on_bar_completed(code, completed_bar.to_dict())
-            except Exception:  # noqa: BLE001
-                logger.exception("五分鐘K訊號偵測失敗 code=%s", code)
-            self._broadcast({
-                "type": "bar_completed",
-                "interval": "5m",
-                "code": code,
-                "bar": completed_bar.to_dict(),
-            })
+            self._handle_stock_bar_5m_completed(code, completed_bar)
 
         # 廣播 tick
         self._broadcast({
@@ -504,6 +524,50 @@ class MarketDataHub:
             "code": code,
             "data": tick_data,
         })
+
+    def _handle_stock_bar_5m_completed(self, code: str, completed_bar: "Bar") -> None:
+        """一根股票 5 分 K 收尾後的後續處理（tick 跨根收尾、時間到收尾共用）。"""
+        self._total_bars_completed += 1
+        try:
+            from intraday_kline_signals import get_intraday_kline_signal_monitor
+            from stock_groups import industry_group_codes
+            if code in industry_group_codes():  # 只掃 67 個族群的股票（開過圖的 ETF／股期標的不掃）
+                get_intraday_kline_signal_monitor().on_bar_completed(code, completed_bar.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("五分鐘K訊號偵測失敗 code=%s", code)
+        self._broadcast({
+            "type": "bar_completed",
+            "interval": "5m",
+            "code": code,
+            "bar": completed_bar.to_dict(),
+        })
+
+    def flush_due_stock_bars(self, now_ms: int | None = None) -> int:
+        """把時間到了卻等不到下一筆 tick 的股票 5 分 K 收掉（冷門股）；回傳這次收了幾根。"""
+        now = _now_ms() if now_ms is None else int(now_ms)
+        done = self.bars.flush_due(now, BAR_FLUSH_GRACE_MS)
+        for code, bar in done:
+            self._total_bars_flushed += 1
+            self._handle_stock_bar_5m_completed(code, bar)
+        return len(done)
+
+    def start_bar_flusher(self) -> bool:
+        """啟動背景執行緒，每幾秒檢查一次有沒有要時間到收尾的 5 分 K。已啟動回 False。"""
+        with self._lock:
+            if self._flusher_started:
+                return False
+            self._flusher_started = True
+
+        def _loop() -> None:
+            while True:
+                time.sleep(BAR_FLUSH_POLL_SECONDS)
+                try:
+                    self.flush_due_stock_bars()
+                except Exception:  # noqa: BLE001
+                    logger.exception("5 分 K 時間到收尾失敗")
+
+        threading.Thread(target=_loop, name="hanstock-bar-flusher", daemon=True).start()
+        return True
 
     def on_futures_tick(self, tick_data: dict[str, Any]) -> None:
         """接收台指期 tick，更新 cache、1m/5m K 棒並廣播。"""
@@ -623,6 +687,7 @@ class MarketDataHub:
             "total_ticks_received": self._total_ticks,
             "total_bars_completed": self._total_bars_completed,
             "total_bars_1m_completed": self._total_bars_1m_completed,
+            "total_bars_flushed": self._total_bars_flushed,
             "total_futures_bars_completed": self._total_futures_bars_completed,
             "total_futures_bars_1m_completed": self._total_futures_bars_1m_completed,
             "websocket_clients": ws_count,
