@@ -334,6 +334,8 @@ def get_stock_flags(summary: bool = Query(False)) -> dict[str, Any]:
         # 公告清單沒抓到（TPEx 被擋 403 之類）時，永豐個股資訊列的處置等級也算處置中。
         info["disposition"] = bool(item) or level > 0
         info["dispositionUntil"] = item.get("end") if item else None
+        # 2026-10-20：處置開始日。盤前（還沒開盤）的刀劍空名單照老師用「昨天收盤時」的狀態：今天才開始處置的還不算處置股。
+        info["dispositionStart"] = item.get("start") if item else None
         info["dispositionReason"] = (item.get("reason") if item else None) or (f"永豐合約處置等級 {level}" if level > 0 else None)
         stocks[code] = info
     unknown = sum(1 for info in stocks.values() if info.get("marginable") is None)

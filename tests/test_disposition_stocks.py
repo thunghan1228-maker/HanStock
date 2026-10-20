@@ -217,6 +217,8 @@ class StockFlagsEndpointTests(unittest.TestCase):
         self.assertGreater(len(data["stocks"]), 300)
         self.assertEqual(data["stocks"]["8996"]["disposition"], True)
         self.assertEqual(data["stocks"]["8996"]["dispositionUntil"], "2026-10-06")
+        self.assertEqual(data["stocks"]["8996"]["dispositionStart"], "2026-09-22")
+        self.assertIsNone(data["stocks"]["2317"]["dispositionStart"])
         self.assertEqual(data["stocks"]["8996"]["shortable"], False)
         self.assertEqual(data["stocks"]["2317"]["disposition"], False)
         self.assertTrue(data["stocks"]["2317"]["hasStockFutures"])
