@@ -314,12 +314,18 @@ def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw:
     2026-10-07 查到 8/21～8/27、9/07～9/09 的上櫃日K整段錯一天（存的是前一個交易日的行情，8/21、9/07 跟前一天一模一樣）：
     當天櫃買還沒公布就去抓，拿到前一天的行情當成當天存進去，之後 ON CONFLICT DO NOTHING 就再也蓋不掉；
     均線、布林、創高天數全部跟著錯（飆股雷達對嗨投資的布林帶寬就是這樣對不上）。今天的不核對（鏡像 16:50 才更新）。"""
-    result: dict[str, Any] = {"months": [], "checked": 0, "repaired": 0, "days": {}, "error": None}
+    result: dict[str, Any] = {"months": [], "checked": 0, "repaired": 0, "days": {}, "filled": 0, "filledDays": {}, "error": None}
     try:
         index = json.loads(_mirror_get("quotes/index.json", volatile=True, raw=raw).decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         result["error"] = f"鏡像索引抓不到：{type(exc).__name__}: {exc}"[:200]
         return result
+    # 2026-10-20：信昌電（6173）日K停在 10/06（鏡像裡 10/19、10/20 有、DB 沒有），方土霖、全譜、泰霖也是；
+    # 那幾天上櫃整體已經算收齊（import 只補「整天沒收齊」的日子），個別漏掉的股票就永遠沒人補。
+    # 已經存過的上櫃股票、在市場有開盤的日子，鏡像有而 DB 沒有的，這裡補進去（沒存過的股票還是交給 import）。
+    trading = set(market_days(TSE_DAY_COMPLETE_MIN))
+    with get_connection() as connection:
+        known_otc = {str(r["stock_code"]).strip().upper() for r in connection.execute("SELECT stock_code FROM stocks WHERE market = 'OTC'").fetchall()}
     cursor = today.replace(day=1)
     wanted = []
     for _ in range(max(1, months)):
@@ -333,9 +339,19 @@ def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw:
             result["error"] = f"{ym} 抓不到：{type(exc).__name__}: {exc}"[:200]
             continue
         result["months"].append(ym)
-        for day, rows in sorted((month.get("days") or {}).items()):
-            if day >= today.isoformat():
+        month_days = sorted((month.get("days") or {}).items())
+        for position, (day, rows) in enumerate(month_days):
+            if day > today.isoformat():
                 continue
+            # 今天的行情鏡像 16:50 才更新、可能拿到前一天的（不核對、不覆蓋）；缺的股票只在「跟前一天鏡像裡那檔的開高低收不一樣」時才補
+            is_today = day == today.isoformat()
+            previous: dict[str, tuple] = {}
+            if is_today and position > 0:
+                for prow in month_days[position - 1][1]:
+                    try:
+                        previous[str(prow[0]).strip().upper()] = tuple(float(v) for v in prow[2:6])
+                    except (TypeError, ValueError):
+                        continue
             with get_connection() as connection:
                 have = {
                     str(r["stock_code"]).upper(): r for r in connection.execute(
@@ -344,6 +360,7 @@ def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw:
                            WHERE s.market = 'OTC' AND b.bar_time >= ? AND b.bar_time < ? || 'z'""", (day, day)).fetchall()
                 }
                 fixes = []
+                missing = []
                 for row in rows:
                     try:
                         code, _name, o, h, l, c, _chg, volume = row[:8]
@@ -351,7 +368,13 @@ def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw:
                     except (TypeError, ValueError):
                         continue
                     old = have.get(str(code).strip().upper())
-                    if old is None or min(prices) <= 0:
+                    if (old is None and min(prices) > 0 and str(code).strip().upper() in known_otc and day in trading
+                            and (not is_today or (previous and previous.get(str(code).strip().upper()) != prices))):
+                        missing.append({"stock_code": str(code).strip().upper(), "stock_name": str(_name or code), "market": "OTC",
+                                        "time": datetime.combine(date.fromisoformat(day), datetime.min.time(), tzinfo=UTC),
+                                        "open": prices[0], "high": prices[1], "low": prices[2], "close": prices[3],
+                                        "volume": max(0, int((volume or 0) / 1000))})
+                    if old is None or min(prices) <= 0 or is_today:
                         continue
                     result["checked"] += 1
                     if any(abs(float(old[k]) - v) > 1e-6 for k, v in zip(("open", "high", "low", "close"), prices)):
@@ -361,6 +384,9 @@ def repair_otc_from_mirror(today: date, *, months: int = OTC_REPAIR_MONTHS, raw:
                         "UPDATE bars_1d SET open = ?, high = ?, low = ?, close = ?, volume = ? WHERE stock_code = ? AND bar_time = ?", fixes)
                     result["repaired"] += len(fixes)
                     result["days"][day] = len(fixes)
+            if missing:
+                result["filled"] += _save_day(missing)
+                result["filledDays"][day] = len(missing)
     return result
 
 
@@ -430,7 +456,7 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
         tse = backfill_tse(start, today)
         otc = import_otc_from_mirror(start, today)
         repair = repair_otc_from_mirror(today)
-        _update(otcRepair={k: repair.get(k) for k in ("months", "checked", "repaired", "days", "error")})
+        _update(otcRepair={k: repair.get(k) for k in ("months", "checked", "repaired", "days", "filled", "filledDays", "error")})
         _update(phase="events")
         official = refresh_official_events(start.year, today.year)
         inferred = infer_events(start)
@@ -440,7 +466,7 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
         _update(coverage=after)
         heilong: dict[str, Any] | None = None
         changed = (tse.get("inserted", 0) or otc.get("inserted", 0) or otc.get("events", 0) or inferred or repair.get("repaired", 0)
-                   or (before.get("bars") != after.get("bars")))
+                   or repair.get("filled", 0) or (before.get("bars") != after.get("bars")))
         if rebuild_heilong and changed:
             _update(phase="heilong")
             try:
@@ -448,13 +474,13 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
 
                 # 修過舊日子的上櫃日K（不只最新 3 天）也要整張重算，不然黑龍表留著錯的均線分數
                 bulk = (int(tse.get("inserted", 0) or 0) + int(otc.get("inserted", 0) or 0) >= BULK_INSERTED
-                        or bool(repair.get("repaired")))
+                        or bool(repair.get("repaired")) or bool(repair.get("filled")))
                 heilong = rebuild_heilong_table(force=bulk)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("bars history: heilong rebuild failed")
                 heilong = {"error": str(exc)}
             _update(heilong={k: heilong.get(k) for k in ("date", "dates", "rows", "written", "error") if isinstance(heilong, dict)})
-        if repair.get("repaired"):
+        if repair.get("repaired") or repair.get("filled"):
             try:
                 from grail_radar import backfill_close as grail_radar_backfill
 

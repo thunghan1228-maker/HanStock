@@ -45,6 +45,7 @@ class AnalyzeBarsTests(unittest.TestCase):
         self.assertTrue(t["crossedMa20"] and t["aboveMa20"])
         self.assertEqual(t["ma20"], 100.2)
         self.assertAlmostEqual(t["aboveMa20Pct"], 3.79, places=2)
+        self.assertAlmostEqual(t["abovePrevMa20Pct"], 4.0, places=2)     # 老師「站上 +x%」是拿昨天的月線算（昨天月線 100）
         self.assertEqual((t["score"], t["prevScore"]), (15, 0))    # 最後一天拉高；前一天完全平盤，創新高平手不算 → 0 分
         self.assertEqual(t["threeDayLow"], 99.0)
         self.assertEqual(t["changePct"], 4.0)
@@ -54,7 +55,11 @@ class AnalyzeBarsTests(unittest.TestCase):
     def test_risks(self) -> None:
         t = {"ma60OverHead": True, "ma60": 53.93, "dev5Pct": 19.0, "limitUp": True}
         self.assertEqual(module._risks(t, {"inst5": -3.0, "instToday": -1.0}, True),
-                         ["處置中", "季線 53.93 在頭上", "漲停後與 5 日線乖離 19%", "法人 5 日仍為賣超"])
+                         ["處置中", "漲停後與 5 日線乖離 19%", "法人 5 日仍為賣超", "季線 53.93 在頭上"])
+        # 老師 10/21：乖離 ≥10% 就提示（芯鼎 10%、聯一光 11%）、出獄 N 天內寫「依規則觀察三日」，順序＝出獄、本益比、乖離、法人賣超、季線
+        self.assertEqual(module._risks({"dev5Pct": 11.2, "limitUp": True}, {"inst5": -5.0, "pe": 110.0, "peGroupAvg": 54.0}, False, 2),
+                         ["出獄第 2 天，依規則觀察三日", "本益比 110 高於族群均值 54", "漲停後與 5 日線乖離 11%", "法人 5 日仍為賣超"])
+        self.assertEqual(module._risks({"dev5Pct": 9.0}, {}, False), [])
         # 法人今天轉賣超不算風險（2026-10-14：老師 10/14 光頡法人今天賣超，卡片沒有提示）
         self.assertEqual(module._risks({"ma60OverHead": False, "dev5Pct": 2.0}, {"inst5": 10.0, "instToday": -2.0}, False), [])
         # 本益比高於族群均值 1.5 倍才提示（老師 10/14：天二科技 69 vs 44 有；光頡 52 vs 44 沒有）
@@ -127,7 +132,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(r["tiles"]["disposition"], 1)
         tech = r["picks"]["tech"]
         self.assertEqual([x["code"] for x in tech], ["6182"])
-        self.assertEqual(tech[0]["tag"], "站上 +3.8%")
+        self.assertEqual(tech[0]["tag"], "站上 +4.0%")
         self.assertEqual(tech[0]["defense"], {"ma20": 100.2, "threeDayLow": 99.0})
         self.assertEqual((tech[0]["name"], tech[0]["group"], tech[0]["hot"]), ("合晶", "矽晶圓", True))
         chips = r["picks"]["chips"]

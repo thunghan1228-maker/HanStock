@@ -160,6 +160,50 @@ class OtcMirrorTests(BaseCase):
         self.assertEqual(unknown, 0)                                                 # 只修已經有的，缺的交給 import
         self.assertEqual(module.repair_otc_from_mirror(date(2026, 10, 7), raw=raw)["repaired"], 0)
 
+    def test_repair_fills_rows_the_mirror_has_but_the_db_lacks(self) -> None:
+        # 2026-10-20 信昌電（6173）日K停在 10/06：鏡像 10/19、10/20 有、DB 沒有，上櫃整體算收齊所以 import 不會補
+        from official_daily_bars import _save_day
+
+        def otc(day: date, code: str, c: float) -> dict:
+            return {"stock_code": code, "stock_name": code, "market": "OTC", "time": datetime.combine(day, datetime.min.time(), tzinfo=UTC),
+                    "open": c, "high": c, "low": c, "close": c, "volume": 100}
+
+        _save_day([otc(date(2026, 10, 6), "6173", 284.0), otc(date(2026, 10, 19), "2330", 1.0)])
+        month = {"month": "2026-10", "days": {
+            "2026-10-06": [["6173", "信昌電", 284.0, 284.0, 284.0, 284.0, 0.0, 1000]],
+            "2026-10-19": [["6173", "信昌電", 271.5, 271.5, 271.5, 271.5, -12.5, 5000], ["9999", "沒存過", 10.0, 10.0, 10.0, 10.0, 0.0, 1000]],
+            "2026-10-20": [["6173", "信昌電", 281.0, 283.5, 279.5, 282.5, 11.0, 738000]],
+            "2026-10-21": [["6173", "信昌電", 282.0, 285.0, 280.0, 281.0, -1.5, 100000]],     # 非交易日（市場沒有開盤）
+        }}
+        raw = self.mirror({"2026-10": month})
+        with patch.object(module, "market_days", return_value=["2026-10-06", "2026-10-19", "2026-10-20"]):
+            result = module.repair_otc_from_mirror(date(2026, 10, 20), raw=raw)
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["filledDays"], {"2026-10-19": 1, "2026-10-20": 1})   # 今天 10/20 跟前一天鏡像（10/19）的價格不同 → 也補
+        with database.get_connection() as c:
+            rows = {r[0][:10]: tuple(r[1:]) for r in c.execute(
+                "SELECT bar_time, open, high, low, close, volume FROM bars_1d WHERE stock_code = '6173' ORDER BY bar_time").fetchall()}
+            unknown = c.execute("SELECT COUNT(*) FROM bars_1d WHERE stock_code = '9999'").fetchone()[0]
+        self.assertEqual(rows["2026-10-19"], (271.5, 271.5, 271.5, 271.5, 5))
+        self.assertEqual(rows["2026-10-20"], (281.0, 283.5, 279.5, 282.5, 738))
+        self.assertNotIn("2026-10-21", rows)                              # 市場沒開盤的日子不補
+        self.assertEqual(unknown, 0)                                      # 沒存過的股票交給 import
+        self.assertEqual(module.repair_otc_from_mirror(date(2026, 10, 20), raw=raw)["filled"], 0)   # 補過就不再補
+
+    def test_repair_does_not_fill_todays_row_when_it_equals_yesterdays_quote(self) -> None:
+        from official_daily_bars import _save_day
+
+        _save_day([{"stock_code": "6173", "stock_name": "信昌電", "market": "OTC", "time": datetime(2026, 10, 6, tzinfo=UTC),
+                    "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1}])
+        month = {"month": "2026-10", "days": {
+            "2026-10-19": [["6173", "信昌電", 271.5, 272.0, 270.0, 271.0, 0.0, 5000]],
+            "2026-10-20": [["6173", "信昌電", 271.5, 272.0, 270.0, 271.0, 0.0, 5000]],     # 鏡像抓太早、拿到前一天的行情
+        }}
+        raw = self.mirror({"2026-10": month})
+        with patch.object(module, "market_days", return_value=["2026-10-19", "2026-10-20"]):
+            result = module.repair_otc_from_mirror(date(2026, 10, 20), raw=raw)
+        self.assertEqual(result["filledDays"], {"2026-10-19": 1})
+
 
 class EventTests(BaseCase):
     def test_official_events_and_inference(self) -> None:
