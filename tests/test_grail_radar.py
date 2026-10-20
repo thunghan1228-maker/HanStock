@@ -56,6 +56,31 @@ class FeatureTests(unittest.TestCase):
         # 第一型照舊：整理很久（高低差 31% 以內）的股，月線比季線高 1.8% 就可以
         self.assertTrue(module._crossconv({**chuangwei, "ma20_ma60": 3.0, "run60": 25.0, "dd120": -10.0, "v_pv": 0.7, "v_v20": 0.3}))
 
+    def test_version_9_rules_from_zhuang_1020(self) -> None:
+        """第九版（老師 10/20 名單）：極限黑龍 5 日線往上放寬、飛龍紅爆月線比季線、超黑豹長黑、神下影 3 天漲幅（用 10/20 收盤的真實特徵）。"""
+        self.assertEqual(module.RULES_VERSION, 9)
+        # 新鉅科：收黑 -4.29% 收在最低、5 日線只比昨天高 0.595% → 老師 13:45 有列
+        xd = {"black": True, "c_m5_prev": 6.055, "c_ma60": 8.9, "chg": -4.29, "close_pos": 0.0, "hiago20": 0, "l_ma5": 0.905, "lshadow": 0.0,
+              "ma20_ma60": 3.708, "ma20_slope5": 2.629, "ma5_slope": 0.595, "range": 7.591, "vol": 4421.0}
+        self.assertTrue(module._xdragon(xd))
+        self.assertFalse(module._xdragon({**xd, "chg": -2.0}))          # 跌不到 4%：5 日線要往上 0.95% 以上
+        self.assertFalse(module._xdragon({**xd, "lshadow": 0.5}))       # 有下影線：一樣要 0.95%（10/13 擎邦、澤米不是老師的）
+        self.assertTrue(module._xdragon({**xd, "chg": -2.0, "ma5_slope": 1.2}))
+        self.assertFalse(module._xdragon({**xd, "ma5_slope": 0.5}))
+        # 宏正：月線比季線高 1.097%（原本 1.2%）
+        fb = {"bw_min10": 4.548, "c_m5_prev": 5.413, "c_ma120": 25.475, "chg": 8.221, "hiago120": 0, "hup_max20": 9.3, "ma20_ma60": 1.097, "v_v5": 5.067, "vol": 4543.0}
+        self.assertTrue(module._flyburst(fb))
+        self.assertFalse(module._flyburst({**fb, "ma20_ma60": 1.0}))
+        # 富喬：創 120 日新高、收黑 1.28%（原本要 1.8% 的長黑）
+        pa = {"body": -1.282, "c_m5_prev": 12.327, "c_ma20": 20.172, "chg": 0.0, "h_ph": 4.87, "hiago120": 0, "ma5_ma20": 10.73, "vol": 188839.0}
+        self.assertTrue(module._panther(pa))
+        self.assertFalse(module._panther({**pa, "body": -1.0}))
+        # 聯光通：神下影；近 3 天漲幅超過 5.5% 的不算（10/12～10/19 多出來的幾檔）
+        sh = {"body": 0.931, "c_ma5": -0.587, "c_ma60": 35.712, "chg": 0.931, "chg_3": -2.041, "chg_max4": 9.848, "l_ge_pl": False, "lshadow": 3.911,
+              "ma20_ma60": 17.045, "ma5_slope": 1.075, "v_v20": 1.714, "vol": 19172.0, "z_min5": 1.374}
+        self.assertTrue(module._shadow(sh))
+        self.assertFalse(module._shadow({**sh, "chg_3": 6.0}))
+
     def test_short_history_is_skipped(self) -> None:
         o, h, l, c, v = columns(uptrend(100))
         self.assertIsNone(module.compute_features(o, h, l, c, v))
