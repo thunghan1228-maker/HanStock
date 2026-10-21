@@ -818,6 +818,62 @@ def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None
     return _fetch_group_quotes(codes, key, fetcher)
 
 
+def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None) -> dict[str, Any]:
+    """首頁報價比證交所那份更即時（2026-10-21 使用者：刀劍空的股票已經漲回去了，名單一兩分鐘後才消掉）。
+
+    證交所 MIS 每檔 5 秒才出一盤，好幾台主機還會回 40～100 秒前的舊資料，再加上這裡 30 秒內先給舊的，
+    首頁看到的價格常常比真正成交晚 20 秒到一兩分鐘；Shioaji 的逐筆成交（ticks）幾乎是即時的。
+    這裡在回給 tw-groups 前，把「比證交所那份更新」的逐筆成交蓋上去：只動價格／漲跌／量／漲停跌停旗標，
+    不動快取裡那份（回新的一份），其他吃 group_quotes_payload 的地方（均線排行、醞釀發動）照舊。
+    判斷誰比較新：同一天的成交、累積成交量（張）比證交所那份多＝它比較新；一樣多或比較少就維持證交所的。
+    試撮、盤中零股、暫停交易的逐筆不算；收盤後／盤前不蓋（報價不會動）。
+    """
+    if not ticks or not _market_open():
+        return payload
+    quotes = payload.get("quotes") or {}
+    day = str(payload.get("quoteDate") or "")
+    if not quotes or not day:
+        return payload
+    from session_close import limit_prices
+
+    merged: dict[str, dict[str, Any]] = {}
+    latest_clock = ""
+    for code, old in quotes.items():
+        tick = ticks.get(code)
+        if not tick or tick.get("simtrade") or tick.get("intraday_odd") or tick.get("suspend"):
+            continue
+        stamp = str(tick.get("tick_time") or "")
+        close, total = tick.get("close"), tick.get("total_volume")
+        if stamp[:10] != day or not close or close <= 0 or total is None:
+            continue
+        if total <= (old.get("volume") or 0):
+            continue
+        prev = round(old["price"] - old["change"], 4)
+        if prev <= 0:
+            continue
+        up, down = limit_prices(prev)
+        was_locked = abs(close - old["price"]) < 1e-6
+        merged[code] = {
+            **old,
+            "price": close,
+            "change": round(close - prev, 4),
+            "changePercent": (close - prev) / prev * 100,
+            "volume": total,
+            "open": old.get("open") or tick.get("open"),
+            "limitUp": (bool(old.get("limitUp")) and was_locked) or close >= up - 1e-6,
+            "limitDown": (bool(old.get("limitDown")) and was_locked) or close <= down + 1e-6,
+        }
+        clock = stamp[11:19]
+        if clock > latest_clock:
+            latest_clock = clock
+    if not merged:
+        return payload
+    out = {**payload, "quotes": {**quotes, **merged}, "realtimeTicks": len(merged)}
+    if latest_clock > str(payload.get("quoteTime") or ""):
+        out["quoteTime"] = latest_clock
+    return out
+
+
 def _markets(codes: list[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     with get_connection() as connection:
