@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +61,25 @@ class AnalyzeBarsTests(unittest.TestCase):
         self.assertEqual(module._risks({"dev5Pct": 11.2, "limitUp": True}, {"inst5": -5.0, "pe": 110.0, "peGroupAvg": 54.0}, False, 2),
                          ["出獄第 2 天，依規則觀察三日", "本益比 110 高於族群均值 54", "漲停後與 5 日線乖離 11%", "法人 5 日仍為賣超"])
         self.assertEqual(module._risks({"dev5Pct": 9.0}, {}, False), [])
+        # 隔日沖買超 ≥30% 提示（老師 10/21：聯一光 51%、今國光 31%；和益 19.5% 沒有），整數捨去、排在出獄後面、本益比前面
+        self.assertEqual(module._risks({}, {"pe": 110.0, "peGroupAvg": 54.0}, False, 2, 51.4),
+                         ["出獄第 2 天，依規則觀察三日", "隔日沖買超 51%，明日開盤有短線倒貨壓力", "本益比 110 高於族群均值 54"])
+        self.assertEqual(module._risks({}, {}, False, None, 31.9), ["隔日沖買超 31%，明日開盤有短線倒貨壓力"])
+        self.assertEqual(module._risks({}, {}, False, None, 19.5), [])
+
+    def test_daytrade_pct_map_reads_mirror_and_survives_failures(self) -> None:
+        import io
+
+        module._daytrade_cache.clear()
+        payload = json.dumps({"date": "2026-10-20", "rows": [{"code": "6209", "todayPct": 31.9}, {"code": "3441", "todayPct": 51.4}, {"code": "9999"}]}).encode()
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(payload)):
+            self.assertEqual(module.daytrade_pct_map("2026-10-20"), {"6209": 31.9, "3441": 51.4})
+        module._daytrade_cache.clear()
+        with patch("urllib.request.urlopen", side_effect=OSError("down")):
+            self.assertEqual(module.daytrade_pct_map("2026-10-20"), {})
+        module._daytrade_cache.clear()
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(json.dumps({"date": "2026-10-16", "rows": []}).encode())):
+            self.assertEqual(module.daytrade_pct_map("2026-10-20"), {})   # 鏡像是前一天的：不用
         # 法人今天轉賣超不算風險（2026-10-14：老師 10/14 光頡法人今天賣超，卡片沒有提示）
         self.assertEqual(module._risks({"ma60OverHead": False, "dev5Pct": 2.0}, {"inst5": 10.0, "instToday": -2.0}, False), [])
         # 本益比高於族群均值 1.5 倍才提示（老師 10/14：天二科技 69 vs 44 有；光頡 52 vs 44 沒有）
@@ -76,6 +96,7 @@ class ReportTests(unittest.TestCase):
         main_force_store._table_ready_path = None
         main_force_store._ensure_table()
         self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history, chip_radar)]
+        self.patches.append(patch.object(module, "daytrade_pct_map", lambda as_of: {}))   # 不真的去抓隔日沖鏡像
         for p in self.patches:
             p.start()
         brew_launch_history._group_by_code.clear()
