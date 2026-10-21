@@ -188,5 +188,74 @@ class GroupQuotesTests(unittest.TestCase):
         self.assertIn("證交所報價抓不到", down.json()["error"])
 
 
+    # ---- 逐筆成交蓋過證交所那份（2026-10-21 使用者：新鉅科漲回去了，刀劍空一兩分鐘後才消掉）----
+    @staticmethod
+    def _tick(code: str, close: float, total_volume: int, clock: str = "09:46:10", day: str = "2026-10-06", **extra):
+        return {"code": code, "close": close, "open": 100.5, "total_volume": total_volume, "tick_time": f"{day}T{clock}.123456+08:00",
+                "simtrade": False, "intraday_odd": False, "suspend": False, **extra}
+
+    def test_overlay_newer_tick_wins(self) -> None:
+        payload = module.group_quotes_payload("1000,1001,1002,1003", fetcher=mis_fetcher())   # 昨收 100、成交 101、量 800、09:44:55
+        before = {c: dict(q) for c, q in payload["quotes"].items()}
+        ticks = {
+            "1000": self._tick("1000", 103.5, 830),                    # 量比較多＝比較新：蓋上去
+            "1001": self._tick("1001", 99.0, 800),                     # 量一樣＝同一盤，維持證交所
+            "1002": self._tick("1002", 99.0, 790),                     # 量比較少＝比較舊
+            "1003": self._tick("1003", 99.0, 900, day="2026-10-05"),   # 昨天的成交（盤前還留著）不蓋
+        }
+        got = module.overlay_realtime_ticks(payload, ticks)
+        self.assertEqual(payload["quotes"], before)                    # 快取裡那份不能被改
+        one = got["quotes"]["1000"]
+        self.assertEqual((one["price"], one["change"], one["volume"]), (103.5, 3.5, 830))
+        self.assertAlmostEqual(one["changePercent"], 3.5)
+        self.assertEqual(one["name"], "股1000")
+        for code in ("1001", "1002", "1003"):
+            self.assertEqual(got["quotes"][code], before[code])
+        self.assertEqual((got["realtimeTicks"], got["quoteTime"]), (1, "09:46:10"))
+
+    def test_overlay_skips_auction_odd_lot_and_off_hours(self) -> None:
+        payload = module.group_quotes_payload("1000,1001,1002", fetcher=mis_fetcher())
+        ticks = {
+            "1000": self._tick("1000", 103.5, 830, simtrade=True),
+            "1001": self._tick("1001", 103.5, 830, intraday_odd=True),
+            "1002": self._tick("1002", 103.5, 830, suspend=True),
+        }
+        self.assertIs(module.overlay_realtime_ticks(payload, ticks), payload)
+        self.assertIs(module.overlay_realtime_ticks(payload, None), payload)
+        with patch.object(module, "_market_open", return_value=False):
+            good = {"1000": self._tick("1000", 103.5, 830)}
+            self.assertIs(module.overlay_realtime_ticks(payload, good), payload)
+
+    def test_overlay_limit_flags(self) -> None:
+        payload = module.group_quotes_payload("2330,1000", fetcher=mis_fetcher())   # 2330 鎖在漲停 110、1000 成交 101
+        ticks = {
+            "2330": self._tick("2330", 109.5, 5100),    # 漲停打開：旗標要拿掉
+            "1000": self._tick("1000", 110.0, 830),     # 剛鎖上漲停：要補上旗標
+        }
+        got = module.overlay_realtime_ticks(payload, ticks)["quotes"]
+        self.assertFalse(got["2330"]["limitUp"])
+        self.assertTrue(got["1000"]["limitUp"])
+        self.assertFalse(got["1000"]["limitDown"])
+
+    def test_endpoint_overlays_ticks(self) -> None:
+        class FakeService:
+            def get_stock_quotes(self, codes):
+                return {"2317": GroupQuotesTests._tick("2317", 104.0, 850)}
+
+        client = TestClient(persistent_app.app)
+        with patch.object(module, "_default_fetcher", mis_fetcher()), patch.object(persistent_app, "get_quote_service", return_value=FakeService()):
+            got = client.get("/api/hub/group-quotes?codes=2330,2317").json()
+        self.assertEqual(got["quotes"]["2317"]["price"], 104.0)
+        self.assertEqual(got["quotes"]["2330"]["price"], 110.0)
+        module._reset_group_quotes()
+
+        def boom():
+            raise RuntimeError("Shioaji 沒登入")
+
+        with patch.object(module, "_default_fetcher", mis_fetcher()), patch.object(persistent_app, "get_quote_service", side_effect=boom):
+            fallback = client.get("/api/hub/group-quotes?codes=2330,2317").json()
+        self.assertEqual(fallback["quotes"]["2317"]["price"], 101.0)   # 逐筆拿不到就維持證交所那份
+
+
 if __name__ == "__main__":
     unittest.main()

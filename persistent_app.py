@@ -28,6 +28,7 @@ from brew_launch_history import (
     backfill_holder_force as brew_launch_backfill_holder_force,
     group_quotes_payload,
     history as brew_launch_history,
+    overlay_realtime_ticks,
     purge_false_relaunches as brew_launch_purge_false_relaunches,
     scan_status as brew_launch_scan_status,
     start_brew_launch_scan,
@@ -992,7 +993,12 @@ def get_group_quotes_endpoint(codes: str = Query("", description="代號，逗�
     tw-groups worker 自己向證交所抓失敗時改問這裡：每檔 price／prevClose／change／changePercent／open／
     limitUp／limitDown／volume／name，加上報價日期時間與沒抓到的檔數；同一批代號 10 秒內共用一份。"""
     try:
-        return group_quotes_payload(codes)
+        payload = group_quotes_payload(codes)
+        try:   # 逐筆成交比證交所那份即時：有比較新的就蓋上去，Shioaji 沒連上就維持證交所那份
+            ticks = get_quote_service().get_stock_quotes(list(payload.get("quotes") or {}))
+        except Exception:  # noqa: BLE001
+            ticks = None
+        return overlay_realtime_ticks(payload, ticks)
     except ValueError as error:
         return JSONResponse({"status": "error", "error": str(error)}, status_code=400)
     except Exception as error:  # noqa: BLE001
