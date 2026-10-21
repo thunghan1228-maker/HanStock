@@ -15,12 +15,13 @@ import logging
 import math
 import threading
 import time
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from brew_launch import MA_PERIODS, _latest_bar_date, _load_bars, _load_market_values, group_codes, skipped_codes
 from brew_launch_history import group_and_name
-from chips_daily import _institutional_by_date, _streak, main_force_daily, main_force_dates, stored_dates
+from chips_daily import TPEX_MIRROR_BASE, _institutional_by_date, _streak, main_force_daily, main_force_dates, stored_dates
 from database import get_connection, initialize_database
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 from etf_holdings import report_section as etf_report_section
@@ -42,6 +43,8 @@ MA_JUMP_MIN = 3                # 均線轉強：均線分數比前一交易日�
 MAIN_GROUP_MIN_INST5 = 10000   # 資金主軸：法人 5 日合計至少 1 萬張（老師 10/20 報告：小電組 +5.9、鋼鐵 +4.3、光學鏡頭 +3.6 萬張；能源 +0.09、資訊 +0.8 萬張沒入選）
 JUMP_TOP_MIN_SCORE = 10        # 跳升最多：跳升後的均線分數至少這個數（老師 10/20：鉅橡 5→11、建榮 7→12、東台 9→12…，沒有 3→7、2→6 這種）
 MA_STRONG_MIN = 8              # 均線轉強：跳升後至少 8 分
+DAYTRADE_WARN_PCT = 30.0       # 隔日沖買超佔成交量 ≥30% 提示倒貨壓力（老師 10/21：聯一光 51%、今國光 31% 有提示；和益 19.5%、德淵 17% 沒有）
+DAYTRADE_FETCH_TIMEOUT = 8
 DEV5_WARN_PCT = 10.0           # 與 5 日線乖離 ≥10% 提示（老師 10/21：芯鼎 10%、聯一光 11%、今國光 13% 都有提示；原本 15）
 CHIPS_POOL_TOP = 10            # 籌碼面：籌碼暴增榜（籌碼雷達）前 10 名裡挑（2026-10-12 使用者：照老師的籌碼面精選）
 CHIPS_PICK_LIMIT = 4            # 籌碼面精選固定 4 檔（老師 10/08～10/19 七份日報每份都是 4 檔）
@@ -318,14 +321,39 @@ def _chip2(rs: dict[str, Any]) -> float:
     return v if v is not None else (rs.get("chip") or 0)
 
 
-def _risks(t: dict[str, Any], chips: dict[str, Any], disposed: bool, days_out: int | None = None) -> list[str]:
-    # 順序照老師 10/21 日報：處置／出獄 → 本益比 → 營收 → 乖離 → 法人賣超 → 季線
+_daytrade_cache: dict[str, tuple[float, dict[str, float]]] = {}
+
+
+def daytrade_pct_map(as_of: str) -> dict[str, float]:
+    """隔日沖 18 個分點當天淨買超佔成交量%（機器人 811／813 同一份鏡像：data 分支 tpex/daytrade/日期.json，只有當天漲 9% 以上的股票）。
+    抓不到（鏡像還沒更新、網路）就回空，卡片就沒有這項提示。"""
+    hit = _daytrade_cache.get(as_of)
+    if hit and time.monotonic() - hit[0] < 600:
+        return hit[1]
+    out: dict[str, float] = {}
+    try:
+        request = urllib.request.Request(f"{TPEX_MIRROR_BASE}/daytrade/{as_of}.json?v={int(time.time())}", headers={"User-Agent": "HanStock/1.0"})
+        with urllib.request.urlopen(request, timeout=DAYTRADE_FETCH_TIMEOUT) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+        if str(payload.get("date")) == as_of:
+            out = {str(r["code"]): float(r["todayPct"]) for r in payload.get("rows") or [] if r.get("todayPct") is not None}
+    except Exception:  # noqa: BLE001
+        logger.warning("daytrade mirror %s failed", as_of, exc_info=True)
+        return {}
+    _daytrade_cache[as_of] = (time.monotonic(), out)
+    return out
+
+
+def _risks(t: dict[str, Any], chips: dict[str, Any], disposed: bool, days_out: int | None = None, day_trade_pct: float | None = None) -> list[str]:
+    # 順序照老師 10/21 日報：處置／出獄 → 隔日沖買超 → 本益比 → 營收 → 乖離 → 法人賣超 → 季線
     # （聯一光：出獄第 2 天、本益比、乖離、法人賣超；緯穎：法人賣超、季線在頭上；芯鼎：乖離、法人賣超）
     out: list[str] = []
     if disposed:
         out.append("處置中")
     if days_out is not None:
         out.append(f"出獄第 {days_out} 天，依規則觀察三日")
+    if day_trade_pct is not None and day_trade_pct >= DAYTRADE_WARN_PCT:
+        out.append(f"隔日沖買超 {int(day_trade_pct)}%，明日開盤有短線倒貨壓力")
     pe, pe_avg = chips.get("pe"), chips.get("peGroupAvg")
     if pe is not None and pe_avg and pe > pe_avg * PE_RISK_MULT:
         out.append(f"本益比 {pe:.0f} 高於族群均值 {pe_avg:.0f}")
@@ -348,7 +376,7 @@ def _jump(t: dict[str, Any]) -> int | None:
 
 
 def _card(code: str, t: dict[str, Any], chips: dict[str, Any], group: str, hot: bool, disposed: bool, tag: str,
-          days_out: int | None = None) -> dict[str, Any]:
+          days_out: int | None = None, day_trade_pct: float | None = None) -> dict[str, Any]:
     _g, name = group_and_name(code)
     return {
         "code": code, "name": name, "group": group, "hot": hot, "tag": tag,
@@ -358,7 +386,7 @@ def _card(code: str, t: dict[str, Any], chips: dict[str, Any], group: str, hot: 
         "instStreak": chips.get("instStreak", 0), "instToday": chips.get("instToday"),
         "mf5": chips.get("mf5"), "mfStreak": chips.get("mfStreak", 0),
         "defense": {"ma20": t["ma20"], "threeDayLow": t["threeDayLow"]},
-        "risks": _risks(t, chips, disposed, days_out),
+        "risks": _risks(t, chips, disposed, days_out, day_trade_pct),
         "health": chips.get("health"), "healthChecks": chips.get("healthChecks"),
         "pe": chips.get("pe"), "peGroupAvg": chips.get("peGroupAvg"), "revenueYoy": chips.get("revenueYoy"), "revenueYm": chips.get("revenueYm"),
         "weekPct": chips.get("weekPct"), "weekPp": chips.get("weekPp"), "weeks": chips.get("weeks"), "bigPct": chips.get("bigPct"), "tdccDate": chips.get("tdccDate"),
@@ -597,7 +625,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         # 熱門族＝籌碼雷達族群排名前 5（老師卡片上的熱門族：川寶的被動元件、台表科的光學鏡頭…）；還沒有集保週資料才用當天漲幅前 10
         g = hot_of.get(code) or group_of.get(code, "")
         hot = code in hot_of if radar else group_rank.get(g, 99) <= HOT_GROUP_RANK
-        out = _card(code, tech[code], chips.get(code, {}), g, hot, code in disposed, tag, watch_days.get(code))
+        out = _card(code, tech[code], chips.get(code, {}), g, hot, code in disposed, tag, watch_days.get(code), day_trade.get(code))
         sv = seven.get(code) or {}
         out["seven"] = sv.get("total")
         out["sevenCls"] = sv.get("cls")
@@ -614,6 +642,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     dispo = disposition_from_jail(as_of) or disposition_sections(as_of, set(codes))
     just_out = {e["code"] for e in dispo.get("watch") or []}
     watch_days = {e["code"]: e["daysOut"] for e in dispo.get("watch") or []}   # 剛出獄第幾天（卡片風險提示用）
+    day_trade = daytrade_pct_map(as_of)   # 隔日沖買超佔成交量%（卡片風險提示用）
     def chips_ok(c: str) -> bool:
         rk = radar_stocks[c].get("rank")
         if rk and rk <= CHIPS_TOP_RANK:
@@ -672,7 +701,8 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     # 而且是「熱門族」——當天族群漲幅前 10 名，或籌碼雷達熱門族（週籌碼先進）；照收盤排名排（老師：小電組 1、鋼鐵 10、光學鏡頭 42）
     radar_groups = {g["name"]: g for g in (radar.get("groups") or [])} if radar else {}
     main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] >= MAIN_GROUP_MIN_INST5 and (g["rank"] <= HOT_GROUP_RANK or g["name"] in radar_groups)]
-    main_groups.sort(key=lambda g: g["rank"])
+    # 排序照老師 10/21：法人 5 日買超多的在前（AI 3.7 萬、光學鏡頭 2.7、鴻家軍 1.2；10/20 的小電組 5.9、鋼鐵 4.3、光學鏡頭 3.6 也是這個順序）
+    main_groups.sort(key=lambda g: g["inst5"], reverse=True)
     # 籌碼進、法人未跟：籌碼雷達的熱門族（週籌碼先進）裡，站上月線不到一半的（價格未表態）；週籌碼高的在前
     brewing_groups = [g for g in groups if g["name"] in radar_groups and g["aboveRatio"] < 0.5]
     for g in groups:
@@ -722,7 +752,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         for p in revenue.get("newPicks") or []:
             if p["code"] in tech and "card" not in p:
                 p["card"] = card(p["code"], f"年增 +{p['yoy']:.0f}%")
-    if revenue and "newPublished" in revenue:
+    if revenue and "newPublished" in revenue and (revenue.get("newPicks") or revenue.get("newYoyHigh")):   # 老師 10/21：沒有年增達標的就不寫這一點
         md_ = lambda d: d[5:].replace("-", "/")  # noqa: E731
         line = f"月營收：{md_(revenue['since'])} 之後到 {md_(as_of)} 公布 {revenue['newPublished']} 檔，年增 ≥{revenue['rule']['yoy']:g}% 有 {revenue['newYoyHigh']} 檔"
         if revenue["newPicks"]:
