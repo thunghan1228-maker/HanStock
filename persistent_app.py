@@ -31,6 +31,7 @@ from brew_launch_history import (
     overlay_realtime_ticks,
     purge_false_relaunches as brew_launch_purge_false_relaunches,
     scan_status as brew_launch_scan_status,
+    set_group_quote_tick_provider,
     start_brew_launch_scan,
 )
 from trading_days import is_trading_day
@@ -90,6 +91,9 @@ from stock_history_service import get_stock_history_bars_1m, get_stock_history_b
 from stock_bar_bootstrap import stock_bar_repair_status
 from stock_bar_repair_collector import backfill_pause_reason, start_stock_bar_repair_collector
 from quote_service import get_quote_service
+
+# 證交所整批抓不到時（2026-10-21 12:10 被切連線），首頁報價改用 Shioaji 逐筆成交供應
+set_group_quote_tick_provider(lambda codes: get_quote_service().get_stock_quotes(codes))
 from memory_diag import note_request as memory_note_request, payload as memory_payload, rss_mb, start_memory_sampler
 from memory_diag import table_sizes as memory_table_sizes
 
