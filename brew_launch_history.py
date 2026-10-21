@@ -688,10 +688,66 @@ _group_quotes_lock = threading.Lock()
 _group_quotes_fetch_locks: dict[str, threading.Lock] = {}
 
 
+# 2026-10-21 12:10 證交所把後端這台主機的連線整批切掉（回 Remote end closed connection，首頁／機器人代碼全部讀不到）：
+# Shioaji 的逐筆成交是另一條路、不受影響，證交所整批抓不到時改用它供應首頁報價，並且 MIS_DOWN_SECONDS 秒內不再去打證交所
+# （一直重試只會讓對方擋更久）。逐筆提供者由 persistent_app 啟動時設定，沒設／盤外就維持原本的行為（整批失敗丟例外）。
+MIS_DOWN_SECONDS = 60
+_mis_down_until = 0.0
+_tick_provider: Callable[[list[str]], dict[str, Any]] | None = None
+
+
+def set_group_quote_tick_provider(provider: Callable[[list[str]], dict[str, Any]] | None) -> None:
+    global _tick_provider
+    _tick_provider = provider
+
+
 def _reset_group_quotes() -> None:
+    global _mis_down_until
+    _mis_down_until = 0.0
     with _group_quotes_lock:
         _group_quotes_cache.update(payloads={}, best={}, threads={})
         _group_quotes_fetch_locks.clear()
+
+
+def _tick_quote(tick: dict[str, Any] | None, day: str) -> tuple[dict[str, Any], str] | None:
+    """一筆 Shioaji 逐筆成交轉成 group_quotes 的一格（價／漲跌／量／漲停跌停）；試撮、零股、暫停、不是今天的不算。"""
+    if not tick or tick.get("simtrade") or tick.get("intraday_odd") or tick.get("suspend"):
+        return None
+    stamp = str(tick.get("tick_time") or "")
+    close, chg, total = tick.get("close"), tick.get("price_chg"), tick.get("total_volume")
+    if stamp[:10] != day or not close or close <= 0 or chg is None or total is None:
+        return None
+    prev = round(close - chg, 4)
+    if prev <= 0:
+        return None
+    from session_close import limit_prices
+
+    up, down = limit_prices(prev)
+    return {
+        "price": close, "change": round(close - prev, 4), "changePercent": (close - prev) / prev * 100,
+        "open": tick.get("open"), "limitUp": close >= up - 1e-6, "limitDown": close <= down + 1e-6,
+        "volume": total, "name": None,
+    }, stamp[11:19]
+
+
+def _ticks_as_quotes(codes: list[str], day: str | None = None) -> tuple[dict[str, dict[str, Any]], str, str]:
+    """證交所抓不到的代號，用逐筆成交補：回（{代號: 報價}, 日期, 最新時間）。day＝要跟哪一天的報價湊在一起（預設今天）。"""
+    if _tick_provider is None or not codes or not _market_open():
+        return {}, "", ""
+    try:
+        ticks = _tick_provider(codes) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("group quotes tick fallback failed: %s", exc)
+        return {}, "", ""
+    day = day or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    out: dict[str, dict[str, Any]] = {}
+    latest = ""
+    for code in codes:
+        got = _tick_quote(ticks.get(code), day)
+        if got:
+            out[code] = got[0]
+            latest = max(latest, got[1])
+    return out, day if out else "", latest
 
 
 def _stamp(q: dict[str, Any]) -> tuple[str, str]:
@@ -706,21 +762,41 @@ def _fetch_group_quotes(codes: list[str], key: str, fetcher: Callable[[str], Any
             hit = _group_quotes_cache["payloads"].get(key)
         if hit and time.time() - hit[0] < GROUP_QUOTES_FRESH_SECONDS:
             return hit[1]
+        global _mis_down_until
         markets = _markets(codes)
         chunks = [codes[i:i + MIS_CHUNK] for i in range(0, len(codes), MIS_CHUNK)]
         quotes: dict[str, dict[str, Any]] = {}
         failed: list[str] = []
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=min(6, len(chunks))) as pool:
-            futures = [pool.submit(fetch_mis_quotes, chunk, markets, fetcher=fetcher) for chunk in chunks]
-            for future in futures:
-                try:
-                    quotes.update(future.result())
-                except Exception as exc:  # noqa: BLE001
-                    failed.append(str(exc)[:200])
+        if _tick_provider is not None and time.time() < _mis_down_until:
+            failed = ["證交所剛整批失敗，暫停重試"] * len(chunks)      # 對方擋著的時候不要一直打
+        else:
+            with ThreadPoolExecutor(max_workers=min(6, len(chunks))) as pool:
+                futures = [pool.submit(fetch_mis_quotes, chunk, markets, fetcher=fetcher) for chunk in chunks]
+                for future in futures:
+                    try:
+                        quotes.update(future.result())
+                    except Exception as exc:  # noqa: BLE001
+                        failed.append(str(exc)[:200])
+            if len(failed) == len(chunks) and _tick_provider is not None:
+                _mis_down_until = time.time() + MIS_DOWN_SECONDS
         if len(failed) == len(chunks):
-            raise RuntimeError(failed[0] if failed else "證交所沒有回應")
+            ticked, tick_day, tick_clock = _ticks_as_quotes(codes)
+            if not ticked:
+                raise RuntimeError(failed[0] if failed else "證交所沒有回應")
+            payload = {
+                "status": "ok", "quotes": ticked, "quoteDate": tick_day, "quoteTime": tick_clock or None,
+                "missing": len(codes) - len(ticked), "failedChunks": len(failed), "source": "shioaji",
+                "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+            }
+            with _group_quotes_lock:
+                payloads = _group_quotes_cache["payloads"]
+                payloads[key] = (time.time(), payload)
+                for old_key in sorted(payloads, key=lambda k: payloads[k][0])[:-GROUP_QUOTES_KEEP_KEYS]:
+                    payloads.pop(old_key, None)
+                    _group_quotes_fetch_locks.pop(old_key, None)
+            return payload
         with _group_quotes_lock:
             best = _group_quotes_cache["best"]
             for code, q in quotes.items():
@@ -750,6 +826,12 @@ def _fetch_group_quotes(codes: list[str], key: str, fetcher: Callable[[str], Any
                 day, clock = _stamp(q)
                 if day > latest_date or (day == latest_date and clock > latest_time):
                     latest_date, latest_time = day, clock
+            if len(out) < len(codes):      # 部分段落抓不到：缺的用逐筆成交補
+                filled, fill_day, fill_clock = _ticks_as_quotes([c for c in codes if c not in out], latest_date or None)   # 跟證交所那份同一天才湊
+                if filled:
+                    out.update(filled)
+                    latest_date = latest_date or fill_day
+                    latest_time = max(latest_time, fill_clock)
             payload = {
                 "status": "ok", "quotes": out, "quoteDate": latest_date or None, "quoteTime": latest_time or None,
                 "missing": len(codes) - len(out), "failedChunks": len(failed), "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),

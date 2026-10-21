@@ -257,5 +257,69 @@ class GroupQuotesTests(unittest.TestCase):
         self.assertEqual(fallback["quotes"]["2317"]["price"], 101.0)   # 逐筆拿不到就維持證交所那份
 
 
+    # ---- 證交所整批抓不到時改用逐筆成交（2026-10-21 12:10 後端被證交所切連線，首頁／機器人代碼讀不到）----
+    def _provider(self, ticks):
+        calls: list[list[str]] = []
+
+        def provider(codes):
+            calls.append(list(codes))
+            return ticks
+
+        self.addCleanup(module.set_group_quote_tick_provider, None)
+        module.set_group_quote_tick_provider(provider)
+        return calls
+
+    @staticmethod
+    def _live_tick(code: str, close: float, chg: float, total: int, clock: str = "09:46:10", day: str | None = None):
+        from datetime import datetime as dt
+
+        day = day or dt.now(module.TW_TZ).strftime("%Y-%m-%d")
+        return {"code": code, "close": close, "price_chg": chg, "open": 100.5, "total_volume": total, "tick_time": f"{day}T{clock}.1+08:00",
+                "simtrade": False, "intraday_odd": False, "suspend": False}
+
+    def test_total_failure_falls_back_to_ticks_and_pauses_mis(self) -> None:
+        ticks = {"1000": self._live_tick("1000", 110.0, 10.0, 900), "1001": self._live_tick("1001", 99.0, -1.0, 500, clock="09:46:20"),
+                 "1002": {**self._live_tick("1002", 105.0, 5.0, 100), "intraday_odd": True}}
+        calls = self._provider(ticks)
+        mis_calls: list[str] = []
+        got = module.group_quotes_payload("1000,1001,1002,1003", fetcher=mis_fetcher(fail_codes={"1000", "1001", "1002", "1003"}, calls=mis_calls))
+        self.assertEqual(got["source"], "shioaji")
+        self.assertEqual(sorted(got["quotes"]), ["1000", "1001"])          # 零股、沒逐筆的不算
+        one = got["quotes"]["1000"]
+        self.assertEqual((one["price"], one["change"], one["volume"], one["limitUp"]), (110.0, 10.0, 900, True))
+        self.assertAlmostEqual(got["quotes"]["1001"]["changePercent"], -1.0)
+        self.assertEqual((got["missing"], got["quoteTime"]), (2, "09:46:20"))
+        self.assertGreater(module._mis_down_until, 0)
+        # 對方擋著的這段時間不再打證交所
+        key = "1000,1001,1002,1003"
+        at, payload = module._group_quotes_cache["payloads"][key]
+        module._group_quotes_cache["payloads"][key] = (at - 10, payload)
+        mis_calls.clear()
+        module.group_quotes_payload("1000,1001,1002,1003", fetcher=mis_fetcher(calls=mis_calls))
+        th = module._group_quotes_cache["threads"].get(key)
+        th and th.join(5)
+        self.assertEqual(mis_calls, [])
+        self.assertTrue(calls)
+
+    def test_partial_failure_filled_by_ticks(self) -> None:
+        codes = ",".join(str(1000 + i) for i in range(160))
+        self._provider({"1000": self._live_tick("1000", 103.0, 3.0, 700, day="2026-10-06"), "1001": self._live_tick("1001", 103.0, 3.0, 700, day="2026-10-05")})
+        got = module.group_quotes_payload(codes, fetcher=mis_fetcher(fail_codes={"1000"}))   # 1000～1079 那段失敗
+        self.assertEqual(len(got["quotes"]), 81)               # 1001 的逐筆是前一天的，不湊
+        self.assertEqual(got["quotes"]["1000"]["price"], 103.0)
+        self.assertNotIn("1001", got["quotes"])
+        self.assertEqual(got["missing"], 79)
+
+    def test_no_provider_or_off_hours_still_raises(self) -> None:
+        self._provider({"1000": self._live_tick("1000", 103.0, 3.0, 700)})
+        with patch.object(module, "_market_open", return_value=False):
+            with self.assertRaises(RuntimeError):
+                module.group_quotes_payload("1000,1001", fetcher=mis_fetcher(fail_codes={"1000", "1001"}))
+        module._reset_group_quotes()
+        module.set_group_quote_tick_provider(None)
+        with self.assertRaises(RuntimeError):
+            module.group_quotes_payload("1000,1001", fetcher=mis_fetcher(fail_codes={"1000", "1001"}))
+
+
 if __name__ == "__main__":
     unittest.main()
