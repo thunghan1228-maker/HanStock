@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,6 +85,34 @@ class OfficialScoreTests(unittest.TestCase):
         pullback = rising[:-4] + [rising[-5] - 1] * 4                          # 高點後拉回 4 天：新高 0、跌破 5 日線、排列仍在
         self.assertEqual(module.official_score(pullback), 8)
         self.assertEqual(module.official_score(rising, {p: sum(rising[-p:]) / p for p in module.MA_PERIODS}), 15)
+
+    def test_new_high_is_today_close_vs_three_days_ago(self) -> None:
+        # 2026-10-22 老師問診名單（56 檔）：創新高＝今天收盤比這個天期內「3 個交易日以前」的最高收盤還高；昨天、前天不比
+        base = [100 + i * 0.5 for i in range(297)]
+        top = base[-1]
+        hi_bits = lambda closes: module.official_parts(closes)[1]  # noqa: E731
+        # 昨天衝到最高、今天回檔但還在 3 日以前的高點之上：6 個新高都算（緯創 10/22：昨天 195、今天 190，10 日／5 日新高還在）
+        self.assertEqual(hi_bits(base + [top + 10, top + 20, top + 5]), 0b111111)
+        # 昨天衝高、今天收盤掉到 3 日以前的高點之下：新高 0（大綜 10/22 -5%：我們原本多算 4 分）
+        self.assertEqual(hi_bits(base + [top + 10, top + 20, top - 1]), 0)
+        # 平手不算
+        self.assertEqual(hi_bits(base + [top, top, top]), 0)
+        # 一部分天期：今天收盤 104 比 5 日內 3 天以前的（100）高，但比 10 日內 3 天以前的（120）低 → 只有 5 日新高
+        self.assertEqual(hi_bits([100.0] * 250 + [120.0] + [100.0] * 6 + [105.0, 105.0, 104.0]), 0b000001)
+
+    def test_compute_features_matches_official_score(self) -> None:
+        import random
+
+        rnd = random.Random(7)
+        price, bars = 100.0, []
+        days = [d.isoformat() for d in (date(2025, 1, 1) + timedelta(days=i) for i in range(420))]
+        for d in days:
+            price = max(5.0, price * (1 + rnd.uniform(-0.04, 0.045)))
+            bars.append((d, price, price, price, round(price, 2), 1000))
+        closes = [b[4] for b in bars]
+        feats = module.compute_features(bars, set(days[-60:]))
+        for i in range(len(bars) - 60, len(bars)):
+            self.assertEqual(feats[days[i]]["score2"], module.official_score(closes[:i + 1]), days[i])
 
     def test_select_rows_by_algo(self) -> None:
         base = {"date": "2026-09-24", "open": 100, "high": 101, "low": 98, "close": 99, "volume": 1000, "prevClose": 100, "changePct": -1.0,

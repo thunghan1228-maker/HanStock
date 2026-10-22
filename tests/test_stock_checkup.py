@@ -18,6 +18,7 @@ import fundamentals_daily
 import heilong_backtest
 import persistent_app
 import stock_checkup as module
+import swing_report
 from trading_days import previous_trading_day
 
 GROUPS = {"矽晶圓": [("6182", "合晶"), ("6488", "環球晶"), ("5483", "中美晶")], "半導體": [("2330", "台積電")]}
@@ -113,6 +114,8 @@ class RebuildTests(unittest.TestCase):
         self.db_patch.start()
         database.initialize_database()
         self.patches = [patch.object(m, "STOCK_GROUPS", GROUPS) for m in (module, brew_launch, brew_launch_history, heilong_backtest)]
+        # 籌碼科用籌碼雷達的籌碼%（老師問診名單的「籌碼」欄）：合晶這週 +4.5%（≥3 得 2 分）
+        self.patches.append(patch.object(swing_report, "radar_week", return_value={"week": "2026-09-18", "stocks": {"6182": {"chip": 4.5, "chip2": 4.5}}}))
         for p in self.patches:
             p.start()
         brew_launch_history._group_by_code.clear()
@@ -168,6 +171,8 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((df["low3Y"], df["low3T"], df["halfY"], df["halfT"], df["label"]), (99, 99, 106.5, 107.5, "✅ 守住"))   # 昨天看：高 114 低 99 → 106.5；今天看：高 116 低 99 → 107.5
         self.assertEqual((hj["groupAvg2"], hj["groupRank"], hj["groupN"]), (15.0, 2, 2))   # 族內只有合晶與環球晶有今天的日K；合晶 −0.88% 排第 2
         self.assertEqual(hj["subjects"]["sc"], {"ma": 2, "grp": 2, "pos": 1, "chip": 2, "pe": 1, "rev": 2, "inst": 2})
+        self.assertEqual(hj["chip"]["radar"], 4.5)           # 籌碼雷達的籌碼%；大戶週增 weekPct 另外留著（三面向分數用）
+        self.assertIsNone(rows["6488"]["chip"]["radar"])     # 雷達沒有這檔：籌碼科不計分，不拿大戶週增 % 來湊
         self.assertEqual((hj["subjects"]["red"], hj["subjects"]["green"], hj["subjects"]["cls"]), (5, 0, "強勢"))
         self.assertEqual(hj["hist"]["chip8"], [["2026-09-18", 10.0]])
         self.assertEqual(len(hj["hist"]["score10"]), 10)

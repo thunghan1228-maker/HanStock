@@ -640,6 +640,14 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     for code, entry in chips.items():
         entry["peGroupAvg"] = group_pe.get(group_of.get(code, ""))
 
+    # 籌碼雷達那一週（熱門族、籌碼%、連 N 週）；讀不到不拖垮整份報告。問診七科的籌碼科也用它的籌碼%（老師問診名單的「籌碼」欄就是這個數）
+    try:
+        radar = radar_week(as_of)
+    except Exception:  # noqa: BLE001
+        logger.exception("chip radar section failed")
+        radar = None
+    hot_of = dict(radar["hotOf"]) if radar else {}
+    radar_stocks = radar["stocks"] if radar else {}
     # 問診七科（跟個股研究／健診同一套口徑；2026-09-28 使用者：體質轉強改用七科）
     # 延遲匯入：stock_checkup → heilong_backtest → 這個模組，放最上面會循環。
     from stock_checkup import subjects as seven_subjects
@@ -659,16 +667,8 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         g = group_of.get(code, "")
         ch = chips.get(code, {})
         seven[code] = seven_subjects(t["score"], group_avg_score.get(g), pos_rank.get(code), group_size.get(g),
-                                     ch.get("weekPct"), ch.get("pe"), ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
+                                     (radar_stocks.get(code) or {}).get("chip2"), ch.get("pe"), ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
 
-    # 籌碼雷達那一週（熱門族、籌碼%、連 N 週）；讀不到不拖垮整份報告
-    try:
-        radar = radar_week(as_of)
-    except Exception:  # noqa: BLE001
-        logger.exception("chip radar section failed")
-        radar = None
-    hot_of = dict(radar["hotOf"]) if radar else {}
-    radar_stocks = radar["stocks"] if radar else {}
     # 熱門族也包含當天族群漲幅前 10 名（老師 10/12 GIS-KY 屬 AI眼鏡、10/15～10/16 精誠屬資訊都標熱門族，那幾天這兩族都在當天前 10）
     for g in groups[:CHIPS_DAILY_HOT_GROUPS]:
         for c, _n in STOCK_GROUPS.get(g["name"], []):
@@ -851,7 +851,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                      f"觀察名單＝族群表裡、出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
             "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張＝真穿月線；營收年增為負、成交值不到 {TECH_MIN_TURNOVER:,} 萬的列在略過，均線分數 <{TECH_MIN_SCORE} 的不列；"
                     f"取站上月線最多的 {TECH_PICK_LIMIT} 檔，均線跳升多的排前面；站上月線第一天，防守就是月線本身",
-            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
+            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼雷達的籌碼%、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、本益比高於族群均值 {PE_RISK_MULT:g} 倍、營收年增為負、處置中",
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；"
