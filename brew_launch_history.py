@@ -870,6 +870,71 @@ def _market_open(now: datetime | None = None) -> bool:
     return 8 * 60 + 25 <= minutes <= 13 * 60 + 45 and is_trading_day(now.date())
 
 
+# 盤前撮合（2026-10-22 使用者）：要用即時股價算出來選股的功能（首頁各欄、機器人代碼、盤中333…），從 08:40 盤前試撮開始就要算，
+# 不要等到 09:00 開盤；用前一天收盤資料選股的功能不受影響。試撮價來自 Shioaji 的 simtrade 逐筆（close＝試算成交價）。
+PREOPEN_FROM_MINUTE = 8 * 60 + 40
+PREOPEN_UNTIL_MINUTE = 9 * 60
+
+
+def _preopen_window(now: datetime | None = None) -> bool:
+    """交易日 08:40～09:00：盤前試撮時段（還沒有真的成交，只有試算價）。"""
+    now = now or datetime.now(TW_TZ)
+    minutes = now.hour * 60 + now.minute
+    return PREOPEN_FROM_MINUTE <= minutes < PREOPEN_UNTIL_MINUTE and is_trading_day(now.date())
+
+
+def count_preopen_ticks(ticks: dict[str, Any] | None, now: datetime | None = None) -> int:
+    """今天的盤前試撮逐筆有幾檔（零股、暫停不算）；session-close 用它判斷試撮資料夠不夠、能不能提前解除「暫留昨收」。"""
+    now = now or datetime.now(TW_TZ)
+    today = now.strftime("%Y-%m-%d")
+    count = 0
+    for tick in (ticks or {}).values():
+        if not tick or not tick.get("simtrade") or tick.get("intraday_odd") or tick.get("suspend"):
+            continue
+        close = tick.get("close")
+        if str(tick.get("tick_time") or "")[:10] == today and close and close > 0 and tick.get("price_chg") is not None:
+            count += 1
+    return count
+
+
+def _overlay_preopen_ticks(payload: dict[str, Any], ticks: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """盤前試撮（08:40～09:00）：證交所那份這時候幾乎都是昨收、沒有漲跌，改把 Shioaji 的試撮價（simtrade 逐筆的 close）蓋上去，
+    價格／漲跌／漲跌停旗標都用試算價算；量一律 None（還沒有成交量，各名單的成交量門檻當作不知道、不擋）；
+    每檔標 preopen=True，整份標 preopen=True、日期改今天、時間用最新一筆試撮。沒有試撮逐筆的股票維持原樣。"""
+    quotes = payload.get("quotes") or {}
+    if not quotes:
+        return payload
+    today = now.strftime("%Y-%m-%d")
+    from session_close import limit_prices
+
+    merged: dict[str, dict[str, Any]] = {}
+    latest_clock = ""
+    for code, old in quotes.items():
+        tick = ticks.get(code)
+        if not tick or not tick.get("simtrade") or tick.get("intraday_odd") or tick.get("suspend"):
+            continue
+        stamp = str(tick.get("tick_time") or "")
+        close, chg = tick.get("close"), tick.get("price_chg")
+        if stamp[:10] != today or not close or close <= 0 or chg is None:
+            continue
+        prev = old.get("prevClose") if isinstance(old.get("prevClose"), (int, float)) and old.get("prevClose") > 0 else round(close - chg, 4)
+        if prev <= 0:
+            continue
+        up, down = limit_prices(prev)
+        merged[code] = {
+            **old,
+            "price": close, "prevClose": prev, "change": round(close - prev, 4), "changePercent": (close - prev) / prev * 100,
+            "volume": None, "limitUp": close >= up - 1e-6, "limitDown": close <= down + 1e-6, "preopen": True,
+        }
+        clock = stamp[11:19]
+        if clock > latest_clock:
+            latest_clock = clock
+    if not merged:
+        return payload
+    return {**payload, "quotes": {**quotes, **merged}, "preopen": True, "preopenTicks": len(merged), "quoteDate": today,
+            "quoteTime": latest_clock or payload.get("quoteTime")}
+
+
 def _quote_windows() -> tuple[int, int]:
     return (GROUP_QUOTES_FRESH_SECONDS, GROUP_QUOTES_STALE_SECONDS) if _market_open() else (GROUP_QUOTES_OFF_FRESH_SECONDS, GROUP_QUOTES_OFF_STALE_SECONDS)
 
@@ -900,7 +965,7 @@ def group_quotes_payload(raw_codes: Any, *, fetcher: Callable[[str], Any] | None
     return _fetch_group_quotes(codes, key, fetcher)
 
 
-def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None) -> dict[str, Any]:
+def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None, now: datetime | None = None) -> dict[str, Any]:
     """首頁報價比證交所那份更即時（2026-10-21 使用者：刀劍空的股票已經漲回去了，名單一兩分鐘後才消掉）。
 
     證交所 MIS 每檔 5 秒才出一盤，好幾台主機還會回 40～100 秒前的舊資料，再加上這裡 30 秒內先給舊的，
@@ -908,9 +973,14 @@ def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None
     這裡在回給 tw-groups 前，把「比證交所那份更新」的逐筆成交蓋上去：只動價格／漲跌／量／漲停跌停旗標，
     不動快取裡那份（回新的一份），其他吃 group_quotes_payload 的地方（均線排行、醞釀發動）照舊。
     判斷誰比較新：同一天的成交、累積成交量（張）比證交所那份多＝它比較新；一樣多或比較少就維持證交所的。
-    試撮、盤中零股、暫停交易的逐筆不算；收盤後／盤前不蓋（報價不會動）。
+    試撮、盤中零股、暫停交易的逐筆不算；收盤後不蓋（報價不會動）。
+    盤前 08:40～09:00 例外：改蓋上試撮價（_overlay_preopen_ticks），讓用即時價選股的功能從盤前撮合就開始算（2026-10-22 使用者）。
     """
-    if not ticks or not _market_open():
+    if not ticks:
+        return payload
+    if _preopen_window(now):
+        return _overlay_preopen_ticks(payload, ticks, now or datetime.now(TW_TZ))
+    if not _market_open(now):
         return payload
     quotes = payload.get("quotes") or {}
     day = str(payload.get("quoteDate") or "")

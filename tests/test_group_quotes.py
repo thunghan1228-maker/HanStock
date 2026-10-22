@@ -257,6 +257,76 @@ class GroupQuotesTests(unittest.TestCase):
         self.assertEqual(fallback["quotes"]["2317"]["price"], 101.0)   # 逐筆拿不到就維持證交所那份
 
 
+    # ---- 盤前撮合（2026-10-22 使用者：用即時價選股的功能從 08:40 盤前試撮開始就要算）----
+    @staticmethod
+    def _sim(code: str, close: float, chg: float, clock: str = "08:41:05", day: str = "2026-10-06", **extra):
+        return {"code": code, "close": close, "price_chg": chg, "total_volume": 0, "tick_time": f"{day}T{clock}.000000+08:00",
+                "simtrade": True, "intraday_odd": False, "suspend": False, **extra}
+
+    @staticmethod
+    def _at(hour: int, minute: int):
+        from datetime import datetime as dt
+
+        return dt(2026, 10, 6, hour, minute, tzinfo=module.TW_TZ)   # 2026-10-06 是週二
+
+    def test_preopen_window(self) -> None:
+        self.assertFalse(module._preopen_window(self._at(8, 39)))
+        self.assertTrue(module._preopen_window(self._at(8, 40)))
+        self.assertTrue(module._preopen_window(self._at(8, 59)))
+        self.assertFalse(module._preopen_window(self._at(9, 0)))
+        from datetime import datetime as dt
+
+        self.assertFalse(module._preopen_window(dt(2026, 10, 11, 8, 50, tzinfo=module.TW_TZ)))   # 週日
+
+    def test_overlay_preopen_uses_trial_match_price(self) -> None:
+        payload = module.group_quotes_payload("1000,1001,1002,1003", fetcher=mis_fetcher())   # 昨收 100
+        before = {c: dict(q) for c, q in payload["quotes"].items()}
+        ticks = {
+            "1000": self._sim("1000", 104.0, 4.0),                      # 試算 +4%：蓋上去
+            "1001": self._sim("1001", 110.0, 10.0),                     # 試算漲停
+            "1002": self._sim("1002", 103.0, 3.0, day="2026-10-05"),    # 昨天的試撮不算
+            "1003": {**self._sim("1003", 103.0, 3.0), "simtrade": False},   # 真的成交（盤前不該有）不當試撮
+        }
+        got = module.overlay_realtime_ticks(payload, ticks, now=self._at(8, 45))
+        self.assertEqual(payload["quotes"], before)                     # 快取裡那份不能被改
+        one = got["quotes"]["1000"]
+        self.assertEqual((one["price"], one["change"], one["volume"], one["preopen"]), (104.0, 4.0, None, True))
+        self.assertAlmostEqual(one["changePercent"], 4.0)
+        self.assertTrue(got["quotes"]["1001"]["limitUp"])
+        for code in ("1002", "1003"):
+            self.assertEqual(got["quotes"][code], before[code])
+        self.assertEqual((got["preopen"], got["preopenTicks"], got["quoteDate"], got["quoteTime"]), (True, 2, "2026-10-06", "08:41:05"))
+        # 沒有任何試撮逐筆＝維持證交所那份、不標 preopen
+        self.assertIs(module.overlay_realtime_ticks(payload, {}, now=self._at(8, 45)), payload)
+        self.assertIs(module.overlay_realtime_ticks(payload, {"1002": ticks["1002"]}, now=self._at(8, 45)), payload)
+        # 08:40 之前、09:00 之後都不走盤前那條（09:00 之後試撮不算，照盤中規則）
+        self.assertIs(module.overlay_realtime_ticks(payload, {"1000": ticks["1000"]}, now=self._at(8, 30)), payload)
+        self.assertIs(module.overlay_realtime_ticks(payload, {"1000": ticks["1000"]}, now=self._at(9, 5)), payload)
+
+    def test_session_close_released_early_only_with_enough_trial_ticks(self) -> None:
+        stocks = {f"{1000 + i}": {"close": 100.0} for i in range(40)}
+        held = {"status": "ok", "held": True, "tradingDay": True, "today": "2026-10-06", "session": "2026-10-05", "stocks": stocks}
+
+        def ticks_for(n: int):
+            return lambda codes: {c: self._sim(c, 101.0, 1.0) for c in list(stocks)[:n]}
+
+        now = self._at(8, 41)
+        released = persistent_app.release_hold_for_preopen(held, now, ticks_for(35))
+        self.assertEqual((released["held"], released["preopen"]), (False, True))
+        self.assertTrue(held["held"])                                          # 原本那份不能被改（快取共用）
+        self.assertIs(persistent_app.release_hold_for_preopen(held, now, ticks_for(5)), held)      # 試撮不夠多：維持暫留
+        self.assertIs(persistent_app.release_hold_for_preopen(held, self._at(8, 39), ticks_for(35)), held)   # 08:40 以前
+        not_held = {**held, "held": False}
+        self.assertIs(persistent_app.release_hold_for_preopen(not_held, now, ticks_for(35)), not_held)   # 本來就沒暫留：不動
+
+        def boom(codes):
+            raise RuntimeError("Shioaji 沒登入")
+
+        self.assertIs(persistent_app.release_hold_for_preopen(held, now, boom), held)
+        closed = {**held, "tradingDay": False}
+        self.assertIs(persistent_app.release_hold_for_preopen(closed, now, ticks_for(35)), closed)
+
+
     # ---- 證交所整批抓不到時改用逐筆成交（2026-10-21 12:10 後端被證交所切連線，首頁／機器人代碼讀不到）----
     def _provider(self, ticks):
         calls: list[list[str]] = []
