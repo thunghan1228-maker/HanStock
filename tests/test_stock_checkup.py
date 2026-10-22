@@ -226,6 +226,18 @@ class RebuildTests(unittest.TestCase):
         rows = {x["code"]: x["hiLen"] for x in module.checkup("6182 2330")["rows"]}
         self.assertEqual(rows, {"6182": 242, "2330": None})                      # 用最新一天；那天沒有的不拿舊的
 
+    def test_cross_info_threshold(self) -> None:
+        # 老師 10/22 今日穿惡：麗臺 96.20 ÷ 昨天月線 88.41 = +8.8% 列；百達-KY 96.3 ÷ 94.13 = +2.3% 不列（用昨天的月線算，門檻 3%）
+        d = {"ma20Y": 88.41, "ma20T": 88.62}
+        c = module.cross_info(87.5, 96.2, 10337, d)
+        self.assertEqual((c["prevBelow"], c["up"], round(c["dist"], 1)), (True, True, 8.8))
+        c = module.cross_info(90.1, 96.3, 1312, {"ma20Y": 94.13, "ma20T": 93.5})
+        self.assertEqual((c["prevBelow"], c["up"], round(c["dist"], 1)), (True, False, 2.3))
+        self.assertFalse(module.cross_info(87.5, 96.2, 300, d)["up"])        # 量不到 500 張
+        self.assertFalse(module.cross_info(89.0, 96.2, 5000, d)["up"])       # 昨收已在月線上，不算穿
+        self.assertIsNone(module.cross_info(None, 96.2, 5000, d))
+        self.assertIsNone(module.cross_info(87.5, 96.2, 5000, None))
+
     def test_cross_up_and_diag(self) -> None:
         d = self.dates
         # 環球晶改成：昨收在月線下、今天站上月線 3% 且量夠 → 穿惡
@@ -238,7 +250,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual(result["cross"], 1)
         r = module.diag("6488")
         self.assertEqual((r["status"], r["code"], r["stock"]["name"], r["stock"]["cross"]["up"], r["stock"]["cross"]["prevBelow"]), ("ok", "6488", "環球晶", True, True))
-        self.assertGreater(r["stock"]["cross"]["dist"], 2.0)
+        self.assertGreater(r["stock"]["cross"]["dist"], 3.0)
         self.assertEqual(len(r["bars"]), 30)
         self.assertEqual(r["bars"][-1][:5], [d[-1], 480.0, 520.0, 478.0, 516.0])
         self.assertEqual([x["code"] for x in r["siblings"]], ["6182", "6488", "5483"])       # 同族依七科總分排；中美晶資料舊的沒有七科排最後

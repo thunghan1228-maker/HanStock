@@ -41,7 +41,7 @@ HALF_RANGE_MIN_PCT = 10.0      # 紅半：近三日振幅（最高／最低 −1
 HALF_ABOVE_MID_PCT = 1.0       # 紅半：收盤要站在中點之上 1% 以上
 NEAR_MA_PCT = 10.0             # 即將穿惡：收盤在月線下但距月線 10% 以內
 MAX_CODES = 120
-CROSS_MIN_ABOVE_PCT = 2.0      # 穿惡：今收站上今日月線至少 2%
+CROSS_MIN_ABOVE_PCT = 3.0      # 穿惡：今收比昨天的月線高至少 3%（老師 10/22 今日穿惡名單：麗臺 +8.8%、振發 +6.5%、訊達 +4.0% 列出；百達-KY +2.3%、碩禾 +2.6%、華宏 +2.5% 不列。用昨天的月線算：麗臺 96.20÷88.41）
 CROSS_MIN_VOLUME = 500         # 穿惡：成交量至少 500 張
 TOP_GROUPS = 10                # 族群強度榜前 10 族
 TOP_K = 3                      # 族群強度＝七科總分最高的前 3 檔平均
@@ -64,7 +64,7 @@ RULES = [
     "防守線：三日低＝不含當天的前三個交易日最低（明日值＝含今天的近三日最低）；月線＝20 日收盤均；紅半＝近三個交易日最高與最低的中間值，只在三日振幅 ≥10% 而且收盤站在中點之上 1% 以上時才列（漲多時多一個防守點）。收盤跌破任一條 → 減碼；月線與三日低雙破 → 出場；即將穿惡＝收盤在月線下但距月線 10% 以內，一根漲停就能站回。價格未還原除權息。",
     "七科小體檢各 0～2 分：均線分數（內定 ≥12 得 2、≥8 得 1）、族群平均分（≥10 得 2、≥7 得 1）、族內名次（依當天漲跌幅，前三分之一得 2、中段得 1）、籌碼（籌碼雷達的籌碼% ≥3 得 2、≥0 得 1）、本益比（<20 得 2、<35 得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
     "族群強度榜：每族取七科總分最高的前 3 檔平均當族群強度，排名前 10 族；今日名單＝這十族裡判定為強勢／中等的股，依族群強度再依七科總分排。收盤排名＝下午報當天族群平均漲跌幅的名次。",
-    "今日穿惡＝族群表內、昨收在昨日月線之下、今收站上今日月線 2% 以上、成交量 ≥500 張的股票；站上不到 2% 或量太小的不列。",
+    "今日穿惡＝族群表內、昨收在昨日月線之下、今收比昨日月線高 3% 以上、成交量 ≥500 張的股票；站上不到 3% 或量太小的不列。",
     "分數是體質快照，不是買賣訊號。範圍是本站有日K的股票（族群表內加盤中訊號追蹤的全市場股票）。",
 ]
 
@@ -364,11 +364,7 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
     chip_hist.reverse()
     week_pct = td.get("bigChangePct")
     defense = defense_lines(bars)
-    cross = None
-    if defense and prev is not None:
-        prev_below = prev < defense["ma20Y"]
-        cross = {"prevBelow": prev_below, "dist": _pct(close, defense["ma20T"]),
-                 "up": prev_below and close >= defense["ma20T"] * (1 + CROSS_MIN_ABOVE_PCT / 100) and bars[-1][5] >= CROSS_MIN_VOLUME}
+    cross = cross_info(prev, close, bars[-1][5], defense)
     fund = fund_score(rev_row.get("yoy"), rev_row.get("mom"), pe)
     chip = chip_score(week_pct, td.get("weeks"), inst5, mf5, avg_vol5)
     tech = tech_score(score2)
@@ -396,6 +392,15 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
         "disposed": code in ctx["disposed"],
         "d123": _d123_state(bars),
     }
+
+
+def cross_info(prev: float | None, close: float, volume: int, defense: dict[str, Any] | None) -> dict[str, Any] | None:
+    """穿惡：昨收在昨天的月線下、今收比昨天的月線高 CROSS_MIN_ABOVE_PCT 以上、量夠。dist＝今收離昨天月線幾 %（老師名單的「收盤站上多少」）。"""
+    if not defense or prev is None:
+        return None
+    prev_below = prev < defense["ma20Y"]
+    return {"prevBelow": prev_below, "dist": _pct(close, defense["ma20Y"]),
+            "up": prev_below and close >= defense["ma20Y"] * (1 + CROSS_MIN_ABOVE_PCT / 100) and volume >= CROSS_MIN_VOLUME}
 
 
 def _d123_state(bars: list[Bar]) -> dict[str, Any] | None:
@@ -503,7 +508,7 @@ def compact(r: dict[str, Any]) -> dict[str, Any]:
         "code": r["code"], "name": r["name"], "group": r["group"], "cls": sub.get("cls"), "total": sub.get("total"), "red": sub.get("red"), "green": sub.get("green"),
         "chgPct": r["chgPct"], "close": r["close"], "prev": r.get("prev"), "volume": r.get("volume"), "score2": r["score2"], "weekPct": r["chip"]["weekPct"], "chip": r["chip"].get("radar"),
         "pe": r["fund"]["pe"], "yoy": r["fund"]["yoy"], "inst5": r["chip"]["inst5"], "scores": r["scores"],
-        "def": {k: d.get(k) for k in ("low3T", "ma20T", "halfT", "brkMa", "brkL3", "brkHalf", "nearMa", "label")} if d else None,
+        "def": {k: d.get(k) for k in ("low3T", "ma20T", "ma20Y", "halfT", "brkMa", "brkL3", "brkHalf", "nearMa", "label")} if d else None,
         "cross": r.get("cross"), "groupSrank": r.get("groupSrank"), "disposed": r.get("disposed"),
     }
 
