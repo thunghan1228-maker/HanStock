@@ -46,6 +46,12 @@ CROSS_MIN_VOLUME = 500         # 穿惡：成交量至少 500 張
 TOP_GROUPS = 10                # 族群強度榜前 10 族
 TOP_K = 3                      # 族群強度＝七科總分最高的前 3 檔平均
 MIN_SUBJECTS = 3               # 至少三科有資料才分強勢／中等／弱勢
+# 七科給分（2026-10-22 使用者給老師完整問診：華通、國巨，加上今日名單 10 族 98 檔強勢／中等／弱勢＋族群強度榜；85 檔判定對上 76 檔，原本 62 檔）
+SUBJ_MA_HI, SUBJ_MA_MID = 13, 10   # 均線分數 ≥13 得 2、≥10 得 1（華通 4 分、國巨 3 分都是「趨勢偏弱」）
+SUBJ_GRP_TOP, SUBJ_GRP_MID = 3, 32   # 族群名次（當天族群漲幅排名，老師寫「排 第 59 名，後段沒資金照顧」）：前 3 名得 2、前 32 名得 1
+SUBJ_CHIP_HI, SUBJ_CHIP_LO = 3.0, -1.0   # 籌碼（籌碼雷達的籌碼%）：≥3 得 2；華通 -0.07「沒明顯進出」得 1、國巨 -1.79「主力在退」得 0
+SUBJ_PE_CHEAP, SUBJ_PE_FAIR = 1.0, 1.5   # 本益比跟族群平均比：≤族均得 2（華通 36.2、國巨 34.1 都「低於族均、便宜」）、≤1.5 倍得 1
+POS_DAYS = 5                   # 族內名次看近 5 日平均名次（華通近 5 日平均 3.6／7、國巨 14／22，「中 1/3」）
 PE_HIST_DAYS = 8
 REV_HIST_MONTHS = 4
 DIAG_BARS = 120                # 問診日線圖給近 120 根
@@ -62,7 +68,7 @@ RULES = [
     "籌碼面＝50 分起算：集保 400 張以上大戶張數週增％ ×4（上限 ±25）、連續增加每週 +3（上限 +9）；三大法人近 5 日買賣超佔近 5 日成交量的比例（上限 ±15）；主力近 5 日淨買賣佔近 5 日成交量的比例（上限 ±10）。三種資料都沒有的不評分。",
     "綜合＝你勾選的面向加權平均（預設基本面 34％、籌碼面 33％、技術面 33％）；沒資料的面向預設不算進去，不會被當 0 分。≥80 強、≥60 中上、≥45 普通、≥30 偏弱、其餘弱。",
     "防守線：三日低＝不含當天的前三個交易日最低（明日值＝含今天的近三日最低）；月線＝20 日收盤均；紅半＝近三個交易日最高與最低的中間值，只在三日振幅 ≥10% 而且收盤站在中點之上 1% 以上時才列（漲多時多一個防守點）。收盤跌破任一條 → 減碼；月線與三日低雙破 → 出場；即將穿惡＝收盤在月線下但距月線 10% 以內，一根漲停就能站回。價格未還原除權息。",
-    "七科小體檢各 0～2 分：均線分數（內定 ≥12 得 2、≥8 得 1）、族群平均分（≥10 得 2、≥7 得 1）、族內名次（依當天漲跌幅，前三分之一得 2、中段得 1）、籌碼（籌碼雷達的籌碼% ≥3 得 2、≥0 得 1）、本益比（<20 得 2、<35 得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
+    "七科小體檢各 0～2 分：均線分數（內定 ≥13 得 2、≥10 得 1）、族群名次（當天族群漲幅排名，前 3 名得 2、前 32 名得 1、後段 0）、族內名次（近 5 日平均名次，前三分之一得 2、中段得 1）、籌碼（籌碼雷達的籌碼% ≥3 得 2、-1 以上得 1、更低 0）、本益比（≤族群平均得 2、≤1.5 倍得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
     "族群強度榜：每族取七科總分最高的前 3 檔平均當族群強度，排名前 10 族；今日名單＝這十族裡判定為強勢／中等的股，依族群強度再依七科總分排。收盤排名＝下午報當天族群平均漲跌幅的名次。",
     "今日穿惡＝族群表內、昨收在昨日月線之下、今收比昨日月線高 3% 以上、成交量 ≥500 張的股票；站上不到 3% 或量太小的不列。",
     "分數是體質快照，不是買賣訊號。範圍是本站有日K的股票（族群表內加盤中訊號追蹤的全市場股票）。",
@@ -285,14 +291,62 @@ def defense_lines(bars: list[Bar]) -> dict[str, Any] | None:
 
 # ------------------------------------------------------------------ 七科
 
-def subjects(official: int | None, group_avg: float | None, group_rank: int | None, group_n: int | None,
-             week_pct: float | None, pe: float | None, yoy: float | None, inst5: float | None, inst_today: float | None) -> dict[str, Any]:
+def group_day_ranks(changes: dict[str, float | None], members: dict[str, list[str]]) -> dict[str, int]:
+    """族群名次＝每族成員當天平均漲幅的排名（老師的「族群名次」、收盤排名）；changes 只放有今天日K的股票。"""
+    avgs = {}
+    for name, codes in members.items():
+        values = [changes[c] for c in codes if changes.get(c) is not None]
+        if values:
+            avgs[name] = _mean(values)
+    return {name: i + 1 for i, name in enumerate(sorted(avgs, key=lambda n: -avgs[n]))}
+
+
+def daily_changes(closes: list[tuple[str, float]], keep: int = 12) -> dict[str, float]:
+    """{日期: 當天漲跌 %}，只留最近 keep 天。closes 舊到新、（日期, 收盤）。"""
+    out: dict[str, float] = {}
+    for i in range(max(1, len(closes) - keep), len(closes)):
+        prev = closes[i - 1][1]
+        if prev > 0:
+            out[closes[i][0]] = (closes[i][1] / prev - 1) * 100
+    return out
+
+
+def pos_averages(daily: dict[str, dict[str, float]], members: dict[str, list[str]], as_of: str, days: int = POS_DAYS) -> dict[tuple[str, str], tuple[float, int]]:
+    """{(族群, 代號): (近 days 日族內平均名次, 族內檔數)}。每天用當天漲幅在族內排名（有當天日K的才排），平均最近 days 個交易日的名次；
+    檔數＝基準日有日K的成員數。華通（低軌衛星 7 檔）近 5 日平均 3.6、國巨（被動元件 22 檔）14，跟老師一樣。"""
+    out: dict[tuple[str, str], tuple[float, int]] = {}
+    for name, codes in members.items():
+        have = [c for c in codes if c in daily]
+        dates = sorted({d for c in have for d in daily[c] if d <= as_of})[-days:]
+        ranks: dict[str, list[int]] = {c: [] for c in have}
+        for d in dates:
+            for i, c in enumerate(sorted((c for c in have if d in daily[c]), key=lambda c: -daily[c][d])):
+                ranks[c].append(i + 1)
+        n = sum(1 for c in have if as_of in daily[c])
+        for c, r in ranks.items():
+            if r and as_of in daily[c]:
+                out[(name, c)] = (sum(r) / len(r), n)
+    return out
+
+
+def group_pe_means(pe_by_code: dict[str, float | None], members: dict[str, list[str]]) -> dict[str, float]:
+    """族群本益比平均（老師：低軌衛星 37.9＝6 檔有本益比的平均）；沒有本益比或超過 500 的不算。"""
+    out = {}
+    for name, codes in members.items():
+        values = [pe_by_code[c] for c in codes if pe_by_code.get(c) and 0 < pe_by_code[c] < 500]
+        if values:
+            out[name] = _mean(values)
+    return out
+
+
+def subjects(official: int | None, group_rank: int | None, pos_avg: float | None, pos_n: int | None,
+             chip: float | None, pe: float | None, group_pe: float | None, yoy: float | None, inst5: float | None, inst_today: float | None) -> dict[str, Any]:
     sc: dict[str, int | None] = {
-        "ma": None if official is None else 2 if official >= 12 else 1 if official >= 8 else 0,
-        "grp": None if group_avg is None else 2 if group_avg >= 10 else 1 if group_avg >= 7 else 0,
-        "pos": None if not group_rank or not group_n or group_n < 2 else 2 if group_rank <= -(-group_n // 3) else 1 if group_rank <= -(-2 * group_n // 3) else 0,
-        "chip": None if week_pct is None else 2 if week_pct >= 3 else 1 if week_pct >= 0 else 0,
-        "pe": None if pe is None or pe <= 0 else 2 if pe < 20 else 1 if pe < 35 else 0,
+        "ma": None if official is None else 2 if official >= SUBJ_MA_HI else 1 if official >= SUBJ_MA_MID else 0,
+        "grp": None if not group_rank else 2 if group_rank <= SUBJ_GRP_TOP else 1 if group_rank <= SUBJ_GRP_MID else 0,
+        "pos": None if pos_avg is None or not pos_n or pos_n < 2 else 2 if pos_avg <= pos_n / 3 else 1 if pos_avg <= 2 * pos_n / 3 else 0,
+        "chip": None if chip is None else 2 if chip >= SUBJ_CHIP_HI else 1 if chip >= SUBJ_CHIP_LO else 0,
+        "pe": None if pe is None or pe <= 0 or not group_pe else 2 if pe <= group_pe * SUBJ_PE_CHEAP else 1 if pe <= group_pe * SUBJ_PE_FAIR else 0,
         "rev": None if yoy is None else 2 if yoy >= 30 else 1 if yoy >= 0 else 0,
         "inst": None if inst5 is None else 2 if inst5 > 0 and (inst_today or 0) > 0 else 1 if inst5 > 0 or (inst_today or 0) > 0 else 0,
     }
@@ -477,8 +531,15 @@ def _rebuild() -> dict[str, Any]:
     radar_chip = {c: v.get("chip2") for c, v in ((week or {}).get("stocks") or {}).items()}
     for code, r in rows.items():
         r["chip"]["radar"] = radar_chip.get(code)
+    members = _group_members()
+    day_rank = group_day_ranks({c: r["chgPct"] for c, r in rows.items() if not r["stale"]}, members)
+    pos = pos_averages({c: daily_changes([(b[0], b[4]) for b in bars_by_code[c][-14:]]) for c in rows}, members, latest)
+    group_pe = group_pe_means({c: r["fund"]["pe"] for c, r in rows.items() if not r["stale"]}, members)
     for r in rows.values():
-        r["subjects"] = subjects(r["score2"], r["groupAvg2"], r["groupRank"], r["groupN"], r["chip"]["radar"], r["fund"]["pe"], r["fund"]["yoy"],
+        g = r["group"]
+        avg, n = pos.get((g, r["code"]), (None, None)) if g else (None, None)
+        r["groupDayRank"], r["posAvg"], r["posN"], r["groupPe"] = day_rank.get(g), (round(avg, 1) if avg is not None else None), n, (round(group_pe[g], 1) if g in group_pe else None)
+        r["subjects"] = subjects(r["score2"], day_rank.get(g), avg, n, r["chip"]["radar"], r["fund"]["pe"], group_pe.get(g), r["fund"]["yoy"],
                                  r["chip"]["inst5"], r["chip"]["instToday"])
     top = build_top(rows, latest)
     for r in rows.values():

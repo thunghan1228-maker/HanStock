@@ -650,24 +650,19 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     radar_stocks = radar["stocks"] if radar else {}
     # 問診七科（跟個股研究／健診同一套口徑；2026-09-28 使用者：體質轉強改用七科）
     # 延遲匯入：stock_checkup → heilong_backtest → 這個模組，放最上面會循環。
-    from stock_checkup import subjects as seven_subjects
+    from stock_checkup import daily_changes, group_pe_means, pos_averages, subjects as seven_subjects
 
-    group_avg_score = {g["name"]: g["avgScore"] for g in groups}
-    group_size = {g["name"]: g["members"] for g in groups}
-    pos_rank: dict[str, int] = {}   # 族內名次＝當天漲跌幅在族內的排名（跟 stock_checkup 一樣，第一個族群為準）
-    for name, members in STOCK_GROUPS.items():
-        if name in SPECIAL_GROUP_NAMES:
-            continue
-        fresh = [str(c).strip().upper() for c, _n in members if str(c).strip().upper() in tech]
-        fresh.sort(key=lambda c: tech[c]["changePct"], reverse=True)
-        for i, c in enumerate(fresh):
-            pos_rank.setdefault(c, i + 1)
+    # 老師問診（2026-10-22）：族群名次＝當天族群漲幅排名、族內名次＝近 5 日平均名次、本益比跟族群平均比；族內以第一個族群為準
+    group_members = {name: [str(c).strip().upper() for c, _n in members] for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES}
+    pos_avg = pos_averages({c: daily_changes([(b[0], b[3]) for b in bars_by_code[c][-14:]]) for c in tech}, group_members, as_of)
+    group_pe_avg = group_pe_means({c: chips.get(c, {}).get("pe") for c in tech}, group_members)
     seven: dict[str, dict[str, Any]] = {}
     for code, t in tech.items():
         g = group_of.get(code, "")
         ch = chips.get(code, {})
-        seven[code] = seven_subjects(t["score"], group_avg_score.get(g), pos_rank.get(code), group_size.get(g),
-                                     (radar_stocks.get(code) or {}).get("chip2"), ch.get("pe"), ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
+        avg, n = pos_avg.get((g, code), (None, None))
+        seven[code] = seven_subjects(t["score"], group_rank.get(g), avg, n, (radar_stocks.get(code) or {}).get("chip2"), ch.get("pe"), group_pe_avg.get(g),
+                                     ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
 
     # 熱門族也包含當天族群漲幅前 10 名（老師 10/12 GIS-KY 屬 AI眼鏡、10/15～10/16 精誠屬資訊都標熱門族，那幾天這兩族都在當天前 10）
     for g in groups[:CHIPS_DAILY_HOT_GROUPS]:
