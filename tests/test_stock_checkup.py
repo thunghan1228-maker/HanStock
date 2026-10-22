@@ -89,16 +89,49 @@ class ScoreTests(unittest.TestCase):
         self.assertIsNone(module.defense_lines(bars[:20]))
 
     def test_subjects(self) -> None:
-        s = module.subjects(9, None, None, None, 0.73, 28.7, 53.3, 8230.0, -5713.0)
-        self.assertEqual(s["sc"], {"ma": 1, "grp": None, "pos": None, "chip": 1, "pe": 1, "rev": 2, "inst": 1})
-        self.assertEqual((s["red"], s["green"], s["total"], s["possible"], s["cls"]), (1, 0, 6, 10, "中等"))
-        s2 = module.subjects(15, 12.0, 1, 9, 5.0, 15.0, 40.0, 100.0, 10.0)
+        # subjects(均線, 族群名次, 族內近5日平均名次, 族內檔數, 籌碼%, PE, 族群平均PE, 營收年增, 法人5日, 法人今日)
+        s = module.subjects(9, None, None, None, 0.73, 28.7, 30.0, 53.3, 8230.0, -5713.0)
+        self.assertEqual(s["sc"], {"ma": 0, "grp": None, "pos": None, "chip": 1, "pe": 2, "rev": 2, "inst": 1})
+        self.assertEqual((s["red"], s["green"], s["total"], s["possible"], s["cls"]), (2, 1, 6, 10, "中等"))
+        s2 = module.subjects(15, 1, 1.0, 9, 5.0, 15.0, 40.0, 100.0, 10.0, 10.0)
         self.assertEqual((s2["red"], s2["green"], s2["cls"]), (7, 0, "強勢"))
-        s3 = module.subjects(3, 5.0, 9, 9, -2.0, 60.0, -10.0, -50.0, -5.0)
+        s3 = module.subjects(3, 59, 8.0, 9, -2.0, 60.0, 30.0, -10.0, -50.0, -5.0)
         self.assertEqual((s3["red"], s3["green"], s3["cls"]), (0, 6, "弱勢"))
-        self.assertEqual(module.subjects(None, None, None, None, None, None, None, None, None)["cls"], None)
-        self.assertEqual(module.subjects(None, 12.0, 1, 5, None, None, None, None, None)["cls"], None)      # 只有兩科有資料不分級
-        self.assertEqual(module.subjects(None, 12.0, 1, 5, 5.0, None, None, None, None)["cls"], "強勢")
+        self.assertEqual(module.subjects(None, None, None, None, None, None, None, None, None, None)["cls"], None)
+        self.assertEqual(module.subjects(None, 1, 1.0, 5, None, None, None, None, None, None)["cls"], None)      # 只有兩科有資料不分級
+        self.assertEqual(module.subjects(None, 1, 1.0, 5, 5.0, None, None, None, None, None)["cls"], "強勢")
+
+    def test_subjects_zhuang_1022(self) -> None:
+        # 老師 10/22 完整問診：華通（低軌衛星）弱勢 🔴1·🟢3、國巨（被動元件）弱勢 🔴2·🟢4
+        hua = module.subjects(4, 59, 3.6, 7, -0.07, 36.2, 37.9, 15.0, -3971.0, -5585.0)
+        self.assertEqual(hua["sc"], {"ma": 0, "grp": 0, "pos": 1, "chip": 1, "pe": 2, "rev": 1, "inst": 0})   # 趨勢偏弱、後段沒資金、中間位置、沒明顯進出、便宜、溫和成長、籌碼被倒
+        self.assertEqual((hua["red"], hua["green"], hua["cls"]), (1, 3, "弱勢"))
+        kuo = module.subjects(3, 65, 14.0, 22, -1.79, 34.1, 40.0, 46.1, -29225.0, -16585.0)
+        self.assertEqual(kuo["sc"], {"ma": 0, "grp": 0, "pos": 1, "chip": 0, "pe": 2, "rev": 2, "inst": 0})   # 主力在退、成長很強
+        self.assertEqual((kuo["red"], kuo["green"], kuo["cls"]), (2, 4, "弱勢"))
+
+    def test_group_helpers(self) -> None:
+        # 族群本益比平均：老師低軌衛星 37.9＝耀登 35.1、兆赫 43.1、萊德 63.8、華通 36.2、啟碁 25.0、同欣電 24.2（燿華沒有本益比）六檔的平均
+        members = {"低軌衛星": ["3138", "2367", "2485", "7717", "2313", "6285", "6271"], "空運": ["2610", "2618"]}
+        pes = {"3138": 35.1, "2367": None, "2485": 43.1, "7717": 63.8, "2313": 36.2, "6285": 25.0, "6271": 24.2, "2610": 9.4, "2618": 600.0}
+        means = module.group_pe_means(pes, members)
+        self.assertEqual(round(means["低軌衛星"], 1), 37.9)
+        self.assertEqual(means["空運"], 9.4)                       # 超過 500 的異常值不算
+        # 族群名次：成員平均漲幅排名
+        ranks = module.group_day_ranks({"3138": 1.0, "2313": -1.0, "2610": 2.0, "2618": 2.0, "9999": 5.0}, members)
+        self.assertEqual(ranks, {"空運": 1, "低軌衛星": 2})
+        # 族內近 5 日平均名次：3 檔 × 5 天，A 每天第 1、B 第 2、C 第 3；只有最近 5 天算，更早的不算；基準日沒日K的不排
+        days = ["d1", "d2", "d3", "d4", "d5", "d6", "d7"]
+        daily = {"A": {d: 3.0 for d in days}, "B": {d: 2.0 for d in days}, "C": {d: 1.0 for d in days}}
+        daily["C"]["d1"] = 9.0                                     # 更早那天 C 第 1，不在最近 5 天內
+        daily["D"] = {d: 0.0 for d in days[:-1]}                   # D 基準日（d7）沒有日K
+        pos = module.pos_averages(daily, {"g": ["A", "B", "C", "D"]}, "d7")
+        self.assertEqual((pos[("g", "A")], pos[("g", "B")], pos[("g", "C")]), ((1.0, 3), (2.0, 3), (3.0, 3)))
+        self.assertNotIn(("g", "D"), pos)
+        changes = module.daily_changes([("d1", 100.0), ("d2", 110.0), ("d3", 99.0)])
+        self.assertEqual(list(changes), ["d2", "d3"])
+        self.assertAlmostEqual(changes["d2"], 10.0)
+        self.assertAlmostEqual(changes["d3"], -10.0)
 
     def test_normalize_codes(self) -> None:
         self.assertEqual(module.normalize_codes("2481/2408, 2344 2330\n2409，6182、2481"), ["2481", "2408", "2344", "2330", "2409", "6182"])
@@ -170,10 +203,10 @@ class RebuildTests(unittest.TestCase):
         df = hj["def"]
         self.assertEqual((df["low3Y"], df["low3T"], df["halfY"], df["halfT"], df["label"]), (99, 99, 106.5, 107.5, "✅ 守住"))   # 昨天看：高 114 低 99 → 106.5；今天看：高 116 低 99 → 107.5
         self.assertEqual((hj["groupAvg2"], hj["groupRank"], hj["groupN"]), (15.0, 2, 2))   # 族內只有合晶與環球晶有今天的日K；合晶 −0.88% 排第 2
-        self.assertEqual(hj["subjects"]["sc"], {"ma": 2, "grp": 2, "pos": 1, "chip": 2, "pe": 1, "rev": 2, "inst": 2})
+        self.assertEqual(hj["subjects"]["sc"], {"ma": 2, "grp": 2, "pos": 1, "chip": 2, "pe": 2, "rev": 2, "inst": 2})
         self.assertEqual(hj["chip"]["radar"], 4.5)           # 籌碼雷達的籌碼%；大戶週增 weekPct 另外留著（三面向分數用）
         self.assertIsNone(rows["6488"]["chip"]["radar"])     # 雷達沒有這檔：籌碼科不計分，不拿大戶週增 % 來湊
-        self.assertEqual((hj["subjects"]["red"], hj["subjects"]["green"], hj["subjects"]["cls"]), (5, 0, "強勢"))
+        self.assertEqual((hj["subjects"]["red"], hj["subjects"]["green"], hj["subjects"]["cls"]), (6, 0, "強勢"))
         self.assertEqual(hj["hist"]["chip8"], [["2026-09-18", 10.0]])
         self.assertEqual(len(hj["hist"]["score10"]), 10)
         self.assertEqual(hj["hist"]["score10"][-1], [d[-1], 15])
@@ -189,7 +222,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((rows["2330"]["group"], rows["2330"]["score2"], rows["2330"]["subjects"]["cls"]), ("半導體", 0, None))   # 平盤：官網式 0（創新高平手不算）；只有兩科有資料不分級
         self.assertEqual(module.collector_status()["lastDate"], d[-1])
         self.assertEqual((hj["cross"]["prevBelow"], hj["cross"]["up"]), (False, False))       # 昨收 113 在月線上，不算穿惡
-        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 12.0))                  # 矽晶圓：合晶 12 分（2+2+1+2+1+2+2；環球晶沒有七科）
+        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 13.0))                  # 矽晶圓：合晶 13 分（2+2+1+2+2+2+2，本益比跟族群平均比；環球晶沒有七科）
         self.assertIsNone(rows["2330"]["groupSrank"])                                       # 半導體沒有分級的成員，不進強度榜
         self.assertEqual((result["topGroups"], result["todayList"], result["cross"]), (1, 1, 0))
         again = module.rebuild()
@@ -226,6 +259,18 @@ class RebuildTests(unittest.TestCase):
         rows = {x["code"]: x["hiLen"] for x in module.checkup("6182 2330")["rows"]}
         self.assertEqual(rows, {"6182": 242, "2330": None})                      # 用最新一天；那天沒有的不拿舊的
 
+    def test_cross_info_threshold(self) -> None:
+        # 老師 10/22 今日穿惡：麗臺 96.20 ÷ 昨天月線 88.41 = +8.8% 列；百達-KY 96.3 ÷ 94.13 = +2.3% 不列（用昨天的月線算，門檻 3%）
+        d = {"ma20Y": 88.41, "ma20T": 88.62}
+        c = module.cross_info(87.5, 96.2, 10337, d)
+        self.assertEqual((c["prevBelow"], c["up"], round(c["dist"], 1)), (True, True, 8.8))
+        c = module.cross_info(90.1, 96.3, 1312, {"ma20Y": 94.13, "ma20T": 93.5})
+        self.assertEqual((c["prevBelow"], c["up"], round(c["dist"], 1)), (True, False, 2.3))
+        self.assertFalse(module.cross_info(87.5, 96.2, 300, d)["up"])        # 量不到 500 張
+        self.assertFalse(module.cross_info(89.0, 96.2, 5000, d)["up"])       # 昨收已在月線上，不算穿
+        self.assertIsNone(module.cross_info(None, 96.2, 5000, d))
+        self.assertIsNone(module.cross_info(87.5, 96.2, 5000, None))
+
     def test_cross_up_and_diag(self) -> None:
         d = self.dates
         # 環球晶改成：昨收在月線下、今天站上月線 3% 且量夠 → 穿惡
@@ -238,7 +283,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual(result["cross"], 1)
         r = module.diag("6488")
         self.assertEqual((r["status"], r["code"], r["stock"]["name"], r["stock"]["cross"]["up"], r["stock"]["cross"]["prevBelow"]), ("ok", "6488", "環球晶", True, True))
-        self.assertGreater(r["stock"]["cross"]["dist"], 2.0)
+        self.assertGreater(r["stock"]["cross"]["dist"], 3.0)
         self.assertEqual(len(r["bars"]), 30)
         self.assertEqual(r["bars"][-1][:5], [d[-1], 480.0, 520.0, 478.0, 516.0])
         self.assertEqual([x["code"] for x in r["siblings"]], ["6182", "6488", "5483"])       # 同族依七科總分排；中美晶資料舊的沒有七科排最後
