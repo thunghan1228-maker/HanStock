@@ -58,12 +58,16 @@ TAX_PCT = 0.3                    # 證交稅％（賣出一次）
 SCOPES = ("groups", "market")
 
 OFFICIAL_HI_PERIODS = (5, 10, 20, 60, 120, 360)   # 官網式「創 6 個天期新高」
-OFFICIAL_RECENT_DAYS = 3                            # 最近 3 個交易日的最高收盤比這個天期內更早的都高（平手不算）就算創新高
+OFFICIAL_GAP_DAYS = 3                               # 創新高：今天收盤比這個天期內「3 個交易日以前」的最高收盤還高（平手不算）；最近兩天（含今天往前 2 天）不比
 # 官網式「多頭排列加分」三項。2026-10-10 使用者給老師均線分數排行頁（zhuang.tw/ma）：他寫的是 MA120>MA350（不是 240），
 # 創新高也是平手不算；拿他 10/08 前 60 名逐檔比，這樣改才對得上（240／平手算的版本差 8 檔）。日K不到 350 根就用現有的平均。
+# 2026-10-22 使用者給老師問診「今日名單」（10/22 收盤 56 檔的均線）：創新高原本是「最近 3 天的最高收盤 > 更早的」，當天收黑的股票會多算
+# （大綜 -5% 我們 11、老師 7；緯創、英業達、廣達、技嘉都多 1～2 分），改成「今天收盤 > 3 個交易日以前的最高收盤」後 56 檔對上 49 檔（原本 44 檔），
+# 10/21 日報的 13 檔也全對（精誠前一天 8 不是 14、環科 5 不是 6、緯穎 1 不是 2）。剩下 7 檔老師的分數都比我們高 1～2 分（三商電、達麗、高鋒、虎航、
+# 伊雲谷、中櫃、華航…），看起來是均線剛好差一點點的平手（高鋒收盤 41.45＝5 日均價 41.45）；試過「收盤等於均線算站上」只多對 1 檔、而且平盤股票會被算成 6 分，沒採用。
 OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 350))
 ALIGN_LONG = 350
-SCORE_VERSION = "2026-10-10"     # 算法改了就換：整張表重算
+SCORE_VERSION = "2026-10-22"     # 算法改了就換：整張表重算
 ALGOS = ("site", "official")
 ALGO_LABELS = {"site": "本站", "official": "內定"}   # 2026-09-28 使用者：前端只用內定這套
 
@@ -87,7 +91,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
 
 RULES = [
     "進場＝符合條件那天的收盤價；D+1＝下一個有日K的交易日。日K不足 240 根算不出均線分數、不會入選。",
-    "均線分數（內定算法，滿分 15）＝收盤站上 5／10／20／60／120／240 日均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（最近 3 個交易日的最高收盤比那個天期內更早的都高，平手不算）＋多頭排列加分 3 分（20 日線在 60 日線上、60 在 120 上、120 在 350 上各 1 分）。",
+    "均線分數（內定算法，滿分 15）＝收盤站上 5／10／20／60／120／240 日均線各 1 分＋創 6 個天期（5／10／20／60／120／360 日）新高各 1 分（今天收盤比那個天期內 3 個交易日以前的最高收盤還高，平手不算）＋多頭排列加分 3 分（20 日線在 60 日線上、60 在 120 上、120 在 350 上各 1 分）。",
     "黑K＝收盤＜開盤、紅K＝收盤＞開盤；漲跌幅跟前一天收盤比。",
     "週籌碼＝那天當時看得到的集保週（結算日早於那天的最近一週）400 張以上大戶張數比前一週的增減％；沒有資料的股，勾了這條件就不算符合。",
     "族群平均分＝該股所屬族群全部成員當天均線分數的平均。5 日均成交值＝近 5 天「收盤價×成交量」的平均（億），是估算值。",
@@ -292,8 +296,8 @@ def _has_futures(code: str) -> bool:
 
 def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> tuple[int, int, int] | None:
     """官網式均線分數的三部分：(站上均線位元, 創新高位元, 多頭排列分)。位元第 k 位＝第 k 個天期（MA_PERIODS／OFFICIAL_HI_PERIODS 的順序）。
-    站上：收盤＞5／10／20／60／120／240 日均線；創新高：最近 3 個交易日的最高收盤＞那個天期（5／10／20／60／120／360 日，
-    不夠長用現有長度）內更早的最高收盤（平手不算）；排列：20 日＞60 日、60 日＞120 日、120 日＞350 日各 1 分。
+    站上：收盤＞5／10／20／60／120／240 日均線；創新高：今天收盤＞那個天期（5／10／20／60／120／360 日，
+    不夠長用現有長度）內 3 個交易日以前的最高收盤（平手不算）；排列：20 日＞60 日、60 日＞120 日、120 日＞350 日各 1 分。
     closes 舊到新、最後一筆是當天；不足 240 根回 None。mas 可以先給 MA_PERIODS 的均線（350 日不給就自己算）。"""
     n = len(closes)
     if n < max(MA_PERIODS):
@@ -307,8 +311,8 @@ def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> 
     hi_bits = 0
     for k, p in enumerate(OFFICIAL_HI_PERIODS):
         window = closes[-p:]
-        earlier = window[:-OFFICIAL_RECENT_DAYS]
-        if earlier and max(window[-OFFICIAL_RECENT_DAYS:]) > max(earlier):
+        earlier = window[:-OFFICIAL_GAP_DAYS]
+        if earlier and close > max(earlier):
             hi_bits |= 1 << k
     align = sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
     return ma_bits, hi_bits, align
@@ -367,10 +371,9 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
     for ch in changes:
         big.append(big[-1] + (1 if ch is not None and ch > HITS_MIN_PCT else 0))
     longest = max(MA_PERIODS)
-    recent = OFFICIAL_RECENT_DAYS
-    # 天期內「最近 3 天以前」那段的最高收盤：寬度 p−3、結束在 i−3 的滑動最大值
-    earlier_max = {p: _sliding_max(closes, p - recent) for p in OFFICIAL_HI_PERIODS}
-    recent_max = _sliding_max(closes, recent)
+    gap = OFFICIAL_GAP_DAYS
+    # 天期內「3 個交易日以前」那段的最高收盤：寬度 p−3、結束在 i−3 的滑動最大值
+    earlier_max = {p: _sliding_max(closes, p - gap) for p in OFFICIAL_HI_PERIODS}
     hi_len = hi_lengths(closes)
     for i, (d, o, h, l, c, v) in enumerate(bars):
         if d not in wanted:
@@ -383,7 +386,7 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             span = min(ALIGN_LONG, n)
             mas[ALIGN_LONG] = (prefix[n] - prefix[n - span]) / span
             ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if c > mas[p])
-            hi_bits = sum(1 << k for k, p in enumerate(OFFICIAL_HI_PERIODS) if i >= recent and recent_max[i] > earlier_max[p][i - recent])
+            hi_bits = sum(1 << k for k, p in enumerate(OFFICIAL_HI_PERIODS) if i >= gap and c > earlier_max[p][i - gap])
             align = sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
             score2 = bin(ma_bits).count("1") + bin(hi_bits).count("1") + align
         hits = big[i + 1] - big[max(1, i - HITS_DAYS + 1)]
@@ -494,7 +497,7 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     if old_version != version:
         force, reason = True, "還原事件有變"   # 分割減資還原的事件變了：以前的價格都要重算
     if have and old_score_version != SCORE_VERSION:
-        force, reason = True, "均線分數算法更新"   # 2026-10-10：排列第三項改 120＞350、創新高平手不算
+        force, reason = True, "均線分數算法更新"   # 2026-10-10：排列第三項改 120＞350、創新高平手不算；2026-10-22：創新高改今天收盤比 3 日以前高
     tail = set(target[-RECOMPUTE_TAIL:])
     todo = [d for d in target if force or d not in have or d in tail]
     result: dict[str, Any] = {"date": latest, "rebuilt": todo, "rebuiltCount": len(todo), "dates": len(target), "reason": reason}

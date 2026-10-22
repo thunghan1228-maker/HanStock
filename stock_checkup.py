@@ -62,7 +62,7 @@ RULES = [
     "籌碼面＝50 分起算：集保 400 張以上大戶張數週增％ ×4（上限 ±25）、連續增加每週 +3（上限 +9）；三大法人近 5 日買賣超佔近 5 日成交量的比例（上限 ±15）；主力近 5 日淨買賣佔近 5 日成交量的比例（上限 ±10）。三種資料都沒有的不評分。",
     "綜合＝你勾選的面向加權平均（預設基本面 34％、籌碼面 33％、技術面 33％）；沒資料的面向預設不算進去，不會被當 0 分。≥80 強、≥60 中上、≥45 普通、≥30 偏弱、其餘弱。",
     "防守線：三日低＝不含當天的前三個交易日最低（明日值＝含今天的近三日最低）；月線＝20 日收盤均；紅半＝近三個交易日最高與最低的中間值，只在三日振幅 ≥10% 而且收盤站在中點之上 1% 以上時才列（漲多時多一個防守點）。收盤跌破任一條 → 減碼；月線與三日低雙破 → 出場；即將穿惡＝收盤在月線下但距月線 10% 以內，一根漲停就能站回。價格未還原除權息。",
-    "七科小體檢各 0～2 分：均線分數（內定 ≥12 得 2、≥8 得 1）、族群平均分（≥10 得 2、≥7 得 1）、族內名次（依當天漲跌幅，前三分之一得 2、中段得 1）、籌碼（大戶週增 ≥3% 得 2、≥0 得 1）、本益比（<20 得 2、<35 得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
+    "七科小體檢各 0～2 分：均線分數（內定 ≥12 得 2、≥8 得 1）、族群平均分（≥10 得 2、≥7 得 1）、族內名次（依當天漲跌幅，前三分之一得 2、中段得 1）、籌碼（籌碼雷達的籌碼% ≥3 得 2、≥0 得 1）、本益比（<20 得 2、<35 得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
     "族群強度榜：每族取七科總分最高的前 3 檔平均當族群強度，排名前 10 族；今日名單＝這十族裡判定為強勢／中等的股，依族群強度再依七科總分排。收盤排名＝下午報當天族群平均漲跌幅的名次。",
     "今日穿惡＝族群表內、昨收在昨日月線之下、今收站上今日月線 2% 以上、成交量 ≥500 張的股票；站上不到 2% 或量太小的不列。",
     "分數是體質快照，不是買賣訊號。範圍是本站有日K的股票（族群表內加盤中訊號追蹤的全市場股票）。",
@@ -461,8 +461,19 @@ def _rebuild() -> dict[str, Any]:
         for i, r in enumerate(ranked):
             if r["group"] == name:
                 r["groupAvg2"], r["groupRank"], r["groupN"] = avg, i + 1, len(ranked)
+    # 籌碼科：老師問診名單的「籌碼」欄是籌碼雷達的籌碼%（集保大戶週增換算，10/22 零壹 +4.17、台表科 +7.02，跟雷達那週一模一樣），不是大戶週增%
+    try:
+        from swing_report import radar_week   # 延遲匯入：swing_report 會反過來用這裡的七科
+
+        week = radar_week(latest)
+    except Exception:  # noqa: BLE001
+        logger.exception("checkup radar chip failed")
+        week = None
+    radar_chip = {c: v.get("chip2") for c, v in ((week or {}).get("stocks") or {}).items()}
+    for code, r in rows.items():
+        r["chip"]["radar"] = radar_chip.get(code)
     for r in rows.values():
-        r["subjects"] = subjects(r["score2"], r["groupAvg2"], r["groupRank"], r["groupN"], r["chip"]["weekPct"], r["fund"]["pe"], r["fund"]["yoy"],
+        r["subjects"] = subjects(r["score2"], r["groupAvg2"], r["groupRank"], r["groupN"], r["chip"]["radar"], r["fund"]["pe"], r["fund"]["yoy"],
                                  r["chip"]["inst5"], r["chip"]["instToday"])
     top = build_top(rows, latest)
     for r in rows.values():
@@ -490,7 +501,7 @@ def compact(r: dict[str, Any]) -> dict[str, Any]:
     d = r.get("def") or {}
     return {
         "code": r["code"], "name": r["name"], "group": r["group"], "cls": sub.get("cls"), "total": sub.get("total"), "red": sub.get("red"), "green": sub.get("green"),
-        "chgPct": r["chgPct"], "close": r["close"], "prev": r.get("prev"), "volume": r.get("volume"), "score2": r["score2"], "weekPct": r["chip"]["weekPct"],
+        "chgPct": r["chgPct"], "close": r["close"], "prev": r.get("prev"), "volume": r.get("volume"), "score2": r["score2"], "weekPct": r["chip"]["weekPct"], "chip": r["chip"].get("radar"),
         "pe": r["fund"]["pe"], "yoy": r["fund"]["yoy"], "inst5": r["chip"]["inst5"], "scores": r["scores"],
         "def": {k: d.get(k) for k in ("low3T", "ma20T", "halfT", "brkMa", "brkL3", "brkHalf", "nearMa", "label")} if d else None,
         "cross": r.get("cross"), "groupSrank": r.get("groupSrank"), "disposed": r.get("disposed"),

@@ -133,15 +133,66 @@ class ReportTests(unittest.TestCase):
         self.temp_dir.cleanup()
         main_force_store._table_ready_path = None
 
-    def test_main_group_needs_hot_and_big_inst(self) -> None:
-        # 2026-10-19 老師 10/20：資金主軸只挑熱門族、法人 5 日 ≥1 萬張；法人買超不到門檻的（這份測試資料 5,000 張）不算資金主軸
+    def test_main_group_needs_hot_and_enough_members(self) -> None:
+        # 老師 10/22：資金主軸只挑熱門族、法人 5 日買超、至少 5 檔（彬彬只有 3 檔法人 +1.1 萬張沒入選）；這份測試族群只有 1 檔，不算資金主軸
         r = module.build_report("2026-09-24", disposition_codes={"6207"})
         self.assertTrue(r["summary"][0].startswith("今天沒有族群"))
         self.assertFalse(any(g["featured"] and g["name"] == "矽晶圓" for g in r["groups"] if g["aboveRatio"] >= 0.5))
 
+    def test_main_groups_top_three_by_inst(self) -> None:
+        # 老師 10/22（資料基準 10/21）：光學鏡頭 +3.4 萬、AI眼鏡 +0.7 萬、資訊 +0.6 萬（法人買超不用 1 萬張）；彬彬只有 3 檔（+1.1 萬）、鴻家軍／AI 不是熱門族沒入選
+        def g(name: str, members: int, above: int, inst5: float, rank: int) -> dict:
+            return {"name": name, "members": members, "aboveMa20": above, "aboveRatio": above / members, "inst5": inst5, "rank": rank}
+
+        groups = [g("彬彬", 3, 2, 11402.2, 1), g("AI眼鏡", 6, 3, 6930.7, 9), g("鴻家軍", 7, 6, 45934.8, 17), g("AI", 5, 3, 72417.6, 25),
+                  g("光學鏡頭", 13, 8, 34917.5, 41), g("資訊", 21, 13, 6124.8, 46), g("小電組", 20, 13, -27239.6, 42)]
+        picked = module.pick_main_groups(groups, {"光學鏡頭", "資訊"})   # 籌碼雷達熱門族
+        self.assertEqual([x["name"] for x in picked[:module.MAIN_GROUP_LIMIT]], ["光學鏡頭", "AI眼鏡", "資訊"])
+        # 老師 10/21（資料基準 10/20）：AI、光學鏡頭、鴻家軍（鴻家軍收盤排名 7）；資訊 +0.7 萬排第 4 沒入選
+        groups = [g("AI", 5, 3, 37132.6, 1), g("彬彬", 3, 2, 3880.3, 6), g("鴻家軍", 7, 5, 15884.0, 7), g("AI眼鏡", 6, 3, 2840.8, 9), g("光學鏡頭", 13, 7, 26285.2, 11), g("資訊", 21, 11, 7275.7, 12)]
+        self.assertEqual([x["name"] for x in module.pick_main_groups(groups, {"光學鏡頭", "資訊"})[:3]], ["AI", "光學鏡頭", "鴻家軍"])
+        # 老師 10/20（資料基準 10/19）：小電組、鋼鐵、光學鏡頭；能源 3 檔、電腦周邊 4 檔太小
+        groups = [g("小電組", 20, 15, 59612.7, 1), g("電腦周邊", 4, 2, 1123.0, 5), g("能源", 3, 2, 854.2, 8), g("鋼鐵", 16, 9, 39522.5, 9), g("資訊", 21, 12, 6707.8, 35), g("光學鏡頭", 13, 7, 33668.4, 43)]
+        self.assertEqual([x["name"] for x in module.pick_main_groups(groups, {"資訊", "光學鏡頭"})[:3]], ["小電組", "鋼鐵", "光學鏡頭"])
+        # 法人賣超、站上月線不到一半的不算
+        self.assertEqual(module.pick_main_groups([g("被動元件", 22, 13, -68687.1, 3), g("機殼", 7, 3, 1000.0, 21)], {"被動元件", "機殼"}), [])
+
+    def test_pick_tech_from_zhuang_1022(self) -> None:
+        # 老師 10/22（資料基準 10/21）：真穿月線 8 檔＝列鈞寶、高力、眾達-KY、環科；略過 新復興（營收年增為負）、榮星（成交值 4,703 萬）、友達（營收年增為負）；定穎投控均線分數 6 沒列
+        def t(above: float, volume: int, close: float, prev: int, score: int) -> dict:
+            return {"crossedMa20": True, "abovePrevMa20Pct": above, "volume": volume, "close": close, "prevScore": prev, "score": score}
+
+        tech = {"6155": t(8.7, 4200, 71.7, 5, 9), "8996": t(4.5, 6064, 1660.0, 6, 10), "4977": t(3.1, 3981, 180.5, 4, 8), "2413": t(7.8, 3257, 57.6, 6, 9),
+                "3715": t(3.6, 5539, 135.0, 3, 6), "4909": t(7.82, 1720, 38.75, 5, 9), "1617": t(3.31, 2036, 23.1, 6, 10), "2409": t(3.21, 304087, 37.25, 5, 9),
+                "9999": {**t(2.9, 5000, 50.0, 5, 9)}, "9998": {**t(9.0, 300, 50.0, 5, 9)}}   # 站上不到 3%、量不到 500 張的只算「剛站上」
+        chips = {"4909": {"revenueYoy": -9.8}, "2409": {"revenueYoy": -4.3}, "1617": {"revenueYoy": 22.0}}
+        r = module.pick_tech(list(tech), tech, chips)
+        self.assertEqual(r["picks"], ["6155", "8996", "4977", "2413"])     # 跳升 +4、+4、+4、+3，同分站上多的在前
+        self.assertEqual(len(r["qualified"]), 8)
+        self.assertEqual(r["skipped"], [("4909", "營收年增為負"), ("1617", "成交值 4,703 萬"), ("2409", "營收年增為負")])
+        self.assertEqual(len(r["crossed"]), 10)
+        # 老師 10/21（資料基準 10/20）：和益均線分數 7 有列、乙盛-KY 均線 6 沒列（站上 3.2%）
+        tech = {"6695": t(9.4, 2990, 56.1, 7, 12), "1709": t(6.3, 26681, 56.5, 6, 7), "4770": t(5.6, 1924, 285.0, 5, 10), "3031": t(4.8, 5441, 32.55, 5, 9), "5243": t(3.2, 2362, 97.7, 4, 6)}
+        self.assertEqual(module.pick_tech(list(tech), tech, {})["picks"], ["6695", "4770", "3031", "1709"])
+        # 算不出均線分數的（日K不夠）不擋
+        tech = {"1111": {**t(5.0, 2000, 30.0, 0, 0), "score": None, "prevScore": None}}
+        self.assertEqual(module.pick_tech(["1111"], tech, {})["picks"], ["1111"])
+
+    def test_order_chips_from_zhuang_1022(self) -> None:
+        # 老師 10/22（資料基準 10/21）籌碼面：信昌電、緯穎、台表科、今國光；榜外連 5 週、均線 14 的濱川沒列
+        stocks = {"6669": {"chip": 21.5, "streak": 1, "rank": 1}, "6173": {"chip": 17.6, "streak": 1, "rank": 2}, "6278": {"chip": 7.0, "streak": 5, "rank": 6},
+                  "1569": {"chip": 3.2, "streak": 5, "rank": None}, "6209": {"chip": 5.4, "streak": 3, "rank": 14}}
+        scores = {"6669": 2, "6173": 7, "6278": 15, "1569": 14, "6209": 15}
+        hot = {"6173": 0, "6669": 1, "6278": 3, "6209": 3}   # 週籌碼族群排名：被動元件、機殼、資訊、光學鏡頭
+        allc, shown = module.order_chips(list(stocks), stocks, scores, {"6669", "6173", "6278"}, hot)
+        self.assertEqual(shown, ["6173", "6669", "6278", "6209"])
+        self.assertEqual(len(allc), 5)
+        # 沒有榜外的競爭者時，榜外連續週數多的照列（10/15 精誠連 8 週）
+        self.assertEqual(module.order_chips(["1569"], stocks, scores, set(), {})[1], ["1569"])
+
     def test_build_report(self) -> None:
-        # 資金主軸要法人 5 日 ≥1 萬張（真實盤）；這份測試資料只有 5,000 張，把門檻降下來才測得到「精選族群」的判讀文字
-        with patch.object(module, "MAIN_GROUP_MIN_INST5", 1000):
+        # 資金主軸要至少 5 檔（真實盤）；這份測試族群只有 1 檔，把門檻降下來才測得到「精選族群」的判讀文字
+        with patch.object(module, "MAIN_GROUP_MIN_MEMBERS", 1):
             r = module.build_report("2026-09-24", disposition_codes={"6207"})
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["date"], "2026-09-24")
@@ -193,10 +244,10 @@ class ReportTests(unittest.TestCase):
         self.enterContext(patch.object(module, "CHIPS_DAILY_HOT_GROUPS", 0))   # 這個測試只看週籌碼熱門族
         for d in trading_dates("2026-09-24", 5):
             chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
-        hot_all = {"6182": "矽晶圓", "2330": "半導體", "6207": "設備股"}
+        hot_all = {"6182": "矽晶圓", "6207": "設備股", "2330": "半導體"}   # 熱門族依週籌碼族群排名：矽晶圓、設備股、半導體
 
         def picks(buy: list[str], streaks: dict[str, int], hot_of: dict[str, str]) -> list[str]:
-            fake = {"week": "2026-09-18", "buy": buy, "hot": sorted(set(hot_of.values())), "hotOf": hot_of,
+            fake = {"week": "2026-09-18", "buy": buy, "hot": list(dict.fromkeys(hot_of.values())), "hotOf": hot_of,
                     "stocks": {c: {"chip": 5.0, "streak": streaks.get(c, 1), "rank": i + 1} for i, c in enumerate(buy)}}
             with patch.object(module, "radar_week", return_value=fake):
                 r = module.build_report("2026-09-24")
@@ -371,11 +422,57 @@ class ReportTests(unittest.TestCase):
                 return module.build_report("2026-09-24")["chipsWatch"]
 
         self.assertEqual(watch(1.97), [])
-        self.assertEqual(watch(2.4), [{"code": "3008", "name": "N3008", "daysOut": 3, "chip": 2.4}])
+        self.assertEqual(watch(2.4), [])   # 3008 不在族群表（老師 10/22：台星科、浩鼎不在族群表沒列）
         # 報告用帳本（全市場），不是只看族群表
         r = module.build_report("2026-09-24")
         self.assertEqual((r["tiles"]["upcoming"], r["tiles"]["releasing"]), (2, 1))
         self.assertEqual(r["readDate"], "2026-09-29")
+
+    def test_high_risk_includes_volume_already_passed(self) -> None:
+        # 老師 10/22 高機率處置：科嶠「成交量 > 1,729 張 會被關（今 3259 張）」、金居「成交量 > 12,625 張（今 15873 張）」——門檻已經被今天的量超過；
+        # 第四款要收盤價配合的（價格那條還沒到）不算
+        import disposition_jail as jail
+
+        jail.save_punishes([{"code": "6182", "start": "2026-09-29", "end": "2026-10-09", "market": "TSE", "name": "N6182", "announce": "2026-09-24",
+                             "condition": "連續三次", "measure": "第一次處置", "days": 10, "minutes": 5, "content": ""}])
+        vol = lambda lots, today, text, passed=True: {"kind": "volume", "lots": lots, "today": today, "passed": passed, "clause": "第六款", "text": text}  # noqa: E731
+        suspects = [
+            {"code": "4542", "name": "科嶠", "market": "上櫃", "jailed": False, "high": False, "status": "連3", "lines": [vol(1729, 3259, "成交量 > 1,729 張 會被關")]},
+            {"code": "8358", "name": "金居", "market": "上櫃", "jailed": False, "high": False, "status": "連3", "lines": [vol(12625, 15873, "成交量 > 12,625 張 會被關")]},
+            {"code": "2033", "name": "佳大", "market": "上市", "jailed": False, "high": False, "status": "連2", "lines": [vol(11999, 3629, "成交量 > 11,999 張 會被關", False)]},
+            {"code": "3037", "name": "欣興", "market": "上市", "jailed": False, "high": False, "status": "連2", "lines": [vol(5000, 9000, "收盤 > 69.14 元（+1.83%）且成交量 > 5,000 張 會被關")]},
+            {"code": "5205", "name": "中茂", "market": "上櫃", "jailed": False, "high": True, "status": "連2", "lines": [{"kind": "price", "text": "漲停都會被關（6 日累積已達第一款門檻）"}]},
+            {"code": "9999", "name": "已關", "market": "上市", "jailed": True, "high": True, "status": "連2", "lines": []},
+        ]
+        with patch.object(jail, "build_payload", return_value={"status": "ok", "dataDate": "2026-09-24", "suspects": suspects}):
+            d = module.disposition_from_jail("2026-09-24")
+        self.assertEqual([x["code"] for x in d["high"]], ["4542", "8358", "5205"])
+        self.assertEqual(d["high"][0]["lines"], ["成交量 > 1,729 張 會被關（今 3259 張）"])
+        self.assertEqual(d["high"][2]["lines"], ["漲停都會被關（6 日累積已達第一款門檻）"])
+
+    def test_summary_lines_follow_zhuang_1022(self) -> None:
+        # 老師 10/22 今日摘要：均線新滿分寫前 2 檔（精誠、台表科）、風險提示最多 4 檔、沒有新公布年增達標的月營收就不寫月營收那一點（也不退回寫整月累計首選）
+        import revenue_rank
+
+        self.assertEqual((module.SUMMARY_FULL_NAMES, module.RISK_LINE_LIMIT), (2, 4))
+        base = {"month": "2026-09", "asOf": "2026-09-24", "published": 3, "yoyHigh": 2, "qualified": 1, "rule": {"yoy": 30},
+                "picks": [{"code": "6182", "name": "合晶", "yoy": 40.0}], "since": "2026-09-23", "newPublished": 5, "newYoyHigh": 0, "newQualified": 0, "newPicks": []}
+        with patch.object(revenue_rank, "report_section", return_value=base):
+            r = module.build_report("2026-09-24")
+        self.assertFalse(any(line.startswith("營收面") or line.startswith("月營收") for line in r["summary"]))
+        with patch.object(revenue_rank, "report_section", return_value={**base, "newYoyHigh": 1, "newQualified": 1, "newPicks": [{"code": "6182", "name": "合晶", "yoy": 40.0}]}):
+            r = module.build_report("2026-09-24")
+        self.assertIn("月營收：09/23 之後到 09/24 公布 5 檔，年增 ≥30% 有 1 檔；首選 合晶", r["summary"])
+
+    def test_chips_watch_needs_group_stock(self) -> None:
+        # 老師 10/22 觀察名單只有勤凱（出獄第 5 天、籌碼 +3.5%）；不在族群表的（台星科、浩鼎）不列
+        out = {"nextTradingDay": "2026-09-25", "upcoming": [], "releasing": [], "active": [], "high": [],
+               "watch": [{"code": "6182", "name": "合晶", "daysOut": 5}, {"code": "3265", "name": "台星科", "daysOut": 2}]}
+        fake = {"week": "2026-09-18", "buy": [], "hot": [], "hotOf": {},
+                "stocks": {"6182": {"chip": 3.5, "chip2": 3.5, "streak": 1, "rank": None}, "3265": {"chip": 5.8, "chip2": 5.8, "streak": 1, "rank": None}}}
+        with patch.object(module, "disposition_from_jail", return_value=out), patch.object(module, "radar_week", return_value=fake):
+            r = module.build_report("2026-09-24")
+        self.assertEqual([(x["code"], x["daysOut"], x["chip"]) for x in r["chipsWatch"]], [("6182", 5, 3.5)])
 
     def test_refresh_window(self) -> None:
         self.assertTrue(module._in_refresh_window(datetime(2026, 9, 24, 15, 10, tzinfo=TW)))

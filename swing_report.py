@@ -36,15 +36,21 @@ LOOKBACK_DATES = 10            # 前端可回看的天數
 SUSTAIN_MIN_PREV = 10          # 續強確認：今天問診判強勢，而且昨天均線分數就已 ≥ 這個數（不是今天才跳上來）
 PICK_LIMIT = 5                 # 每個精選名單最多幾檔
 TECH_PICK_LIMIT = 4            # 技術面精選最多 4 檔（老師 10/21：真穿月線 6 檔、只列站上最多的 4 檔：芯鼎 9.4、和益 6.3、上品 5.6、佰鴻 4.8；乙盛-KY 3.2 沒列）
+TECH_MIN_SCORE = 7             # 技術面：均線分數至少 7 才列（老師 10/21 和益 7 有列、乙盛-KY 6 沒列；10/22 眾達-KY 8 有列、定穎投控 6 沒列，站上 3.6% 比眾達 3.1% 高也一樣沒列）；算不出均線分數的不擋
+TECH_MIN_TURNOVER = 5000       # 技術面：成交值（萬元）≥5,000 萬，不到的列在「略過」（老師 10/22 榮星 成交值 4,703 萬略過）
 INST_DAYS = 5                  # 法人／主力「5 日」
 TECH_MIN_ABOVE_PCT = 3.0       # 真穿月線：收盤站上月線 ≥3%
 TECH_MIN_VOLUME = 500          # 真穿月線：量 ≥500 張
 MA_JUMP_MIN = 3                # 均線轉強：均線分數比前一交易日跳升 ≥3
-MAIN_GROUP_MIN_INST5 = 10000   # 資金主軸：法人 5 日合計至少 1 萬張（老師 10/20 報告：小電組 +5.9、鋼鐵 +4.3、光學鏡頭 +3.6 萬張；能源 +0.09、資訊 +0.8 萬張沒入選）
+MAIN_GROUP_MIN_INST5 = 1       # 資金主軸：法人 5 日要是買超（老師 10/22：光學鏡頭 +3.4、AI眼鏡 +0.7、資訊 +0.6 萬張都入選，不是看 1 萬張門檻——原本的 1 萬張門檻會把後兩個擋掉）
+MAIN_GROUP_MIN_MEMBERS = 5     # 資金主軸：族群至少 5 檔（老師 10/22 彬彬 3 檔、法人 +1.1 萬張沒入選；10/20 能源 3 檔、電腦周邊 4 檔也沒有；AI 剛好 5 檔有）
+MAIN_GROUP_LIMIT = 3           # 資金主軸最多 3 個，法人 5 日買超多的在前（老師 10/20：小電組 5.9、鋼鐵 4.3、光學鏡頭 3.6；10/21：AI 3.7、光學鏡頭 2.7、鴻家軍 1.2；10/22：光學鏡頭 3.4、AI眼鏡 0.7、資訊 0.6）
 JUMP_TOP_MIN_SCORE = 10        # 跳升最多：跳升後的均線分數至少這個數（老師 10/20：鉅橡 5→11、建榮 7→12、東台 9→12…，沒有 3→7、2→6 這種）
 MA_STRONG_MIN = 8              # 均線轉強：跳升後至少 8 分
 DAYTRADE_WARN_PCT = 30.0       # 隔日沖買超佔成交量 ≥30% 提示倒貨壓力（老師 10/21：聯一光 51%、今國光 31% 有提示；和益 19.5%、德淵 17% 沒有）
 DAYTRADE_FETCH_TIMEOUT = 8
+SUMMARY_FULL_NAMES = 2         # 今日摘要「均線新滿分」寫前 2 檔（老師 10/22：精誠、台表科，第三檔騰輝電子-KY 沒寫）
+RISK_LINE_LIMIT = 4            # 今日摘要「風險提示」最多 4 檔（老師 10/22：信昌電、緯穎、台表科、鈞寶；後面眾達-KY 法人賣超、環科隔日沖 24% 都沒寫）
 DEV5_WARN_PCT = 10.0           # 與 5 日線乖離 ≥10% 提示（老師 10/21：芯鼎 10%、聯一光 11%、今國光 13% 都有提示；原本 15）
 CHIPS_POOL_TOP = 10            # 籌碼面：籌碼暴增榜（籌碼雷達）前 10 名裡挑（2026-10-12 使用者：照老師的籌碼面精選）
 CHIPS_PICK_LIMIT = 4            # 籌碼面精選固定 4 檔（老師 10/08～10/19 七份日報每份都是 4 檔）
@@ -197,10 +203,14 @@ def disposition_from_jail(as_of: str) -> dict[str, Any] | None:
         payload = jail.build_payload()
         if payload.get("status") == "ok" and payload.get("dataDate") == as_of:
             for x in payload.get("suspects") or []:
-                if x.get("high") and not x.get("jailed") and x["code"] not in upcoming:
+                lines = x.get("lines") or []
+                # 老師 10/22：成交量門檻已經被今天的量超過的（科嶠 > 1,729 張、今 3259 張；金居 > 12,625 張、今 15873 張）也列高機率——跟監獄頁「量很難躲」同義；
+                # 只算單純看成交量的那種（第六款），第四款還要收盤價配合的不算
+                volume_hit = any(ln.get("kind") == "volume" and ln.get("passed") and "收盤" not in str(ln.get("text") or "") for ln in lines)
+                if (x.get("high") or volume_hit) and not x.get("jailed") and x["code"] not in upcoming:
                     group, _name = group_and_name(x["code"])
-                    high.append({"code": x["code"], "name": x.get("name"), "group": group, "market": x.get("market"), "status": x.get("status"),
-                                 "lines": [ln.get("text") for ln in (x.get("lines") or []) if ln.get("text")][:2]})
+                    texts = [str(ln["text"]) + (f"（今 {int(ln['today'])} 張）" if ln.get("kind") == "volume" and ln.get("today") else "") for ln in lines if ln.get("text")]
+                    high.append({"code": x["code"], "name": x.get("name"), "group": group, "market": x.get("market"), "status": x.get("status"), "lines": texts[:2]})
     except Exception:  # noqa: BLE001
         logger.exception("jail suspects failed")
     order = lambda d: sorted(d.values(), key=lambda e: e["code"])  # noqa: E731
@@ -468,6 +478,49 @@ def radar_week(as_of: str) -> dict[str, Any] | None:
             "groups": [{"name": g["name"], "avg": g["avg"]} for g in hot_groups]}   # 熱門族的週籌碼（族群裡籌碼% 最高 5 檔平均）
 
 
+def pick_main_groups(groups: list[dict[str, Any]], hot_names: set[str]) -> list[dict[str, Any]]:
+    """資金主軸候選（老師 10/20～10/22 三份）：站上月線過半、法人 5 日買超、至少 5 檔，而且是熱門族（當天族群漲幅前 10 名，或籌碼雷達熱門族）；
+    法人 5 日買超多的在前，呼叫端取前 MAIN_GROUP_LIMIT 個。"""
+    out = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] >= MAIN_GROUP_MIN_INST5 and g["members"] >= MAIN_GROUP_MIN_MEMBERS
+           and (g["rank"] <= HOT_GROUP_RANK or g["name"] in hot_names)]
+    out.sort(key=lambda g: g["inst5"], reverse=True)
+    return out
+
+
+def order_chips(cand: list[str], radar_stocks: dict[str, dict[str, Any]], scores: dict[str, int | None], top_pool: set[str],
+                group_hot_rank: dict[str, int]) -> tuple[list[str], list[str]]:
+    """籌碼面候選排序，回 (全部候選的順序, 最後列出來的順序；最多 CHIPS_PICK_LIMIT 檔)。
+    榜上前 3 名（在前 10 名裡）排最前面，同樣在前面的照熱門族排（group_hot_rank：代號 → 熱門族名次，沒有的排最後）；
+    其他的連續增加週數多的優先，名額不夠時先挑有榜上名次的、再挑榜外的，挑出來之後顯示順序還是連續週數多的在前。"""
+    front = sorted((c for c in cand if (radar_stocks[c]["rank"] or 99) <= CHIPS_TOP_RANK and c in top_pool),
+                   key=lambda c: (group_hot_rank.get(c, 99), radar_stocks[c]["rank"]))
+    rest_pool = [c for c in cand if c not in front]
+    show_order = lambda c: (-radar_stocks[c]["streak"], -(scores.get(c) or 0), radar_stocks[c]["rank"] or 99, -(radar_stocks[c]["chip"] or 0))  # noqa: E731
+    take_order = lambda c: (radar_stocks[c]["rank"] is None, *show_order(c))  # noqa: E731
+    taken = sorted(rest_pool, key=take_order)[:max(CHIPS_PICK_LIMIT - len(front), 0)]
+    return front + sorted(rest_pool, key=take_order), (front + sorted(taken, key=show_order))[:CHIPS_PICK_LIMIT]
+
+
+def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """技術面精選：今天才站上月線（真穿）＝站上 ≥3%（比昨天的月線）且量 ≥500 張；回 {crossed, qualified（真穿月線檔數）, skipped, picks}。
+    老師 10/22（資料基準 10/21）：真穿月線 8 檔＝列 4 檔（鈞寶、高力、眾達-KY、環科）＋略過 3 檔（新復興、友達營收年增為負、榮星成交值 4,703 萬）＋均線分數 6 的定穎投控沒列。"""
+    crossed = [c for c in eligible if tech[c]["crossedMa20"]]
+    qualified = [c for c in crossed if tech[c]["abovePrevMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
+    qualified.sort(key=lambda c: tech[c]["abovePrevMa20Pct"], reverse=True)   # 略過那行也是站上多的在前（新復興 7.8、榮星 3.3、友達 3.2）
+    skipped: list[tuple[str, str]] = []
+    for c in qualified:
+        turnover = tech[c]["close"] * tech[c]["volume"] / 10   # 成交值（萬元）：收盤 × 張數 × 1000 ÷ 10000
+        if (chips.get(c, {}).get("revenueYoy") or 0) < 0:
+            skipped.append((c, "營收年增為負"))
+        elif turnover < TECH_MIN_TURNOVER:
+            skipped.append((c, f"成交值 {int(turnover):,} 萬"))
+    skipped_set = {c for c, _why in skipped}
+    picks = [c for c in qualified if c not in skipped_set and (tech[c]["score"] is None or tech[c]["score"] >= TECH_MIN_SCORE)][:TECH_PICK_LIMIT]
+    # 取站上月線最多的幾檔之後，照老師的順序排：均線分數跳升多的在前（10/21 芯鼎 +5、上品 +5、佰鴻 +4、和益 +1；10/22 鈞寶 +4、高力 +4、眾達 +4、環科 +3），同分站上月線多的在前
+    picks.sort(key=lambda c: (_jump(tech[c]) or 0, tech[c]["abovePrevMa20Pct"]), reverse=True)
+    return {"crossed": crossed, "qualified": qualified, "skipped": skipped, "picks": picks}
+
+
 def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None = None) -> dict[str, Any]:
     """整理一天的波段日報。as_of 沒給就用最後一根日K的日期。"""
     codes = group_codes()
@@ -587,6 +640,14 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     for code, entry in chips.items():
         entry["peGroupAvg"] = group_pe.get(group_of.get(code, ""))
 
+    # 籌碼雷達那一週（熱門族、籌碼%、連 N 週）；讀不到不拖垮整份報告。問診七科的籌碼科也用它的籌碼%（老師問診名單的「籌碼」欄就是這個數）
+    try:
+        radar = radar_week(as_of)
+    except Exception:  # noqa: BLE001
+        logger.exception("chip radar section failed")
+        radar = None
+    hot_of = dict(radar["hotOf"]) if radar else {}
+    radar_stocks = radar["stocks"] if radar else {}
     # 問診七科（跟個股研究／健診同一套口徑；2026-09-28 使用者：體質轉強改用七科）
     # 延遲匯入：stock_checkup → heilong_backtest → 這個模組，放最上面會循環。
     from stock_checkup import subjects as seven_subjects
@@ -606,16 +667,8 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         g = group_of.get(code, "")
         ch = chips.get(code, {})
         seven[code] = seven_subjects(t["score"], group_avg_score.get(g), pos_rank.get(code), group_size.get(g),
-                                     ch.get("weekPct"), ch.get("pe"), ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
+                                     (radar_stocks.get(code) or {}).get("chip2"), ch.get("pe"), ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
 
-    # 籌碼雷達那一週（熱門族、籌碼%、連 N 週）；讀不到不拖垮整份報告
-    try:
-        radar = radar_week(as_of)
-    except Exception:  # noqa: BLE001
-        logger.exception("chip radar section failed")
-        radar = None
-    hot_of = dict(radar["hotOf"]) if radar else {}
-    radar_stocks = radar["stocks"] if radar else {}
     # 熱門族也包含當天族群漲幅前 10 名（老師 10/12 GIS-KY 屬 AI眼鏡、10/15～10/16 精誠屬資訊都標熱門族，那幾天這兩族都在當天前 10）
     for g in groups[:CHIPS_DAILY_HOT_GROUPS]:
         for c, _n in STOCK_GROUPS.get(g["name"], []):
@@ -658,23 +711,16 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             if c in eligible_set and c in hot_of and c not in disposed and c not in just_out and chips_ok(c)
             and (c in top_pool or ((rs.get("streak") or 0) >= CHIPS_STREAK_MIN and _chip2(rs) >= CHIPS_TIER2_CHIP_MIN
                                    and (tech[c]["score"] or 0) >= CHIPS_MIN_SCORE))]   # 榜外的一定要均線 ≥12（10/15 允強均線 7、10/19 敦陽科均線 8 老師沒列）
-    # 榜上前 3 名排最前面（老師每天都有富喬、今國光），後面不分榜內榜外，連續增加週數多的在前
-    # （10/15 精誠連 8 週、天二連 5 週排在台表科連 4 週前面；10/16 天二均線 8 掉出來，台表科補上）
-    front = sorted((c for c in cand if (radar_stocks[c]["rank"] or 99) <= CHIPS_TOP_RANK and c in top_pool), key=lambda c: radar_stocks[c]["rank"])
-    rest = sorted((c for c in cand if c not in front), key=lambda c: (-radar_stocks[c]["streak"], -(tech[c]["score"] or 0), radar_stocks[c]["rank"] or 99, -(radar_stocks[c]["chip"] or 0)))
-    chips_all = front + rest
-    chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_all[:CHIPS_PICK_LIMIT]]
-    # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數
-    crossed = [c for c in eligible if tech[c]["crossedMa20"]]
-    tech_qualified = [c for c in crossed if tech[c]["abovePrevMa20Pct"] >= TECH_MIN_ABOVE_PCT and tech[c]["volume"] >= TECH_MIN_VOLUME]
-    tech_skipped = [c for c in tech_qualified if (chips.get(c, {}).get("revenueYoy") or 0) < 0]   # 營收年增為負：略過
-    tech_all = [c for c in tech_qualified if c not in tech_skipped]
-    # 先取站上月線最多的 TECH_PICK_LIMIT 檔，再照老師 10/21 的順序排：均線分數跳升多的在前（芯鼎 +5、上品 +5、佰鴻 +4、和益 +1），
-    # 同分站上月線多的在前（芯鼎 9.4 > 上品 5.6）
-    tech_total = len(tech_all)   # 真穿月線檔數（老師 10/21：6 檔）；精選只列其中站上最多的幾檔
-    tech_all.sort(key=lambda c: tech[c]["abovePrevMa20Pct"], reverse=True)
-    tech_all = tech_all[:TECH_PICK_LIMIT]
-    tech_all.sort(key=lambda c: (_jump(tech[c]) or 0, tech[c]["abovePrevMa20Pct"]), reverse=True)
+    # 榜上前 3 名排最前面（老師每天都有富喬、今國光），同樣在前面的照熱門族排（老師 10/22：信昌電〔被動元件、週籌碼族群第 1〕在緯穎〔機殼、第 2〕前面，雖然緯穎籌碼名次第 1）；
+    # 後面不分榜內榜外，連續增加週數多的優先（10/15 精誠連 8 週、天二連 5 週排在台表科連 4 週前面；10/16 天二均線 8 掉出來，台表科補上）。
+    # 名額不夠時，先挑真的上榜的（有榜上名次）再挑榜外的：老師 10/22 台表科連 5 週（榜第 6）、今國光連 3 週（榜第 14）入選，榜外的濱川連 5 週、均線 14 反而沒列
+    hot_rank = {name: i for i, name in enumerate(radar["hot"])} if radar else {}
+    chips_all, chips_shown = order_chips(cand, radar_stocks, {c: tech[c]["score"] for c in cand}, top_pool, {c: hot_rank.get(hot_of.get(c, ""), 99) for c in cand})
+    chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_shown]
+    # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數（細節見 pick_tech）
+    tech_pick = pick_tech(eligible, tech, chips)
+    crossed, tech_skipped, tech_all = tech_pick["crossed"], tech_pick["skipped"], tech_pick["picks"]
+    tech_total = len(tech_pick["qualified"])   # 真穿月線檔數（老師 10/21：6 檔、10/22：8 檔，略過的、沒列的都算在內）；精選只列其中站上最多的幾檔
     tech_picks = [card(c, f"站上 +{tech[c]['abovePrevMa20Pct']:.1f}%") for c in tech_all]
     # 體質轉強：問診七科判強勢，再取均線分數比前一交易日跳升 ≥3 者；七科總分高、跳得多的在前（跟學員專區日報同口徑）
     jump = lambda c: (tech[c]["score"] - tech[c]["prevScore"]) if tech[c]["score"] is not None and tech[c]["prevScore"] is not None else None  # noqa: E731
@@ -697,12 +743,10 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     sustained.sort(key=lambda x: (x["total"], x["score"] or 0), reverse=True)
     sustained = sustained[:8]
     # 今日摘要（2026-10-13 照老師 10/14 報告的六點：資金主軸、籌碼進法人未跟、籌碼／技術首選、體質／均線、月營收、風險提示）
-    # 資金主軸（2026-10-19 老師 10/20 報告：小電組、鋼鐵、光學鏡頭，沒有金融股、空運）：站上月線過半、法人 5 日買超 ≥1 萬張，
-    # 而且是「熱門族」——當天族群漲幅前 10 名，或籌碼雷達熱門族（週籌碼先進）；照收盤排名排（老師：小電組 1、鋼鐵 10、光學鏡頭 42）
+    # 資金主軸（老師 10/20～10/22 三份）：站上月線過半、法人 5 日買超、至少 5 檔，而且是「熱門族」——當天族群漲幅前 10 名，或籌碼雷達熱門族（週籌碼先進）；
+    # 符合的取法人 5 日買超最多的前 3 個（10/20：小電組、鋼鐵、光學鏡頭，同樣符合的資訊 +0.7 萬排第 4；10/22：光學鏡頭、AI眼鏡、資訊，彬彬只有 3 檔沒入選）
     radar_groups = {g["name"]: g for g in (radar.get("groups") or [])} if radar else {}
-    main_groups = [g for g in groups if g["aboveRatio"] >= 0.5 and g["inst5"] >= MAIN_GROUP_MIN_INST5 and (g["rank"] <= HOT_GROUP_RANK or g["name"] in radar_groups)]
-    # 排序照老師 10/21：法人 5 日買超多的在前（AI 3.7 萬、光學鏡頭 2.7、鴻家軍 1.2；10/20 的小電組 5.9、鋼鐵 4.3、光學鏡頭 3.6 也是這個順序）
-    main_groups.sort(key=lambda g: g["inst5"], reverse=True)
+    main_groups = pick_main_groups(groups, set(radar_groups))   # 法人 5 日買超多的在前（10/21 AI 3.7 萬、光學鏡頭 2.7、鴻家軍 1.2；10/20 小電組 5.9、鋼鐵 4.3、光學鏡頭 3.6 也是這個順序）
     # 籌碼進、法人未跟：籌碼雷達的熱門族（週籌碼先進）裡，站上月線不到一半的（價格未表態）；週籌碼高的在前
     brewing_groups = [g for g in groups if g["name"] in radar_groups and g["aboveRatio"] < 0.5]
     for g in groups:
@@ -712,7 +756,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     brewing_groups.sort(key=lambda g: g["chipWeek"] or 0, reverse=True)
     if not brewing_groups:   # 集保週資料還沒有：退回法人先進、型態未翻
         brewing_groups = sorted((g for g in groups if g["inst5"] > 0 and g["aboveRatio"] < 0.5), key=lambda g: g["inst5"], reverse=True)
-    featured = [g["name"] for g in main_groups[:3]] + [g["name"] for g in brewing_groups[:2]]
+    featured = [g["name"] for g in main_groups[:MAIN_GROUP_LIMIT]] + [g["name"] for g in brewing_groups[:2]]
     for g in groups:
         g["featured"] = g["name"] in featured
         g["featuredOrder"] = featured.index(g["name"]) if g["name"] in featured else None
@@ -725,17 +769,17 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     summary: list[str] = []
     if not has_inst:
         summary.append("法人資料還沒進來（上市約 15:00、上櫃約 16:40），籌碼相關的判斷等資料齊了會自動更新")
-    summary.append(("資金主軸在已站上月線的族群：" + "、".join(g["name"] for g in main_groups[:3]) + " —— 法人同步買超")
+    summary.append(("資金主軸在已站上月線的族群：" + "、".join(g["name"] for g in main_groups[:MAIN_GROUP_LIMIT]) + " —— 法人同步買超")
                    if main_groups else "今天沒有族群同時「多數站上月線」又「法人 5 日買超」，資金沒有明顯主軸")
     if brewing_groups:
         summary.append(("籌碼進、法人未跟：" if radar_groups else "法人先進、型態未翻：") + "、".join(g["name"] for g in brewing_groups[:2]) + " —— 低檔醞釀，等站上月線再進")
     summary.append("籌碼面首選 " + (names(chips_picks[:2]) or "無") + "；技術面首選 " + (names(tech_picks[:3]) or "無"))
-    summary.append("體質轉強 " + (names(body_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:3]) or "無"))
+    summary.append("體質轉強 " + (names(body_picks[:2]) or "無") + "；均線新滿分 " + ("、".join(group_and_name(c)[1] for c in new_full[:SUMMARY_FULL_NAMES]) or "無"))
     # 籌碼面的觀察名單：出獄 5 個交易日內、籌碼% 是正的（老師：嘉晶 出獄第 2 天，籌碼 +3.0%）
     chips_watch = []
     for e in dispo.get("watch") or []:
         rs = radar_stocks.get(e["code"])
-        if rs and _chip2(rs) >= CHIPS_WATCH_CHIP_MIN:
+        if e["code"] in eligible_set and rs and _chip2(rs) >= CHIPS_WATCH_CHIP_MIN:   # 要在族群表裡（老師 10/22 只有勤凱；台星科、浩鼎不在族群表沒列）
             chips_watch.append({"code": e["code"], "name": e["name"], "daysOut": e["daysOut"], "chip": rs["chip"]})
     chips_watch.sort(key=lambda x: (x["daysOut"], -x["chip"]))
     last_week = _last_week_followup(as_of, _week_ago_report(as_of), bars_by_code, tech, inst_dates, inst_by_date)
@@ -752,12 +796,13 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         for p in revenue.get("newPicks") or []:
             if p["code"] in tech and "card" not in p:
                 p["card"] = card(p["code"], f"年增 +{p['yoy']:.0f}%")
-    if revenue and "newPublished" in revenue and (revenue.get("newPicks") or revenue.get("newYoyHigh")):   # 老師 10/21：沒有年增達標的就不寫這一點
-        md_ = lambda d: d[5:].replace("-", "/")  # noqa: E731
-        line = f"月營收：{md_(revenue['since'])} 之後到 {md_(as_of)} 公布 {revenue['newPublished']} 檔，年增 ≥{revenue['rule']['yoy']:g}% 有 {revenue['newYoyHigh']} 檔"
-        if revenue["newPicks"]:
-            line += "；首選 " + "、".join(x["name"] for x in revenue["newPicks"][:3])
-        summary.append(line)
+    if revenue and "newPublished" in revenue:   # 老師 10/21、10/22：沒有新公布年增達標的就不寫這一點（不退回寫整月累計首選）
+        if revenue.get("newPicks") or revenue.get("newYoyHigh"):
+            md_ = lambda d: d[5:].replace("-", "/")  # noqa: E731
+            line = f"月營收：{md_(revenue['since'])} 之後到 {md_(as_of)} 公布 {revenue['newPublished']} 檔，年增 ≥{revenue['rule']['yoy']:g}% 有 {revenue['newYoyHigh']} 檔"
+            if revenue["newPicks"]:
+                line += "；首選 " + "、".join(x["name"] for x in revenue["newPicks"][:3])
+            summary.append(line)
     elif revenue and revenue["picks"]:
         summary.append(f"營收面（{int(revenue['month'][5:])} 月營收）首選 " + "、".join(x["name"] for x in revenue["picks"][:3]))
     # 每檔只寫第一個風險（老師：「天二科技 本益比 69 高於族群均值 44」，沒再寫乖離）
@@ -768,7 +813,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
             risk_lines.append(f"{x['name']} {x['risks'][0]}")
     # 剛出獄的（出獄 3 個交易日內）：依規則觀察三日
     risk_lines += [f"{x['name']} 出獄第 {x['daysOut']} 天，依規則觀察三日" for x in chips_watch if x["daysOut"] <= 3]
-    summary.append("風險提示：" + ("；".join(risk_lines[:5]) if risk_lines else "精選名單沒有特別的風險提示"))
+    summary.append("風險提示：" + ("；".join(risk_lines[:RISK_LINE_LIMIT]) if risk_lines else "精選名單沒有特別的風險提示"))
     return {
         "status": "ok",
         "date": as_of,
@@ -788,7 +833,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                   "etfSyncBuy": len(active_etf["sync"]["buy"]) if active_etf else 0, "etfSyncSell": len(active_etf["sync"]["sell"]) if active_etf else 0,
                   "revenue": revenue["qualified"] if revenue else 0, "highRisk": len(dispo.get("high") or [])},
         "disposition": dispo,
-        "techSkipped": [{"code": c, "name": group_and_name(c)[1], "why": "營收年增為負"} for c in tech_skipped],
+        "techSkipped": [{"code": c, "name": group_and_name(c)[1], "why": why} for c, why in tech_skipped],
         "lastWeek": last_week,
         "activeEtf": active_etf,
         "revenue": revenue,
@@ -802,10 +847,11 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份；集保週要在日報那天收盤後已經公布，週五收盤的那週週末才公布，所以週五的日報還是看上一週）前 {CHIPS_POOL_TOP} 名裡，"
                      "屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名一定列，其他的法人 5 日佔量不能低於 -0.5%，榜上的要均線分數 ≥12 或法人 5 日佔量 ≥10%、榜外的要均線分數 ≥12；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
-                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}% 的；法人 5 日賣超、營收年增為負的照列，只在卡片上標風險；最多列 {CHIPS_PICK_LIMIT} 檔。"
-                     f"觀察名單＝出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
-            "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張；站上月線第一天，防守就是月線本身；同分時均線跳升多的排前面",
-            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼週增、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
+                     f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}% 的；法人 5 日賣超、營收年增為負的照列，只在卡片上標風險；名額不夠時有榜上名次的先於榜外的，最多列 {CHIPS_PICK_LIMIT} 檔。"
+                     f"觀察名單＝族群表裡、出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
+            "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張＝真穿月線；營收年增為負、成交值不到 {TECH_MIN_TURNOVER:,} 萬的列在略過，均線分數 <{TECH_MIN_SCORE} 的不列；"
+                    f"取站上月線最多的 {TECH_PICK_LIMIT} 檔，均線跳升多的排前面；站上月線第一天，防守就是月線本身",
+            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼雷達的籌碼%、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、本益比高於族群均值 {PE_RISK_MULT:g} 倍、營收年增為負、處置中",
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；"

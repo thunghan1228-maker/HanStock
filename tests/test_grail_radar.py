@@ -58,7 +58,7 @@ class FeatureTests(unittest.TestCase):
 
     def test_version_9_rules_from_zhuang_1020(self) -> None:
         """第九版（老師 10/20 名單）：極限黑龍 5 日線往上放寬、飛龍紅爆月線比季線、超黑豹長黑、神下影 3 天漲幅（用 10/20 收盤的真實特徵）。"""
-        self.assertEqual(module.RULES_VERSION, 9)
+        self.assertGreaterEqual(module.RULES_VERSION, 9)
         # 新鉅科：收黑 -4.29% 收在最低、5 日線只比昨天高 0.595% → 老師 13:45 有列
         xd = {"black": True, "c_m5_prev": 6.055, "c_ma60": 8.9, "chg": -4.29, "close_pos": 0.0, "hiago20": 0, "l_ma5": 0.905, "lshadow": 0.0,
               "ma20_ma60": 3.708, "ma20_slope5": 2.629, "ma5_slope": 0.595, "range": 7.591, "vol": 4421.0}
@@ -80,6 +80,35 @@ class FeatureTests(unittest.TestCase):
               "ma20_ma60": 17.045, "ma5_slope": 1.075, "v_v20": 1.714, "vol": 19172.0, "z_min5": 1.374}
         self.assertTrue(module._shadow(sh))
         self.assertFalse(module._shadow({**sh, "chg_3": 6.0}))
+
+    def test_version_10_rules_from_zhuang_1022(self) -> None:
+        """第十版（老師 10/22 名單）：穿惡量比 9.1 倍、極限黑龍跌停鎖死放寬＋季線 2.7%、黑飛舞 2021 離 120 日高點 18.7%、突破惡紅年線 8%（用 10/22 收盤的真實特徵）。"""
+        self.assertGreaterEqual(module.RULES_VERSION, 10)
+        # 麗臺：量是 5 日均量的 9.009 倍（原本 9 倍）→ 老師 15:00 有列
+        cross = {"bw": 16.6697, "c_ma120": 13.3855, "c_ma20": 8.5534, "c_ma240": 34.611, "c_ma5": 10.5239, "c_ma60": 7.771, "dd60": -10.5116, "h_ma20": 8.5534,
+                 "hiago60": 32, "ma60_slope": 0.3222, "ma60_slope5": 0.62, "pc_ma20": -1.0293, "range": 8.2286, "run60": 59.4955, "v_v5": 9.0091, "vol": 10337.0}
+        self.assertTrue(module._cross2022(cross))
+        self.assertFalse(module._cross2022({**cross, "v_v5": 9.5}))
+        # 詠昇：跌 9.81%、收在最低 0.5%（沒鎖死）→ 老師 13:45 有列；沒收在最低的大跌不算
+        xd = {"black": True, "c_m5_prev": 19.8613, "c_ma60": 27.4391, "chg": -9.814, "close_pos": 0.0052, "hiago20": 0, "l_ma5": 2.6124, "lshadow": 0.1033,
+              "ma20_ma60": 6.0386, "ma20_slope5": 5.6275, "ma5_slope": 5.2254, "range": 19.8347, "vol": 4481.0}
+        self.assertTrue(module._xdragon(xd))
+        self.assertFalse(module._xdragon({**xd, "close_pos": 0.2}))
+        # 緯創：收盤只比季線高 2.786%（原本 4.2%）→ 老師有列
+        xd2 = {"black": True, "c_m5_prev": 5.6911, "c_ma60": 2.786, "chg": -2.5641, "close_pos": 0.0526, "hiago20": 1, "l_ma5": 1.1746, "lshadow": 0.2564,
+               "ma20_ma60": 0.6357, "ma20_slope5": 0.3101, "ma5_slope": 1.5176, "range": 4.8718, "vol": 35943.0}
+        self.assertTrue(module._xdragon(xd2))
+        self.assertFalse(module._xdragon({**xd2, "c_ma60": 2.0}))
+        # 力致：離 120 日高點 18.59%（原本 15.9%）→ 老師 13:45 有列
+        bf = {"above5_cnt3": 3, "body": -2.8391, "bw": 28.8839, "bw_min10": 12.4332, "c_m5_prev": 4.6076, "dd120": -18.5903, "h_gt_ph": False, "h_ma20": 19.2978,
+              "hiago60": 1, "hup_max20": 9.5161, "l_ma10": 3.0392, "newhi_cnt3": 2, "prev_black": True, "ret3": 6.3291, "run20": 34.8465, "v_pv": 0.5563, "vol_prev": 5961.0}
+        self.assertTrue(module._bfw2021(bf))
+        self.assertFalse(module._bfw2021({**bf, "dd120": -25.0}))
+        # 突破惡紅：收盤比年線高 5.28%（10/22 的 2607 老師沒列）→ 擋掉
+        br = {"below_cnt20": 2, "body": 0.7233, "c_m5_prev": -2.4904, "c_ma20": 0.3784, "c_ma240": 5.2814, "chg": 0.1799, "chg_3": -2.5641, "close_pos": 0.8571, "dd60": -6.8562,
+              "h_ma20": 0.5587, "l_ma20": -0.7028, "l_ma5": -2.5813, "l_pl": -0.7207, "ma20_ma60": 5.6902, "ma5_slope": -0.8067, "vma5": 899.2}
+        self.assertFalse(module._breakred(br))
+        self.assertTrue(module._breakred({**br, "c_ma240": 12.0}))
 
     def test_short_history_is_skipped(self) -> None:
         o, h, l, c, v = columns(uptrend(100))
