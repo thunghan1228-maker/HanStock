@@ -6,7 +6,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Body, Query, Request
 from fastapi.responses import JSONResponse
@@ -25,7 +25,10 @@ from main_force_backfill_jobs import list_main_force_backfill_jobs, prune_pendin
 from disposition_stocks import disposition_status, get_disposition_map, start_disposition_collector
 from stock_groups import industry_group_codes
 from brew_launch_history import (
+    PREOPEN_FROM_MINUTE,
+    _preopen_window,
     backfill_holder_force as brew_launch_backfill_holder_force,
+    count_preopen_ticks,
     group_quotes_payload,
     history as brew_launch_history,
     overlay_realtime_ticks,
@@ -1009,14 +1012,37 @@ def get_group_quotes_endpoint(codes: str = Query("", description="代號，逗�
         return JSONResponse({"status": "error", "error": f"證交所報價抓不到：{error}"}, status_code=502)
 
 
+PREOPEN_MIN_TICKS = 30  # 盤前試撮逐筆至少要有這麼多檔，才提前解除「暫留昨收」（Shioaji 沒連上、還沒有試撮就維持原樣到 08:45）
+
+
+def release_hold_for_preopen(result: dict[str, Any], now: datetime | None = None, ticks_fn: Callable[[list[str]], Any] | None = None) -> dict[str, Any]:
+    """盤前撮合（2026-10-22 使用者）：交易日 08:40～09:00、試撮逐筆已經有一批時，把 held 改成 False（並標 preopen=True），
+    tw-groups 首頁就不再用昨收取代報價，改用 group-quotes 蓋上去的試撮價，各名單從盤前撮合就開始算；
+    試撮資料不夠（沒登入／還沒開始）就維持 held（08:45 前照舊顯示昨收）。"""
+    now = now or datetime.now(TW_TZ)
+    if not result.get("held") or not result.get("tradingDay", True) or not _preopen_window(now):
+        return result
+    codes = list((result.get("stocks") or {}).keys())
+    if not codes:
+        return result
+    try:
+        ticks = (ticks_fn or (lambda c: get_quote_service().get_stock_quotes(c)))(codes)
+    except Exception:  # noqa: BLE001
+        return result
+    if count_preopen_ticks(ticks, now) < PREOPEN_MIN_TICKS:
+        return result
+    return {**result, "held": False, "preopen": True, "preopenFrom": f"{PREOPEN_FROM_MINUTE // 60:02d}:{PREOPEN_FROM_MINUTE % 60:02d}"}
+
+
 @app.get("/api/hub/session-close")
 def get_session_close_endpoint() -> dict[str, Any]:
     """休市日（週末、假日）與交易日 08:45 前，tw-groups 首頁／盤中333 等即時行情改顯示上一個交易日收盤用：
     回現在該不該暫留（held）、要顯示的那個交易日（session），以及族群成員那天的日K收盤／漲跌／成交量／
-    漲跌停旗標。使用者 2026-10-04：週末 TWSE 測試盤會回假價，不能再拿即時報價。快取 5 分鐘。"""
+    漲跌停旗標。使用者 2026-10-04：週末 TWSE 測試盤會回假價，不能再拿即時報價。快取 5 分鐘。
+    2026-10-22 起：08:40～09:00 盤前試撮資料夠多時不暫留（held=False、preopen=True），改用試撮價算。"""
     from session_close import get_session_close
 
-    return get_session_close()
+    return release_hold_for_preopen(get_session_close())
 
 
 @app.get("/api/hub/brew-launch")
