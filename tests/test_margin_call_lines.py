@@ -136,6 +136,18 @@ class PayloadTests(unittest.TestCase):
         r = module.lines_for(bars, "TSE")
         self.assertEqual((r["aBroken"], r["aNew"], r["bNew"]), (True, True, False))                     # B 409.81：昨今都在線上
 
+    def test_single_stock_line(self) -> None:
+        r = module.single("2408")
+        self.assertEqual((r["status"], r["code"], r["date"], r["line"]["factor"], r["line"]["a"]), ("ok", "2408", self.days[-1], 0.78, round(max(b for b in (537.0 * 1.0, 532.0 * 1.01)) * 0.78, 2)))
+        self.assertEqual(module.single("6488")["line"]["factor"], 0.65)                    # 上櫃 0.65
+        self.assertEqual(module.single("9999")["status"], "missing")                       # 沒日K
+        self.assertEqual(module.single("")["status"], "empty")
+        client = TestClient(persistent_app.app)
+        body = client.get("/api/hub/margin-line", params={"code": "2408"}).json()
+        self.assertEqual((body["status"], body["line"]["code"] if "code" in body["line"] else body["code"]), ("ok", "2408"))
+        self.assertEqual(client.get("/api/hub/margin-line", params={"code": "bad code!"}).status_code, 422)
+        self.assertEqual(client.get("/api/hub/margin-line", params={"code": "2408", "date": "x"}).status_code, 422)
+
     def test_endpoint(self) -> None:
         client = TestClient(persistent_app.app)
         self.assertEqual(client.get("/api/hub/margin-call", params={"date": "bad"}).status_code, 422)

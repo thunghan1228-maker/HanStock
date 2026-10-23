@@ -579,6 +579,7 @@ def compact(r: dict[str, Any]) -> dict[str, Any]:
         "pe": r["fund"]["pe"], "yoy": r["fund"]["yoy"], "inst5": r["chip"]["inst5"], "scores": r["scores"],
         "def": {k: d.get(k) for k in ("low3T", "ma20T", "ma20Y", "halfT", "brkMa", "brkL3", "brkHalf", "nearMa", "label")} if d else None,
         "cross": r.get("cross"), "groupSrank": r.get("groupSrank"), "disposed": r.get("disposed"),
+        "margin": {k: m.get(k) for k in ("a", "b", "aGap", "bGap", "aBroken", "bBroken", "aNew", "bNew", "factor")} if (m := r.get("margin")) else None,   # 同族對照／今日名單的斷頭價 A／B
     }
 
 
