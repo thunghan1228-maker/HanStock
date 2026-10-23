@@ -5,6 +5,8 @@
   A 最高點追 ＝ 近一個月（20 個交易日）盤中最高價 × 0.78（上櫃 × 0.65）：最慘的那批人，A 跌破＝斷頭開始；
   B 五日線追 ＝ 月高那天的 5 日均價（收盤）× 0.78（上櫃 × 0.65）：比較多人的平均成本，B 跌破＝斷頭高峰。
 今收低於斷頭價＝已破；否則「差 x%」＝（今收 − 斷頭價）÷ 今收。名單照 B 的距離由近到遠排。
+再加每檔的融資餘額（margin_balance.py，證交所／櫃買每天整張表）：只看價格不知道那個價位附近還有沒有融資，
+所以名單每檔多給融資餘額（張／億）、使用率、今天增減、五日增減、月高那天到今天增減（負的＝融資在退場）。
 老師最後一頁的總結：「A 線已破」＝今收跌破 A 的檔數與名單、「B 線 5% 內」＝B 還沒破但離今收 ≤5% 的檔數與名單
 （10/22：A 已破南亞科、國巨、聯電、聯發科、天二科技；B 5% 內南亞科、國巨）。天二科技是上市股（×0.78，A 131.04、今收 130 已破）。
 老師 10/22 的八檔（南亞科、國巨、聯電、立隆電、聯發科、鈺邦、環球晶、凱美）月高、五日線、A、B、差幾 % 都用日K算得出一模一樣。
@@ -17,6 +19,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import Any
+
+from margin_balance import metrics as margin_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ def lines_for(bars: list[tuple[str, float, float]], market: str | None = None) -
     month_high = bars[idx][1]
     ma5 = sum(b[2] for b in bars[idx - MA_DAYS + 1:idx + 1]) / MA_DAYS
     close = bars[-1][2]
+    prev_close = bars[-2][2]
     k = factor_of(market)
     a, b = month_high * k, ma5 * k
     gap = lambda line: (close - line) / close * 100 if close > 0 else None  # noqa: E731
@@ -54,6 +59,7 @@ def lines_for(bars: list[tuple[str, float, float]], market: str | None = None) -
         "monthHigh": month_high, "highDate": bars[idx][0], "ma5": round(ma5, 2),
         "a": round(a, 2), "b": round(b, 2), "aGap": round(gap(a), 2), "bGap": round(gap(b), 2),
         "aBroken": close < a, "bBroken": close < b,
+        "aNew": close < a <= prev_close, "bNew": close < b <= prev_close,   # 今天剛跌破：昨收還在線上、今收在線下
     }
 
 
@@ -88,6 +94,13 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
     bars_by_code = _load_bars(wanted, session=session)
     markets = _markets(wanted)
     rows: list[dict[str, Any]] = []
+    margin_hist: dict[str, dict[str, dict[str, int]]] = {}
+    try:
+        from margin_balance import history as margin_history
+
+        margin_hist = margin_history(wanted, (datetime.strptime(as_of, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d"), as_of)
+    except Exception:  # noqa: BLE001
+        logger.exception("融資餘額讀取失敗")
     for code in wanted:
         bars = [(b[0], b[1], b[3]) for b in bars_by_code.get(code, []) if b[0] <= as_of]
         if not bars or bars[-1][0] != as_of:
@@ -96,12 +109,14 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
         if not info:
             continue
         group, name = group_and_name(code)
-        rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info})
+        rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info,
+                     "margin": margin_metrics(margin_hist.get(code), as_of, info["highDate"], info["close"])})
     rows.sort(key=lambda r: (r["bGap"], r["aGap"], r["code"]))
     counts = {"stocks": len(rows), "aBroken": sum(1 for r in rows if r["aBroken"]), "bBroken": sum(1 for r in rows if r["bBroken"]),
               "bNear": sum(1 for r in rows if not r["bBroken"] and r["bGap"] <= NEAR_LIMIT_PCT)}
     pick = lambda hit: [{"code": r["code"], "name": r["name"]} for r in rows if hit(r)]  # noqa: E731
-    summary = {"aBroken": pick(lambda r: r["aBroken"]), "bWithin": pick(lambda r: not r["bBroken"] and r["bGap"] <= SUMMARY_NEAR_PCT)}
+    summary = {"aBroken": pick(lambda r: r["aBroken"]), "bWithin": pick(lambda r: not r["bBroken"] and r["bGap"] <= SUMMARY_NEAR_PCT),
+               "aNew": pick(lambda r: r["aNew"]), "bNew": pick(lambda r: r["bNew"])}
     return {"status": "ok", "date": as_of, "groups": names, "counts": counts, "summary": summary, "rows": rows[:max(1, min(limit, 400))],
             "rule": {"factorTse": FACTOR_TSE, "factorOtc": FACTOR_OTC, "highDays": HIGH_DAYS, "maDays": MA_DAYS, "nearPct": NEAR_LIMIT_PCT,
                      "summaryNearPct": SUMMARY_NEAR_PCT}}

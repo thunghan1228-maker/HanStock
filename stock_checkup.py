@@ -685,6 +685,15 @@ def diag(code: str) -> dict[str, Any]:
     stock = load_rows(date, [code]).get(code)
     if not stock:
         return {"status": "missing", "reason": "本站沒有這檔的日K", "code": code, "date": date, "rules": RULES, "collector": collector_status()}
+    line = stock.get("margin")
+    if line:       # 融資水位：證交所／櫃買晚上才公布，問診當下才查（不放進收盤建的表）
+        try:
+            from margin_balance import history as margin_history, metrics as margin_metrics
+
+            since_margin = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
+            stock["marginBal"] = margin_metrics(margin_history([code], since_margin, date).get(code), date, line.get("highDate"), line.get("close"))
+        except Exception:  # noqa: BLE001
+            logger.exception("問診融資水位讀取失敗")
     since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=DIAG_BARS * 2 + 420)).strftime("%Y-%m-%d")
     long_bars = _load_bars([code], since=since, until=date).get(code, [])
     bars = long_bars[-DIAG_BARS:]

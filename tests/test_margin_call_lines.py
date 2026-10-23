@@ -116,6 +116,26 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(sorted(x["code"] for x in module.payload(groups=["all"])["rows"]), ["2327", "2408", "3231", "6488"])
         self.assertIn("3231", [x["code"] for x in module.payload(codes=["3231"])["rows"]])
 
+    def test_margin_balance_attached(self) -> None:
+        import margin_balance
+
+        row = lambda **kw: {"code": "2408", "buy": 0, "sell": 0, "repay": 0, "prev": 0, "limit": 774656, "short": 0, **kw}  # noqa: E731
+        high_date = next(x for x in module.payload()["rows"] if x["code"] == "2408")["highDate"]
+        margin_balance.save_margin(high_date, "TSE", [row(balance=1000, prev=990)], "twse")             # 月高那天
+        margin_balance.save_margin(self.days[-1], "TSE", [row(balance=800, prev=900)], "twse")
+        by = {x["code"]: x for x in module.payload()["rows"]}
+        m = by["2408"]["margin"]
+        self.assertEqual((m["balance"], m["chg1"], m["sinceHighPct"], m["util"]), (800, -100, -20.0, 0.1))
+        self.assertIsNone(by["2327"]["margin"])                                                          # 那檔還沒有融資資料：不擋名單
+        self.assertEqual((by["2408"]["aNew"], by["2408"]["bNew"]), (False, False))                      # 昨收就在線下，不算今天剛破
+        self.assertEqual(module.payload()["summary"]["aNew"], [])
+
+    def test_new_break_flags(self) -> None:
+        bars = scenario(537.0, [520.0, 524.0, 526.0, 527.0, 530.0], 414.0)
+        bars = bars[:-2] + [(bars[-2][0], 440.0, 440.0), (bars[-1][0], 430.0, 414.0)]                  # 昨收 440（A 418.86 之上）、今收 414：剛跌破 A
+        r = module.lines_for(bars, "TSE")
+        self.assertEqual((r["aBroken"], r["aNew"], r["bNew"]), (True, True, False))                     # B 409.81：昨今都在線上
+
     def test_endpoint(self) -> None:
         client = TestClient(persistent_app.app)
         self.assertEqual(client.get("/api/hub/margin-call", params={"date": "bad"}).status_code, 422)

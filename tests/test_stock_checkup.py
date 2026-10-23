@@ -282,8 +282,12 @@ class RebuildTests(unittest.TestCase):
             c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
         result = module.rebuild()
         self.assertEqual(result["cross"], 1)
+        import margin_balance
+
+        margin_balance.save_margin(d[-1], "OTC", [{"code": "6488", "buy": 576, "sell": 670, "repay": 19, "prev": 13071, "balance": 12958, "limit": 132028, "short": 185}], "mirror")
         r = module.diag("6488")
         self.assertEqual((r["status"], r["code"], r["stock"]["name"], r["stock"]["cross"]["up"], r["stock"]["cross"]["prevBelow"]), ("ok", "6488", "環球晶", True, True))
+        self.assertEqual((r["stock"]["marginBal"]["balance"], r["stock"]["marginBal"]["chg1"], r["stock"]["marginBal"]["util"]), (12958, -113, 9.81))   # 融資水位問診當下才查
         self.assertGreater(r["stock"]["cross"]["dist"], 3.0)
         self.assertEqual(len(r["bars"]), 30)
         self.assertEqual(r["bars"][-1][:5], [d[-1], 480.0, 520.0, 478.0, 516.0])

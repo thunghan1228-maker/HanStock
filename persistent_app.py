@@ -150,6 +150,9 @@ async def _persistent_lifespan(fastapi_app):
             from macro_calendar import start_macro_calendar_collector
 
             start_macro_calendar_collector()  # 國際大事行事曆：TradingView 經濟日曆每小時更新公布值（2026-10-10 使用者）
+            from margin_balance import start_margin_collector
+
+            start_margin_collector()  # 個股融資餘額：上市證交所直抓、上櫃走鏡像，融資斷頭線看那檔融資還剩多少（2026-10-23 使用者）
             from fund_umbrella import start_fund_umbrella_collector
 
             start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
@@ -1151,6 +1154,22 @@ def get_swing_report(date: str | None = Query(None)) -> dict[str, Any]:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return swing_report_payload(date)
+
+
+@app.get("/api/hub/margin-balance/status")
+def get_margin_balance_status() -> dict[str, Any]:
+    """個股融資餘額收集狀態（證交所直抓、櫃買走 tw-groups 鏡像）：最近幾天有資料的日期、上一輪結果。"""
+    from margin_balance import collector_status as margin_balance_status
+
+    return {"status": "ok", **margin_balance_status()}
+
+
+@app.post("/api/hub/margin-balance/collect")
+def post_margin_balance_collect() -> dict[str, Any]:
+    """手動跑一輪個股融資餘額收集（櫃買鏡像工作流程推完會戳這裡）；冪等。"""
+    from margin_balance import run_collect as run_margin_balance_collect
+
+    return {"status": "ok", "result": run_margin_balance_collect()}
 
 
 @app.get("/api/hub/margin-call")
