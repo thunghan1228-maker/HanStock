@@ -193,6 +193,31 @@ class MaRankTests(unittest.TestCase):
             module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
             self.assertNotIn("live", module.strength("strong"))
 
+    def test_bias_columns(self) -> None:
+        """月乖離／季乖離：收盤 ÷ 20／60 日均線 − 1（%）；日K不夠或當天沒日K就是 None；讀日K失敗不影響排行。"""
+        def bar(day: str, close: float) -> tuple:
+            return (day, close, close, close, close, 100)
+
+        days = [(datetime(2026, 7, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(70)]
+        up = [bar(d, 100 + i) for i, d in enumerate(days)]                   # 一路漲：收盤 169、MA20=159.5、MA60=139.5
+        short = [bar(d, 50) for d in days[-10:]]                              # 只有 10 根：算不出
+        stale = [bar(d, 80) for d in days[:-1]]                               # 最後一根不是查的那天
+        fake = {"1111": up, "2222": short, "4444": stale}
+        rows = [{"code": "1111"}, {"code": "2222"}, {"code": "4444"}, {"code": "3333"}]
+        with patch.object(module, "_load_bars", return_value=fake):
+            module._attach_bias(rows, days[-1])
+        self.assertEqual((rows[0]["b20"], rows[0]["b60"]), (round((169 / 159.5 - 1) * 100, 1), round((169 / 139.5 - 1) * 100, 1)))
+        self.assertEqual((rows[1]["b20"], rows[1]["b60"]), (None, None))
+        self.assertEqual((rows[2]["b20"], rows[2]["b60"]), (None, None))
+        self.assertEqual((rows[3]["b20"], rows[3]["b60"]), (None, None))
+        with patch.object(module, "_load_bars", side_effect=RuntimeError("沒日K")):
+            rows = [{"code": "1111"}]
+            module._attach_bias(rows, days[-1])
+        self.assertEqual((rows[0]["b20"], rows[0]["b60"]), (None, None))
+        with patch.object(module, "_load_bars", return_value={"1111": up}):
+            out = module.ranking(D[3])
+        self.assertIn("b20", out["stocks"][0])
+
     def test_query(self) -> None:
         out = module.query(code="2222")
         self.assertEqual((out["group"], [r["code"] for r in out["rows"]]), ("甲/乙", ["1111", "2222", "4444", "3333"]))
