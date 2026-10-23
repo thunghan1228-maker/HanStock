@@ -2,7 +2,7 @@
 
 算法跟個股完全一樣（heilong_backtest.official_parts）：站上 5／10／20／60／120／240 日均線各 1 分＋創 5／10／20／60／120／360 日新高各 1 分＋
 排列（20 日在 60 日上、60 在 120 上、120 在 350 上，也就是黃金交叉之後的多頭排列）各 1 分，滿分 15。
-小卡上的分數是「近 3 個交易日日分數的平均」，分水嶺 6 分（≥6 多、<6 空）。
+小卡上的分數是「近 3 個交易日日分數的平均」，分水嶺 6 分（超過 6 多、低於 6 空、剛好 6 平）。
 
 用 2026-10-22 的櫃買指數對老師頁驗證過：日分數 10/20＝3、10/21＝4、10/22＝3，近 3 日平均 10/22＝3.33、10/21＝3.33，
 跟老師小卡「今天 3.33、明天 3.33」一模一樣。
@@ -20,12 +20,14 @@ from heilong_backtest import MA_PERIODS, OFFICIAL_HI_PERIODS, official_parts
 
 AVG_DAYS = 3
 THRESHOLD = 6
+HIGH_DAYS = 120          # 距高點：近半年（120 個交易日）的最高點
 DAILY_SHOWN = 5
 INDEXES = (("otc", "tpex", "櫃買"), ("taiex", "taiex", "加權"))
 
 
 def label(avg: float) -> str:
-    return "多" if avg >= THRESHOLD else "空"
+    """分水嶺 6 分：超過 6 多、低於 6 空、剛好 6 是「平」（2026-10-24 使用者：加權 10/22 當天只有 5 分、3 日平均剛好 6.00，不能標多）。"""
+    return "多" if avg > THRESHOLD else "空" if avg < THRESHOLD else "平"
 
 
 def daily_scores(dates: list[str], closes: list[float], count: int) -> list[dict[str, Any]]:
@@ -38,7 +40,7 @@ def daily_scores(dates: list[str], closes: list[float], count: int) -> list[dict
             continue
         ma_bits, hi_bits, align = parts
         ma, hi = bin(ma_bits).count("1"), bin(hi_bits).count("1")
-        out.append({"date": dates[i], "close": closes[i], "score": ma + hi + align, "ma": ma, "hi": hi, "align": align,
+        out.append({"date": dates[i], "close": closes[i], "score": ma + hi + align, "label": label(ma + hi + align), "ma": ma, "hi": hi, "align": align,
                     "maOf": len(MA_PERIODS), "hiOf": len(OFFICIAL_HI_PERIODS)})
     return out
 
@@ -51,12 +53,26 @@ def _avg(rows: list[dict[str, Any]], end: int) -> dict[str, Any] | None:
     return {"basis": window[-1]["date"], "avg": avg, "label": label(avg)}
 
 
-def index_payload(dates: list[str], closes: list[float]) -> dict[str, Any] | None:
+def table_block(dates: list[str], closes: list[float], highs: dict[str, float] | None = None) -> dict[str, Any]:
+    """指數對照表（2026-10-24 使用者：老師影片「10/22 收盤 vs 月／季／半年線」）：收盤、20／60／120 日線、近半年高點與距高點 %。
+    高點用當天最高點（盤中最高，抓得到才用；老師加權 10/6 高點 49,969 就是盤中最高），沒有就用收盤。"""
+    close = closes[-1]
+    window = list(zip(dates, closes))[-HIGH_DAYS:]
+    high, high_date = max(((highs or {}).get(d) or c, d) for d, c in window)
+    out: dict[str, Any] = {"close": close, "high": round(high, 2), "highDate": high_date, "fromHigh": round((close / high - 1) * 100, 1),
+                           "highIntraday": bool(highs and any(highs.get(d) for d, _c in window))}
+    for period in (20, 60, 120):
+        out[f"ma{period}"] = round(sum(closes[-period:]) / period, 2) if len(closes) >= period else None
+    return out
+
+
+def index_payload(dates: list[str], closes: list[float], highs: dict[str, float] | None = None) -> dict[str, Any] | None:
     rows = daily_scores(dates, closes, AVG_DAYS + 3)
     if len(rows) < AVG_DAYS + 1:
         return None
     nxt, today = _avg(rows, len(rows) - 1), _avg(rows, len(rows) - 2)
-    return {"asOf": rows[-1]["date"], "close": rows[-1]["close"], "daily": rows[-DAILY_SHOWN:], "today": today, "next": nxt}
+    return {"asOf": rows[-1]["date"], "close": rows[-1]["close"], "daily": rows[-DAILY_SHOWN:], "today": today, "next": nxt,
+            "table": table_block(dates, closes, highs)}
 
 
 def payload() -> dict[str, Any]:
@@ -65,7 +81,8 @@ def payload() -> dict[str, Any]:
     for key, series, name in INDEXES:
         values = data.get(series) or {}
         dates = sorted(values)
-        got = index_payload(dates, [float(values[d]) for d in dates]) if dates else None
+        highs = data.get("taiex_high" if series == "taiex" else "tpex_high") or {}
+        got = index_payload(dates, [float(values[d]) for d in dates], highs) if dates else None
         if got:
             out[key] = {"name": name, **got}
     if not out:

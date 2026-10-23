@@ -62,8 +62,29 @@ class IndexScoreTests(unittest.TestCase):
         self.assertEqual((got["next"]["avg"], got["next"]["label"]), (3.33, "空"))
         self.assertEqual((got["today"]["avg"], got["today"]["label"]), (3.33, "空"))
 
+    def test_table_block(self) -> None:
+        """指數對照表：收盤、20／60／120 日線、近半年高點（盤中最高優先）與距高點。"""
+        ds = days(300)
+        closes = [100.0] * 280 + [100 + i for i in range(20)]       # 最後 20 天一路漲到 119
+        highs = {ds[-1]: 130.0, ds[-30]: 140.0}
+        t = module.table_block(ds, closes, highs)
+        self.assertEqual((t["close"], t["high"], t["highDate"], t["highIntraday"]), (119.0, 140.0, ds[-30], True))
+        self.assertAlmostEqual(t["fromHigh"], round((119 / 140 - 1) * 100, 1))
+        self.assertEqual((t["ma20"], t["ma60"], t["ma120"]), (round(sum(closes[-20:]) / 20, 2), round(sum(closes[-60:]) / 60, 2), round(sum(closes[-120:]) / 120, 2)))
+        t = module.table_block(ds, closes, None)                     # 沒有盤中高點：用收盤
+        self.assertEqual((t["high"], t["highDate"], t["highIntraday"]), (119.0, ds[-1], False))
+        self.assertEqual(module.table_block(ds[:50], closes[:50])["ma60"], None)
+
+    def test_payload_has_table_and_uses_highs(self) -> None:
+        ds = days(300)
+        self.put("tpex", ds, [100 + i * 0.5 for i in range(300)])
+        with database.get_connection() as c:
+            c.execute("INSERT INTO fund_umbrella_series (series, trade_date, value) VALUES ('tpex_high', ?, 999.0)", (ds[-5],))
+        t = module.payload()["indexes"]["otc"]["table"]
+        self.assertEqual((t["high"], t["highDate"], t["highIntraday"]), (999.0, ds[-5], True))
+
     def test_threshold(self) -> None:
-        self.assertEqual((module.label(5.99), module.label(6.0), module.label(9)), ("空", "多", "多"))
+        self.assertEqual((module.label(5.99), module.label(6.0), module.label(6.01), module.label(9)), ("空", "平", "多", "多"))
 
     def test_missing_and_short(self) -> None:
         self.assertEqual(module.payload()["status"], "missing")
