@@ -150,6 +150,9 @@ async def _persistent_lifespan(fastapi_app):
             from macro_calendar import start_macro_calendar_collector
 
             start_macro_calendar_collector()  # 國際大事行事曆：TradingView 經濟日曆每小時更新公布值（2026-10-10 使用者）
+            from margin_balance import start_margin_collector
+
+            start_margin_collector()  # 個股融資餘額：上市證交所直抓、上櫃走鏡像，融資斷頭線看那檔融資還剩多少（2026-10-23 使用者）
             from fund_umbrella import start_fund_umbrella_collector
 
             start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
@@ -1151,6 +1154,39 @@ def get_swing_report(date: str | None = Query(None)) -> dict[str, Any]:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return swing_report_payload(date)
+
+
+@app.get("/api/hub/margin-balance/status")
+def get_margin_balance_status() -> dict[str, Any]:
+    """個股融資餘額收集狀態（證交所直抓、櫃買走 tw-groups 鏡像）：最近幾天有資料的日期、上一輪結果。"""
+    from margin_balance import collector_status as margin_balance_status
+
+    return {"status": "ok", **margin_balance_status()}
+
+
+@app.post("/api/hub/margin-balance/collect")
+def post_margin_balance_collect() -> dict[str, Any]:
+    """手動跑一輪個股融資餘額收集（櫃買鏡像工作流程推完會戳這裡）；冪等。"""
+    from margin_balance import run_collect as run_margin_balance_collect
+
+    return {"status": "ok", "result": run_margin_balance_collect()}
+
+
+@app.get("/api/hub/margin-call")
+def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=400)) -> dict[str, Any]:
+    """融資斷頭線（2026-10-23 使用者貼老師 10/22「斷頭線就在腳下」）：A＝近 20 個交易日盤中最高 × 0.78（上櫃 × 0.65），B＝月高那天的 5 日均價 × 0.78（上櫃 × 0.65）；
+    名單照 B 離今收的距離排，已破（今收低於斷頭價）在最前面。groups＝族群名逗號分隔（沒給＝被動元件、記憶體、矽晶圓；all＝全部族群），codes＝額外代號。"""
+    from fastapi import HTTPException
+
+    from margin_call_lines import payload as margin_call_payload
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    split = lambda text: [x.strip() for x in str(text or "").replace("，", ",").replace("、", ",").split(",") if x.strip()]  # noqa: E731
+    return margin_call_payload(date, split(groups) or None, split(codes) or None, limit)
 
 
 @app.post("/api/hub/swing-report/refresh")

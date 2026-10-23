@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from brew_launch import MA_PERIODS, _latest_bar_date, ma_alignment_score
-from brew_launch_history import group_and_name
+from brew_launch_history import _markets, group_and_name
 from chips_daily import _institutional_by_date, _streak, main_force_daily, main_force_dates, stored_dates
 from daily_bars_store import bar_codes
 from database import get_connection, initialize_database
@@ -439,6 +439,7 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
                  "mf5": mf5, "mfStreak": mf_streak, "avgVol5": _r1(avg_vol5)},
         "def": defense,
         "cross": cross,
+        "margin": margin_lines([(b[0], b[2], b[4]) for b in bars[-40:]], (ctx.get("markets") or {}).get(code)),
         "hist": {"score10": hist_scores, "inst10": inst_hist, "chip8": chip_hist,
                  "pe8": ctx.get("peHist", {}).get(code, []), "rev4": ctx.get("revHist", {}).get(code, [])},
         "groupAvg2": None, "groupRank": None, "groupN": None,
@@ -446,6 +447,13 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
         "disposed": code in ctx["disposed"],
         "d123": _d123_state(bars),
     }
+
+
+def margin_lines(bars: list[tuple[str, float, float]], market: str | None) -> dict[str, Any] | None:
+    """融資斷頭線（老師 10/22「斷頭線就在腳下」）：A 月高 × 0.78、B 月高那天五日均價 × 0.78（上櫃 × 0.65）；算法見 margin_call_lines。"""
+    from margin_call_lines import lines_for
+
+    return lines_for(bars, market)
 
 
 def cross_info(prev: float | None, close: float, volume: int, defense: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -504,7 +512,7 @@ def _rebuild() -> dict[str, Any]:
         "weeks": _tdcc_weeks(codes), "peHist": _pe_history(codes), "revHist": _revenue_history(codes),
         "instDates": inst_dates, "inst": _institutional_by_date(inst_dates, codes) if inst_dates else {},
         "mfDates": mf_dates, "mf": {d: main_force_daily(d, codes) for d in mf_dates},
-        "disposed": disposed,
+        "disposed": disposed, "markets": _markets(codes),
     }
     rows: dict[str, dict[str, Any]] = {}
     for code, bars in bars_by_code.items():
@@ -677,6 +685,15 @@ def diag(code: str) -> dict[str, Any]:
     stock = load_rows(date, [code]).get(code)
     if not stock:
         return {"status": "missing", "reason": "本站沒有這檔的日K", "code": code, "date": date, "rules": RULES, "collector": collector_status()}
+    line = stock.get("margin")
+    if line:       # 融資水位：證交所／櫃買晚上才公布，問診當下才查（不放進收盤建的表）
+        try:
+            from margin_balance import history as margin_history, metrics as margin_metrics
+
+            since_margin = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
+            stock["marginBal"] = margin_metrics(margin_history([code], since_margin, date).get(code), date, line.get("highDate"), line.get("close"))
+        except Exception:  # noqa: BLE001
+            logger.exception("問診融資水位讀取失敗")
     since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=DIAG_BARS * 2 + 420)).strftime("%Y-%m-%d")
     long_bars = _load_bars([code], since=since, until=date).get(code, [])
     bars = long_bars[-DIAG_BARS:]
