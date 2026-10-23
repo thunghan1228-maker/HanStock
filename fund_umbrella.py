@@ -129,13 +129,16 @@ def fetch(*, fetcher: Callable[[dict[str, str]], Any] | None = None, now: dateti
     with get_connection() as connection:
         _schema(connection)
         last = _last_date(connection, "margin")
-        last_ohlc = _last_date(connection, "taiex_high")     # 以前只存收盤，沒有開高低：第一次要整段回補
+        last_ohlc = _last_date(connection, "taiex_high") and _last_date(connection, "tpex_high")   # 以前只存收盤，沒有開高低：第一次要整段回補（櫃買的高低是 2026-10-24 才加：指數對照表的「距高點」）
     start = HISTORY_START if not last or not last_ohlc else (date.fromisoformat(last) - timedelta(days=REFETCH_DAYS)).isoformat()
     got: dict[str, dict[str, float]] = parse_margin(call({"dataset": "TaiwanStockTotalMarginPurchaseShortSale", "start_date": start}))
     taiex_payload = call({"dataset": "TaiwanStockPrice", "data_id": "TAIEX", "start_date": start})
     got["taiex"] = parse_index(taiex_payload)
     got.update(parse_ohlc(taiex_payload))
-    got["tpex"] = parse_index(call({"dataset": "TaiwanStockPrice", "data_id": "TPEx", "start_date": start}))
+    tpex_payload = call({"dataset": "TaiwanStockPrice", "data_id": "TPEx", "start_date": start})
+    got["tpex"] = parse_index(tpex_payload)
+    tpex_ohlc = parse_ohlc(tpex_payload)           # parse_ohlc 的 key 叫 taiex_*，櫃買只留高低
+    got["tpex_high"], got["tpex_low"] = tpex_ohlc["taiex_high"], tpex_ohlc["taiex_low"]
     if not got["margin"] or not got["taiex"]:
         raise RuntimeError("融資餘額或加權指數抓到 0 筆")
     otc_error = None

@@ -57,7 +57,7 @@ class FundUmbrellaTests(unittest.TestCase):
             scale = 1 if params["data_id"] == "TAIEX" else 0.01
             if params["data_id"] == "TAIEX":     # 加權指數另外有開高低、成交值（FinMind TaiwanStockPrice 的欄位）
                 return {"data": [{"date": d, "open": c * 0.995, "max": c * 1.01, "min": c * 0.99, "close": c, "Trading_money": 3.0e11} for d, c in zip(self.d, self.closes)]}
-            return {"data": [{"date": d, "close": c * scale} for d, c in zip(self.d, self.closes)]}
+            return {"data": [{"date": d, "max": c * scale * 1.02, "min": c * scale * 0.98, "close": c * scale} for d, c in zip(self.d, self.closes)]}   # 櫃買也有高低（2026-10-24 指數對照表的距高點）
         return call
 
     def mirror(self, url: str):
