@@ -77,7 +77,7 @@ class FeatureTests(unittest.TestCase):
 class OfficialScoreTests(unittest.TestCase):
     def test_official_score(self) -> None:
         self.assertIsNone(module.official_score([100.0] * 239))
-        self.assertEqual(module.official_score([100.0] * 240), 0)            # 平盤：站上 0、創新高 0（平手不算）、排列 0
+        self.assertEqual(module.official_score([100.0] * 240), 6)            # 平盤：站上 6（平手算站上，2026-10-24 老師佰鴻收盤＝10 日線算站上）、創新高 0（平手不算）、排列 0
         self.assertEqual(module.official_parts([100.0] * 237 + [101.0] * 3), (0b111111, 0b111111, 3))   # 最近 3 天比之前高：站上 6 條、新高 6 個、短均線在上
         rising = [100 + i * 0.5 for i in range(300)]
         self.assertEqual(module.official_score(rising), 15)                   # 一路漲：6＋6＋3
@@ -322,7 +322,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((row["score"], row["changePct"], row["hits20"], row["group"], row["groupAvg"], row["weekPct"], row["weekDate"], row["disposed"]),
                          (15, 2.0, 0, "矽晶圓", 15.0, 10.0, "2026-09-18", False))
         self.assertEqual((row["score2"], row["groupAvg2"]), (15, 15.0))          # 官網式：站上 6＋新高 6＋排列 3
-        self.assertEqual((table[d[239]]["6182"]["score"], table[d[239]]["6182"]["score2"]), (0, 0))   # 平盤那天（創新高平手不算）
+        self.assertEqual((table[d[239]]["6182"]["score"], table[d[239]]["6182"]["score2"]), (0, 6))   # 平盤那天（創新高平手不算；站上均線平手算站上 → 6 分）
         self.assertEqual((row["maBits"], row["hiBits"], row["align"]), (0b111111, 0b111111, 3))
         self.assertIsNone(table[d[240]]["6488"]["score"])
         self.assertTrue(table[d[241]]["2330"]["disposed"])     # 9/23 起處置

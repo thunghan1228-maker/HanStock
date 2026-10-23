@@ -5,6 +5,10 @@
 這裡另外記「除權息日、除權息前收盤價、除權息參考價」，因子＝參考價 ÷ 前收盤價；除權息日以前的價格都乘上因子
 （之後所有事件的因子連乘，跟 price_adjust 同一套算法，直接用 price_adjust.adjust_bars）。
 
+**只還原現金股利（純除息）**：含股票股利的事件（除權、除權息）不還原。2026-10-24 拿老師 10/22 前 60 名 60 檔逐檔試過三種規則——
+不還原（5 檔不對）、全部還原（倍力 6874 的 9/3 除權息、永光 1711 的 10/20 除權會多算 3 檔不對）、只還原純除息（伊雲谷、日友都對上，沒有多錯的）——
+老師的還原價看起來只還原現金股利，所以照這個做。
+
 只有均線分數（站上均線、創新高、多頭排列）用還原後的價格；創高黑龍的持有報酬、漲跌幅、乖離、月營收的收盤價等
 全部還是原本的價格（原始日K bars_1d 也不改）。呼叫端：heilong_backtest 算分數、ma_rank 盤中即時分數。
 
@@ -116,6 +120,8 @@ def parse_table(payload: Any, *, source: str) -> list[dict[str, Any]]:
         if factor == 1.0 or not (MIN_FACTOR <= factor <= MAX_FACTOR):
             continue
         note = str(row[i_kind]).strip() if i_kind is not None and i_kind < len(row) else None
+        if not note or "息" not in note or "權" in note:      # 只收純除息（證交所寫「息」、櫃買寫「除息」）；除權、除權息不還原
+            continue
         out.append({"code": code, "date": day, "prevClose": prev, "refPrice": ref, "factor": factor, "source": source, "note": note})
     return out
 

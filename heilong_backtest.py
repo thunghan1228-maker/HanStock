@@ -295,9 +295,14 @@ def _has_futures(code: str) -> bool:
 
 # ------------------------------------------------------------------ 特徵
 
+def _above(close: float, ma: float) -> bool:
+    """站上均線：收盤 ≥ 均線（誤差 1e-9 內算相等）。2026-10-24 老師頁 3031 佰鴻 10/22 收 32.3、10 日均線剛好 32.3，他算站上。"""
+    return close >= ma - 1e-9
+
+
 def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> tuple[int, int, int] | None:
     """官網式均線分數的三部分：(站上均線位元, 創新高位元, 多頭排列分)。位元第 k 位＝第 k 個天期（MA_PERIODS／OFFICIAL_HI_PERIODS 的順序）。
-    站上：收盤＞5／10／20／60／120／240 日均線；創新高：今天收盤＞那個天期（5／10／20／60／120／360 日，
+    站上：收盤≥5／10／20／60／120／240 日均線（平手算站上）；創新高：今天收盤＞那個天期（5／10／20／60／120／360 日，
     不夠長用現有長度）內 3 個交易日以前的最高收盤（平手不算）；排列：20 日＞60 日、60 日＞120 日、120 日＞350 日各 1 分。
     closes 舊到新、最後一筆是當天；不足 240 根回 None。mas 可以先給 MA_PERIODS 的均線（350 日不給就自己算）。"""
     n = len(closes)
@@ -308,7 +313,7 @@ def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> 
         span = min(ALIGN_LONG, n)
         mas[ALIGN_LONG] = sum(closes[-span:]) / span
     close = closes[-1]
-    ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if close > mas[p])
+    ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if _above(close, mas[p]))
     hi_bits = 0
     for k, p in enumerate(OFFICIAL_HI_PERIODS):
         window = closes[-p:]
@@ -386,7 +391,7 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             score = ma_alignment_score(mas)          # 本站算法只看 MA_PERIODS，350 日線要加在後面
             span = min(ALIGN_LONG, n)
             mas[ALIGN_LONG] = (prefix[n] - prefix[n - span]) / span
-            ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if c > mas[p])
+            ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if _above(c, mas[p]))
             hi_bits = sum(1 << k for k, p in enumerate(OFFICIAL_HI_PERIODS) if i >= gap and c > earlier_max[p][i - gap])
             align = sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
             score2 = bin(ma_bits).count("1") + bin(hi_bits).count("1") + align

@@ -20,6 +20,8 @@ TWSE_PAYLOAD = {
         ["114年10月22日", "1101", "台泥", "30.00", "30.00", "0.00", "息", "33.00", "27.00"],          # 沒變動：不收
         ["114年10月22日", "1234", "怪怪", "100.00", "20.00", "80.00", "權", "22.00", "18.00"],         # 因子 0.2：資料怪，不收
         ["114年10月23日", "2412", "中華電", "--", "119.00", "1.00", "息", "130", "110"],               # 沒有前收盤價：不收
+        ["114年10月24日", "1711", "永光", "44.65", "43.75", "0.90", "權", "48", "39"],                 # 除權（股票股利）：老師不還原，不收
+        ["114年10月24日", "6874", "倍力", "83.60", "73.27", "10.33", "權息", "90", "66"],              # 除權息：同上不收
     ],
 }
 TPEX_PAYLOAD = {
@@ -37,6 +39,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual([(r["code"], r["date"], r["prevClose"], r["refPrice"]) for r in rows], [("2330", "2025-10-21", 1500.0, 1495.0)])
         self.assertAlmostEqual(rows[0]["factor"], 1495 / 1500)
         self.assertEqual(rows[0]["note"], "息")
+        self.assertEqual({r["code"] for r in rows}, {"2330"})                  # 除權、除權息的不還原（老師只還原現金股利）
 
     def test_tpex_raw_and_mirror(self) -> None:
         for payload in (TPEX_PAYLOAD, MIRROR_PAYLOAD):
