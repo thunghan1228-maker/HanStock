@@ -892,11 +892,15 @@ def get_otc_index_strength() -> dict[str, Any]:
     today = now.strftime("%Y-%m-%d")
     today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
     held_from = None
+    held_reason = None
     # 使用者 2026-09-25：過午夜不能變成「資料蒐集中」，上一個交易日收盤時的判斷要留到下一個交易日
     # 開盤前 15 分鐘（08:45），跟大戶力排行同一條規則（週末整天留）；沿用時價格用那天最後一根 5 分 K 的收盤。
-    if not today_bars and bars and _should_hold_previous_ranking(now):
+    # 使用者 2026-10-23：沒開盤、或停止交易休息（颱風假等，日曆上是交易日但今天一根 5 分 K 都沒有）時，也不要顯示「資料蒐集中」，
+    # 一樣放最近一個交易日的資料；今天一有第一根 5 分 K 就自動換回今天的。heldReason：before-open＝還沒到開盤，no-trading＝過了 08:45 今天還是沒有資料。
+    if not today_bars and bars:
         last_day = taipei_trade_date(int(bars[-1]["ts"]))
         if last_day < today:
+            held_reason = "before-open" if _should_hold_previous_ranking(now) else "no-trading"
             held_from, today = today, last_day
             today_bars = [b for b in bars if taipei_trade_date(int(b["ts"])) == today]
             quote = None
@@ -957,7 +961,8 @@ def get_otc_index_strength() -> dict[str, Any]:
         "aboveRefLow": above_ref_low,
         "priceSource": price_source,
         "tradeDate": today,
-        "heldFrom": held_from,  # 有值＝現在還沒到下一個交易日 08:45，畫面上是 tradeDate 那天收盤時的判斷
+        "heldFrom": held_from,  # 有值＝今天沒有 5 分 K（還沒到 08:45 開盤前、或沒開盤／停止交易），畫面上是 tradeDate 那天收盤時的判斷
+        "heldReason": held_reason,
         "updatedAt": datetime.now(TW_TZ).isoformat(),
         "hub": hub.get_status(),
     }

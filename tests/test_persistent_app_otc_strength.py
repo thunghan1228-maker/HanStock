@@ -63,10 +63,14 @@ class OtcIndexStrengthEndpointTests(unittest.TestCase):
         self.assertEqual(data["refLow"], 95.0)                       # 那天第 3 根的低點
         self.assertEqual(data["label"], "強多")
         self.assertEqual(data["priceSource"], "lastBar")
+        self.assertEqual(data["heldReason"], "before-open")
+        # 使用者 2026-10-23：過了 08:45 今天還是一根 5 分 K 都沒有（沒開盤／停止交易）：也放最近一個交易日，不顯示「資料蒐集中」
         with patch("persistent_app.get_otc_index_hub", return_value=hub), \
                 patch("persistent_app._should_hold_previous_ranking", return_value=False):
             data = self.client.get("/api/hub/index/otc/strength").json()
-        self.assertFalse(data["ready"])                              # 08:45 以後就等今天的資料
+        self.assertTrue(data["ready"])
+        self.assertEqual((data["tradeDate"], data["heldFrom"], data["heldReason"]), (self.yesterday.isoformat(), self.today.isoformat(), "no-trading"))
+        self.assertEqual((data["price"], data["label"]), (101.0, "強多"))
 
     def test_ma20_uses_multi_day_bars_when_today_alone_has_fewer_than_20(self) -> None:
         # 使用者回報的核心情境：今天只走了2根5分K，靠歷史(昨天)補齊到20根，
@@ -147,17 +151,29 @@ class OtcIndexStrengthEndpointTests(unittest.TestCase):
         self.assertIn("補齊失敗", data["reason"])
         self.assertIn("yahoo: HTTP 404", data["reason"])
 
-    def test_not_ready_when_bars_are_all_historical_with_none_from_today(self) -> None:
-        # 有20根以上的歷史bar、也有quote，但今天自己一根bar都還沒有——
-        # 這種狀態下沒有today_bars可以當ref_bar，不該假裝ready。
-        # （2026-09-25 起：08:45 之前會沿用上一個交易日，所以這裡明確指定「已經過 08:45」的情境。）
+    def test_market_closed_today_shows_last_trading_day_even_with_stale_quote(self) -> None:
+        # 使用者 2026-10-23：日曆上是交易日但沒開盤（停止交易）——今天一根 5 分 K 都沒有，不要顯示「資料蒐集中」，
+        # 放最近一個交易日收盤時的判斷（就算還留著昨天的最後一筆報價也一樣，價格用那天最後一根 5 分 K）。
         bars = [bar_at(i * 5, day=self.yesterday, low=90.0, close=100.0) for i in range(20)]
+        bars[-1]["close"] = 105.0
         hub = FakeHub(bars, quote_close=100.0)
         with patch("persistent_app.get_otc_index_hub", return_value=hub), \
                 patch("persistent_app._should_hold_previous_ranking", return_value=False):
-            resp = self.client.get("/api/hub/index/otc/strength")
-        data = resp.json()
-        self.assertFalse(data["ready"])
+            data = self.client.get("/api/hub/index/otc/strength").json()
+        self.assertTrue(data["ready"], data)
+        self.assertEqual((data["tradeDate"], data["heldFrom"], data["heldReason"]), (self.yesterday.isoformat(), self.today.isoformat(), "no-trading"))
+        self.assertEqual((data["price"], data["priceSource"]), (105.0, "lastBar"))
+
+    def test_todays_bars_take_over_from_the_held_day(self) -> None:
+        # 今天一有 5 分 K 就換回今天的，heldFrom 不再出現
+        yesterday_bars = [bar_at(i * 5, day=self.yesterday, low=90.0, close=100.0) for i in range(19)]
+        hub = FakeHub(yesterday_bars + [bar(9, 0, day=self.today, low=99.0, close=101.0)], quote_close=102.0)
+        with patch("persistent_app.get_otc_index_hub", return_value=hub), \
+                patch("persistent_app._should_hold_previous_ranking", return_value=False):
+            data = self.client.get("/api/hub/index/otc/strength").json()
+        self.assertTrue(data["ready"], data)
+        self.assertEqual((data["tradeDate"], data["heldFrom"], data["heldReason"]), (self.today.isoformat(), None, None))
+        self.assertEqual(data["priceSource"], "quote")
 
 
 if __name__ == "__main__":
