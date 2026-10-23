@@ -206,6 +206,23 @@ class MaRankTests(unittest.TestCase):
         self.assertEqual(first["stocks"][0]["sum"], 15)
         self.assertNotEqual([s["code"] for s in again["stocks"]][0], "1111")     # 1111 被改成 3 分，掉出第一名
 
+    def test_teacher_view_drops_absent_codes(self) -> None:
+        """對照老師名單：拿掉老師名單沒有的股票後重排——名次、族群平均、前十名常客都照剩下的算；預設（不帶）完全不變。"""
+        with patch.object(module, "TEACHER_ABSENT", frozenset({"1111"})):
+            normal = module.ranking()
+            view = module.ranking(teacher=True)
+            hit_view = module.hits(teacher=True)
+        self.assertEqual([x["code"] for x in normal["stocks"]], ["1111", "2222", "4444"])
+        self.assertEqual([x["code"] for x in view["stocks"]], ["2222", "4444", "3333"])        # 1111 拿掉，3333 遞補進前 3
+        self.assertEqual((view["teacher"], normal["teacher"], view["n"], normal["n"]), (True, False, 4, 5))
+        self.assertEqual(view["stocks"][0]["rank"], 1)
+        self.assertEqual(view["stocks"][0]["prev"], 1)         # 昨天名次也照拿掉之後的名單排（昨天 1111 在榜首，拿掉後 2222 是第 1）
+        groups = {g["name"]: g for g in view["groups"]}
+        self.assertEqual((groups["甲"]["n"], groups["甲"]["avg"]), (2, round((15 + 14) / 2, 2)))   # 甲 3 檔拿掉 1111 剩 2222、3333
+        self.assertNotIn("1111", [r["code"] for r in hit_view["rows"]])
+        self.assertIn("1111", [r["code"] for r in module.hits()["rows"]])
+        self.assertEqual(module.ranking()["n"], 5)              # 切過去再切回來，原本的資料沒被動到
+
     def test_bias_columns(self) -> None:
         """月乖離／季乖離：收盤 ÷ 20／60 日均線 − 1（%）；日K不夠或當天沒日K就是 None；讀日K失敗不影響排行。"""
         def bar(day: str, close: float) -> tuple:

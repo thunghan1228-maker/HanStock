@@ -170,6 +170,34 @@ def load_events(codes: Iterable[str] | None = None) -> dict[str, list[tuple[str,
     return out
 
 
+def cash_reduction_undo(codes: Iterable[str] | None = None) -> dict[str, list[tuple[str, float]]]:
+    """{代號: [(事件日, 1÷因子)]}：現金減資的反向因子。價格已經套過 price_adjust 的減資還原時，再乘上這個就等於「現金減資不還原」。
+    2026-10-24 老師均線分數排行頁 10/22：信昌電 10/19 現金減資（前收 284、參考價 301.49），老師的分數（9／6／3）等於沒還原，
+    我們還原了（7／4／3）。只有「現金減資」這一種不還原；彌補虧損、退還股款等其他減資、變更面額都照常還原。"""
+    initialize_database()
+    from price_adjust import _schema as _pa_schema
+
+    with get_connection() as connection:
+        _pa_schema(connection)
+        rows = connection.execute("SELECT stock_code, ex_date, factor FROM price_adjust_events WHERE note LIKE '%現金減資%' ORDER BY ex_date").fetchall()
+    wanted = {str(c).strip().upper() for c in codes} if codes is not None else None
+    out: dict[str, list[tuple[str, float]]] = {}
+    for r in rows:
+        code, factor = str(r["stock_code"]), float(r["factor"])
+        if factor > 0 and (wanted is None or code in wanted):
+            out.setdefault(code, []).append((str(r["ex_date"]), 1.0 / factor))
+    return out
+
+
+def score_events(codes: Iterable[str] | None = None) -> dict[str, list[tuple[str, float]]]:
+    """算均線分數時，要在「已套分割減資還原」的日K上再乘的事件：現金股利（除息）因子＋現金減資的反向因子。"""
+    codes = list(codes) if codes is not None else None
+    out: dict[str, list[tuple[str, float]]] = {c: list(v) for c, v in load_events(codes).items()}
+    for code, events in cash_reduction_undo(codes).items():
+        out.setdefault(code, []).extend(events)
+    return {c: sorted(v) for c, v in out.items()}
+
+
 def last_event_date() -> str | None:
     initialize_database()
     with get_connection() as connection:
