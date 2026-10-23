@@ -15,6 +15,7 @@ from hanstock_app import app, _normalize_stock_code
 from main_force_collector import start_main_force_collector
 from main_force_store import (
     latest_trade_date_with_data,
+    load_daily_big_amounts,
     load_daily_main_force_net,
     load_main_force_bars,
     load_holder_timeline,
@@ -1847,8 +1848,12 @@ def get_daily_bars(
     code = _normalize_stock_code(stock_code)
     bars = load_daily_bars(code, limit=limit)
     daily_net = load_daily_main_force_net(code)
+    big = load_daily_big_amounts(code)   # 老師版大戶（2026-10-23 使用者：日線副圖切「老師版」也要有統計）
     for bar in bars:
-        bar["mainNet"] = daily_net.get(str(bar["ts"])[:10])
+        day = str(bar["ts"])[:10]
+        bar["mainNet"] = daily_net.get(day)
+        amounts, close = big.get(day), bar.get("close")
+        bar["bigNet"] = round((amounts[0] - amounts[1]) / (float(close) * 1000), 1) if amounts and close else None   # 張：金額 ÷（收盤價 × 1000），跟前端分K 的換算一樣
     return {
         "status": "ok",
         "code": code,
