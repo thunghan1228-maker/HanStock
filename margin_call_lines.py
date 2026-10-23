@@ -97,6 +97,36 @@ def pullback(bars: list[tuple[str, float, float, float, float]], open_today: flo
             "black": black, "shadow": shadow, "run": run, "burst": burst, "dump": dump}
 
 
+def live_base(full: list[tuple[str, float, float, float, float]]) -> dict[str, Any] | None:
+    """盤中版落底／回檔警示要用的「昨天以前」基底（2026-10-23 使用者：落底訊號、回檔警示盤中有發生要跳通知）。
+    full＝舊到新（日期, 最高, 最低, 收盤, 成交量張），最後一根是最近一個收盤日；前端拿「今天到目前的 開高低現價＋累計量」當今天那根暫時的日K，
+    接在這些後面，用跟 stabilize／pullback 一模一樣的算法重算。這裡預先算好需要的幾個數字（前端不必拿整串日K）：
+      prevClose＝昨收、prevChg＝昨天漲跌幅 %、c10＝往前第 10 個交易日收盤（算近 10 日漲幅）、sum19＝最近 19 日收盤合計（加上現價就是 20 日均線）、
+      avgVol20＝最近 20 日均量（爆量的基準）、burstPrev＝今天以前的近 BURST_DAYS−1 天裡量比最大的那天 {ratio, low, date}（今天的量比拿去跟它比）。
+    日K不夠（要 30 根；落底的爆量日要 20＋BURST_DAYS 根）的欄位是 None。"""
+    n = len(full)
+    if n < 10:
+        return None
+    out: dict[str, Any] = {"prevClose": full[-1][3], "c10": full[-10][3], "sum19": None, "avgVol20": None, "prevChg": None, "burstPrev": None}
+    if n >= 19:
+        out["sum19"] = sum(b[3] for b in full[-19:])
+    if n >= AVG_VOL_DAYS:
+        out["avgVol20"] = sum(b[4] for b in full[-AVG_VOL_DAYS:]) / AVG_VOL_DAYS
+    if n >= 2 and full[-2][3] > 0 and full[-1][3] > 0:
+        out["prevChg"] = (full[-1][3] / full[-2][3] - 1) * 100
+    if n >= AVG_VOL_DAYS + BURST_DAYS:
+        best: tuple[float, int] | None = None
+        for j in range(n + 1 - BURST_DAYS, n):          # 今天（第 n 根）以前的那幾天
+            base = sum(b[4] for b in full[j - AVG_VOL_DAYS:j]) / AVG_VOL_DAYS
+            if base > 0:
+                ratio = full[j][4] / base
+                if best is None or ratio >= best[0]:
+                    best = (ratio, j)
+        if best is not None:
+            out["burstPrev"] = {"ratio": best[0], "low": full[best[1]][2], "date": full[best[1]][0]}
+    return out
+
+
 def _load_open_map(codes: list[str], as_of: str) -> dict[str, float]:
     """{代號: as_of 那天的開盤價}（_load_bars 沒帶開盤價，黑K／長上影要用）。"""
     from database import get_connection, initialize_database
@@ -214,6 +244,7 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
             continue
         group, name = group_and_name(code)
         rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info, "stab": stabilize([(b[0], b[1], b[2], b[3], b[4]) for b in full]), "pull": pullback([(b[0], b[1], b[2], b[3], b[4]) for b in full], opens.get(code)),
+                     "liveBase": live_base([(b[0], b[1], b[2], b[3], b[4]) for b in full]),
                      "margin": margin_metrics(margin_hist.get(code), as_of, info["highDate"], info["close"])})
     rows.sort(key=lambda r: (r["bGap"], r["aGap"], r["code"]))
     counts = {"stocks": len(rows), "aBroken": sum(1 for r in rows if r["aBroken"]), "bBroken": sum(1 for r in rows if r["bBroken"]),

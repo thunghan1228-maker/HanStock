@@ -263,6 +263,35 @@ def history(codes: list[str], since: str, until: str) -> dict[str, dict[str, dic
     return out
 
 
+def series(code: str, days: int = 60) -> list[dict[str, Any]]:
+    """單檔近 days 個有資料的交易日的融資序列，日期由舊到新（K線圖的融資副圖用，2026-10-23 使用者）。
+    每天：餘額（張）、當天增減（張，前日餘額欄；沒有就跟前一天比）、買進／賣出／現償（張）、使用率（餘額÷次一營業日限額，%）。"""
+    code = str(code or "").strip().upper()
+    if not code:
+        return []
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        rows = connection.execute(
+            "SELECT trade_date, margin_balance, margin_prev, margin_limit, margin_buy, margin_sell, margin_repay FROM margin_daily "
+            "WHERE stock_code = ? ORDER BY trade_date DESC LIMIT ?",
+            (code, max(1, int(days))),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    prev_balance: int | None = None
+    for row in reversed(rows):
+        balance = int(row["margin_balance"])
+        prev = int(row["margin_prev"]) if row["margin_prev"] else prev_balance
+        limit = int(row["margin_limit"])
+        out.append({
+            "date": str(row["trade_date"]), "balance": balance, "chg": balance - prev if prev is not None else None,
+            "buy": int(row["margin_buy"]), "sell": int(row["margin_sell"]), "repay": int(row["margin_repay"]),
+            "util": round(balance / limit * 100, 2) if limit else None,
+        })
+        prev_balance = balance
+    return out
+
+
 def _pct(now_value: float, before: float | None) -> float | None:
     return round((now_value / before - 1) * 100, 2) if before and before > 0 else None
 
