@@ -45,6 +45,9 @@ class DetectTests(unittest.TestCase):
         self.assertLess(w["stop"], w["low2"]["price"])
         self.assertGreater(w["target"], w["trigger"])
         self.assertEqual(module.detect_all(bars).get("w", {}).get("name"), "W底")
+        self.assertEqual([p["k"] for p in w["points"]], ["低1", "頸", "低2"])                      # K線圖要標的點：兩個低點和頸線的高點
+        self.assertEqual((w["line"]["label"], w["line"]["price"], w["line"]["from"]), ("頸線", w["trigger"], w["neck"]["date"]))
+        self.assertEqual([p["date"] for p in w["points"]], [w["low1"]["date"], w["neck"]["date"], w["low2"]["date"]])
         broke = series(self.pre + [(80, 40), (92, 15), (80.8, 15), (88, 8), (95, 4)], 100.0)       # 最後 4 根站上頸線
         w2 = module.detect_w(broke)
         self.assertEqual(w2["state"], "breakout")
@@ -66,6 +69,8 @@ class DetectTests(unittest.TestCase):
         self.assertLess(hs["head"]["price"], hs["right"]["price"])
         self.assertAlmostEqual(hs["trigger"], 95 * 1.004, delta=0.6)
         self.assertGreater(hs["target"], hs["trigger"] + 15)                                      # 頸線 + 頭到頸線的高度
+        self.assertEqual([p["k"] for p in hs["points"]], ["左肩", "頸", "頭", "頸", "右肩"])
+        self.assertEqual(hs["line"]["label"], "頸線")
         flat_head = series(self.pre + [(85, 15), (95, 10), (84, 15), (95, 10), (86, 10), (90, 3)], 100.0)   # 頭只比左肩低 1%：不算
         self.assertIsNone(module.detect_hs(flat_head))
 
@@ -76,6 +81,7 @@ class DetectTests(unittest.TestCase):
         self.assertEqual((hl["name"], hl["state"]), ("C不破A低", "candidate"))
         self.assertGreater(hl["c"]["price"], hl["a"]["price"] * 1.04)
         self.assertAlmostEqual(hl["trigger"], 85 * 1.004, delta=0.6)
+        self.assertEqual([p["k"] for p in hl["points"]], ["A", "B", "C"])
         lower = series([(90, 60), (70, 20), (85, 15), (66, 12), (74, 5)], 50.0)                  # C 破了 A 的低
         self.assertIsNone(module.detect_hl(lower))
 
@@ -90,6 +96,8 @@ class DetectTests(unittest.TestCase):
         self.assertGreaterEqual(len(v["contractions"]), 2)
         self.assertTrue(all(v["contractions"][i] < v["contractions"][i - 1] for i in range(1, len(v["contractions"]))))   # 一次比一次小
         self.assertLess(v["volRatio"], 0.95)
+        self.assertEqual(len(v["points"]), 2 * len(v["contractions"]))                           # 每次收縮一高一低
+        self.assertEqual((v["line"]["label"], v["line"]["price"]), ("樞紐", v["trigger"]))
         loud = series(pts, 50.0)                                                                  # 量沒縮（全程同量）
         self.assertIsNone(module.detect_vcp(loud))
         gp = [(100, 80), (80, 12), (98, 10), (70, 14), (97, 10), (92, 6), (95, 3)]               # 第二次回檔（98→70）比第一次（100→80）更深

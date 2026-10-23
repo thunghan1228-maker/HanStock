@@ -105,6 +105,11 @@ def _mk(name: str, state: str, trigger: float, stop: float, target: float, **ext
     return {"name": name, "state": state, "trigger": round(trigger, 2), "stop": round(stop, 2), "target": round(target, 2), **extra}
 
 
+def _pt(label: str, p: dict[str, Any]) -> dict[str, Any]:
+    """K線圖上要標的轉折點：{k 名稱, date, price}。"""
+    return {"k": label, "date": p["date"], "price": round(p["price"], 2)}
+
+
 def _prior_drop(pivs: list[dict[str, Any]], k: int) -> float | None:
     """第 k 個轉折（低點）前面那個高點到它的跌幅。"""
     if k < 1 or pivs[k - 1]["kind"] != "H":
@@ -138,7 +143,8 @@ def detect_w(bars: list[Bar]) -> dict[str, Any] | None:
         if st is None:
             continue
         return _mk("W底", st, h["price"], low * 0.98, h["price"] + (h["price"] - low), low1={"date": l1["date"], "price": l1["price"]},
-                   low2={"date": l2["date"], "price": l2["price"]}, neck={"date": h["date"], "price": h["price"]}, heightPct=round((h["price"] / low - 1) * 100, 1))
+                   low2={"date": l2["date"], "price": l2["price"]}, neck={"date": h["date"], "price": h["price"]}, heightPct=round((h["price"] / low - 1) * 100, 1),
+                   points=[_pt("低1", l1), _pt("頸", h), _pt("低2", l2)], line={"label": "頸線", "price": round(h["price"], 2), "from": h["date"]})
     return None
 
 
@@ -167,8 +173,10 @@ def detect_hs(bars: list[Bar]) -> dict[str, Any] | None:
         st = _state(bars, neck)
         if st is None:
             continue
+        neck_p = h1 if h1["price"] >= h2["price"] else h2
         return _mk("頭肩底", st, neck, rs * 0.98, neck + (neck - head), left={"date": lf["date"], "price": ls}, head={"date": hd["date"], "price": head},
-                   right={"date": r["date"], "price": rs}, heightPct=round((neck / head - 1) * 100, 1))
+                   right={"date": r["date"], "price": rs}, heightPct=round((neck / head - 1) * 100, 1),
+                   points=[_pt("左肩", lf), _pt("頸", h1), _pt("頭", hd), _pt("頸", h2), _pt("右肩", r)], line={"label": "頸線", "price": round(neck, 2), "from": neck_p["date"]})
     return None
 
 
@@ -197,7 +205,8 @@ def detect_hl(bars: list[Bar]) -> dict[str, Any] | None:
         if st is None:
             continue
         return _mk("C不破A低", st, b["price"], c["price"] * 0.98, b["price"] + (b["price"] - c["price"]), a={"date": a["date"], "price": a["price"]},
-                   b={"date": b["date"], "price": b["price"]}, c={"date": c["date"], "price": c["price"]}, higherLowPct=round((c["price"] / a["price"] - 1) * 100, 1))
+                   b={"date": b["date"], "price": b["price"]}, c={"date": c["date"], "price": c["price"]}, higherLowPct=round((c["price"] / a["price"] - 1) * 100, 1),
+                   points=[_pt("A", a), _pt("B", b), _pt("C", c)], line={"label": "前高B", "price": round(b["price"], 2), "from": b["date"]})
     return None
 
 
@@ -257,8 +266,12 @@ def detect_vcp(bars: list[Bar]) -> dict[str, Any] | None:
     st = _state(bars, trigger)
     if st is None:
         return None
+    pts: list[dict[str, Any]] = []
+    for j, (hh, ll) in enumerate(segl, start=1):
+        pts += [_pt(f"高{j}", hh), _pt(f"低{j}", ll)]
     return _mk("VCP收斂", st, trigger, last_l["price"] * 0.97, trigger + (segl[0][0]["price"] - segl[0][1]["price"]) * 0.5,
-               contractions=[round(d * 100, 1) for d in seg], volRatio=round(v10 / v50, 2), pivotDate=last_h["date"])
+               contractions=[round(d * 100, 1) for d in seg], volRatio=round(v10 / v50, 2), pivotDate=last_h["date"],
+               points=pts, line={"label": "樞紐", "price": round(trigger, 2), "from": last_h["date"]})
 
 
 DETECTORS = (("vcp", detect_vcp), ("hl", detect_hl), ("w", detect_w), ("hs", detect_hs))
