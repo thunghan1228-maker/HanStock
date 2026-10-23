@@ -1202,6 +1202,23 @@ def get_margin_line(code: str = Query(..., min_length=1, max_length=12, pattern=
     return margin_line_single(code, date)
 
 
+@app.get("/api/hub/patterns")
+def get_patterns(date: str | None = Query(None), codes: str | None = Query(None)) -> dict[str, Any]:
+    """形態選股（2026-10-23 使用者：VCP 收斂、C 不破 A 的低、W 底、頭肩底）：全部族群股符合形態的候選＋觸發價（頸線／樞紐）、停損、目標價；
+    state＝candidate（等突破）／breakout（最近 3 根內剛突破）。日K算的，收盤後才變；盤中突破由前端用即時價判斷。"""
+    from fastapi import HTTPException
+
+    from chart_patterns import payload as patterns_payload
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    split = lambda text: [x.strip() for x in str(text or "").replace("，", ",").split(",") if x.strip()]  # noqa: E731
+    return patterns_payload(date, split(codes) or None)
+
+
 @app.get("/api/hub/margin-call")
 def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=1000)) -> dict[str, Any]:
     """融資斷頭線（2026-10-23 使用者貼老師 10/22「斷頭線就在腳下」）：A＝近 20 個交易日盤中最高 × 0.78（上櫃 × 0.65），B＝月高那天的 5 日均價 × 0.78（上櫃 × 0.65）；
