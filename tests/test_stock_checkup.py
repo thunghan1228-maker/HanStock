@@ -204,6 +204,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((df["low3Y"], df["low3T"], df["halfY"], df["halfT"], df["label"]), (99, 99, 106.5, 107.5, "✅ 守住"))   # 昨天看：高 114 低 99 → 106.5；今天看：高 116 低 99 → 107.5
         self.assertEqual((hj["groupAvg2"], hj["groupRank"], hj["groupN"]), (15.0, 2, 2))   # 族內只有合晶與環球晶有今天的日K；合晶 −0.88% 排第 2
         self.assertEqual(hj["subjects"]["sc"], {"ma": 2, "grp": 2, "pos": 1, "chip": 2, "pe": 2, "rev": 2, "inst": 2})
+        self.assertEqual((hj["margin"]["factor"], hj["margin"]["monthHigh"], rows["6488"]["margin"]["factor"]), (0.78, 116.0, 0.65))   # 融資斷頭線：上市 0.78、上櫃（環球晶）0.65
         self.assertEqual(hj["chip"]["radar"], 4.5)           # 籌碼雷達的籌碼%；大戶週增 weekPct 另外留著（三面向分數用）
         self.assertIsNone(rows["6488"]["chip"]["radar"])     # 雷達沒有這檔：籌碼科不計分，不拿大戶週增 % 來湊
         self.assertEqual((hj["subjects"]["red"], hj["subjects"]["green"], hj["subjects"]["cls"]), (6, 0, "強勢"))

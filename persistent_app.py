@@ -1153,6 +1153,23 @@ def get_swing_report(date: str | None = Query(None)) -> dict[str, Any]:
     return swing_report_payload(date)
 
 
+@app.get("/api/hub/margin-call")
+def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=400)) -> dict[str, Any]:
+    """融資斷頭線（2026-10-23 使用者貼老師 10/22「斷頭線就在腳下」）：A＝近 20 個交易日盤中最高 × 0.78（上櫃 × 0.65），B＝月高那天的 5 日均價 × 0.78（上櫃 × 0.65）；
+    名單照 B 離今收的距離排，已破（今收低於斷頭價）在最前面。groups＝族群名逗號分隔（沒給＝被動元件、記憶體、矽晶圓；all＝全部族群），codes＝額外代號。"""
+    from fastapi import HTTPException
+
+    from margin_call_lines import payload as margin_call_payload
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    split = lambda text: [x.strip() for x in str(text or "").replace("，", ",").replace("、", ",").split(",") if x.strip()]  # noqa: E731
+    return margin_call_payload(date, split(groups) or None, split(codes) or None, limit)
+
+
 @app.post("/api/hub/swing-report/refresh")
 def post_swing_report_refresh(rebuild_days: int = Query(0, ge=0, le=15)) -> dict[str, Any]:
     """立刻重算最新一天（並補齊近幾天沒存的）。rebuild_days＞0＝近幾個交易日已存的也一起重算（改規則後用）。"""
