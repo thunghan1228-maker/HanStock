@@ -35,6 +35,7 @@ from brew_launch import MA_PERIODS, _latest_bar_date, group_codes, ma_alignment_
 from brew_launch_history import group_and_name
 from database import get_connection, initialize_database
 from fundamentals_daily import BIG_HOLDER_LEVELS, _schema as _fundamentals_schema
+from dividend_adjust import load_events as load_dividend_events
 from price_adjust import adjust_bars, events_version, load_events
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 from swing_report import _logged_dispositions
@@ -67,7 +68,7 @@ OFFICIAL_GAP_DAYS = 3                               # 創新高：今天收盤�
 # 伊雲谷、中櫃、華航…），看起來是均線剛好差一點點的平手（高鋒收盤 41.45＝5 日均價 41.45）；試過「收盤等於均線算站上」只多對 1 檔、而且平盤股票會被算成 6 分，沒採用。
 OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 350))
 ALIGN_LONG = 350
-SCORE_VERSION = "2026-10-22"     # 算法改了就換：整張表重算
+SCORE_VERSION = "2026-10-24"     # 算法改了就換：整張表重算（2026-10-24：均線分數改用除權息還原價算）
 ALGOS = ("site", "official")
 ALGO_LABELS = {"site": "本站", "official": "內定"}   # 2026-09-28 使用者：前端只用內定這套
 
@@ -294,9 +295,14 @@ def _has_futures(code: str) -> bool:
 
 # ------------------------------------------------------------------ 特徵
 
+def _above(close: float, ma: float) -> bool:
+    """站上均線：收盤 ≥ 均線（誤差 1e-9 內算相等）。2026-10-24 老師頁 3031 佰鴻 10/22 收 32.3、10 日均線剛好 32.3，他算站上。"""
+    return close >= ma - 1e-9
+
+
 def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> tuple[int, int, int] | None:
     """官網式均線分數的三部分：(站上均線位元, 創新高位元, 多頭排列分)。位元第 k 位＝第 k 個天期（MA_PERIODS／OFFICIAL_HI_PERIODS 的順序）。
-    站上：收盤＞5／10／20／60／120／240 日均線；創新高：今天收盤＞那個天期（5／10／20／60／120／360 日，
+    站上：收盤≥5／10／20／60／120／240 日均線（平手算站上）；創新高：今天收盤＞那個天期（5／10／20／60／120／360 日，
     不夠長用現有長度）內 3 個交易日以前的最高收盤（平手不算）；排列：20 日＞60 日、60 日＞120 日、120 日＞350 日各 1 分。
     closes 舊到新、最後一筆是當天；不足 240 根回 None。mas 可以先給 MA_PERIODS 的均線（350 日不給就自己算）。"""
     n = len(closes)
@@ -307,7 +313,7 @@ def official_parts(closes: list[float], mas: dict[int, float] | None = None) -> 
         span = min(ALIGN_LONG, n)
         mas[ALIGN_LONG] = sum(closes[-span:]) / span
     close = closes[-1]
-    ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if close > mas[p])
+    ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if _above(close, mas[p]))
     hi_bits = 0
     for k, p in enumerate(OFFICIAL_HI_PERIODS):
         window = closes[-p:]
@@ -385,7 +391,7 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             score = ma_alignment_score(mas)          # 本站算法只看 MA_PERIODS，350 日線要加在後面
             span = min(ALIGN_LONG, n)
             mas[ALIGN_LONG] = (prefix[n] - prefix[n - span]) / span
-            ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if c > mas[p])
+            ma_bits = sum(1 << k for k, p in enumerate(MA_PERIODS) if _above(c, mas[p]))
             hi_bits = sum(1 << k for k, p in enumerate(OFFICIAL_HI_PERIODS) if i >= gap and c > earlier_max[p][i - gap])
             align = sum(1 for short, long in OFFICIAL_ALIGN_PAIRS if mas[short] > mas[long])
             score2 = bin(ma_bits).count("1") + bin(hi_bits).count("1") + align
@@ -408,6 +414,24 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
             "maBits": ma_bits, "hiBits": hi_bits, "align": align,
         }
     return out
+
+
+SCORE_FIELDS = ("score2", "maBits", "hiBits", "align")
+
+
+def features_for(code: str, bars: list[Bar], wanted: set[str], dividends: dict[str, list[tuple[str, float]]]) -> dict[str, dict[str, Any]]:
+    """compute_features 加一道：這檔有除權息事件，官網式均線分數（站上均線、創新高、排列）改用除權息還原後的價格算
+    （2026-10-24 使用者：老師的均線分數用還原價，只用在均線分數）；其他特徵（漲跌幅、乖離、報酬…）還是原本的價格。"""
+    feats = compute_features(bars, wanted)
+    events = dividends.get(code)
+    if events and feats:
+        alt = compute_features(adjust_bars(bars, events), wanted)
+        for d, f in feats.items():
+            a = alt.get(d)
+            if a is not None:
+                for key in SCORE_FIELDS:
+                    f[key] = a[key]
+    return feats
 
 
 def _group_members() -> dict[str, list[str]]:
@@ -524,8 +548,9 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     scores: dict[str, dict[str, tuple[Any, Any]]] = {}
     for i in range(0, len(member_codes), CODE_BATCH):
         batch = member_codes[i:i + CODE_BATCH]
+        dividends = load_dividend_events(batch)
         for code, bars in _load_bars(batch, since=since, until=todo[-1], adjusted=True).items():
-            scores[code] = {d: (f["score"], f["score2"]) for d, f in compute_features(bars, wanted).items()}
+            scores[code] = {d: (f["score"], f["score2"]) for d, f in features_for(code, bars, wanted, dividends).items()}
     group_avg: dict[tuple[str, str], tuple[float | None, float | None]] = {}
     for name, member_list in members.items():
         for d in todo:
@@ -544,9 +569,10 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     for i in range(0, len(codes), CODE_BATCH):
         batch = codes[i:i + CODE_BATCH]
         rows: list[tuple] = []
+        dividends = load_dividend_events(batch)
         for code, bars in _load_bars(batch, since=since, until=todo[-1], adjusted=True).items():
             group, _name = group_and_name(code)
-            for d, f in compute_features(bars, wanted).items():
+            for d, f in features_for(code, bars, wanted, dividends).items():
                 f["group"] = group
                 f["weekPct"], f["weekDate"] = _week_pct(weeks.get(code, []), d)
                 f["disposed"] = _disposed(spans, code, d)
