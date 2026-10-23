@@ -251,6 +251,7 @@ class RunTests(BaseCase):
              patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 0}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 1, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
+             patch.object(module, "refresh_dividends", return_value={"twse": 0, "tpex": 0, "changed": 0, "errors": []}), \
              patch("heilong_backtest.rebuild", return_value={"date": "2026-10-02", "dates": 250, "rows": 10, "written": 10}) as rebuild:
             result = module.run_once()
         self.assertEqual(result["status"], "ok")
@@ -266,6 +267,7 @@ class RunTests(BaseCase):
              patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 0}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
+             patch.object(module, "refresh_dividends", return_value={"twse": 0, "tpex": 0, "changed": 0, "errors": []}), \
              patch("heilong_backtest.rebuild") as rebuild2:
             module.run_once()
         rebuild2.assert_not_called()                     # 什麼都沒變：不重算
@@ -276,6 +278,7 @@ class RunTests(BaseCase):
              patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 0}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
+             patch.object(module, "refresh_dividends", return_value={"twse": 0, "tpex": 0, "changed": 0, "errors": []}), \
              patch("heilong_backtest.rebuild", return_value={}) as rebuild:
             module.run_once()
         rebuild.assert_called_once_with(force=True)      # 補了一大段歷史：整張重算
@@ -286,6 +289,7 @@ class RunTests(BaseCase):
              patch.object(module, "repair_otc_from_mirror", return_value={"repaired": 860, "days": {"2026-09-07": 860}}), \
              patch.object(module, "refresh_official_events", return_value={"twse": 0, "tpex": 0, "errors": []}), \
              patch.object(module, "infer_events", return_value=0), \
+             patch.object(module, "refresh_dividends", return_value={"twse": 0, "tpex": 0, "changed": 0, "errors": []}), \
              patch("heilong_backtest.rebuild", return_value={}) as rebuild, \
              patch("grail_radar.backfill_close", return_value={}) as radar:
             result = module.run_once()

@@ -35,6 +35,7 @@ from brew_launch import MA_PERIODS, _latest_bar_date, group_codes, ma_alignment_
 from brew_launch_history import group_and_name
 from database import get_connection, initialize_database
 from fundamentals_daily import BIG_HOLDER_LEVELS, _schema as _fundamentals_schema
+from dividend_adjust import load_events as load_dividend_events
 from price_adjust import adjust_bars, events_version, load_events
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 from swing_report import _logged_dispositions
@@ -67,7 +68,7 @@ OFFICIAL_GAP_DAYS = 3                               # 創新高：今天收盤�
 # 伊雲谷、中櫃、華航…），看起來是均線剛好差一點點的平手（高鋒收盤 41.45＝5 日均價 41.45）；試過「收盤等於均線算站上」只多對 1 檔、而且平盤股票會被算成 6 分，沒採用。
 OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 350))
 ALIGN_LONG = 350
-SCORE_VERSION = "2026-10-22"     # 算法改了就換：整張表重算
+SCORE_VERSION = "2026-10-24"     # 算法改了就換：整張表重算（2026-10-24：均線分數改用除權息還原價算）
 ALGOS = ("site", "official")
 ALGO_LABELS = {"site": "本站", "official": "內定"}   # 2026-09-28 使用者：前端只用內定這套
 
@@ -410,6 +411,24 @@ def compute_features(bars: list[Bar], wanted: set[str]) -> dict[str, dict[str, A
     return out
 
 
+SCORE_FIELDS = ("score2", "maBits", "hiBits", "align")
+
+
+def features_for(code: str, bars: list[Bar], wanted: set[str], dividends: dict[str, list[tuple[str, float]]]) -> dict[str, dict[str, Any]]:
+    """compute_features 加一道：這檔有除權息事件，官網式均線分數（站上均線、創新高、排列）改用除權息還原後的價格算
+    （2026-10-24 使用者：老師的均線分數用還原價，只用在均線分數）；其他特徵（漲跌幅、乖離、報酬…）還是原本的價格。"""
+    feats = compute_features(bars, wanted)
+    events = dividends.get(code)
+    if events and feats:
+        alt = compute_features(adjust_bars(bars, events), wanted)
+        for d, f in feats.items():
+            a = alt.get(d)
+            if a is not None:
+                for key in SCORE_FIELDS:
+                    f[key] = a[key]
+    return feats
+
+
 def _group_members() -> dict[str, list[str]]:
     return {name: [str(c).strip().upper() for c, _n in members] for name, members in STOCK_GROUPS.items() if name not in SPECIAL_GROUP_NAMES}
 
@@ -524,8 +543,9 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     scores: dict[str, dict[str, tuple[Any, Any]]] = {}
     for i in range(0, len(member_codes), CODE_BATCH):
         batch = member_codes[i:i + CODE_BATCH]
+        dividends = load_dividend_events(batch)
         for code, bars in _load_bars(batch, since=since, until=todo[-1], adjusted=True).items():
-            scores[code] = {d: (f["score"], f["score2"]) for d, f in compute_features(bars, wanted).items()}
+            scores[code] = {d: (f["score"], f["score2"]) for d, f in features_for(code, bars, wanted, dividends).items()}
     group_avg: dict[tuple[str, str], tuple[float | None, float | None]] = {}
     for name, member_list in members.items():
         for d in todo:
@@ -544,9 +564,10 @@ def _rebuild(*, force: bool) -> dict[str, Any]:
     for i in range(0, len(codes), CODE_BATCH):
         batch = codes[i:i + CODE_BATCH]
         rows: list[tuple] = []
+        dividends = load_dividend_events(batch)
         for code, bars in _load_bars(batch, since=since, until=todo[-1], adjusted=True).items():
             group, _name = group_and_name(code)
-            for d, f in compute_features(bars, wanted).items():
+            for d, f in features_for(code, bars, wanted, dividends).items():
                 f["group"] = group
                 f["weekPct"], f["weekDate"] = _week_pct(weeks.get(code, []), d)
                 f["disposed"] = _disposed(spans, code, d)

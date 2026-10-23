@@ -26,6 +26,7 @@ from typing import Any, Callable
 from chips_daily import TPEX_MIRROR_BASE
 from database import get_connection, initialize_database
 from official_daily_bars import TSE_DAY_COMPLETE_MIN, UTC, _save_day, fetch_json, fetch_twse_day
+import dividend_adjust
 from price_adjust import detect_halt_jumps, load_events, market_days, parse_official_table, quote_ref_events, save_events
 
 logger = logging.getLogger("hanstock.bars_history")
@@ -47,6 +48,7 @@ _state: dict[str, Any] = {
     "otc": {"months": 0, "monthsDone": 0, "inserted": 0, "days": 0, "error": None},
     "otcRepair": None,
     "events": {"twse": 0, "tpex": 0, "tpexQuote": 0, "inferred": 0, "errors": []},
+    "dividends": {"twse": 0, "tpex": 0, "changed": 0, "errors": []},
     "coverage": None, "heilong": None,
 }
 _lock = threading.Lock()
@@ -418,6 +420,26 @@ def refresh_official_events(start_year: int, end_year: int, *, fetcher: Callable
     return out
 
 
+DIVIDEND_REFETCH_DAYS = 60   # 除權息已經有資料了就只重抓最近這麼久（第一次才抓三年）
+
+
+def refresh_dividends(start: date, today: date, *, fetcher: Callable[..., Any] = fetch_json, raw: Callable[[str], bytes] = _download,
+                      sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """除權息還原事件（2026-10-24 使用者：均線分數用）：證交所一個月一份直接抓、櫃買走鏡像 tpex/actions/exdiv-YYYY.json。
+    資料庫已經有事件就只重抓最近 60 天（到下個月底，證交所會先公布要除權息的），沒有（第一次）就從日K補到的起點抓。"""
+    last = dividend_adjust.last_event_date()
+    begin = start
+    if last:
+        begin = max(start, date.fromisoformat(last) - timedelta(days=DIVIDEND_REFETCH_DAYS))
+        begin = min(begin, today - timedelta(days=DIVIDEND_REFETCH_DAYS))
+    end = today + timedelta(days=31)
+
+    def mirror(year: int) -> Any:
+        return json.loads(_mirror_get(f"actions/exdiv-{year}.json", volatile=year >= today.year, raw=raw).decode("utf-8"))
+
+    return dividend_adjust.refresh(begin, end, fetcher=fetcher, mirror=mirror, sleep=sleep, delay=TWSE_DELAY_SECONDS)
+
+
 def infer_events(start: date) -> int:
     """日K推測：停止買賣後跳空超過一成、又沒有其他來源事件的（一次 300 檔，記憶體不要一次全載）。"""
     days = market_days(TSE_DAY_COMPLETE_MIN)
@@ -460,12 +482,18 @@ def run_once(*, rebuild_heilong: bool = True) -> dict[str, Any]:
         _update(phase="events")
         official = refresh_official_events(start.year, today.year)
         inferred = infer_events(start)
+        try:
+            dividends = refresh_dividends(start, today)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("bars history: dividend refresh failed")
+            dividends = {"twse": 0, "tpex": 0, "changed": 0, "errors": [f"{type(exc).__name__}: {exc}"[:200]]}
+        _update(dividends={**dividends, "errors": dividends["errors"][:10], "counts": dividend_adjust.event_counts()})
         _update(events={"twse": official["twse"], "tpex": official["tpex"], "tpexQuote": otc.get("events", 0),
                         "inferred": inferred, "errors": official["errors"][:10]})
         after = coverage()
         _update(coverage=after)
         heilong: dict[str, Any] | None = None
-        changed = (tse.get("inserted", 0) or otc.get("inserted", 0) or otc.get("events", 0) or inferred or repair.get("repaired", 0)
+        changed = (tse.get("inserted", 0) or otc.get("inserted", 0) or otc.get("events", 0) or inferred or dividends.get("changed", 0) or repair.get("repaired", 0)
                    or repair.get("filled", 0) or (before.get("bars") != after.get("bars")))
         if rebuild_heilong and changed:
             _update(phase="heilong")

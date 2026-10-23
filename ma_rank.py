@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database import get_connection, initialize_database
+from dividend_adjust import adjust as adjust_dividends, load_events as load_dividend_events
 from heilong_backtest import (
     LOOKBACK_CALENDAR_DAYS, MA_PERIODS, OFFICIAL_HI_PERIODS, _load_bars, _schema as _heilong_schema, collector_status as _heilong_status, official_parts,
 )
@@ -292,7 +293,9 @@ def _history_closes(codes: list[str], day: str) -> dict[str, list[float]]:
         return _live_hist["closes"]
     since = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
     until = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-    closes = {code: [bar[4] for bar in bars] for code, bars in _load_bars(codes, since=since, until=until, adjusted=True).items()}
+    loaded = _load_bars(codes, since=since, until=until, adjusted=True)
+    dividends = load_dividend_events(loaded.keys())      # 均線分數用除權息還原價（跟收盤整表同一套，見 dividend_adjust）
+    closes = {code: [bar[4] for bar in (adjust_dividends(bars, dividends[code]) if code in dividends else bars)] for code, bars in loaded.items()}
     _live_hist.update({"day": day, "closes": closes})
     return closes
 
