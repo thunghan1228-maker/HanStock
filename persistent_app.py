@@ -1170,6 +1170,16 @@ def get_margin_balance_status() -> dict[str, Any]:
     return {"status": "ok", **margin_balance_status()}
 
 
+@app.get("/api/hub/margin-history")
+def get_margin_history(code: str = Query(..., min_length=1, max_length=12, pattern=r"^[0-9A-Za-z]+$"), days: int = Query(60, ge=1, le=260)) -> dict[str, Any]:
+    """單檔融資餘額每日序列（K線圖日線／分K 的融資副圖：每天增減、餘額、使用率；2026-10-23 使用者）。證交所／櫃買每天晚上才公布，歷史只有收集器補到的那幾十天。"""
+    from margin_balance import series as margin_balance_series
+
+    rows = margin_balance_series(code, days)
+    return {"status": "ok" if rows else "empty", "code": code.upper(), "days": days, "rows": rows,
+            **({} if rows else {"reason": "本站還沒有這檔的融資餘額紀錄（只有上市櫃普通股有，歷史約一個月）"})}
+
+
 @app.post("/api/hub/margin-balance/collect")
 def post_margin_balance_collect() -> dict[str, Any]:
     """手動跑一輪個股融資餘額收集（櫃買鏡像工作流程推完會戳這裡）；冪等。"""

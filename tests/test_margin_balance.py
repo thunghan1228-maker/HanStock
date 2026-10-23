@@ -129,6 +129,23 @@ class CollectTests(unittest.TestCase):
         client = TestClient(persistent_app.app)
         self.assertEqual(client.get("/api/hub/margin-balance/status").json()["status"], "ok")
 
+    def test_series_for_chart_panel(self) -> None:
+        now = datetime(2026, 10, 27, 22, 0, tzinfo=TW)
+        module.collect_once(now, fetcher=self.fetcher, delay=0, mirror_fetcher=self.mirror)
+        rows = module.series("2408", 60)
+        self.assertEqual([r["date"] for r in rows], ["2026-10-21", "2026-10-22"])           # 由舊到新
+        last = rows[-1]
+        self.assertEqual((last["balance"], last["chg"], last["buy"], last["sell"], last["repay"]), (60136, 60136 - 60320, 1593, 1758, 19))
+        self.assertAlmostEqual(last["util"], 60136 / 774656 * 100, places=2)
+        self.assertEqual(len(module.series("2408", 1)), 1)                                   # 只取最近 1 天
+        self.assertEqual(module.series("9999", 60), [])
+        client = TestClient(persistent_app.app)
+        body = client.get("/api/hub/margin-history?code=2408&days=30").json()
+        self.assertEqual((body["status"], body["code"], len(body["rows"])), ("ok", "2408", 2))
+        empty = client.get("/api/hub/margin-history?code=9999").json()
+        self.assertEqual((empty["status"], empty["rows"]), ("empty", []))
+        self.assertEqual(client.get("/api/hub/margin-history?code=2408&days=0").status_code, 422)
+
 
 if __name__ == "__main__":
     unittest.main()
