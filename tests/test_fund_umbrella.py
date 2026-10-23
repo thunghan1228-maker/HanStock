@@ -55,6 +55,8 @@ class FundUmbrellaTests(unittest.TestCase):
                              {"date": d, "name": "MarginPurchase", "TodayBalance": 8_000_000}, {"date": d, "name": "ShortSale", "TodayBalance": 200_000}]
                 return {"data": rows}
             scale = 1 if params["data_id"] == "TAIEX" else 0.01
+            if params["data_id"] == "TAIEX":     # 加權指數另外有開高低、成交值（FinMind TaiwanStockPrice 的欄位）
+                return {"data": [{"date": d, "open": c * 0.995, "max": c * 1.01, "min": c * 0.99, "close": c, "Trading_money": 3.0e11} for d, c in zip(self.d, self.closes)]}
             return {"data": [{"date": d, "close": c * scale} for d, c in zip(self.d, self.closes)]}
         return call
 
@@ -62,6 +64,19 @@ class FundUmbrellaTests(unittest.TestCase):
         # 上櫃融資：每天 1,500 億、最後 20 天每天加 10 億
         rows = {d: [2_000_000, (1500 + max(0, i - 179) * 10) * 1e5, 40_000] for i, d in enumerate(self.d)}
         return {"rows": rows}
+
+    def test_parse_ohlc_and_backfill_when_missing(self) -> None:
+        got = module.parse_ohlc({"data": [{"date": "2026-10-22", "open": 46942.75, "max": 47332.18, "min": 46041.43, "close": 46041.43, "Trading_money": 4.5e11}, {"date": "2026-10-21", "close": 1}, {"x": 1}]})
+        self.assertEqual((got["taiex_high"]["2026-10-22"], got["taiex_low"]["2026-10-22"], got["taiex_open"]["2026-10-22"], round(got["taiex_value"]["2026-10-22"], 1)), (47332.18, 46041.43, 46942.75, 4500.0))
+        self.assertNotIn("2026-10-21", got["taiex_high"])                  # 欄位缺的那天不存
+        # 以前只存收盤（沒有 taiex_high）→ 下一次抓要從頭回補，不是只補最近 15 天
+        calls: list = []
+        module.fetch(fetcher=self.fetcher(calls), now=datetime(2026, 10, 10, 22, 0, tzinfo=TW), mirror_fetcher=self.mirror)
+        with module.get_connection() as connection:
+            connection.execute("DELETE FROM fund_umbrella_series WHERE series IN ('taiex_open', 'taiex_high', 'taiex_low', 'taiex_value')")
+        calls.clear()
+        module.fetch(fetcher=self.fetcher(calls), now=datetime(2026, 10, 11, 22, 0, tzinfo=TW), mirror_fetcher=self.mirror)
+        self.assertEqual(calls[-1]["start_date"] if calls[-1]["dataset"] == "TaiwanStockPrice" else [c for c in calls if c["dataset"] == "TaiwanStockPrice"][0]["start_date"], "2020-01-01")
 
     def test_parse(self) -> None:
         got = module.parse_margin({"data": [{"date": "2026-10-08", "name": "MarginPurchaseMoney", "TodayBalance": 646405767000},
@@ -103,6 +118,8 @@ class FundUmbrellaTests(unittest.TestCase):
         o = p["otcMargin"]                                                 # 上櫃融資
         self.assertEqual((o["balance"], o["d1"], o["d20"], o["shortRatio"]), (1700.0, 10.0, 200.0, 2.0))
         self.assertEqual(p["series"][-1]["mo"], 1700.0)
+        last = p["series"][-1]                                              # 加權開高低、成交值（億元）
+        self.assertEqual((last["th"], last["tl"], last["to"], last["tv"]), (round(self.closes[-1] * 1.01, 2), round(self.closes[-1] * 0.99, 2), round(self.closes[-1] * 0.995, 2), 3000.0))
         self.assertEqual(p["crashes"][0]["otcMarginPeak"], 1500.0)
         self.assertEqual(p["hotPct"], round((self.margin[-1] + 1700) / (self.margin[-21] + 1500) * 100 - 100, 2))
         self.assertNotIn("back5", o)

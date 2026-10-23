@@ -88,6 +88,21 @@ def parse_index(payload: Any) -> dict[str, float]:
     return {r["date"]: float(r["close"]) for r in (payload or {}).get("data") or [] if r.get("date") and r.get("close")}
 
 
+def parse_ohlc(payload: Any) -> dict[str, dict[str, float]]:
+    """加權指數的開高低（點）、成交值（億元）；每日加權指數分析（首頁，2026-10-23 使用者）要看「收在當天最低」「量能」用。
+    FinMind TaiwanStockPrice 欄位：open／max／min／close／Trading_money（元）。缺的欄位就不存。"""
+    out: dict[str, dict[str, float]] = {"taiex_open": {}, "taiex_high": {}, "taiex_low": {}, "taiex_value": {}}
+    for r in (payload or {}).get("data") or []:
+        d = r.get("date")
+        if not d:
+            continue
+        for series, key, scale in (("taiex_open", "open", 1.0), ("taiex_high", "max", 1.0), ("taiex_low", "min", 1.0), ("taiex_value", "Trading_money", 1e-8)):
+            v = r.get(key)
+            if v:
+                out[series][d] = float(v) * scale
+    return out
+
+
 def _last_date(connection, series: str) -> str | None:
     row = connection.execute("SELECT MAX(trade_date) AS d FROM fund_umbrella_series WHERE series = ?", (series,)).fetchone()
     return row["d"] if row else None
@@ -114,9 +129,12 @@ def fetch(*, fetcher: Callable[[dict[str, str]], Any] | None = None, now: dateti
     with get_connection() as connection:
         _schema(connection)
         last = _last_date(connection, "margin")
-    start = HISTORY_START if not last else (date.fromisoformat(last) - timedelta(days=REFETCH_DAYS)).isoformat()
+        last_ohlc = _last_date(connection, "taiex_high")     # 以前只存收盤，沒有開高低：第一次要整段回補
+    start = HISTORY_START if not last or not last_ohlc else (date.fromisoformat(last) - timedelta(days=REFETCH_DAYS)).isoformat()
     got: dict[str, dict[str, float]] = parse_margin(call({"dataset": "TaiwanStockTotalMarginPurchaseShortSale", "start_date": start}))
-    got["taiex"] = parse_index(call({"dataset": "TaiwanStockPrice", "data_id": "TAIEX", "start_date": start}))
+    taiex_payload = call({"dataset": "TaiwanStockPrice", "data_id": "TAIEX", "start_date": start})
+    got["taiex"] = parse_index(taiex_payload)
+    got.update(parse_ohlc(taiex_payload))
     got["tpex"] = parse_index(call({"dataset": "TaiwanStockPrice", "data_id": "TPEx", "start_date": start}))
     if not got["margin"] or not got["taiex"]:
         raise RuntimeError("融資餘額或加權指數抓到 0 筆")
@@ -313,8 +331,12 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
     name, icon, tone, advice = levels[min(score, 3)]
 
     chart_from = t_dates[-CHART_DAYS] if len(t_dates) >= CHART_DAYS else t_dates[0]
+    t_open, t_high, t_low, t_value = data.get("taiex_open", {}), data.get("taiex_high", {}), data.get("taiex_low", {}), data.get("taiex_value", {})
     series = [{"d": d, "t": round(taiex[d], 2), "o": round(tpex[d], 2) if d in tpex else None, "m": round(margin[d], 1) if d in margin else None,
-               "mo": round(otc_margin[d], 1) if d in otc_margin else None}
+               "mo": round(otc_margin[d], 1) if d in otc_margin else None,
+               # 加權指數當天開／高／低／成交值（億元）：每日加權指數分析用，沒有的日子是 None
+               "to": round(t_open[d], 2) if d in t_open else None, "th": round(t_high[d], 2) if d in t_high else None,
+               "tl": round(t_low[d], 2) if d in t_low else None, "tv": round(t_value[d], 1) if d in t_value else None}
               for d in t_dates if d >= chart_from]
     for info in (m_info, o_info):
         if info:
