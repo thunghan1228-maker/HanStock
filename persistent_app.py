@@ -1188,7 +1188,7 @@ def get_margin_line(code: str = Query(..., min_length=1, max_length=12, pattern=
 
 
 @app.get("/api/hub/margin-call")
-def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=400)) -> dict[str, Any]:
+def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=1000)) -> dict[str, Any]:
     """融資斷頭線（2026-10-23 使用者貼老師 10/22「斷頭線就在腳下」）：A＝近 20 個交易日盤中最高 × 0.78（上櫃 × 0.65），B＝月高那天的 5 日均價 × 0.78（上櫃 × 0.65）；
     名單照 B 離今收的距離排，已破（今收低於斷頭價）在最前面。groups＝族群名逗號分隔（沒給＝被動元件、記憶體、矽晶圓；all＝全部族群），codes＝額外代號。"""
     from fastapi import HTTPException

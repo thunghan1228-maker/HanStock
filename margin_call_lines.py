@@ -62,6 +62,60 @@ def stabilize(bars: list[tuple[str, float, float, float, float]]) -> dict[str, A
             "shrinking": chg_prev < 0 and chg > chg_prev, "noNewLow": bars[-1][2] >= bars[j][2]}
 
 
+PULL_RUN_RET10 = 0.25        # 漲多：近 10 日漲 ≥25%，或離 20 日均線乖離 ≥20%
+PULL_RUN_BIAS20 = 0.20
+PULL_EXTREME_RET10 = 0.40    # 極端漲多：近 10 日漲 ≥40%（回測近一年這組短線回檔機率最高）
+PULL_BURST = 2.0             # 爆量：今天量 ≥ 前 20 日均量 2 倍
+
+
+def pullback(bars: list[tuple[str, float, float, float, float]], open_today: float | None) -> dict[str, Any] | None:
+    """短線回檔警示的價量特徵（使用者 2026-10-23 要「近似高點」；回測近一年 417 檔顯示價量條件抓不到頭部，只對 1～5 天的短線回檔有一點傾向，所以名稱用「留意回檔」）。
+    bars 舊到新（日期, 最高, 最低, 收盤, 成交量張），最後一根是資料日；open_today＝那天開盤價（黑K、長上影要用）。
+    tier 2＝近 10 日漲 ≥40% ＋ 爆量 ＋ 出貨K；tier 1＝漲多（近 10 日 ≥25% 或乖離月線 ≥20%）＋ 爆量 ＋ 出貨K。
+    出貨K＝收黑、長上影（上影 ≥ 實體 2 倍且 ≥2.5%）、或爆量不漲（漲幅 <1%）。日K不夠（要 31 根）或沒開盤價回 None。"""
+    n = len(bars)
+    if n < 31 or not open_today or open_today <= 0:
+        return None
+    _, high, _low, close, vol = bars[-1]
+    prev_close = bars[-2][3]
+    base = sum(b[4] for b in bars[-21:-1]) / 20
+    if base <= 0 or prev_close <= 0 or close <= 0:
+        return None
+    ma20 = sum(b[3] for b in bars[-20:]) / 20
+    ret10 = close / bars[-11][3] - 1
+    bias20 = close / ma20 - 1
+    vr = vol / base
+    chg = close / prev_close - 1
+    body, upper = abs(close - open_today), high - max(open_today, close)
+    black = close < open_today
+    shadow = upper >= 2 * max(body, 0.002 * close) and upper / close >= 0.025
+    run = ret10 >= PULL_RUN_RET10 or bias20 >= PULL_RUN_BIAS20
+    burst = vr >= PULL_BURST
+    dump = black or shadow or chg < 0.01
+    tier = 2 if (ret10 >= PULL_EXTREME_RET10 and burst and dump) else 1 if (run and burst and dump) else 0
+    return {"tier": tier, "ret10": round(ret10 * 100, 1), "bias20": round(bias20 * 100, 1), "vr": round(vr, 1), "chg": round(chg * 100, 2),
+            "black": black, "shadow": shadow, "run": run, "burst": burst, "dump": dump}
+
+
+def _load_open_map(codes: list[str], as_of: str) -> dict[str, float]:
+    """{代號: as_of 那天的開盤價}（_load_bars 沒帶開盤價，黑K／長上影要用）。"""
+    from database import get_connection, initialize_database
+
+    initialize_database()
+    out: dict[str, float] = {}
+    with get_connection() as connection:
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            rows = connection.execute(
+                f"SELECT stock_code, open FROM bars_1d WHERE substr(bar_time, 1, 10) = ? AND stock_code IN ({','.join('?' for _ in batch)})",
+                (as_of, *batch),
+            ).fetchall()
+            for row in rows:
+                if row["open"]:
+                    out[str(row["stock_code"]).strip().upper()] = float(row["open"])
+    return out
+
+
 def factor_of(market: str | None) -> float:
     return FACTOR_OTC if str(market or "").upper() in ("OTC", "TPEX", "上櫃") else FACTOR_TSE
 
@@ -108,7 +162,7 @@ def single(code: str, as_of: str | None = None) -> dict[str, Any]:
     info = lines_for(bars, _markets([code]).get(code))
     if not info:
         return {"status": "short", "code": code, "date": bars[-1][0], "reason": "日K不足 24 根，算不出斷頭線"}
-    return {"status": "ok", "code": code, "date": info["date"], "line": {**info, "stab": stabilize(full)}}
+    return {"status": "ok", "code": code, "date": info["date"], "line": {**info, "stab": stabilize(full), "pull": pullback(full, _load_open_map([code], as_of).get(code))}}
 
 
 def _group_members(groups: list[str]) -> dict[str, list[str]]:
@@ -141,6 +195,7 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
     session = (datetime.strptime(as_of, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     bars_by_code = _load_bars(wanted, session=session)
     markets = _markets(wanted)
+    opens = _load_open_map(wanted, as_of)
     rows: list[dict[str, Any]] = []
     margin_hist: dict[str, dict[str, dict[str, int]]] = {}
     try:
@@ -158,7 +213,7 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
         if not info:
             continue
         group, name = group_and_name(code)
-        rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info, "stab": stabilize([(b[0], b[1], b[2], b[3], b[4]) for b in full]),
+        rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info, "stab": stabilize([(b[0], b[1], b[2], b[3], b[4]) for b in full]), "pull": pullback([(b[0], b[1], b[2], b[3], b[4]) for b in full], opens.get(code)),
                      "margin": margin_metrics(margin_hist.get(code), as_of, info["highDate"], info["close"])})
     rows.sort(key=lambda r: (r["bGap"], r["aGap"], r["code"]))
     counts = {"stocks": len(rows), "aBroken": sum(1 for r in rows if r["aBroken"]), "bBroken": sum(1 for r in rows if r["bBroken"]),
@@ -166,6 +221,6 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
     pick = lambda hit: [{"code": r["code"], "name": r["name"]} for r in rows if hit(r)]  # noqa: E731
     summary = {"aBroken": pick(lambda r: r["aBroken"]), "bWithin": pick(lambda r: not r["bBroken"] and r["bGap"] <= SUMMARY_NEAR_PCT),
                "aNew": pick(lambda r: r["aNew"]), "bNew": pick(lambda r: r["bNew"])}
-    return {"status": "ok", "date": as_of, "groups": names, "counts": counts, "summary": summary, "rows": rows[:max(1, min(limit, 400))],
+    return {"status": "ok", "date": as_of, "groups": names, "counts": counts, "summary": summary, "rows": rows[:max(1, min(limit, 1000))],
             "rule": {"factorTse": FACTOR_TSE, "factorOtc": FACTOR_OTC, "highDays": HIGH_DAYS, "maDays": MA_DAYS, "nearPct": NEAR_LIMIT_PCT,
                      "summaryNearPct": SUMMARY_NEAR_PCT}}

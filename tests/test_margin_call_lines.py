@@ -85,6 +85,39 @@ class StabilizeTests(unittest.TestCase):
         self.assertIsNone(module.stabilize(self.series([100.0] * 20, [1000.0] * 20)))   # 日K不夠
 
 
+class PullbackTests(unittest.TestCase):
+    @staticmethod
+    def bars(closes: list[float], vols: list[float], last_high: float) -> list[tuple[str, float, float, float, float]]:
+        out = [(f"2026-09-{i + 1:02d}", c * 1.005, c * 0.995, c, v) for i, (c, v) in enumerate(zip(closes, vols))]
+        d, _h, low, c, v = out[-1]
+        out[-1] = (d, last_high, low, c, v)
+        return out
+
+    def test_tiers(self) -> None:
+        flat = [100.0] * 30
+        closes = flat + [104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 136.0, 130.0]     # 近 10 日 +30%（100→130）、今天收黑
+        vols = [1000.0] * 39 + [2600.0]                                                           # 今天爆量 2.6 倍
+        r = module.pullback(self.bars(closes, vols, 137.0), 136.5)                                 # 開 136.5 收 130 → 收黑
+        self.assertEqual((r["tier"], r["ret10"], r["vr"], r["black"], r["run"], r["burst"], r["dump"]), (1, 30.0, 2.6, True, True, True, True))
+        self.assertEqual(r["chg"], round((130 / 136 - 1) * 100, 2))
+        # 近 10 日 +40% 以上：tier 2
+        closes2 = flat + [104.0, 110.0, 118.0, 125.0, 130.0, 134.0, 138.0, 141.0, 146.0, 142.0]   # 100→142
+        self.assertEqual(module.pullback(self.bars(closes2, vols, 147.0), 146.0)["tier"], 2)
+        # 沒爆量 → 0；沒出貨K（收紅、漲幅大、沒長上影）→ 0；沒漲多 → 0
+        self.assertEqual(module.pullback(self.bars(closes, [1000.0] * 40, 137.0), 136.5)["tier"], 0)
+        up = flat + [104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 136.0, 142.0]          # 今天 +4.4% 收紅
+        self.assertEqual(module.pullback(self.bars(up, vols, 142.5), 137.0)["tier"], 0)
+        self.assertEqual(module.pullback(self.bars([100.0] * 39 + [99.0], vols, 100.5), 100.0)["tier"], 0)
+        # 長上影（上影 ≥ 實體 2 倍且 ≥2.5%）也算出貨K；爆量不漲（<1%）也算
+        shadow_day = flat + [104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 136.0, 138.0]   # 近 10 日 +38%
+        r = module.pullback(self.bars(shadow_day, vols, 146.0), 136.5)                              # 開 136.5 收 138，最高 146：上影 8、實體 1.5
+        self.assertEqual((r["shadow"], r["black"], r["tier"]), (True, False, 1))
+        self.assertEqual(module.pullback(self.bars(flat + [104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 136.0, 136.5], vols, 137.0), 136.0)["tier"], 1)   # +0.4% 爆量不漲
+        # 日K不夠或沒開盤價
+        self.assertIsNone(module.pullback(self.bars([100.0] * 30, [1000.0] * 30, 101.0), 100.0))
+        self.assertIsNone(module.pullback(self.bars(closes, vols, 137.0), None))
+
+
 class PayloadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -132,7 +165,8 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(codes, sorted(codes, key=lambda c: next(x["bGap"] for x in r["rows"] if x["code"] == c)))   # B 距離由近到遠（已破在前）
         by = {x["code"]: x for x in r["rows"]}
         self.assertEqual((by["6488"]["factor"], by["2408"]["factor"]), (0.65, 0.78))      # 上櫃 0.65、上市 0.78
-        self.assertEqual(sorted(by["2408"]["stab"]), ["burst", "burstDate", "burstRatio", "chg", "chgPrev", "noNewLow", "shrinking"])   # 名單每檔帶止跌特徵（給「近似落底」）
+        self.assertEqual(sorted(by["2408"]["stab"]), ["burst", "burstDate", "burstRatio", "chg", "chgPrev", "noNewLow", "shrinking"])
+        self.assertIn("pull", by["2408"])                                                                  # 名單每檔帶回檔警示特徵（日K 夠才有值）   # 名單每檔帶止跌特徵（給「近似落底」）
         self.assertEqual(r["counts"]["stocks"], 3)
         # 老師最後一頁的總結：A 線已破的名單、B 線 5% 內（還沒破）的名單（照 B 距離排）
         self.assertEqual([x["code"] for x in r["summary"]["aBroken"]], ["2327", "2408"])
