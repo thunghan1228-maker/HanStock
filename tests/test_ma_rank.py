@@ -193,6 +193,19 @@ class MaRankTests(unittest.TestCase):
             module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
             self.assertNotIn("live", module.strength("strong"))
 
+    def test_cache_follows_rebuild(self) -> None:
+        """黑龍表整張重算（日期、筆數都沒變）也要換新快取，不然舊分數會一直留著。"""
+        first = module.ranking()
+        with patch.object(module, "_heilong_status", return_value={"builtAt": "2026-10-24T01:00:00+08:00"}):
+            key_after = module._cache_key()
+        self.assertNotEqual(module._cache["key"], key_after)
+        with database.get_connection() as c:
+            c.execute("UPDATE heilong_daily SET score2 = 3 WHERE trade_date = ? AND stock_code = ?", (D[3], "1111"))
+        with patch.object(module, "_heilong_status", return_value={"builtAt": "2026-10-24T01:00:00+08:00"}):
+            again = module.ranking()
+        self.assertEqual(first["stocks"][0]["sum"], 15)
+        self.assertNotEqual([s["code"] for s in again["stocks"]][0], "1111")     # 1111 被改成 3 分，掉出第一名
+
     def test_bias_columns(self) -> None:
         """月乖離／季乖離：收盤 ÷ 20／60 日均線 − 1（%）；日K不夠或當天沒日K就是 None；讀日K失敗不影響排行。"""
         def bar(day: str, close: float) -> tuple:

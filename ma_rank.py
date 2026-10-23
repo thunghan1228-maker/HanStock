@@ -112,7 +112,8 @@ def _cache_key() -> tuple:
     with get_connection() as connection:
         _heilong_schema(connection)
         row = connection.execute("SELECT MAX(trade_date) AS d, COUNT(*) AS n FROM heilong_daily").fetchone()
-    return (row["d"], row["n"])
+    # 黑龍表整張重算（演算法換新、補了除權息還原）日期和筆數都不變，所以也看「這個程序最近一次建表的時間」，不然這裡的快取會留著舊分數
+    return (row["d"], row["n"], _heilong_status().get("builtAt"))
 
 
 def _load() -> dict[str, Any]:
