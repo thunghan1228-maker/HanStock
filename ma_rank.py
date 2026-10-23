@@ -190,6 +190,26 @@ def _row(data: dict[str, Any], code: str, date: str, rec: dict[str, Any] | None 
     }
 
 
+def _attach_bias(rows: list[dict[str, Any]], date: str) -> None:
+    """表格列多兩欄（2026-10-23 使用者：照老師頁）：月乖離＝收盤 ÷ 20 日均線 − 1、季乖離＝收盤 ÷ 60 日均線 − 1（%，取到小數 1 位）。
+    均線用官方還原日K的收盤算（含當天）；日K不夠、當天沒日K就留 None，畫面顯示「—」。只算要列出的這幾十檔，讀不到不影響排行。"""
+    codes = sorted({r["code"] for r in rows})
+    if not codes:
+        return
+    try:
+        since = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=130)).strftime("%Y-%m-%d")
+        bars = _load_bars(codes, since=since, until=date, adjusted=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[MA Rank] 月季乖離讀不到日K")
+        bars = {}
+    for row in rows:
+        series = bars.get(row["code"]) or []
+        closes = [b[4] for b in series if b[0] <= date]
+        ok = bool(series) and series[-1][0] == date
+        for key, period in (("b20", 20), ("b60", 60)):
+            row[key] = round((closes[-1] / (sum(closes[-period:]) / period) - 1) * 100, 1) if ok and len(closes) >= period else None
+
+
 # ------------------------------------------------------------------ 族群分數
 
 def _group_table(data: dict[str, Any], date: str) -> list[dict[str, Any]]:
@@ -229,6 +249,7 @@ def ranking(date: str | None = None) -> dict[str, Any]:
         row["prev"] = prev_rank.get(code)
         row["streak"] = _streak(data, code, d)
         stocks.append(row)
+    _attach_bias(stocks, d)
     groups = _group_table(data, d)
     prev_groups = {g["name"]: g["rank"] for g in _group_table(data, prev)} if prev else {}
     for g in groups:
@@ -467,6 +488,7 @@ def query(code: str | None = None, group: str | None = None, date: str | None = 
                 members.append(c)
     recs = data["byDate"][d]
     rows = [_row(data, c, d) for c in sorted((c for c in members if c in recs), key=lambda c: _sort_key(c, recs[c]))]
+    _attach_bias(rows, d)
     missing = [{"code": c, "name": data["names"].get(c) or c} for c in members if c not in recs]
     return {"status": "ok", "date": d, "code": code, "group": "/".join(names),
             "groups": [{"name": n, "chgRank": changes.get(n)} for n in names], "rows": rows, "missing": missing}
