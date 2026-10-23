@@ -1708,6 +1708,15 @@ def get_fund_umbrella() -> dict[str, Any]:
     return body
 
 
+@app.get("/api/hub/index-score")
+def get_index_score() -> dict[str, Any]:
+    """指數均線分數（2026-10-24 使用者：均線分數排行右上角「櫃買分數」小卡，加權、櫃買兩個）：跟個股同一套 15 分算法，
+    近 3 日平均，分水嶺 6 分。今天＝前一個收盤算的、明天＝最新收盤算的。"""
+    import index_score
+
+    return index_score.payload()
+
+
 @app.post("/api/hub/fund-umbrella/fetch")
 def post_fund_umbrella_fetch() -> dict[str, Any]:
     import fund_umbrella
