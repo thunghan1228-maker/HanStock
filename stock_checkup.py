@@ -439,7 +439,7 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
                  "mf5": mf5, "mfStreak": mf_streak, "avgVol5": _r1(avg_vol5)},
         "def": defense,
         "cross": cross,
-        "margin": margin_lines([(b[0], b[2], b[4]) for b in bars[-40:]], (ctx.get("markets") or {}).get(code)),
+        "margin": margin_lines([(b[0], b[2], b[4]) for b in bars[-40:]], (ctx.get("markets") or {}).get(code), [(b[0], b[2], b[3], b[4], b[5]) for b in bars[-40:]]),
         "hist": {"score10": hist_scores, "inst10": inst_hist, "chip8": chip_hist,
                  "pe8": ctx.get("peHist", {}).get(code, []), "rev4": ctx.get("revHist", {}).get(code, [])},
         "groupAvg2": None, "groupRank": None, "groupN": None,
@@ -449,11 +449,15 @@ def evaluate_stock(code: str, bars: list[Bar], latest: str, ctx: dict[str, Any])
     }
 
 
-def margin_lines(bars: list[tuple[str, float, float]], market: str | None) -> dict[str, Any] | None:
-    """融資斷頭線（老師 10/22「斷頭線就在腳下」）：A 月高 × 0.78、B 月高那天五日均價 × 0.78（上櫃 × 0.65）；算法見 margin_call_lines。"""
-    from margin_call_lines import lines_for
+def margin_lines(bars: list[tuple[str, float, float]], market: str | None, full: list[tuple[str, float, float, float, float]] | None = None) -> dict[str, Any] | None:
+    """融資斷頭線（老師 10/22「斷頭線就在腳下」）：A 月高 × 0.78、B 月高那天五日均價 × 0.78（上櫃 × 0.65）；算法見 margin_call_lines。
+    full＝（日期, 高, 低, 收, 量）給「近似落底」的止跌特徵（爆量、跌幅縮小、沒再破低）用。"""
+    from margin_call_lines import lines_for, stabilize
 
-    return lines_for(bars, market)
+    info = lines_for(bars, market)
+    if info and full:
+        info["stab"] = stabilize(full)
+    return info
 
 
 def cross_info(prev: float | None, close: float, volume: int, defense: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -59,6 +59,32 @@ class LinesTests(unittest.TestCase):
         self.assertEqual(module.factor_of(None), 0.78)
 
 
+class StabilizeTests(unittest.TestCase):
+    @staticmethod
+    def series(closes: list[float], vols: list[float], lows: list[float] | None = None) -> list[tuple[str, float, float, float, float]]:
+        lows = lows or [c * 0.99 for c in closes]
+        return [(f"2026-09-{i + 1:02d}", c * 1.01, low, c, v) for i, (c, v, low) in enumerate(zip(closes, vols, lows))]
+
+    def test_burst_then_smaller_drop_without_new_low(self) -> None:
+        closes = [100.0] * 24 + [96.0, 91.0, 90.0]                         # 暴跌 −4%、−5.2% 之後今天只跌 −1.1%
+        vols = [1000.0] * 24 + [1000.0, 3200.0, 1500.0]                    # 前一天爆量（3.2 倍），今天量縮
+        lows = [99.0] * 24 + [95.0, 88.0, 89.5]                            # 今天最低 89.5 比爆量日最低 88 高
+        r = module.stabilize(self.series(closes, vols, lows))
+        self.assertEqual((r["burst"], r["burstRatio"], r["burstDate"]), (True, 3.2, "2026-09-26"))
+        self.assertEqual((r["chg"], r["chgPrev"], r["shrinking"], r["noNewLow"]), (-1.1, -5.21, True, True))
+
+    def test_not_stabilizing_cases(self) -> None:
+        closes = [100.0] * 24 + [96.0, 91.0, 85.0]                         # 今天跌更多（−6.6%）→ 跌幅沒縮小
+        vols = [1000.0] * 24 + [1000.0, 3200.0, 1500.0]
+        r = module.stabilize(self.series(closes, vols))
+        self.assertFalse(r["shrinking"])
+        r = module.stabilize(self.series([100.0] * 24 + [96.0, 91.0, 90.0], [1000.0] * 24 + [1000.0, 1500.0, 1200.0]))   # 量最大只 1.5 倍 → 不算爆量
+        self.assertEqual((r["burst"], r["burstRatio"]), (False, 1.5))
+        r = module.stabilize(self.series([100.0] * 24 + [96.0, 91.0, 92.0], [1000.0] * 24 + [1000.0, 3200.0, 1500.0], [99.0] * 24 + [95.0, 88.0, 87.0]))
+        self.assertFalse(r["noNewLow"])                                    # 今天最低 87 又破爆量日最低 88
+        self.assertIsNone(module.stabilize(self.series([100.0] * 20, [1000.0] * 20)))   # 日K不夠
+
+
 class PayloadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -106,6 +132,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(codes, sorted(codes, key=lambda c: next(x["bGap"] for x in r["rows"] if x["code"] == c)))   # B 距離由近到遠（已破在前）
         by = {x["code"]: x for x in r["rows"]}
         self.assertEqual((by["6488"]["factor"], by["2408"]["factor"]), (0.65, 0.78))      # 上櫃 0.65、上市 0.78
+        self.assertEqual(sorted(by["2408"]["stab"]), ["burst", "burstDate", "burstRatio", "chg", "chgPrev", "noNewLow", "shrinking"])   # 名單每檔帶止跌特徵（給「近似落底」）
         self.assertEqual(r["counts"]["stocks"], 3)
         # 老師最後一頁的總結：A 線已破的名單、B 線 5% 內（還沒破）的名單（照 B 距離排）
         self.assertEqual([x["code"] for x in r["summary"]["aBroken"]], ["2327", "2408"])

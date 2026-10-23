@@ -32,6 +32,34 @@ NEAR_LIMIT_PCT = 10.0        # 「只差一根跌停」：B 線離今收 ≤10%
 SUMMARY_NEAR_PCT = 5.0       # 老師總結「B 線 5% 內」：10/22 聯電 B 差 5.2% 不算、南亞科 1.0%／國巨 3.8% 算
 DEFAULT_GROUPS = ("被動元件", "記憶體", "矽晶圓")
 LOOKBACK_CALENDAR_DAYS = 70
+BURST_RATIO = 2.0            # 爆量：近 5 日內有一天成交量 ≥ 前 20 日均量的 2 倍（使用者 2026-10-23：爆大量、跌幅變小大概是落底）
+BURST_DAYS = 5
+AVG_VOL_DAYS = 20
+
+
+def stabilize(bars: list[tuple[str, float, float, float, float]]) -> dict[str, Any] | None:
+    """止跌特徵（給個股問診的「近似落底」用）。bars 舊到新（日期, 最高, 最低, 收盤, 成交量張），最後一根是資料日。
+    burst＝近 BURST_DAYS 日內量最大的那天 ≥ 它前 AVG_VOL_DAYS 日均量的 BURST_RATIO 倍（爆量）；
+    shrinking＝昨天收跌、今天漲跌幅比昨天好（跌幅縮小或轉漲）；noNewLow＝今天最低沒有低於爆量那天的最低（爆量之後沒再破低）。
+    日K不夠（要有爆量日前 20 日的量）回 None。"""
+    n = len(bars)
+    if n < AVG_VOL_DAYS + BURST_DAYS + 1:
+        return None
+    best: tuple[float, int] | None = None
+    for j in range(n - BURST_DAYS, n):
+        base = sum(b[4] for b in bars[j - AVG_VOL_DAYS:j]) / AVG_VOL_DAYS
+        if base > 0:
+            ratio = bars[j][4] / base
+            if best is None or ratio >= best[0]:
+                best = (ratio, j)
+    if best is None or bars[-2][3] <= 0 or bars[-3][3] <= 0:
+        return None
+    ratio, j = best
+    chg = (bars[-1][3] / bars[-2][3] - 1) * 100
+    chg_prev = (bars[-2][3] / bars[-3][3] - 1) * 100
+    return {"burst": ratio >= BURST_RATIO, "burstRatio": round(ratio, 1), "burstDate": bars[j][0],
+            "chg": round(chg, 2), "chgPrev": round(chg_prev, 2),
+            "shrinking": chg_prev < 0 and chg > chg_prev, "noNewLow": bars[-1][2] >= bars[j][2]}
 
 
 def factor_of(market: str | None) -> float:
@@ -73,13 +101,14 @@ def single(code: str, as_of: str | None = None) -> dict[str, Any]:
     if not code or not as_of:
         return {"status": "empty", "code": code, "date": as_of, "reason": "沒有股號或日K"}
     session = (datetime.strptime(as_of, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    bars = [(b[0], b[1], b[3]) for b in _load_bars([code], session=session).get(code, []) if b[0] <= as_of]
+    full = [b for b in _load_bars([code], session=session).get(code, []) if b[0] <= as_of]
+    bars = [(b[0], b[1], b[3]) for b in full]
     if not bars:
         return {"status": "missing", "code": code, "date": as_of, "reason": "本站沒有這檔的日K"}
     info = lines_for(bars, _markets([code]).get(code))
     if not info:
         return {"status": "short", "code": code, "date": bars[-1][0], "reason": "日K不足 24 根，算不出斷頭線"}
-    return {"status": "ok", "code": code, "date": info["date"], "line": info}
+    return {"status": "ok", "code": code, "date": info["date"], "line": {**info, "stab": stabilize(full)}}
 
 
 def _group_members(groups: list[str]) -> dict[str, list[str]]:
@@ -121,14 +150,15 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
     except Exception:  # noqa: BLE001
         logger.exception("融資餘額讀取失敗")
     for code in wanted:
-        bars = [(b[0], b[1], b[3]) for b in bars_by_code.get(code, []) if b[0] <= as_of]
+        full = [b for b in bars_by_code.get(code, []) if b[0] <= as_of]
+        bars = [(b[0], b[1], b[3]) for b in full]
         if not bars or bars[-1][0] != as_of:
             continue
         info = lines_for(bars, markets.get(code))
         if not info:
             continue
         group, name = group_and_name(code)
-        rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info,
+        rows.append({"code": code, "name": name, "group": code_group.get(code) or group, **info, "stab": stabilize([(b[0], b[1], b[2], b[3], b[4]) for b in full]),
                      "margin": margin_metrics(margin_hist.get(code), as_of, info["highDate"], info["close"])})
     rows.sort(key=lambda r: (r["bGap"], r["aGap"], r["code"]))
     counts = {"stocks": len(rows), "aBroken": sum(1 for r in rows if r["aBroken"]), "bBroken": sum(1 for r in rows if r["bBroken"]),

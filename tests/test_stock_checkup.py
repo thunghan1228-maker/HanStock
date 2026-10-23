@@ -292,6 +292,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual(len(r["bars"]), 30)
         self.assertEqual(r["bars"][-1][:5], [d[-1], 480.0, 520.0, 478.0, 516.0])
         self.assertEqual([x["code"] for x in r["siblings"]], ["6182", "6488", "5483"])       # 同族依七科總分排；中美晶資料舊的沒有七科排最後
+        self.assertIn("stab", r["stock"]["margin"])                                            # 問診單檔的斷頭線也帶止跌特徵（近似落底用）
         sib = {x["code"]: x for x in r["siblings"]}
         self.assertEqual((sib["6488"]["margin"]["factor"], sorted(sib["6488"]["margin"])), (0.65, ["a", "aBroken", "aGap", "aNew", "b", "bBroken", "bGap", "bNew", "factor"]))   # 同族對照每檔帶斷頭價 A／B
         self.assertEqual(r["groupInfo"]["g"], "矽晶圓")
