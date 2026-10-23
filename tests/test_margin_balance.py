@@ -88,7 +88,7 @@ class CollectTests(unittest.TestCase):
     def fetcher(self, url: str):
         self.twse_calls.append(url)
         ymd = url.split("date=")[1][:8]
-        if ymd == "20261023":
+        if ymd == "20261027":
             return {"stat": "很抱歉，沒有符合條件的資料"}       # 還沒公布
         return twse_payload(f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}")
 
@@ -99,10 +99,10 @@ class CollectTests(unittest.TestCase):
         return tpex_payload(day)
 
     def test_collect_twse_direct_and_tpex_mirror(self) -> None:
-        now = datetime(2026, 10, 23, 22, 0, tzinfo=TW)
+        now = datetime(2026, 10, 27, 22, 0, tzinfo=TW)   # 10/23 颱風假、10/26 光復節補假都休市，往前推就是 10/22、10/21
         r = module.collect_once(now, fetcher=self.fetcher, delay=0, mirror_fetcher=self.mirror)
         self.assertEqual(r["errors"], [])
-        self.assertEqual([(x["date"], x["rows"]) for x in r["twse"]], [("2026-10-23", 0), ("2026-10-22", 2), ("2026-10-21", 2)])
+        self.assertEqual([(x["date"], x["rows"]) for x in r["twse"]], [("2026-10-27", 0), ("2026-10-22", 2), ("2026-10-21", 2)])
         self.assertEqual([(x["date"], x["rows"]) for x in r["tpex"]], [("2026-10-22", 2), ("2026-10-21", 2)])   # 鏡像清單沒有的日子不去問
         self.assertEqual(module.stored_dates(), ["2026-10-22", "2026-10-21"])
         h = module.history(["2408", "6488"], "2026-10-01", "2026-10-22")
@@ -117,7 +117,7 @@ class CollectTests(unittest.TestCase):
         def blocked(url: str):
             raise RuntimeError("HTTP Error 307: Temporary Redirect")
 
-        r = module.collect_once(datetime(2026, 10, 23, 22, 0, tzinfo=TW), fetcher=blocked, delay=0, mirror_fetcher=self.mirror)
+        r = module.collect_once(datetime(2026, 10, 27, 22, 0, tzinfo=TW), fetcher=blocked, delay=0, mirror_fetcher=self.mirror)
         self.assertEqual(len(r["errors"]), 1)                                            # 被擋就先停，不連續打
         self.assertEqual(r["twse"], [])
 

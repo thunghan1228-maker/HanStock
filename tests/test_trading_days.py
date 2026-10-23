@@ -22,6 +22,8 @@ class TradingDayTests(unittest.TestCase):
         self.assertFalse(module.is_trading_day(datetime(2026, 9, 25, 10, 0, tzinfo=TW)))
         self.assertTrue(module.is_trading_day(date(2026, 9, 29)))
         self.assertFalse(module.is_trading_day("2026-02-12"))                      # 春節前無交易日
+        self.assertFalse(module.is_trading_day("2026-10-23"))                      # 颱風假（全日停止交易）
+        self.assertEqual(module.next_trading_day("2026-10-22"), date(2026, 10, 27))   # 10/23 颱風假、10/26 光復節補假
 
     def test_previous_and_next_trading_day(self) -> None:
         self.assertEqual(module.previous_trading_day("2026-09-29"), date(2026, 9, 24))
