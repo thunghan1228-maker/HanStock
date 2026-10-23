@@ -10,6 +10,7 @@ from main_force_store import (
     compute_holder_strength_pct,
     latest_trade_date_with_data,
     list_tracked_stock_codes,
+    load_daily_big_amounts,
     load_daily_main_force_net,
     load_daily_main_force_net_amount,
     load_holder_timeline,
@@ -426,6 +427,48 @@ class MainForceStoreTests(unittest.TestCase):
         self.assertEqual(result[trade_date1], 1_050_000)  # (1,000,000-100,000)+(200,000-50,000)
         self.assertEqual(result[trade_date2], -470_000)  # 30,000-500,000
         self.assertEqual(len(result), 2)
+
+    def test_load_daily_big_amounts_only_full_days_with_teacher_data(self):
+        base_ts = BASE_TS
+        day2_ts = base_ts + 86_400_000 * 3
+        day3_ts = base_ts + 86_400_000 * 4
+        d1, d2, d3 = taipei_trade_date(base_ts), taipei_trade_date(day2_ts), taipei_trade_date(day3_ts)
+        # 第一天：兩根都有老師版 → 彙總買賣金額；第二天：沒有老師版欄位（還沒開始存）；第三天：一根有、一根沒有（半天）→ 都不給
+        save_main_force_bars("2330", "5m", [
+            {"ts": base_ts, "main_force_available": True, "big_buy_amount": 5_000_000, "big_sell_amount": 1_000_000},
+            {"ts": base_ts + 300_000, "main_force_available": True, "big_buy_amount": 2_000_000, "big_sell_amount": 500_000},
+        ])
+        save_main_force_bars("2330", "5m", [{"ts": day2_ts, "main_buy_volume": 3, "main_sell_volume": 50, "main_force_available": True}])
+        save_main_force_bars("2330", "5m", [
+            {"ts": day3_ts, "main_force_available": True, "big_buy_amount": 1_000_000, "big_sell_amount": 0},
+            {"ts": day3_ts + 300_000, "main_buy_volume": 1, "main_sell_volume": 0, "main_force_available": True},
+        ])
+
+        result = load_daily_big_amounts("2330")
+
+        self.assertEqual(result, {d1: (7_000_000.0, 1_500_000.0)})
+        self.assertNotIn(d2, result)
+        self.assertNotIn(d3, result)
+        self.assertEqual(load_daily_big_amounts("9999"), {})
+
+    def test_daily_bars_endpoint_carries_teacher_big_net(self):
+        from fastapi.testclient import TestClient
+
+        import persistent_app
+
+        d1 = taipei_trade_date(BASE_TS)
+        save_main_force_bars("2330", "5m", [
+            {"ts": BASE_TS, "main_force_available": True, "main_buy_volume": 30, "main_sell_volume": 10, "big_buy_amount": 5_000_000, "big_sell_amount": 1_000_000},
+            {"ts": BASE_TS + 300_000, "main_force_available": True, "main_buy_volume": 5, "main_sell_volume": 0, "big_buy_amount": 2_000_000, "big_sell_amount": 500_000},
+        ])
+        with database.get_connection() as connection:
+            for day, close in ((d1, 100.0), ("2026-08-12", 101.0)):
+                connection.execute("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                   ("2330", day + "T00:00:00+00:00", close, close, close, close, 1000))
+        bars = {b["ts"][:10]: b for b in TestClient(persistent_app.app).get("/api/hub/bars1d/2330").json()["bars"]}
+        self.assertEqual(bars[d1]["mainNet"], 25)                                 # 單筆 20 張版（原本就有）
+        self.assertEqual(bars[d1]["bigNet"], round((7_000_000 - 1_500_000) / (100.0 * 1000), 1))   # 老師版：金額 ÷（收盤價 × 1000）＝ 55.0 張
+        self.assertIsNone(bars["2026-08-12"]["bigNet"])                           # 沒有老師版資料的日子是 None，不是 0
 
     def test_load_daily_main_force_net_amount_empty_for_untracked_code(self):
         self.assertEqual(load_daily_main_force_net_amount("9999"), {})
