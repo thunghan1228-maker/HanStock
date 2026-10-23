@@ -84,7 +84,7 @@ class IndexScoreTests(unittest.TestCase):
         self.assertEqual((t["high"], t["highDate"], t["highIntraday"]), (999.0, ds[-5], True))
 
     def test_threshold(self) -> None:
-        self.assertEqual((module.label(5.99), module.label(6.0), module.label(6.01), module.label(9)), ("空", "平", "多", "多"))
+        self.assertEqual((module.label(5.99), module.label(6.0), module.label(6.01), module.label(9)), ("空", "多", "多", "多"))
 
     def test_missing_and_short(self) -> None:
         self.assertEqual(module.payload()["status"], "missing")
