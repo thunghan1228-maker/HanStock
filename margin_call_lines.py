@@ -5,6 +5,8 @@
   A 最高點追 ＝ 近一個月（20 個交易日）盤中最高價 × 0.78（上櫃 × 0.65）：最慘的那批人，A 跌破＝斷頭開始；
   B 五日線追 ＝ 月高那天的 5 日均價（收盤）× 0.78（上櫃 × 0.65）：比較多人的平均成本，B 跌破＝斷頭高峰。
 今收低於斷頭價＝已破；否則「差 x%」＝（今收 − 斷頭價）÷ 今收。名單照 B 的距離由近到遠排。
+老師最後一頁的總結：「A 線已破」＝今收跌破 A 的檔數與名單、「B 線 5% 內」＝B 還沒破但離今收 ≤5% 的檔數與名單
+（10/22：A 已破南亞科、國巨、聯電、聯發科、天二科技；B 5% 內南亞科、國巨）。天二科技是上市股（×0.78，A 131.04、今收 130 已破）。
 老師 10/22 的八檔（南亞科、國巨、聯電、立隆電、聯發科、鈺邦、環球晶、凱美）月高、五日線、A、B、差幾 % 都用日K算得出一模一樣。
 老師挑的「23 檔熱門股」怎麼挑的看不出來（不是單純的族群，他還有聯電、聯發科），這裡預設用被動元件、記憶體、矽晶圓三個族群，
 也可以指定族群、或給代號。
@@ -23,6 +25,7 @@ FACTOR_OTC = 0.65            # 上櫃（老師：環球晶 1260 × 0.65 = 819）
 HIGH_DAYS = 20               # 「近一個月」：20 個交易日（老師的聯電、聯發科月高在 9/22，剛好是 10/22 往前第 20 個交易日）
 MA_DAYS = 5
 NEAR_LIMIT_PCT = 10.0        # 「只差一根跌停」：B 線離今收 ≤10%
+SUMMARY_NEAR_PCT = 5.0       # 老師總結「B 線 5% 內」：10/22 聯電 B 差 5.2% 不算、南亞科 1.0%／國巨 3.8% 算
 DEFAULT_GROUPS = ("被動元件", "記憶體", "矽晶圓")
 LOOKBACK_CALENDAR_DAYS = 70
 
@@ -97,5 +100,8 @@ def payload(as_of: str | None = None, groups: list[str] | None = None, codes: li
     rows.sort(key=lambda r: (r["bGap"], r["aGap"], r["code"]))
     counts = {"stocks": len(rows), "aBroken": sum(1 for r in rows if r["aBroken"]), "bBroken": sum(1 for r in rows if r["bBroken"]),
               "bNear": sum(1 for r in rows if not r["bBroken"] and r["bGap"] <= NEAR_LIMIT_PCT)}
-    return {"status": "ok", "date": as_of, "groups": names, "counts": counts, "rows": rows[:max(1, min(limit, 400))],
-            "rule": {"factorTse": FACTOR_TSE, "factorOtc": FACTOR_OTC, "highDays": HIGH_DAYS, "maDays": MA_DAYS, "nearPct": NEAR_LIMIT_PCT}}
+    pick = lambda hit: [{"code": r["code"], "name": r["name"]} for r in rows if hit(r)]  # noqa: E731
+    summary = {"aBroken": pick(lambda r: r["aBroken"]), "bWithin": pick(lambda r: not r["bBroken"] and r["bGap"] <= SUMMARY_NEAR_PCT)}
+    return {"status": "ok", "date": as_of, "groups": names, "counts": counts, "summary": summary, "rows": rows[:max(1, min(limit, 400))],
+            "rule": {"factorTse": FACTOR_TSE, "factorOtc": FACTOR_OTC, "highDays": HIGH_DAYS, "maDays": MA_DAYS, "nearPct": NEAR_LIMIT_PCT,
+                     "summaryNearPct": SUMMARY_NEAR_PCT}}

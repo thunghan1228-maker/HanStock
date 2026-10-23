@@ -107,6 +107,10 @@ class PayloadTests(unittest.TestCase):
         by = {x["code"]: x for x in r["rows"]}
         self.assertEqual((by["6488"]["factor"], by["2408"]["factor"]), (0.65, 0.78))      # 上櫃 0.65、上市 0.78
         self.assertEqual(r["counts"]["stocks"], 3)
+        # 老師最後一頁的總結：A 線已破的名單、B 線 5% 內（還沒破）的名單（照 B 距離排）
+        self.assertEqual([x["code"] for x in r["summary"]["aBroken"]], ["2327", "2408"])
+        self.assertEqual([x["code"] for x in r["summary"]["bWithin"]], ["6488"])
+        self.assertEqual(r["rule"]["summaryNearPct"], 5.0)
         # 指定族群／全部族群／額外代號
         self.assertEqual([x["code"] for x in module.payload(groups=["AI"])["rows"]], ["3231"])
         self.assertEqual(sorted(x["code"] for x in module.payload(groups=["all"])["rows"]), ["2327", "2408", "3231", "6488"])
