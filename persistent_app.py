@@ -777,9 +777,9 @@ def get_main_force_ranking(
     codes = industry_group_codes()
     ranking = load_main_force_ranking(date, interval=interval, limit=limit, codes=codes)
     held_from = None
-    if not trade_date and not ranking and _should_hold_previous_ranking(datetime.now(TW_TZ)):
-        # 沒指定日期、今天還沒有資料（午夜過後到開盤前）：沿用上一個交易日的最終排行，
-        # tradeDate 回真正的資料日期，heldFrom 標示是替哪一天暫留的。
+    if not trade_date and not ranking:
+        # 沒指定日期、今天還沒有資料（休市日、午夜過後到開盤前、或交易日但沒開盤／停止交易）：沿用上一個交易日的最終排行，
+        # tradeDate 回真正的資料日期，heldFrom 標示是替哪一天暫留的；今天一有資料就換回今天（使用者 2026-10-23：沒開盤就放最近交易日的資料，不再 08:45 清空）。
         previous = latest_trade_date_with_data(date, interval=interval)
         if previous:
             ranking = load_main_force_ranking(previous, interval=interval, limit=limit, codes=codes)
@@ -816,7 +816,7 @@ def get_holder_timeline(
     codes = industry_group_codes()
     stocks = load_holder_timeline(date, interval=interval, codes=codes)
     held_from = None
-    if not trade_date and not stocks and _should_hold_previous_ranking(datetime.now(TW_TZ)):
+    if not trade_date and not stocks:
         previous = latest_trade_date_with_data(date, interval=interval)
         if previous:
             stocks = load_holder_timeline(previous, interval=interval, codes=codes)

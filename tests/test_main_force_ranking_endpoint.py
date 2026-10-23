@@ -49,8 +49,9 @@ class MainForceRankingEndpointTests(unittest.TestCase):
         self.assertEqual(response.json()["count"], 1)
         self.assertIsNone(response.json()["heldFrom"])
 
-    def test_holds_previous_trading_day_until_next_open_when_today_has_no_data(self):
-        # 使用者 2026-09-24：過午夜三個大戶力分頁的資料不能不見，要留到下一個交易日開盤前 15 分鐘。
+    def test_holds_previous_trading_day_whenever_today_has_no_data(self):
+        # 使用者 2026-09-24：過午夜三個大戶力分頁的資料不能不見；2026-10-23：沒開盤、停止交易休息（日曆上是交易日但今天沒資料）也一樣放最近交易日，
+        # 不再 08:45 清空——今天一有資料就換回今天的。
         official = next(iter(sorted(industry_group_codes())))
         previous_date = taipei_trade_date(BASE_TS)
         save_main_force_bars(official, "5m", [{
@@ -58,19 +59,27 @@ class MainForceRankingEndpointTests(unittest.TestCase):
             "main_force_available": True,
         }])
         today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
-        with patch.object(persistent_app, "_should_hold_previous_ranking", return_value=True):
-            held = self.client.get("/api/hub/main-force/ranking", params={"limit": 1000}).json()
-        self.assertEqual(held["tradeDate"], previous_date)
-        self.assertEqual(held["heldFrom"], today)
-        self.assertEqual([row["code"] for row in held["ranking"]], [official])
-        with patch.object(persistent_app, "_should_hold_previous_ranking", return_value=False):
-            cleared = self.client.get("/api/hub/main-force/ranking", params={"limit": 1000}).json()
-        self.assertEqual(cleared["tradeDate"], today)
-        self.assertIsNone(cleared["heldFrom"])
-        self.assertEqual(cleared["ranking"], [])
+        for hold in (True, False):   # 不管是「還沒到 08:45」還是「過了 08:45 仍沒資料」都放最近交易日
+            with patch.object(persistent_app, "_should_hold_previous_ranking", return_value=hold):
+                held = self.client.get("/api/hub/main-force/ranking", params={"limit": 1000}).json()
+            self.assertEqual(held["tradeDate"], previous_date)
+            self.assertEqual(held["heldFrom"], today)
+            self.assertEqual([row["code"] for row in held["ranking"]], [official])
         # 明確指定日期就不沿用
         explicit = self.client.get("/api/hub/main-force/ranking", params={"trade_date": "2000-01-03"}).json()
         self.assertEqual(explicit["ranking"], [])
+        self.assertIsNone(explicit["heldFrom"])
+
+    def test_todays_data_replaces_the_held_day(self):
+        official = next(iter(sorted(industry_group_codes())))
+        today = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+        save_main_force_bars(official, "5m", [{"ts": BASE_TS, "main_buy_volume": 100, "main_sell_volume": 0, "main_force_available": True}])
+        n = datetime.now(TW_TZ)
+        now_ts = int(datetime(n.year, n.month, n.day, 10, 0, tzinfo=TW_TZ).timestamp() * 1000)   # 今天 10:00 那根 5 分 K
+        save_main_force_bars(official, "5m", [{"ts": now_ts, "main_buy_volume": 300, "main_sell_volume": 0, "main_force_available": True}])
+        data = self.client.get("/api/hub/main-force/ranking", params={"limit": 1000}).json()
+        self.assertEqual(data["tradeDate"], today)
+        self.assertIsNone(data["heldFrom"])
 
     def test_holder_timeline_endpoint(self):
         """2026-10-13：盤中大戶力每檔第一次進名單的時間；不在官方族群的（ETF）不算；開盤前沿用上一個交易日。"""
