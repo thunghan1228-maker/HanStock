@@ -63,6 +63,25 @@ def lines_for(bars: list[tuple[str, float, float]], market: str | None = None) -
     }
 
 
+def single(code: str, as_of: str | None = None) -> dict[str, Any]:
+    """單檔的斷頭價 A／B（K線圖日線畫線、5 分K 離線近才畫用），算法同 lines_for；沒有日K／日K不夠就回 status 說明原因。"""
+    from brew_launch import _latest_bar_date, _load_bars
+    from brew_launch_history import _markets
+
+    code = str(code or "").strip().upper()
+    as_of = as_of or _latest_bar_date()
+    if not code or not as_of:
+        return {"status": "empty", "code": code, "date": as_of, "reason": "沒有股號或日K"}
+    session = (datetime.strptime(as_of, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    bars = [(b[0], b[1], b[3]) for b in _load_bars([code], session=session).get(code, []) if b[0] <= as_of]
+    if not bars:
+        return {"status": "missing", "code": code, "date": as_of, "reason": "本站沒有這檔的日K"}
+    info = lines_for(bars, _markets([code]).get(code))
+    if not info:
+        return {"status": "short", "code": code, "date": bars[-1][0], "reason": "日K不足 24 根，算不出斷頭線"}
+    return {"status": "ok", "code": code, "date": info["date"], "line": info}
+
+
 def _group_members(groups: list[str]) -> dict[str, list[str]]:
     from stock_groups import STOCK_GROUPS
 

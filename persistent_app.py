@@ -1172,6 +1172,20 @@ def post_margin_balance_collect() -> dict[str, Any]:
     return {"status": "ok", "result": run_margin_balance_collect()}
 
 
+@app.get("/api/hub/margin-line")
+def get_margin_line(code: str = Query(..., min_length=1, max_length=12, pattern=r"^[0-9A-Za-z]+$"), date: str | None = Query(None)) -> dict[str, Any]:
+    """單檔斷頭價 A／B（K線圖日線畫線、5 分K 離線近才畫；2026-10-23 使用者）。算法同 /api/hub/margin-call。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    from margin_call_lines import single as margin_line_single
+
+    return margin_line_single(code, date)
+
+
 @app.get("/api/hub/margin-call")
 def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=400)) -> dict[str, Any]:
     """融資斷頭線（2026-10-23 使用者貼老師 10/22「斷頭線就在腳下」）：A＝近 20 個交易日盤中最高 × 0.78（上櫃 × 0.65），B＝月高那天的 5 日均價 × 0.78（上櫃 × 0.65）；
