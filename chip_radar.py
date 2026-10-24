@@ -201,6 +201,22 @@ def _ma_scores() -> tuple[str | None, dict[str, int]]:
     return str(day), {str(r["stock_code"]).upper(): int(r["score2"]) for r in rows if r["score2"] is not None}
 
 
+def _biases(codes: list[str], day: str | None) -> dict[str, tuple[float | None, float | None]]:
+    """月乖離＝收盤 ÷ 20 日均線 − 1、季乖離＝收盤 ÷ 60 日均線 − 1（%，1 位小數；2026-10-24 使用者：榜單每一檔都要有，照老師雷達頁）。
+    算法跟均線分數排行同一套（ma_rank._attach_bias，官方還原日K）；日K不夠、當天沒日K就是 None，畫面顯示「—」。讀不到不影響榜單。"""
+    if not day or not codes:
+        return {}
+    try:
+        from ma_rank import _attach_bias
+
+        rows: list[dict[str, Any]] = [{"code": c} for c in codes]
+        _attach_bias(rows, day)
+        return {r["code"]: (r.get("b20"), r.get("b60")) for r in rows}
+    except Exception:  # noqa: BLE001
+        logger.exception("[chip radar] 月季乖離讀不到")
+        return {}
+
+
 def _groups() -> tuple[dict[str, list[str]], dict[str, str]]:
     """({族群: [代號…]}, {代號: 第一個族群})，不含股期標的那份清單；照老師的標籤加減（ZHUANG_GROUP_ADD／DROP），
     第一個族群照 ZHUANG_PRIMARY。"""
@@ -245,6 +261,7 @@ class Radar:
         grouped = {c for name, codes in self.group_members.items() if name not in ZHUANG_SKIP_GROUPS for c in codes}
         self.universe = (grouped | ZHUANG_EXTRA) - ZHUANG_SKIP
         self.streak_universe = (self.universe | ZHUANG_STREAK_EXTRA) - ZHUANG_STREAK_SKIP
+        self.bias = _biases(sorted(self.universe | self.streak_universe), self.score_date)
         self.chips: dict[str, dict[str, float]] = {}
         self.xs: dict[str, dict[str, float]] = {}
         # 沒取兩位的 x，只拿來比門檻：老師 10/16 賣超榜沒有聯傑（x＝−1.4973，取兩位是 −1.50 會過 ≤ −1.5）
@@ -309,7 +326,8 @@ class Radar:
 
     def info(self, code: str) -> dict[str, Any]:
         name, market = self.names.get(code, ("", None))
-        return {"code": code, "name": name or code, "market": market, "group": self.group_of.get(code), "score": self.scores.get(code)}
+        b20, b60 = self.bias.get(code, (None, None))
+        return {"code": code, "name": name or code, "market": market, "group": self.group_of.get(code), "score": self.scores.get(code), "b20": b20, "b60": b60}
 
     def week_lists(self, day: str) -> dict[str, Any]:
         buy, sell = self.lists(day)
