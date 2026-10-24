@@ -183,6 +183,18 @@ class RadarTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.payload("2026-01-02")
 
+    def test_rows_carry_month_and_quarter_bias(self) -> None:
+        """榜單每一檔多月乖離 b20、季乖離 b60（照老師雷達頁；算法同均線分數排行）；讀不到就是 None，不影響榜單。"""
+        module._cache.update({"at": 0.0, "key": None, "radar": None})
+        with patch.object(module, "_ma_scores", lambda: ("2026-10-02", {"2484": 9})), \
+                patch.object(module, "_biases", lambda codes, day: {"2484": (-11.3, None), "3042": (4.5, 7.2)} if "2484" in codes and day == "2026-10-02" else {}):
+            out = module.payload()
+        row = {r["code"]: r for r in out["lists"][0]["buy"]}
+        self.assertEqual((row["2484"]["b20"], row["2484"]["b60"]), (-11.3, None))
+        self.assertEqual((row["3042"]["b20"], row["3042"]["b60"]), (4.5, 7.2))
+        self.assertEqual((row["6127"]["b20"], row["6127"]["b60"]), (None, None))      # 沒算到的就是空
+        module._cache.update({"at": 0.0, "key": None, "radar": None})
+
     def test_skipped_week_small_capital_cut_and_all_window(self) -> None:
         # 方土霖 4527：9/24 那週減資停止過戶、集保查無資料 → 10/02 改跟 9/18 比；總股數 7615 萬 → 6854 萬（−10%）、
         # 大戶 51,420,250 → 45,529,718 → x −8.59（老師 10/08 賣超榜 −8.6%），籌碼% 不大照列
