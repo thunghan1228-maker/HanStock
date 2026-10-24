@@ -88,6 +88,25 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(out["2330"], [90.0, 90.0, 90.0])      # 除息日以前乘 0.9，除息日當天不動
         self.assertEqual(out["1101"], [10.0, 10.0, 10.0])
 
+    def test_score_events_undo_cash_reduction_only(self) -> None:
+        """均線分數用的事件＝除息因子＋現金減資的反向因子；彌補虧損等其他減資不動（照常還原）。"""
+        import price_adjust
+
+        price_adjust.save_events([
+            {"code": "6173", "date": "2026-10-19", "prevClose": 284.0, "refPrice": 301.49, "kind": "reduction", "source": "tpex", "note": "現金減資"},
+            {"code": "1516", "date": "2026-10-27", "prevClose": 18.55, "refPrice": 24.73, "kind": "reduction", "source": "twse", "note": "彌補虧損"},
+        ])
+        module.save_events([{"code": "6173", "date": "2026-07-09", "prevClose": 273.0, "refPrice": 271.2, "source": "tpex"}])
+        out = module.score_events(["6173", "1516"])
+        self.assertEqual(set(out), {"6173"})
+        self.assertEqual([d for d, _f in out["6173"]], ["2026-07-09", "2026-10-19"])
+        self.assertAlmostEqual(out["6173"][1][1], 284.0 / 301.49, places=6)          # 反向：1 ÷ (301.49/284)
+        # 已套分割減資還原的價格（10/19 以前乘 1.0616）再乘反向因子 → 回到沒還原的價格
+        adjusted = [("2026-10-16", 301.49, 301.49, 301.49, 301.49, 1), ("2026-10-19", 301.49, 301.49, 301.49, 301.49, 1)]
+        back = module.adjust(adjusted, [e for e in out["6173"] if e[0] == "2026-10-19"])
+        self.assertAlmostEqual(back[0][4], 301.49 * 284.0 / 301.49, places=3)
+        self.assertEqual(back[1][4], 301.49)
+
     def test_refresh_months_and_errors(self) -> None:
         calls = []
 

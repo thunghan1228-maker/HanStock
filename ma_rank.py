@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database import get_connection, initialize_database
-from dividend_adjust import adjust as adjust_dividends, load_events as load_dividend_events
+from dividend_adjust import adjust as adjust_dividends, score_events as load_dividend_events
 from heilong_backtest import (
     LOOKBACK_CALENDAR_DAYS, MA_PERIODS, OFFICIAL_HI_PERIODS, _load_bars, _schema as _heilong_schema, collector_status as _heilong_status, official_parts,
 )
@@ -44,8 +44,13 @@ HIDE_GROUPS = ("千元",)          # 價格帶分類，不當族群顯示
 SKIP_GROUPS = ("金融股",)
 SKIP_CODES = frozenset({"2241"})
 
+# 老師 10/22 均線分數頁（全市場 487 檔）沒有、我們的族群表（540 檔）多出來的 18 檔——都是分數 ≥8、本來該進老師前 60 名卻沒出現的（分數不受還原規則影響，
+# 所以是老師那天的名單沒有）。2026-10-24 使用者決定名單維持我們的、但要能切換成「對照老師名單」看名次（排行頁的切換鈕）。
+TEACHER_ABSENT = frozenset({"2033", "4720", "5465", "5426", "2034", "2465", "1735", "4716", "1528", "3406", "4711", "2406", "2027", "2516", "3691", "2023", "2032", "3036"})
+
 _lock = threading.Lock()
 _cache: dict[str, Any] = {"key": None, "data": None}
+_teacher_cache: dict[str, Any] = {"src": None, "view": None}
 
 
 # ------------------------------------------------------------------ 族群
@@ -155,6 +160,21 @@ def _load() -> dict[str, Any]:
     return data
 
 
+def _teacher_view(data: dict[str, Any]) -> dict[str, Any]:
+    """拿掉 TEACHER_ABSENT 之後重排的同一份資料：名次、族群平均都照剩下的算（跟老師那天的名單比）。同一份 data 只算一次。"""
+    with _lock:
+        if _teacher_cache["src"] is data:
+            return _teacher_cache["view"]
+    gone = TEACHER_ABSENT
+    order = {d: [c for c in lst if c not in gone] for d, lst in data["order"].items()}
+    view = {**data, "order": order, "rank": {d: {c: i + 1 for i, c in enumerate(lst)} for d, lst in order.items()},
+            "byDate": {d: {c: r for c, r in recs.items() if c not in gone} for d, recs in data["byDate"].items()},
+            "groupLists": {n: [c for c in ms if c not in gone] for n, ms in data["groupLists"].items()}}
+    with _lock:
+        _teacher_cache.update({"src": data, "view": view})
+    return view
+
+
 def _pick_date(data: dict[str, Any], date: str | None) -> str:
     dates = data["dates"]
     if not dates:
@@ -239,9 +259,11 @@ def _group_table(data: dict[str, Any], date: str) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------------------ 對外
 
-def ranking(date: str | None = None) -> dict[str, Any]:
-    """個股分數前 60＋族群分數前十大。date＝選股日期（YYYY-MM-DD），不給＝最新一天。"""
+def ranking(date: str | None = None, teacher: bool = False) -> dict[str, Any]:
+    """個股分數前 60＋族群分數前十大。date＝選股日期（YYYY-MM-DD），不給＝最新一天。teacher＝拿掉老師名單沒有的 18 檔再排。"""
     data = _load()
+    if teacher:
+        data = _teacher_view(data)
     d = _pick_date(data, date)
     prev = _prev_date(data, d)
     prev_rank = data["rank"].get(prev, {}) if prev else {}
@@ -261,6 +283,7 @@ def ranking(date: str | None = None) -> dict[str, Any]:
         "status": "ok", "date": d, "prevDate": prev, "latest": data["dates"][-1],
         "dates": data["dates"][-LIST_DATES:], "n": len(data["byDate"][d]), "updated": status.get("builtAt"),
         "top": TOP_N, "stocks": stocks, "groups": groups[:GROUP_TOP], "groupCount": len(groups),
+        "teacher": bool(teacher), "teacherAbsent": len(TEACHER_ABSENT),
     }
 
 
@@ -425,7 +448,7 @@ def regulars(days: int = 20, top: int = 10, date: str | None = None) -> list[tup
     return [(c, sum(on[c])) for c in counted]
 
 
-def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None) -> dict[str, Any]:
+def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None, teacher: bool = False) -> dict[str, Any]:
     """前十名常客：到 date 為止近 days 個交易日，每天取前 top 名（同分並列全部算），列上榜次數最多的 show 檔。"""
     if days not in HIT_DAYS:
         raise ValueError(f"days 只能是 {HIT_DAYS}")
@@ -434,6 +457,8 @@ def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None)
     if show not in HIT_SHOWS:
         raise ValueError(f"show 只能是 {HIT_SHOWS}")
     data = _load()
+    if teacher:
+        data = _teacher_view(data)
     d = _pick_date(data, date)
     window, on, counted = _hit_counts(data, d, days, top)
     recent = max(0, len(window) - RECENT_DAYS)

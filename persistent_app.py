@@ -1370,13 +1370,13 @@ def _ma_date(date: str | None) -> str | None:
 
 
 @app.get("/api/hub/ma-rank")
-def get_ma_rank(date: str | None = Query(None)) -> dict[str, Any]:
+def get_ma_rank(date: str | None = Query(None), teacher: bool = Query(False)) -> dict[str, Any]:
     """均線分數排行（2026-10-10 使用者：照老師 zhuang.tw/ma 做）：個股分數前 60（昨天名次、連續上榜）＋族群分數前十大。
     date＝選股日期 YYYY-MM-DD，不給＝最新一天；dates 回最近 20 個交易日可以切。"""
     from fastapi import HTTPException
 
     try:
-        return ma_rank_payload(_ma_date(date))
+        return ma_rank_payload(_ma_date(date), teacher=teacher)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1397,12 +1397,12 @@ def get_ma_rank_strength(side: str = Query("strong"), date: str | None = Query(N
 
 
 @app.get("/api/hub/ma-rank/hits")
-def get_ma_rank_hits(days: int = Query(20), top: int = Query(10), show: int = Query(20), date: str | None = Query(None)) -> dict[str, Any]:
+def get_ma_rank_hits(days: int = Query(20), top: int = Query(10), show: int = Query(20), date: str | None = Query(None), teacher: bool = Query(False)) -> dict[str, Any]:
     """前十名常客：近 days 個交易日（10／20／40／60），每天取前 top 名（5／10／20／30，同分並列全部算），列 show 檔（20／30／50）。"""
     from fastapi import HTTPException
 
     try:
-        return ma_rank_hits(days, top, show, _ma_date(date))
+        return ma_rank_hits(days, top, show, _ma_date(date), teacher=teacher)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:

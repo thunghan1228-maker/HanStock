@@ -35,7 +35,7 @@ from brew_launch import MA_PERIODS, _latest_bar_date, group_codes, ma_alignment_
 from brew_launch_history import group_and_name
 from database import get_connection, initialize_database
 from fundamentals_daily import BIG_HOLDER_LEVELS, _schema as _fundamentals_schema
-from dividend_adjust import load_events as load_dividend_events
+from dividend_adjust import score_events as load_dividend_events
 from price_adjust import adjust_bars, events_version, load_events
 from stock_groups import SPECIAL_GROUP_NAMES, STOCK_GROUPS
 from swing_report import _logged_dispositions
@@ -68,7 +68,7 @@ OFFICIAL_GAP_DAYS = 3                               # 創新高：今天收盤�
 # 伊雲谷、中櫃、華航…），看起來是均線剛好差一點點的平手（高鋒收盤 41.45＝5 日均價 41.45）；試過「收盤等於均線算站上」只多對 1 檔、而且平盤股票會被算成 6 分，沒採用。
 OFFICIAL_ALIGN_PAIRS = ((20, 60), (60, 120), (120, 350))
 ALIGN_LONG = 350
-SCORE_VERSION = "2026-10-24"     # 算法改了就換：整張表重算（2026-10-24：均線分數改用除權息還原價算）
+SCORE_VERSION = "2026-10-24b"    # 算法改了就換：整張表重算（2026-10-24：均線分數改用除息還原價算、現金減資不還原）
 ALGOS = ("site", "official")
 ALGO_LABELS = {"site": "本站", "official": "內定"}   # 2026-09-28 使用者：前端只用內定這套
 
@@ -420,7 +420,7 @@ SCORE_FIELDS = ("score2", "maBits", "hiBits", "align")
 
 
 def features_for(code: str, bars: list[Bar], wanted: set[str], dividends: dict[str, list[tuple[str, float]]]) -> dict[str, dict[str, Any]]:
-    """compute_features 加一道：這檔有除權息事件，官網式均線分數（站上均線、創新高、排列）改用除權息還原後的價格算
+    """compute_features 加一道：這檔有除息事件（或現金減資），官網式均線分數（站上均線、創新高、排列）改用除息還原、現金減資不還原的價格算
     （2026-10-24 使用者：老師的均線分數用還原價，只用在均線分數）；其他特徵（漲跌幅、乖離、報酬…）還是原本的價格。"""
     feats = compute_features(bars, wanted)
     events = dividends.get(code)
