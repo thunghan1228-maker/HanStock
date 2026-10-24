@@ -141,6 +141,29 @@ class CollectTests(unittest.TestCase):
         module.collect_once(now=datetime(2026, 9, 26, 10, 0, tzinfo=TW), fetcher=fetch)
         self.assertFalse(any(u.endswith("/tdcc-2026-09-12.json") or u.endswith("/tdcc-2026-09-19.json") for u in calls[n:]))
 
+    def test_tdcc_only_for_off_days(self) -> None:
+        """休市日白天的備援：只抓集保週資料（不重抓本益比、營收、股本），有新的一週才算新資料。"""
+        fetch, calls = self._fetcher()
+        result = module.collect_tdcc_only(now=datetime(2026, 9, 26, 10, 0, tzinfo=TW), fetcher=fetch)    # 週六
+        self.assertEqual(result["tdcc"]["added"], ["2026-09-24", "2026-09-19", "2026-09-12"])
+        self.assertEqual(set(result) - {"swingRefreshed"}, {"tdcc"})
+        self.assertFalse(any("BWIBBU_d" in u or "revenue" in u or "basics" in u or u.startswith(module.TWSE_BASICS_URL) for u in calls))
+        self.assertEqual(module.tdcc_dates(5), ["2026-09-24", "2026-09-19", "2026-09-12"])
+        calls.clear()
+        again = module.collect_tdcc_only(now=datetime(2026, 9, 26, 10, 30, tzinfo=TW), fetcher=fetch)    # 沒有新的一週：不再算波段日報
+        self.assertEqual(again["tdcc"]["added"], [])
+        self.assertNotIn("swingRefreshed", again)
+
+    def test_due_job_windows(self) -> None:
+        self.assertEqual(module.due_job(datetime(2026, 10, 22, 17, 0, tzinfo=TW)), "full")     # 交易日傍晚：全部
+        self.assertIsNone(module.due_job(datetime(2026, 10, 22, 12, 0, tzinfo=TW)))            # 交易日其他時間：不抓
+        self.assertIsNone(module.due_job(datetime(2026, 10, 22, 21, 0, tzinfo=TW)))
+        self.assertEqual(module.due_job(datetime(2026, 10, 24, 10, 0, tzinfo=TW)), "tdcc")     # 週六白天：只抓集保
+        self.assertEqual(module.due_job(datetime(2026, 10, 25, 21, 59, tzinfo=TW)), "tdcc")    # 週日
+        self.assertIsNone(module.due_job(datetime(2026, 10, 24, 8, 59, tzinfo=TW)))
+        self.assertIsNone(module.due_job(datetime(2026, 10, 24, 23, 0, tzinfo=TW)))
+        self.assertEqual(module.due_job(datetime(2026, 10, 9, 10, 0, tzinfo=TW)), "tdcc")      # 國慶補假（平日休市）
+
     def test_collect_survives_failures(self) -> None:
         def fetch(url):
             raise OSError("blocked")
