@@ -39,6 +39,10 @@ TDCC_KEEP_WEEKS = 60     # 籌碼週報累積榜「全部」最多一年（52 �
 POLL_SECONDS = 30 * 60
 WINDOW_START = 16 * 60 + 45
 WINDOW_END = 19 * 60
+# 休市日（週末、國定假日）白天也每 POLL_SECONDS 看一次有沒有新的一週集保（2026-10-24 使用者：週籌碼要自己會更新）：集保週資料週五結算、週六公布，
+# 鏡像（GitHub 排程）推完會戳後端，但那一下失敗（網路、排程晚到）的話，原本交易日傍晚窗口要等到下週一才會補上。只抓集保，不重抓本益比、營收那些。
+OFF_DAY_START = 9 * 60
+OFF_DAY_END = 22 * 60
 
 
 # ------------------------------------------------------------------ 儲存
@@ -492,6 +496,68 @@ def pe_history(code: str) -> list[dict[str, Any]]:
     return [{"date": str(r["trade_date"]), "market": r["market"], "pe": r["pe"], "pbr": r["pbr"]} for r in rows]
 
 
+def _collect_tdcc(fetch: Callable[[str], Any], codes: set[str], record: Callable[..., None], force: bool = False) -> None:
+    """集保週資料：鏡像清單裡還沒存的（collect_once 跟休市日的 collect_tdcc_only 共用）。"""
+    try:
+        index = fetch(_mirror_url(MIRROR_TDCC_INDEX, volatile=True))
+        wanted = [str(d) for d in index if isinstance(d, str)] if isinstance(index, list) else []
+        have = set(tdcc_dates(TDCC_KEEP_WEEKS))
+        lacking = tdcc_weeks_without_totals()
+        added = []
+        for i, day in enumerate(sorted(wanted, reverse=True)[:TDCC_KEEP_WEEKS]):
+            newest = i == 0
+            if day in have and day not in lacking and not newest and not force:
+                continue
+            try:
+                date_iso, rows = parse_tdcc_mirror(fetch(_mirror_url(f"tdcc-{day}.json", volatile=newest or force)))
+            except urllib.error.HTTPError:
+                continue
+            rows = [r for r in rows if r[0] in codes]
+            if date_iso and rows:
+                save_tdcc(date_iso, rows)
+                if day not in have:
+                    added.append(date_iso)
+        record("tdcc", ok=True, added=added, latest=(tdcc_dates(1) or [None])[0])
+    except Exception as exc:  # noqa: BLE001
+        record("tdcc", ok=False, error=f"{type(exc).__name__}: {exc}"[:200])
+
+
+def collect_tdcc_only(now: datetime | None = None, fetcher: Callable[[str], Any] | None = None, *, force: bool = False) -> dict[str, Any]:
+    """只抓集保週資料（休市日白天的備援）；有新的一週才重算波段日報。"""
+    now = now or datetime.now(TW_TZ)
+    fetch = fetcher or _default_fetcher
+    codes = set(group_codes()) | set(bar_codes(21))
+    result: dict[str, Any] = {}
+
+    def record(key: str, **info: Any) -> None:
+        result[key] = info
+        with _lock:
+            _state["sources"][key] = {**info, "at": now.isoformat(timespec="seconds")}
+
+    _collect_tdcc(fetch, codes, record, force)
+    with _lock:
+        _state["lastRunAt"] = now.isoformat(timespec="seconds")
+        _state["lastError"] = "; ".join(f"{k}: {v.get('error')}" for k, v in result.items() if v.get("error")) or None
+    if (result.get("tdcc") or {}).get("added"):
+        try:
+            from swing_report import run_once as run_swing_report
+
+            run_swing_report()
+            result["swingRefreshed"] = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("swing report refresh after tdcc failed: %s", exc)
+            result["swingRefreshed"] = False
+    return result
+
+
+def due_job(now: datetime) -> str | None:
+    """現在這個時間點排程該做什麼：交易日傍晚窗口＝全部（'full'）；休市日白天＝只抓集保（'tdcc'）；其他時間不抓（None）。"""
+    minute = now.hour * 60 + now.minute
+    if is_trading_day(now):
+        return "full" if WINDOW_START <= minute <= WINDOW_END else None
+    return "tdcc" if OFF_DAY_START <= minute <= OFF_DAY_END else None
+
+
 def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | None = None, *, force: bool = False) -> dict[str, Any]:
     """抓一輪。範圍＝族群表內加有日K的全市場股票（持股健診要用，2026-09-28）；force＝本益比已經有當天的也重抓（範圍變大時補齊）。"""
     now = now or datetime.now(TW_TZ)
@@ -544,29 +610,7 @@ def collect_once(now: datetime | None = None, fetcher: Callable[[str], Any] | No
             record(key, ok=bool(shares), rows=save_shares(market, shares))
         except Exception as exc:  # noqa: BLE001
             record(key, ok=False, error=f"{type(exc).__name__}: {exc}"[:200])
-    # 集保週資料：鏡像清單裡還沒存的
-    try:
-        index = fetch(_mirror_url(MIRROR_TDCC_INDEX, volatile=True))
-        wanted = [str(d) for d in index if isinstance(d, str)] if isinstance(index, list) else []
-        have = set(tdcc_dates(TDCC_KEEP_WEEKS))
-        lacking = tdcc_weeks_without_totals()
-        added = []
-        for i, day in enumerate(sorted(wanted, reverse=True)[:TDCC_KEEP_WEEKS]):
-            newest = i == 0
-            if day in have and day not in lacking and not newest and not force:
-                continue
-            try:
-                date_iso, rows = parse_tdcc_mirror(fetch(_mirror_url(f"tdcc-{day}.json", volatile=newest or force)))
-            except urllib.error.HTTPError:
-                continue
-            rows = [r for r in rows if r[0] in codes]
-            if date_iso and rows:
-                save_tdcc(date_iso, rows)
-                if day not in have:
-                    added.append(date_iso)
-        record("tdcc", ok=True, added=added, latest=(tdcc_dates(1) or [None])[0])
-    except Exception as exc:  # noqa: BLE001
-        record("tdcc", ok=False, error=f"{type(exc).__name__}: {exc}"[:200])
+    _collect_tdcc(fetch, codes, record, force)   # 集保週資料：鏡像清單裡還沒存的
     with _lock:
         _state["lastRunAt"] = now.isoformat(timespec="seconds")
         _state["lastError"] = "; ".join(f"{k}: {v.get('error')}" for k, v in result.items() if v.get("error")) or None
@@ -620,12 +664,17 @@ def _loop() -> None:
     while True:
         time.sleep(POLL_SECONDS)
         now = datetime.now(TW_TZ)
-        minute = now.hour * 60 + now.minute
-        if is_trading_day(now) and WINDOW_START <= minute <= WINDOW_END:
+        job = due_job(now)
+        if job == "full":
             try:
                 run_collect(now, only_if_new=True)
             except Exception:  # noqa: BLE001
                 logger.exception("fundamentals collect failed")
+        elif job == "tdcc":
+            try:
+                collect_tdcc_only(now)
+            except Exception:  # noqa: BLE001
+                logger.exception("tdcc weekend collect failed")
 
 
 def start_fundamentals_collector() -> bool:
