@@ -212,9 +212,10 @@ def _row(data: dict[str, Any], code: str, date: str, rec: dict[str, Any] | None 
     }
 
 
-def _attach_bias(rows: list[dict[str, Any]], date: str) -> None:
+def _attach_bias(rows: list[dict[str, Any]], date: str, live: bool = False) -> None:
     """表格列多兩欄（2026-10-23 使用者：照老師頁）：月乖離＝收盤 ÷ 20 日均線 − 1、季乖離＝收盤 ÷ 60 日均線 − 1（%，取到小數 1 位）。
-    均線用官方還原日K的收盤算（含當天）；日K不夠、當天沒日K就留 None，畫面顯示「—」。只算要列出的這幾十檔，讀不到不影響排行。"""
+    均線用官方還原日K的收盤算（含當天）；日K不夠、當天沒日K就留 None，畫面顯示「—」。只算要列出的這幾十檔，讀不到不影響排行。
+    live＝盤中即時（2026-10-24）：今天還沒有日K，用那一列的現價（row["close"]）當今天收盤接在昨天之後算。"""
     codes = sorted({r["code"] for r in rows})
     if not codes:
         return
@@ -226,8 +227,15 @@ def _attach_bias(rows: list[dict[str, Any]], date: str) -> None:
         bars = {}
     for row in rows:
         series = bars.get(row["code"]) or []
-        closes = [b[4] for b in series if b[0] <= date]
-        ok = bool(series) and series[-1][0] == date
+        if live:
+            closes = [b[4] for b in series if b[0] < date]
+            price = row.get("close")
+            if price and float(price) > 0:
+                closes.append(float(price))
+            ok = bool(series) and len(closes) > 0 and bool(price)
+        else:
+            closes = [b[4] for b in series if b[0] <= date]
+            ok = bool(series) and series[-1][0] == date
         for key, period in (("b20", 20), ("b60", 60)):
             row[key] = round((closes[-1] / (sum(closes[-period:]) / period) - 1) * 100, 1) if ok and len(closes) >= period else None
 
@@ -259,11 +267,20 @@ def _group_table(data: dict[str, Any], date: str) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------------------ 對外
 
-def ranking(date: str | None = None, teacher: bool = False) -> dict[str, Any]:
-    """個股分數前 60＋族群分數前十大。date＝選股日期（YYYY-MM-DD），不給＝最新一天。teacher＝拿掉老師名單沒有的 18 檔再排。"""
+def _view(date: str | None, teacher: bool) -> tuple[dict[str, Any], bool]:
+    """(要排的資料, 是不是盤中即時)。沒指定日期、或指定的就是「今天盤中」那一天，而且今天盤中有即時分數（_live_data）→ 用現價當今天收盤的那份；
+    其他（回看舊日期、收盤後、休市日）照收盤整表。teacher＝再拿掉老師名單沒有的 18 檔。"""
     data = _load()
-    if teacher:
-        data = _teacher_view(data)
+    live = _live_data(data)
+    use = live is not None and (not date or date == live["dates"][-1])
+    src = live if use else data
+    return (_teacher_view(src) if teacher else src), use
+
+
+def ranking(date: str | None = None, teacher: bool = False) -> dict[str, Any]:
+    """個股分數前 60＋族群分數前十大。date＝選股日期（YYYY-MM-DD），不給＝最新一天。teacher＝拿掉老師名單沒有的 18 檔再排。
+    2026-10-24 使用者：盤中也要即時——沒指定日期、今天又在盤中，就用現價當今天收盤重算（live＝True、date＝今天、asOf＝報價時間），不等收盤後整表。"""
+    data, live = _view(date, teacher)
     d = _pick_date(data, date)
     prev = _prev_date(data, d)
     prev_rank = data["rank"].get(prev, {}) if prev else {}
@@ -273,18 +290,21 @@ def ranking(date: str | None = None, teacher: bool = False) -> dict[str, Any]:
         row["prev"] = prev_rank.get(code)
         row["streak"] = _streak(data, code, d)
         stocks.append(row)
-    _attach_bias(stocks, d)
+    _attach_bias(stocks, d, live=live)
     groups = _group_table(data, d)
     prev_groups = {g["name"]: g["rank"] for g in _group_table(data, prev)} if prev else {}
     for g in groups:
         g["prev"] = prev_groups.get(g["name"])
     status = _heilong_status()
-    return {
+    out = {
         "status": "ok", "date": d, "prevDate": prev, "latest": data["dates"][-1],
         "dates": data["dates"][-LIST_DATES:], "n": len(data["byDate"][d]), "updated": status.get("builtAt"),
         "top": TOP_N, "stocks": stocks, "groups": groups[:GROUP_TOP], "groupCount": len(groups),
         "teacher": bool(teacher), "teacherAbsent": len(TEACHER_ABSENT),
     }
+    if live:
+        out.update({"live": True, "asOf": data.get("liveAt")})
+    return out
 
 
 # ------------------------------------------------------------------ 今日強勢股／弱勢股
@@ -449,16 +469,15 @@ def regulars(days: int = 20, top: int = 10, date: str | None = None) -> list[tup
 
 
 def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None, teacher: bool = False) -> dict[str, Any]:
-    """前十名常客：到 date 為止近 days 個交易日，每天取前 top 名（同分並列全部算），列上榜次數最多的 show 檔。"""
+    """前十名常客：到 date 為止近 days 個交易日，每天取前 top 名（同分並列全部算），列上榜次數最多的 show 檔。
+    2026-10-24：沒指定日期、今天盤中時，最後一天用現價即時算（live＝True），所以盤中的名單跟著動、不用等收盤。"""
     if days not in HIT_DAYS:
         raise ValueError(f"days 只能是 {HIT_DAYS}")
     if top not in HIT_TOPS:
         raise ValueError(f"top 只能是 {HIT_TOPS}")
     if show not in HIT_SHOWS:
         raise ValueError(f"show 只能是 {HIT_SHOWS}")
-    data = _load()
-    if teacher:
-        data = _teacher_view(data)
+    data, live = _view(date, teacher)
     d = _pick_date(data, date)
     window, on, counted = _hit_counts(data, d, days, top)
     recent = max(0, len(window) - RECENT_DAYS)
@@ -474,8 +493,11 @@ def hits(days: int = 20, top: int = 10, show: int = 20, date: str | None = None,
             "r5": sum(on[code][recent:]), "sum": rec["sum"] if rec else None, "rank": data["rank"][d].get(code),
             "grp": _label(data["groupsOf"].get(code, [])), "trail": trail,
         })
-    return {"status": "ok", "to": d, "from": window[0] if window else None, "ndays": len(window), "days": days, "top": top, "show": show,
-            "dates": data["dates"][-LIST_DATES:], "rows": rows}
+    out = {"status": "ok", "to": d, "from": window[0] if window else None, "ndays": len(window), "days": days, "top": top, "show": show,
+           "dates": data["dates"][-LIST_DATES:], "rows": rows}
+    if live:
+        out.update({"live": True, "asOf": data.get("liveAt")})   # 最後一天是盤中即時分數（還不是收盤）
+    return out
 
 
 def _outside_record(code: str, date: str) -> dict[str, Any] | None:

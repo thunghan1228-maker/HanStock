@@ -193,6 +193,49 @@ class MaRankTests(unittest.TestCase):
             module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
             self.assertNotIn("live", module.strength("strong"))
 
+    def test_ranking_and_hits_live(self) -> None:
+        # 2026-10-24 使用者：均線分數排行、前二十名常客盤中也要即時——跟今日強勢股同一套，現價當今天收盤
+        q, b = self._live_setup({"1111": 400.0, "2222": 400.0, "3333": 0.5, "4444": 400.0, "5555": 400.0})
+        with q, b:
+            out = module.ranking()
+            self.assertEqual((out["live"], out["date"], out["latest"], out["asOf"], out["prevDate"]), (True, "2026-10-12", "2026-10-12", "10:30:00", D[3]))
+            self.assertEqual(out["dates"][-2:], [D[3], "2026-10-12"])           # 日期選單最後一天就是今天（盤中）
+            self.assertEqual([(r["code"], r["sum"], r["rank"]) for r in out["stocks"]], [("1111", 15, 1), ("2222", 15, 2), ("4444", 15, 3)])
+            self.assertEqual(out["stocks"][0]["close"], 400.0)
+            self.assertIn("b20", out["stocks"][0])
+            # 前天沒在榜的 3333 不會出現；昨天名次拿正式整表的
+            self.assertEqual(out["stocks"][0]["prev"], 1)
+            # 選單選到「今天」也是即時；選舊日期是正式收盤、沒有 live
+            self.assertTrue(module.ranking("2026-10-12")["live"])
+            old = module.ranking(D[3])
+            self.assertNotIn("live", old)
+            self.assertEqual(old["date"], D[3])
+            hit = module.hits(10, 5, 20)
+            self.assertEqual((hit["live"], hit["to"], hit["asOf"]), (True, "2026-10-12", "10:30:00"))
+            self.assertEqual(hit["rows"][0]["trail"][-1][0], "2026-10-12")      # 最後一天是今天的即時名次
+            self.assertEqual(hit["rows"][0]["sum"], 15)
+            self.assertNotIn("live", module.hits(10, 5, 20, D[3]))
+            teacher = module.ranking(teacher=True)
+            self.assertTrue(teacher["live"])
+        # 回到收盤後（整表已經有今天）：不再算即時
+        self.now = datetime(2026, 10, 8, 18, 0, tzinfo=TW)
+        module._live_cache.update({"day": None, "base": None, "at": 0.0, "data": None})
+        self.assertNotIn("live", module.ranking())
+        self.assertNotIn("live", module.hits())
+
+    def test_bias_live(self) -> None:
+        """盤中：今天還沒有日K，用那一列的現價當今天收盤接在昨天後面算月／季乖離。"""
+        days = [(datetime(2026, 7, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(70)]
+        up = [(d, 100 + i, 100 + i, 100 + i, 100 + i, 100) for i, d in enumerate(days)]
+        today = (datetime(2026, 7, 1) + timedelta(days=70)).strftime("%Y-%m-%d")
+        rows = [{"code": "1111", "close": 200.0}, {"code": "2222", "close": 200.0}]
+        with patch.object(module, "_load_bars", return_value={"1111": up}):
+            module._attach_bias(rows, today, live=True)
+        closes = [b[4] for b in up] + [200.0]
+        self.assertEqual((rows[0]["b20"], rows[0]["b60"]),
+                         (round((200 / (sum(closes[-20:]) / 20) - 1) * 100, 1), round((200 / (sum(closes[-60:]) / 60) - 1) * 100, 1)))
+        self.assertEqual((rows[1]["b20"], rows[1]["b60"]), (None, None))      # 沒日K的不算
+
     def test_cache_follows_rebuild(self) -> None:
         """黑龍表整張重算（日期、筆數都沒變）也要換新快取，不然舊分數會一直留著。"""
         first = module.ranking()
