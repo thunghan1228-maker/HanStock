@@ -141,6 +141,37 @@ class FundUmbrellaTests(unittest.TestCase):
         self.assertFalse(module.due(at("2026-10-10T22:30:00"), "2026-10-10T21:45:00+08:00"))
         self.assertTrue(module.due(at("2026-10-11T21:45:00"), "2026-10-10T21:45:00+08:00"))
 
+    def test_due_index_after_close(self) -> None:
+        """加權指數分析不用等融資：平日 15:30 起今天的加權日K還沒進來就抓，進來就停；21:40 再抓一次補融資。"""
+        at = lambda s: datetime.fromisoformat(s + "+08:00")  # noqa: E731
+        yesterday, today = "2026-10-28", "2026-10-29"         # 2026-10-29 是星期四
+        self.assertFalse(module.due(at("2026-10-29T15:00:00"), "2026-10-29T10:00:00+08:00", yesterday))   # 還沒收盤後 15:30
+        self.assertTrue(module.due(at("2026-10-29T15:40:00"), "2026-10-29T10:00:00+08:00", yesterday))    # 今天的日K還沒進來
+        self.assertFalse(module.due(at("2026-10-29T16:00:00"), "2026-10-29T15:40:00+08:00", today))       # 進來了就不再抓
+        self.assertTrue(module.due(at("2026-10-29T21:45:00"), "2026-10-29T15:40:00+08:00", today))        # 21:40 後補融資
+        self.assertFalse(module.due(at("2026-10-29T22:10:00"), "2026-10-29T21:45:00+08:00", today))
+        self.assertFalse(module.due(at("2026-10-31T16:00:00"), "2026-10-30T21:45:00+08:00", "2026-10-30"))  # 週六不用抓
+
+    def test_payload_index_ahead_of_margin(self) -> None:
+        """今天的加權日K已經進來、融資還沒公布：分析用今天（asOf），融資顯示昨天的（marginDate）。"""
+        base = self.fetcher([])
+
+        def call(params):
+            out = base(params)
+            if params["dataset"] == "TaiwanStockTotalMarginPurchaseShortSale":
+                out = {"data": [r for r in out["data"] if r["date"] != self.d[-1]]}      # 融資晚上才公布：最後一天還沒有
+            return out
+        module.fetch(fetcher=call, now=datetime(2026, 10, 10, 16, 0, tzinfo=TW), mirror_fetcher=lambda u: {"rows": {}})
+        self.assertEqual(module.latest_index_date(), self.d[-1])
+        p = module.payload()
+        self.assertEqual((p["status"], p["asOf"], p["marginDate"], p["margin"]["date"]), ("ok", self.d[-1], self.d[-2], self.d[-2]))
+        self.assertEqual(p["margin"]["balance"], self.margin[-2])
+        self.assertEqual(p["series"][-1]["d"], self.d[-1])                                 # 最後一格是今天的加權
+        self.assertEqual(p["series"][-1]["t"], round(self.closes[-1], 2))
+        self.assertIsNone(p["series"][-1]["m"])                                            # 今天的融資還沒有
+        self.assertEqual(p["series"][-2]["m"], round(self.margin[-2], 1))
+        self.assertEqual(p["taiex"]["close"], round(self.closes[-1], 2))
+
     def test_endpoint(self) -> None:
         client = TestClient(persistent_app.app)
         import chips_daily

@@ -1,7 +1,9 @@
 """資金保護傘（2026-10-10 使用者：照老師課程裡講的「融資水位＋加權／櫃買多空轉折」做成一頁）。
 
 資料：FinMind 公開資料（免登入）——上市融資融券總餘額（TaiwanStockTotalMarginPurchaseShortSale，證交所每天晚上公布），
-加權指數 TAIEX、櫃買指數 TPEx 日K（TaiwanStockPrice），從 2020 年起。每天晚上 21:40 以後更新、存在 SQLite。
+加權指數 TAIEX、櫃買指數 TPEx 日K（TaiwanStockPrice），從 2020 年起。存在 SQLite。
+更新分兩次（2026-10-29 使用者：加權指數分析不用等到晚上 21:40）：收盤後 15:30 起每 20 分鐘抓，今天的加權／櫃買日K一進來就更新；
+21:40 以後再抓一次，補證交所晚上才公布的融資餘額。
 
 看三件事：
 1. 融資水位：上市融資餘額（億）、日／週／月增減、三年百分位，對照過去幾次崩盤前的融資高點還差多少。
@@ -31,6 +33,7 @@ FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 HISTORY_START = "2020-01-01"
 REFETCH_DAYS = 15            # 每次重抓最近幾天（補前一晚還沒出來的）
 UPDATE_AFTER = (21, 40)      # 證交所融資餘額晚上才出來
+INDEX_AFTER = (15, 30)       # 加權、櫃買日K收盤後就有（2026-10-29 16:19 實測已經在 FinMind 裡）：這個時間起每 20 分鐘看一次，進來就停
 POLL_SECONDS = 20 * 60
 CRASH_DROP = 0.15            # 從近半年高點跌 15% 以上算一次崩盤
 CRASH_LOOKBACK = 120         # 「近半年高點」＝往回 120 個交易日
@@ -270,7 +273,7 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
     days = sorted(set(margin) & set(taiex))
     if len(days) < 61:
         return {"status": "missing", "message": "資料還沒抓齊（後端剛部署時約 2 分鐘後會抓第一次）"}
-    as_of = days[-1]
+    as_of = max(taiex)      # 以加權指數最新一天為準（2026-10-29：融資晚上 21:40 才公布，指數不用等它；融資用它自己最新的一天，見 margin.date）
     t_dates = sorted(d for d in taiex if d <= as_of)
     t_close = [taiex[d] for d in t_dates]
     o_dates = sorted(d for d in tpex if d <= as_of)
@@ -294,7 +297,8 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
     tx, otc = index_state(t_dates, t_close), index_state(o_dates, o_close) if len(o_close) > 60 else None
 
     # 背離：近 5 日指數漲跌 vs 融資增減
-    t5, m5 = _pct(t_close[-1], t_close[-6]) if len(t_close) > 5 else None, _pct(cur, m_info["back5"])
+    t_m = [taiex[d] for d in t_dates if d <= m_info["date"]]      # 跟融資同一天比（融資比指數晚一天出來時，不要拿今天的指數去比昨天的融資）
+    t5, m5 = _pct(t_m[-1], t_m[-6]) if len(t_m) > 5 else None, _pct(cur, m_info["back5"])
     if t5 is None or m5 is None:
         diverge = None
     elif t5 < 0 and m5 > 0:
@@ -317,7 +321,7 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
         reasons.append({"pt": 1, "text": f"櫃買跌破月線（{otc['ma20']:,.2f}）"})
     # 融資過熱看上市＋上櫃合計（有上櫃資料時）
     hot, hot_label = m_info["d20Pct"], "融資"
-    if o_info and o_info["back20"] and m_info["back20"] and o_info["date"] == as_of:
+    if o_info and o_info["back20"] and m_info["back20"] and o_info["date"] == m_info["date"]:
         hot = _pct(cur + o_info["balance"], m_info["back20"] + o_info["back20"])
         hot_label = "上市＋上櫃融資"
     if hot is not None and hot >= HOT_MONTH_PCT:
@@ -346,7 +350,7 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
             info.pop("back5", None)
             info.pop("back20", None)
     return {
-        "status": "ok", "asOf": as_of, "updatedAt": _state.get("lastFetch"), "now": now.isoformat(timespec="seconds"),
+        "status": "ok", "asOf": as_of, "marginDate": m_info["date"], "updatedAt": _state.get("lastFetch"), "now": now.isoformat(timespec="seconds"),
         "umbrella": {"score": score, "name": name, "icon": icon, "tone": tone, "advice": advice, "reasons": reasons},
         "margin": m_info, "otcMargin": o_info, "hotPct": hot, "hotLabel": hot_label, "taiex": tx, "tpex": otc, "diverge": diverge, "crashes": crash_list, "series": series,
         "rule": (f"保護傘點數：加權跌破月線、跌破季線、櫃買跌破月線、上市＋上櫃融資月增 ≥{HOT_MONTH_PCT:g}%、上市融資在高檔但加權跌破月線、"
@@ -356,18 +360,29 @@ def payload(*, now: datetime | None = None) -> dict[str, Any]:
     }
 
 
-def due(now: datetime, last_fetch: str | None) -> bool:
-    """每天 21:40 以後抓一次（週末也抓一次無妨，抓到的會是週五的）。"""
-    if (now.hour, now.minute) < UPDATE_AFTER:
-        return last_fetch is None
-    return last_fetch is None or last_fetch[:10] < now.date().isoformat() or last_fetch[11:16] < f"{UPDATE_AFTER[0]:02d}:{UPDATE_AFTER[1]:02d}"
+def due(now: datetime, last_fetch: str | None, latest_index: str | None = None) -> bool:
+    """每天兩次：21:40 以後抓一次（補融資餘額；週末也抓一次無妨，抓到的會是週五的）；
+    平日 15:30～21:40 之間，今天的加權指數日K還沒進來（latest_index＝資料庫裡加權最新一天）就抓，進來了就停。"""
+    hm = (now.hour, now.minute)
+    if hm >= UPDATE_AFTER:
+        return last_fetch is None or last_fetch[:10] < now.date().isoformat() or last_fetch[11:16] < f"{UPDATE_AFTER[0]:02d}:{UPDATE_AFTER[1]:02d}"
+    if hm >= INDEX_AFTER and now.weekday() < 5:
+        return latest_index is None or latest_index < now.date().isoformat()
+    return last_fetch is None
+
+
+def latest_index_date() -> str | None:
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        return _last_date(connection, "taiex")
 
 
 def _loop() -> None:
     time.sleep(120)
     while True:
         try:
-            if due(_now(), _state.get("lastFetch")):
+            if due(_now(), _state.get("lastFetch"), latest_index_date()):
                 fetch()
         except Exception as exc:  # noqa: BLE001
             logger.warning("fund umbrella fetch failed: %s", exc)
