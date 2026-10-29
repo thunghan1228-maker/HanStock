@@ -200,6 +200,11 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(sorted(module.pick_tech(list(tech), tech, chips, hot)["picks"]), ["3006", "4714", "4967", "5351"])
         self.assertEqual(sorted(module.pick_tech(list(tech), tech, chips, {"4967", "4714"})["picks"]), ["3006", "4714", "4967", "6805"])
         self.assertEqual(sorted(module.pick_tech(list(tech), tech, chips)["picks"]), ["3006", "4714", "4967", "6805"])   # 沒給熱門族＝只看均線分數
+        # 剛出獄（觀察三日）、處置中的不進精選但檔數照算：大量（出獄第 2 天、均線 10）老師 10/29 沒列
+        tech["3167"] = t(5.3, 4000, 146.0, 6, 10)
+        r = module.pick_tech(list(tech), tech, chips, hot | {"3167"}, {"3167"})
+        self.assertNotIn("3167", r["picks"])
+        self.assertIn("3167", r["qualified"])
 
     def test_daily_hot_groups_three_days(self) -> None:
         # 老師 10/29（資料基準 10/28）：AI（10/27 第 5、10/28 第 42）、鋼鐵（10/27 前幾名）都標熱門族——當天前 10 名往前算 3 個交易日；千元不算族群、不佔名額

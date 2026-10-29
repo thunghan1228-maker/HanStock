@@ -539,7 +539,8 @@ def order_chips(cand: list[str], radar_stocks: dict[str, dict[str, Any]], scores
     return front + sorted(rest_pool, key=take_order), (front + sorted(taken, key=show_order))[:CHIPS_PICK_LIMIT]
 
 
-def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[str, dict[str, Any]], hot: set[str] | None = None) -> dict[str, Any]:
+def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[str, dict[str, Any]], hot: set[str] | None = None,
+              watch: set[str] | None = None) -> dict[str, Any]:
     """技術面精選：今天才站上月線（真穿）＝站上 ≥3%（比昨天的月線）且量 ≥500 張；回 {crossed, qualified（真穿月線檔數）, skipped, picks}。
     老師 10/22（資料基準 10/21）：真穿月線 8 檔＝列 4 檔（鈞寶、高力、眾達-KY、環科）＋略過 3 檔（新復興、友達營收年增為負、榮星成交值 4,703 萬）＋均線分數 6 的定穎投控沒列。"""
     crossed = [c for c in eligible if tech[c]["crossedMa20"]]
@@ -553,7 +554,8 @@ def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[
         elif turnover < TECH_MIN_TURNOVER:
             skipped.append((c, f"成交值 {int(turnover):,} 萬"))
     skipped_set = {c for c, _why in skipped}
-    pool = [c for c in qualified if c not in skipped_set and (tech[c]["score"] is None or tech[c]["score"] >= TECH_MIN_SCORE)]
+    # 處置中、剛出獄（觀察三日）的不進精選，放在處置動態的觀察名單（老師 10/29 大量出獄第 2 天、均線 10，真穿月線 12 檔裡沒列；籌碼面本來就是這樣）；檔數還是照算
+    pool = [c for c in qualified if c not in skipped_set and c not in (watch or ()) and (tech[c]["score"] is None or tech[c]["score"] >= TECH_MIN_SCORE)]
     # 老師 10/29（資料基準 10/28）：真穿月線 12 檔，列均線分數最高的 4 檔（十銓 11、晶豪科 10、永捷 10、鈺創 10，站上 5.0～6.0%）；
     # 站上更多的眾達-KY（7.0%，均線 9）、川寶（6.0%，8）、聯光通（8.3%，7）沒列——不是「站上最多的」，是「均線分數最高的」；同分才看站上多的
     # 熱門族的先挑，不夠 4 檔才補非熱門族（老師 10/29 十銓、晶豪科、永捷、鈺創全是熱門族，均線 11 的富世達屬千元不是熱門族沒列；10/15、10/16 的 4 檔也全是熱門族）
@@ -762,7 +764,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     chips_all, chips_shown = order_chips(cand, radar_stocks, {c: tech[c]["score"] for c in cand}, top_pool, {c: hot_rank.get(hot_of.get(c, ""), 99) for c in cand})
     chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_shown]
     # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數（細節見 pick_tech）
-    tech_pick = pick_tech(eligible, tech, chips, {c for c in eligible if (c in hot_of if radar else group_rank.get(group_of.get(c, ""), 99) <= HOT_GROUP_RANK)})
+    tech_pick = pick_tech(eligible, tech, chips, {c for c in eligible if (c in hot_of if radar else group_rank.get(group_of.get(c, ""), 99) <= HOT_GROUP_RANK)}, just_out | disposed)
     crossed, tech_skipped, tech_all = tech_pick["crossed"], tech_pick["skipped"], tech_pick["picks"]
     tech_total = len(tech_pick["qualified"])   # 真穿月線檔數（老師 10/21：6 檔、10/22：8 檔，略過的、沒列的都算在內）；精選只列其中站上最多的幾檔
     tech_picks = [card(c, f"站上 +{tech[c]['abovePrevMa20Pct']:.1f}%") for c in tech_all]
