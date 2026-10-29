@@ -99,8 +99,10 @@ class IndexScoreTests(unittest.TestCase):
 
         ds = days(300)
         self.put("tpex", ds, [100 + i * 0.5 for i in range(300)])
-        with TestClient(persistent_app.app) as client:
-            body = client.get("/api/hub/index-score").json()
+        # 不用 with：進 with 會跑整個 app 的 lifespan、啟動三十幾個收集器背景執行緒，之後整場測試它們都還在跑、
+        # 對著別的測試暫時換掉的資料庫亂寫（10/24 起 CI 一直隨機失敗的原因）
+        client = TestClient(persistent_app.app)
+        body = client.get("/api/hub/index-score").json()
         self.assertEqual((body["status"], body["threshold"], body["indexes"]["otc"]["next"]["avg"]), ("ok", 6, 15.0))
 
 
