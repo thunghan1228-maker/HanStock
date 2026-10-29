@@ -1422,6 +1422,20 @@ def get_ma_rank_query(code: str | None = Query(None), group: str | None = Query(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/obs-weekly")
+def get_obs_weekly(date: str | None = Query(None)) -> dict[str, Any]:
+    """收盤觀察股 週分析（2026-10-29 使用者：波段日報新增「每週多觀察全方面解析」，照老師的版面做）：名單異動、族群總覽、功課重點、
+    已噴在高檔、月線下（含即將穿越）、危險個股、觀察、四週回測、功課提醒。date＝名單日 YYYY-MM-DD，不給＝最新一個交易日收盤。"""
+    from fastapi import HTTPException
+
+    from obs_weekly import build as obs_weekly_build
+
+    try:
+        return obs_weekly_build(_ma_date(date))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/hub/river")
 def get_river(q: str = Query(...)) -> dict[str, Any]:
     """估值河流圖・本站版（2026-10-10 使用者：照老師估值河流圖做）：q＝股號或股名；分水嶺＝近 4 季 EPS × 同族群本益比中位數，
