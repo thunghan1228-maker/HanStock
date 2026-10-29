@@ -1174,6 +1174,29 @@ def test_k12_backup_survives_restart_until_a_newer_day(monkeypatch, k12_db):
     assert served["tradeDate"] == "2026-09-19" and "restored" not in served and served["items"] == []
 
 
+def test_k12_backup_kept_while_engine_is_still_catching_up(monkeypatch, k12_db):
+    monitor = _k12_on_monitor(monkeypatch)
+    day = monitor.k12_snapshot()["tradeDate"]
+    for code in ("1301", "1303", "2317"):                                                 # 備份那時候追了 4 檔
+        monitor._states[code] = module._KlineState(trade_date=day)
+        monitor._states[code].last_bar_ts = 1
+    live = module.k12_snapshot_with_backup(monitor)
+    assert [x["code"] for x in live["items"]] == ["2330"]
+    stored_tracked = module.load_k12_snapshot()["tracked"]
+    assert stored_tracked == 4
+    # 重開後引擎先追到比備份少的檔數（同一個交易日、名單還是空的）：回備份、不蓋掉備份
+    partial = IntradayKlineSignalMonitor()
+    for code in ("1101", "1102"):
+        partial._states[code] = module._KlineState(trade_date=live["tradeDate"])
+        partial._states[code].last_bar_ts = 1
+    snap = partial.k12_snapshot()
+    assert 0 < snap["tracked"] < stored_tracked and snap["items"] == []
+    module._k12_last_save.update({"sig": None, "at": 0.0})
+    served = module.k12_snapshot_with_backup(partial)
+    assert served.get("restored") is True and [x["code"] for x in served["items"]] == ["2330"]
+    assert [x["code"] for x in module.load_k12_snapshot()["items"]] == ["2330"]           # 備份沒被空名單蓋掉
+
+
 def test_k12_backup_not_rewritten_when_unchanged(monkeypatch, k12_db):
     monitor = _k12_on_monitor(monkeypatch)
     snap = monitor.k12_snapshot()
