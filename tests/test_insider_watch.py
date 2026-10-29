@@ -34,7 +34,7 @@ INDEX = {"months": ["2026-08", "2026-07"], "updated": "x"}
 
 class InsiderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)   # 背景執行緒（TestClient 啟動的收集器）收尾時偶爾還在寫這個資料夾，清不掉不算測試失敗（2026-10-29 CI 隨機失敗）
         self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
         self.db_patch.start()
         database.initialize_database()
