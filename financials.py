@@ -154,6 +154,9 @@ def _singles_from(cum: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                     "revenue": rev, "opIncome": opi, "margin": margin,
                     "gm": round(gro / rev * 100, 1) if rev and gro is not None and rev > 0 else None,
                     "nm": round(net / rev * 100, 1) if rev and net is not None and rev > 0 else None,
+                    "raw": {"gm": gro / rev * 100 if rev and gro is not None and rev > 0 else None,
+                            "om": opi / rev * 100 if rev and opi is not None and rev > 0 else None,
+                            "nm": net / rev * 100 if rev and net is not None and rev > 0 else None},
                     "firstSeen": c.get("first_seen"), "known": bool(c.get("known"))})
     return out
 
@@ -248,6 +251,7 @@ def eps_tier(eps: float | None, last: float | None) -> str:
 
 
 def _moved(now: float | None, prev: float | None) -> float | None:
+    """百分點差（用沒四捨五入的利潤率算，才跟老師頁的 ▲7.2pp、▼0.3pp 一樣）。"""
     return None if now is None or prev is None else round(now - prev, 1)
 
 
@@ -277,9 +281,10 @@ def eps_board(season: str | None = None) -> dict[str, Any]:
         prev, last = by_season.get(prev_season), by_season.get(last_season)
         last_eps = last["eps"] if last else None
         yoy = round((cur["eps"] / last_eps - 1) * 100, 1) if last_eps is not None and last_eps > 0 else None
-        gm_delta = _moved(cur["gm"], prev["gm"] if prev else None)
-        om_delta = _moved(cur["margin"], prev["margin"] if prev else None)
-        nm_delta = _moved(cur["nm"], prev["nm"] if prev else None)
+        pr = prev["raw"] if prev else {}
+        gm_delta = _moved(cur["raw"]["gm"], pr.get("gm"))
+        om_delta = _moved(cur["raw"]["om"], pr.get("om"))
+        nm_delta = _moved(cur["raw"]["nm"], pr.get("nm"))
         triple = bool(gm_delta is not None and om_delta is not None and nm_delta is not None and gm_delta > 0 and om_delta > 0 and nm_delta > 0)
         rows.append({"code": code, "eps": cur["eps"], "last": last_eps, "yoy": yoy, "gm": cur["gm"], "gmPrev": prev["gm"] if prev else None, "gmDelta": gm_delta,
                      "om": cur["margin"], "omPrev": prev["margin"] if prev else None, "nm": cur["nm"], "nmPrev": prev["nm"] if prev else None,
