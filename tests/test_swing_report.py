@@ -603,6 +603,26 @@ class SustainedTests(unittest.TestCase):
         self.assertEqual((r["tiles"]["bodyJump"], r["tiles"]["strong"]), (1, 2))
         self.assertEqual((r["counts"]["body"], r["counts"]["strong"]), (1, 2))
 
+    def test_adjusted_scores_and_prev_strong(self) -> None:
+        """均線分數用黑龍表的（除息還原後）；續強確認看前一份報告存的強勢名單。"""
+        import heilong_backtest
+
+        dates = trading_dates("2026-09-24", 241)
+        with database.get_connection() as c:
+            heilong_backtest._schema(c)
+            for d, score in ((dates[-2], 13), (dates[-1], 14)):          # 友達：沒還原算 15、15，除息還原後 13、14
+                c.execute("INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, score2) VALUES (?, '2409', 1, 1, 1, 1, 1, ?)", (d, score))
+        with patch.object(module, "_disposition_codes", return_value=set()):
+            r = module.build_report("2026-09-24")
+        self.assertEqual(r["notes"]["sustained"][0]["score"], 14)          # 還原後的分數
+        self.assertEqual(r["notes"]["strongCodes"], ["2409", "6183"])
+        # 前一份報告存了強勢名單：昨天不在名單裡的（只剩 6183）不算續強；在名單裡才算
+        for strong, expect in ((["6183"], []), (["2409"], ["2409"])):
+            module.save_report({"date": dates[-2], "generatedAt": "2026-09-23T21:50:00+08:00", "status": "ok", "notes": {"strongCodes": strong}})
+            with patch.object(module, "_disposition_codes", return_value=set()):
+                r = module.build_report("2026-09-24")
+            self.assertEqual([x["code"] for x in r["notes"]["sustained"]], expect)
+
 
 if __name__ == "__main__":
     unittest.main()

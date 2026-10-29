@@ -46,11 +46,13 @@ CROSS_MIN_VOLUME = 500         # 穿惡：成交量至少 500 張
 TOP_GROUPS = 10                # 族群強度榜前 10 族
 TOP_K = 3                      # 族群強度＝七科總分最高的前 3 檔平均
 MIN_SUBJECTS = 3               # 至少三科有資料才分強勢／中等／弱勢
-# 七科給分（2026-10-22 使用者給老師完整問診：華通、國巨，加上今日名單 10 族 98 檔強勢／中等／弱勢＋族群強度榜；85 檔判定對上 76 檔，原本 62 檔）
-SUBJ_MA_HI, SUBJ_MA_MID = 13, 10   # 均線分數 ≥13 得 2、≥10 得 1（華通 4 分、國巨 3 分都是「趨勢偏弱」）
-SUBJ_GRP_TOP, SUBJ_GRP_MID = 3, 32   # 族群名次（當天族群漲幅排名，老師寫「排 第 59 名，後段沒資金照顧」）：前 3 名得 2、前 32 名得 1
-SUBJ_CHIP_HI, SUBJ_CHIP_LO = 3.0, -1.0   # 籌碼（籌碼雷達的籌碼%）：≥3 得 2；華通 -0.07「沒明顯進出」得 1、國巨 -1.79「主力在退」得 0
-SUBJ_PE_CHEAP, SUBJ_PE_FAIR = 1.0, 1.5   # 本益比跟族群平均比：≤族均得 2（華通 36.2、國巨 34.1 都「低於族均、便宜」）、≤1.5 倍得 1
+# 七科給分（2026-10-29 老師問診 API /api/diag/q 直接回每檔的七科分數，抓 492 檔反推：均線、營收、法人幾乎全對，下面各科的門檻照它；
+# 2026-10-22 那版用華通、國巨兩檔猜的 13／10、3／32、籌碼 3%、本益比給 2 分，全部要改）
+SUBJ_MA_HI, SUBJ_MA_MID = 10, 6      # 均線分數 ≥10 得 2、6～9 得 1、≤5 得 0（老師 492 檔：5 分以下全是 0、6～9 全是 1、10 以上全是 2）
+SUBJ_GRP_TOP, SUBJ_GRP_MID = 12, 25  # 族群名次（當天族群漲幅排名）：老師前 10 名得 2、前 25 名得 1；我們的族群表比老師多 2～3 個（功率半導體、小電機、金融股老師沒有），名次平均晚 2 名，所以用 12／25（492 檔只錯 11 檔，10／25 錯 27 檔）
+SUBJ_CHIP_HI, SUBJ_CHIP_LO = 2.0, -1.0   # 籌碼（籌碼雷達的籌碼%）：≥2 得 2、-1～2 得 1、< -1 得 0（老師 492 檔：2.03 以上全是 2、-1.0～1.99 全是 1、-1.04 以下全是 0）
+PE_MAX = 150                   # 本益比超過 150 老師當沒有（嘉基 317、聯亞 164 沒分、嘉晶 113 有分），也不算進族群平均
+STRONG_RATIO, MID_RATIO = 0.75, 0.42   # 總分比例：超過 7.5 成＝強勢（7 科 ≥11／14、6 科 ≥10／12；9／12 還是中等）；≥4.2 成＝中等（7 科 6 分是中等、5 分是弱勢）
 POS_DAYS = 5                   # 族內名次看近 5 日平均名次（華通近 5 日平均 3.6／7、國巨 14／22，「中 1/3」）
 PE_HIST_DAYS = 8
 REV_HIST_MONTHS = 4
@@ -68,7 +70,7 @@ RULES = [
     "籌碼面＝50 分起算：集保 400 張以上大戶張數週增％ ×4（上限 ±25）、連續增加每週 +3（上限 +9）；三大法人近 5 日買賣超佔近 5 日成交量的比例（上限 ±15）；主力近 5 日淨買賣佔近 5 日成交量的比例（上限 ±10）。三種資料都沒有的不評分。",
     "綜合＝你勾選的面向加權平均（預設基本面 34％、籌碼面 33％、技術面 33％）；沒資料的面向預設不算進去，不會被當 0 分。≥80 強、≥60 中上、≥45 普通、≥30 偏弱、其餘弱。",
     "防守線：三日低＝不含當天的前三個交易日最低（明日值＝含今天的近三日最低）；月線＝20 日收盤均；紅半＝近三個交易日最高與最低的中間值，只在三日振幅 ≥10% 而且收盤站在中點之上 1% 以上時才列（漲多時多一個防守點）。收盤跌破任一條 → 減碼；月線與三日低雙破 → 出場；即將穿惡＝收盤在月線下但距月線 10% 以內，一根漲停就能站回。價格未還原除權息。",
-    "七科小體檢各 0～2 分：均線分數（內定 ≥13 得 2、≥10 得 1）、族群名次（當天族群漲幅排名，前 3 名得 2、前 32 名得 1、後段 0）、族內名次（近 5 日平均名次，前三分之一得 2、中段得 1）、籌碼（籌碼雷達的籌碼% ≥3 得 2、-1 以上得 1、更低 0）、本益比（≤族群平均得 2、≤1.5 倍得 1）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數、🟢＝得 0 分的科目數（本益比不算）；至少三科有資料才分級：有評分科目拿到七成以上＝強勢、四成以上＝中等、其餘弱勢。",
+    "七科小體檢（2026-10-29 照老師問診 API 校正）：均線分數（內定 ≥10 得 2、6～9 得 1、更低 0）、族群名次（當天族群漲幅排名，前 10 名得 2、前 25 名得 1、後段 0）、族內名次（近 5 日平均名次，前三分之一得 2、中段得 1）、籌碼（籌碼雷達的籌碼% ≥2 得 2、-1 以上得 1、更低 0）、本益比（≤族群平均得 1、更高 0；沒有、超過 150 的不計分）、營收（年增 ≥30% 得 2、≥0 得 1）、法人（近 5 日與今日都買超得 2、其中一個買超得 1）。🔴＝得 2 分的科目數（本益比得 1 分也算）、🟢＝得 0 分的科目數；至少三科有資料才分級：有評分科目的總分超過七成五＝強勢、四成二以上＝中等、其餘弱勢。",
     "族群強度榜：每族取七科總分最高的前 3 檔平均當族群強度，排名前 10 族；今日名單＝這十族裡判定為強勢／中等的股，依族群強度再依七科總分排。收盤排名＝下午報當天族群平均漲跌幅的名次。",
     "今日穿惡＝族群表內、昨收在昨日月線之下、今收比昨日月線高 3% 以上、成交量 ≥500 張的股票；站上不到 3% 或量太小的不列。",
     "分數是體質快照，不是買賣訊號。範圍是本站有日K的股票（族群表內加盤中訊號追蹤的全市場股票）。",
@@ -330,10 +332,10 @@ def pos_averages(daily: dict[str, dict[str, float]], members: dict[str, list[str
 
 
 def group_pe_means(pe_by_code: dict[str, float | None], members: dict[str, list[str]]) -> dict[str, float]:
-    """族群本益比平均（老師：低軌衛星 37.9＝6 檔有本益比的平均）；沒有本益比或超過 500 的不算。"""
+    """族群本益比平均（老師：低軌衛星 37.9＝6 檔有本益比的平均）；沒有本益比或超過 150 的不算（老師 10/29：矽光子 68.3、記憶體群都排除嘉基 317、聯亞 164 這種）。"""
     out = {}
     for name, codes in members.items():
-        values = [pe_by_code[c] for c in codes if pe_by_code.get(c) and 0 < pe_by_code[c] < 500]
+        values = [pe_by_code[c] for c in codes if pe_by_code.get(c) and 0 < pe_by_code[c] <= PE_MAX]
         if values:
             out[name] = _mean(values)
     return out
@@ -341,21 +343,22 @@ def group_pe_means(pe_by_code: dict[str, float | None], members: dict[str, list[
 
 def subjects(official: int | None, group_rank: int | None, pos_avg: float | None, pos_n: int | None,
              chip: float | None, pe: float | None, group_pe: float | None, yoy: float | None, inst5: float | None, inst_today: float | None) -> dict[str, Any]:
+    """七科：均線、族群名次、族內位置、籌碼、本益比（0／1 兩級，最高 1 分）、營收、法人；老師的 red＝得 2 分的科＋本益比 1 分的，green＝0 分的科。"""
     sc: dict[str, int | None] = {
         "ma": None if official is None else 2 if official >= SUBJ_MA_HI else 1 if official >= SUBJ_MA_MID else 0,
         "grp": None if not group_rank else 2 if group_rank <= SUBJ_GRP_TOP else 1 if group_rank <= SUBJ_GRP_MID else 0,
         "pos": None if pos_avg is None or not pos_n or pos_n < 2 else 2 if pos_avg <= pos_n / 3 else 1 if pos_avg <= 2 * pos_n / 3 else 0,
         "chip": None if chip is None else 2 if chip >= SUBJ_CHIP_HI else 1 if chip >= SUBJ_CHIP_LO else 0,
-        "pe": None if pe is None or pe <= 0 or not group_pe else 2 if pe <= group_pe * SUBJ_PE_CHEAP else 1 if pe <= group_pe * SUBJ_PE_FAIR else 0,
+        "pe": None if pe is None or pe <= 0 or pe > PE_MAX or not group_pe else 1 if pe <= group_pe else 0,
         "rev": None if yoy is None else 2 if yoy >= 30 else 1 if yoy >= 0 else 0,
         "inst": None if inst5 is None else 2 if inst5 > 0 and (inst_today or 0) > 0 else 1 if inst5 > 0 or (inst_today or 0) > 0 else 0,
     }
     scored = {k: v for k, v in sc.items() if v is not None}
-    red = sum(1 for v in scored.values() if v == 2)
-    green = sum(1 for k, v in scored.items() if v == 0 and k != "pe")
+    red = sum(1 for k, v in scored.items() if v == 2 or (k == "pe" and v == 1))
+    green = sum(1 for v in scored.values() if v == 0)
     total = sum(scored.values())
     possible = 2 * len(scored)
-    cls = None if len(scored) < MIN_SUBJECTS else "強勢" if total >= 0.7 * possible else "中等" if total >= 0.4 * possible else "弱勢"
+    cls = None if len(scored) < MIN_SUBJECTS else "強勢" if total > STRONG_RATIO * possible else "中等" if total >= MID_RATIO * possible else "弱勢"
     return {"sc": sc, "red": red, "green": green, "total": total, "possible": possible, "cls": cls}
 
 
@@ -524,6 +527,19 @@ def _rebuild() -> dict[str, Any]:
         if len(bars) < 21:
             continue
         rows[code] = evaluate_stock(code, bars, latest, ctx)
+    # 均線分數（內定 score2）改用黑龍表的：分割減資＋除息還原後算的（老師的日K是還原價，沒還原的自己算 492 檔有 55 檔差 1～4 分）；表裡沒有的才用沒還原的
+    try:
+        from heilong_backtest import official_scores   # 延遲匯入：heilong_backtest 會反過來用這裡
+
+        adj = official_scores([latest], rows).get(latest, {})
+        for code, r in rows.items():
+            if code in adj and not r["stale"]:
+                r["score2"] = adj[code]
+                r["scores"]["tech"] = tech_score(adj[code])
+                r["scores"]["overall"] = overall_score({k: r["scores"][k] for k in ("fund", "chip", "tech")})
+                r["scores"]["overallLabel"] = overall_label(r["scores"]["overall"])
+    except Exception:  # noqa: BLE001
+        logger.exception("checkup adjusted ma score failed")
     # 族群平均（內定）與族內名次（當天漲跌幅）
     for name, member_codes in _group_members().items():
         fresh = [rows[c] for c in member_codes if c in rows and not rows[c]["stale"]]

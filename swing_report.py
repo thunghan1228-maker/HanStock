@@ -600,6 +600,19 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         info = analyze_bars(bars)
         if info:
             tech[code] = info
+    # 均線分數改用黑龍表的（分割減資＋除息還原後算的，均線分數排行同一份）：老師的日K是還原價，沒還原的自己算 492 檔裡有 55 檔差 1～4 分，改用後只剩 21 檔；表裡沒有的才用沒還原的
+    try:
+        from heilong_backtest import official_scores, previous_table_date   # 延遲匯入：heilong_backtest 會 import 這個模組（處置紀錄）
+
+        prev_day = previous_table_date(as_of)
+        adj = official_scores([d for d in (as_of, prev_day) if d], tech)
+        for code, t in tech.items():
+            now_score = adj.get(as_of, {}).get(code)
+            prev_score = adj.get(prev_day, {}).get(code) if prev_day else None
+            if now_score is not None and (prev_score is not None or t["prevScore"] is None):
+                t["score"], t["prevScore"] = now_score, prev_score
+    except Exception:  # noqa: BLE001
+        logger.exception("adjusted ma score failed")
     # 籌碼：法人 5 日（最近 5 個有資料的交易日，≤ 基準日）與主力 5 日
     inst_dates = [d for d in stored_dates(30) if d <= as_of][:INST_DAYS]
     inst_by_date = _institutional_by_date(inst_dates, load) if inst_dates else {}
@@ -772,7 +785,9 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     jump = lambda c: (tech[c]["score"] - tech[c]["prevScore"]) if tech[c]["score"] is not None and tech[c]["prevScore"] is not None else None  # noqa: E731
     strong_all = [c for c in eligible if seven[c]["cls"] == "強勢"]
     body_all = [c for c in strong_all if (jump(c) or 0) >= MA_JUMP_MIN]
-    body_all.sort(key=lambda c: (seven[c]["total"], jump(c), tech[c]["score"]), reverse=True)
+    # 老師 10 份日報的順序：跳升多的在前，同樣跳升均線分數高的在前（10/29 永捷 +8、GIS-KY 15 分 +5、十銓 11 分 +5；10/28 海悅 11 分、遠雄 10 分都 +7），再同分代號小的在前（凱美 2375 在蜜望實 8043 前）
+    body_all.sort()
+    body_all.sort(key=lambda c: (jump(c), tech[c]["score"]), reverse=True)
     body_picks = [card(c, f"問診 {seven[c]['total']} 分") for c in body_all[:PICK_LIMIT]]
     # 均線結構轉強：今天新達 15 分（前一交易日 <15）；跳得多、法人 5 日佔股本高的在前
     new_full = [c for c in eligible if tech[c]["score"] == 15 and tech[c]["prevScore"] is not None and tech[c]["prevScore"] < 15]
@@ -783,10 +798,17 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
               and tech[c]["score"] >= JUMP_TOP_MIN_SCORE]
     jumped.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], tech[c]["score"]), reverse=True)
     jump_top = [{"code": c, "name": group_and_name(c)[1], "from": tech[c]["prevScore"], "to": tech[c]["score"]} for c in jumped[:5]]
-    # 續強確認（昨日已強、今日維持）：今天問診判強勢、但不是今天才跳升的——昨天均線分數就已 ≥10
+    # 續強確認（昨日已強、今日維持）：昨天問診也判強勢、今天還是強勢、不是今天才跳升的（老師 10/29：有成精密均線只有 7 也在，所以不是看昨天均線分數）；
+    # 前一份報告沒存強勢名單才退回「昨天均線分數 ≥10」。照均線分數高的在前（老師 10/29 東台 14、詠昇 13、誠美材 12、創見 11、晶豪科 10、穩懋 10、有成精密 7）
+    prev_report = _previous_report(as_of)
+    prev_strong = set(((prev_report or {}).get("notes") or {}).get("strongCodes") or [])
+    if prev_strong:
+        sustain_ok = lambda c: c in prev_strong   # noqa: E731
+    else:
+        sustain_ok = lambda c: (tech[c]["prevScore"] or 0) >= SUSTAIN_MIN_PREV   # noqa: E731
     sustained = [{"code": c, "name": group_and_name(c)[1], "score": tech[c]["score"], "total": seven[c]["total"]}
-                 for c in strong_all if c not in body_all and (tech[c]["prevScore"] or 0) >= SUSTAIN_MIN_PREV]
-    sustained.sort(key=lambda x: (x["total"], x["score"] or 0), reverse=True)
+                 for c in strong_all if c not in body_all and sustain_ok(c)]
+    sustained.sort(key=lambda x: (x["score"] or 0, x["total"]), reverse=True)
     sustained = sustained[:8]
     # 今日摘要（2026-10-13 照老師 10/14 報告的六點：資金主軸、籌碼進法人未跟、籌碼／技術首選、體質／均線、月營收、風險提示）
     # 資金主軸（老師 10/20～10/22 三份）：站上月線過半、法人 5 日買超、至少 5 檔，而且是「熱門族」——當天族群漲幅前 10 名，或籌碼雷達熱門族（週籌碼先進）；
@@ -888,7 +910,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "picks": {"chips": chips_picks, "tech": tech_picks, "body": body_picks, "full": full_picks},
         "chipsWatch": chips_watch,
         "readDate": next_trading_day(as_of).isoformat(),
-        "notes": {"jumpTop": jump_top, "sustained": sustained},
+        "notes": {"jumpTop": jump_top, "sustained": sustained, "strongCodes": sorted(strong_all)},
         "counts": {"chips": len(chips_all), "tech": tech_total, "techNear": len(crossed) - tech_total, "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份；集保週要在日報那天收盤後已經公布，週五收盤的那週週末才公布，所以週五的日報還是看上一週）前 {CHIPS_POOL_TOP} 名裡，"
@@ -897,7 +919,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                      f"觀察名單＝族群表裡、出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
             "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張＝真穿月線；營收年增為負、成交值不到 {TECH_MIN_TURNOVER:,} 萬的列在略過，均線分數 <{TECH_MIN_SCORE} 的不列；"
                     f"熱門族的先取、取均線分數最高的 {TECH_PICK_LIMIT} 檔（同分站上月線多的先），均線跳升多的排前面；站上月線第一天，防守就是月線本身",
-            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼雷達的籌碼%、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
+            "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼雷達的籌碼%、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分超過七成五判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝昨天也判強勢、今天維持（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、本益比高於族群均值 {PE_RISK_MULT:g} 倍、營收年增為負、處置中",
             "fund": "本益比＝證交所／櫃買中心每日公布（族群均值不含異常值）；營收年增＝公開資訊觀測站最新月營收的去年同月增減；籌碼週＝集保 400 張以上大戶持股張數的週變化，連 N 週＝連續幾週增加；"
@@ -926,6 +948,14 @@ def _disposition_codes() -> set[str]:
         return {str(c).strip().upper() for c in active.keys()}
     except Exception:  # noqa: BLE001
         return set()
+
+
+def _previous_report(as_of: str) -> dict[str, Any] | None:
+    """基準日之前最近的一份報告（續強確認要看昨天判強勢的名單）。"""
+    for d in report_dates(LOOKBACK_DATES + 10):
+        if d < as_of:
+            return load_report(d)
+    return None
 
 
 def _week_ago_report(as_of: str) -> dict[str, Any] | None:

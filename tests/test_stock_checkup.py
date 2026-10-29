@@ -91,23 +91,43 @@ class ScoreTests(unittest.TestCase):
     def test_subjects(self) -> None:
         # subjects(均線, 族群名次, 族內近5日平均名次, 族內檔數, 籌碼%, PE, 族群平均PE, 營收年增, 法人5日, 法人今日)
         s = module.subjects(9, None, None, None, 0.73, 28.7, 30.0, 53.3, 8230.0, -5713.0)
-        self.assertEqual(s["sc"], {"ma": 0, "grp": None, "pos": None, "chip": 1, "pe": 2, "rev": 2, "inst": 1})
-        self.assertEqual((s["red"], s["green"], s["total"], s["possible"], s["cls"]), (2, 1, 6, 10, "中等"))
+        self.assertEqual(s["sc"], {"ma": 1, "grp": None, "pos": None, "chip": 1, "pe": 1, "rev": 2, "inst": 1})
+        self.assertEqual((s["red"], s["green"], s["total"], s["possible"], s["cls"]), (2, 0, 6, 10, "中等"))
         s2 = module.subjects(15, 1, 1.0, 9, 5.0, 15.0, 40.0, 100.0, 10.0, 10.0)
-        self.assertEqual((s2["red"], s2["green"], s2["cls"]), (7, 0, "強勢"))
+        self.assertEqual((s2["red"], s2["green"], s2["cls"]), (7, 0, "強勢"))          # 本益比 1 分也算紅
         s3 = module.subjects(3, 59, 8.0, 9, -2.0, 60.0, 30.0, -10.0, -50.0, -5.0)
-        self.assertEqual((s3["red"], s3["green"], s3["cls"]), (0, 6, "弱勢"))
+        self.assertEqual((s3["red"], s3["green"], s3["cls"]), (0, 7, "弱勢"))
         self.assertEqual(module.subjects(None, None, None, None, None, None, None, None, None, None)["cls"], None)
         self.assertEqual(module.subjects(None, 1, 1.0, 5, None, None, None, None, None, None)["cls"], None)      # 只有兩科有資料不分級
         self.assertEqual(module.subjects(None, 1, 1.0, 5, 5.0, None, None, None, None, None)["cls"], "強勢")
 
+    def test_subjects_zhuang_1029(self) -> None:
+        # 老師 10/29 問診 API（/api/diag/q）的七科：十銓 ma2 grp1 pos2 chip1 pe1 rev2 inst2＝強勢（紅 5 綠 0）；創見 2,1,1,1,1,2,2 共 10/14 只是中等（要超過七成五）
+        sw = module.subjects(12, 13, 5.6, 17, 1.27, 4.4, 13.3, 109.7, 4134.0, 1245.0)
+        self.assertEqual(sw["sc"], {"ma": 2, "grp": 1, "pos": 2, "chip": 1, "pe": 1, "rev": 2, "inst": 2})
+        self.assertEqual((sw["red"], sw["green"], sw["total"], sw["cls"]), (5, 0, 11, "強勢"))
+        self.assertEqual(module.subjects(11, 13, 6.4, 17, 1.0, 5.0, 13.3, 80.0, 100.0, 10.0)["cls"], "中等")
+        # 邊界：均線 10 得 2、9 得 1、6 得 1、5 得 0；籌碼 2.0 得 2、-1.0 得 1；本益比超過 150 沒分、高於族群平均 0 分；名次前 12／25
+        self.assertEqual(module.subjects(10, 12, None, None, 2.0, None, None, None, None, None)["sc"]["ma"], 2)
+        self.assertEqual([module.subjects(x, None, None, None, None, None, None, None, None, None)["sc"]["ma"] for x in (9, 6, 5)], [1, 1, 0])
+        self.assertEqual([module.subjects(None, None, None, None, c, None, None, None, None, None)["sc"]["chip"] for c in (2.0, 1.99, -1.0, -1.04)], [2, 1, 1, 0])
+        self.assertEqual([module.subjects(None, None, None, None, None, pe, 40.0, None, None, None)["sc"]["pe"] for pe in (40.0, 41.0, 160.0, -3.0)], [1, 0, None, None])
+        self.assertEqual([module.subjects(None, r, None, None, None, None, None, None, None, None)["sc"]["grp"] for r in (12, 13, 25, 26)], [2, 1, 1, 0])
+        # 強勢要超過七成五：6 科 10／12 強勢、9／12 中等；7 科 11／14 強勢、10／14 中等；弱勢是 4 成 2 以下（7 科 5／14 弱勢、6／14 中等）
+        def mk(*scores: int) -> str | None:   # 直接用各科分數湊：均線、族群、族內、籌碼、營收、法人（本益比不給＝6 科）
+            ma, grp, pos, chip, rev, inst = scores
+            return module.subjects(ma, grp, 1.0 if pos == 2 else 5.0 if pos == 1 else 9.0, 9, chip, None, None, rev, inst, 1.0)["cls"]
+
+        self.assertEqual(mk(10, 1, 2, 2, 2, 2), "強勢")      # 6 科 12 分的上限是 12／12；先確認最高分是強勢
+        self.assertEqual(mk(10, 1, 1, 1, 2, 2), "中等")      # 6 科拿 9 分（每科 2、2、2、2、1、0 這種組合都 ≤9）還是中等
+
     def test_subjects_zhuang_1022(self) -> None:
-        # 老師 10/22 完整問診：華通（低軌衛星）弱勢 🔴1·🟢3、國巨（被動元件）弱勢 🔴2·🟢4
+        # 老師 10/22 完整問診：華通（低軌衛星）弱勢 🔴1·🟢3、國巨（被動元件）弱勢 🔴2·🟢4（2026-10-29 改用老師 API 的門檻後，兩檔還是弱勢）
         hua = module.subjects(4, 59, 3.6, 7, -0.07, 36.2, 37.9, 15.0, -3971.0, -5585.0)
-        self.assertEqual(hua["sc"], {"ma": 0, "grp": 0, "pos": 1, "chip": 1, "pe": 2, "rev": 1, "inst": 0})   # 趨勢偏弱、後段沒資金、中間位置、沒明顯進出、便宜、溫和成長、籌碼被倒
-        self.assertEqual((hua["red"], hua["green"], hua["cls"]), (1, 3, "弱勢"))
+        self.assertEqual(hua["sc"], {"ma": 0, "grp": 0, "pos": 1, "chip": 1, "pe": 1, "rev": 1, "inst": 0})   # 趨勢偏弱、後段沒資金、中間位置、沒明顯進出、低於族均、溫和成長、籌碼被倒
+        self.assertEqual(hua["cls"], "弱勢")
         kuo = module.subjects(3, 65, 14.0, 22, -1.79, 34.1, 40.0, 46.1, -29225.0, -16585.0)
-        self.assertEqual(kuo["sc"], {"ma": 0, "grp": 0, "pos": 1, "chip": 0, "pe": 2, "rev": 2, "inst": 0})   # 主力在退、成長很強
+        self.assertEqual(kuo["sc"], {"ma": 0, "grp": 0, "pos": 1, "chip": 0, "pe": 1, "rev": 2, "inst": 0})   # 主力在退、成長很強
         self.assertEqual((kuo["red"], kuo["green"], kuo["cls"]), (2, 4, "弱勢"))
 
     def test_group_helpers(self) -> None:
@@ -116,7 +136,7 @@ class ScoreTests(unittest.TestCase):
         pes = {"3138": 35.1, "2367": None, "2485": 43.1, "7717": 63.8, "2313": 36.2, "6285": 25.0, "6271": 24.2, "2610": 9.4, "2618": 600.0}
         means = module.group_pe_means(pes, members)
         self.assertEqual(round(means["低軌衛星"], 1), 37.9)
-        self.assertEqual(means["空運"], 9.4)                       # 超過 500 的異常值不算
+        self.assertEqual(means["空運"], 9.4)                       # 超過 150 的異常值不算
         # 族群名次：成員平均漲幅排名
         ranks = module.group_day_ranks({"3138": 1.0, "2313": -1.0, "2610": 2.0, "2618": 2.0, "9999": 5.0}, members)
         self.assertEqual(ranks, {"空運": 1, "低軌衛星": 2})
@@ -203,7 +223,7 @@ class RebuildTests(unittest.TestCase):
         df = hj["def"]
         self.assertEqual((df["low3Y"], df["low3T"], df["halfY"], df["halfT"], df["label"]), (99, 99, 106.5, 107.5, "✅ 守住"))   # 昨天看：高 114 低 99 → 106.5；今天看：高 116 低 99 → 107.5
         self.assertEqual((hj["groupAvg2"], hj["groupRank"], hj["groupN"]), (15.0, 2, 2))   # 族內只有合晶與環球晶有今天的日K；合晶 −0.88% 排第 2
-        self.assertEqual(hj["subjects"]["sc"], {"ma": 2, "grp": 2, "pos": 1, "chip": 2, "pe": 2, "rev": 2, "inst": 2})
+        self.assertEqual(hj["subjects"]["sc"], {"ma": 2, "grp": 2, "pos": 1, "chip": 2, "pe": 1, "rev": 2, "inst": 2})
         self.assertEqual((hj["margin"]["factor"], hj["margin"]["monthHigh"], rows["6488"]["margin"]["factor"]), (0.78, 116.0, 0.65))   # 融資斷頭線：上市 0.78、上櫃（環球晶）0.65
         self.assertEqual(hj["chip"]["radar"], 4.5)           # 籌碼雷達的籌碼%；大戶週增 weekPct 另外留著（三面向分數用）
         self.assertIsNone(rows["6488"]["chip"]["radar"])     # 雷達沒有這檔：籌碼科不計分，不拿大戶週增 % 來湊
@@ -223,7 +243,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((rows["2330"]["group"], rows["2330"]["score2"], rows["2330"]["subjects"]["cls"]), ("半導體", 6, None))   # 平盤：官網式 6（站上均線平手算站上 6、創新高平手不算 0、排列 0）；只有兩科有資料不分級
         self.assertEqual(module.collector_status()["lastDate"], d[-1])
         self.assertEqual((hj["cross"]["prevBelow"], hj["cross"]["up"]), (False, False))       # 昨收 113 在月線上，不算穿惡
-        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 13.0))                  # 矽晶圓：合晶 13 分（2+2+1+2+2+2+2，本益比跟族群平均比；環球晶沒有七科）
+        self.assertEqual((hj["groupSrank"], hj["groupStrength"]), (1, 12.0))                  # 矽晶圓：合晶 12 分（2+2+1+2+1+2+2，本益比最高 1 分；環球晶沒有七科）
         self.assertIsNone(rows["2330"]["groupSrank"])                                       # 半導體沒有分級的成員，不進強度榜
         self.assertEqual((result["topGroups"], result["todayList"], result["cross"]), (1, 1, 0))
         again = module.rebuild()
