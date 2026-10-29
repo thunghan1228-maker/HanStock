@@ -21,6 +21,7 @@ from typing import Any
 from datetime import date
 
 from daily_bars_store import latest_daily_trade_date_before, load_daily_bars
+from database import get_connection
 from daytrade_flow import limit_down_price, limit_up_price
 from intraday_signal_store import delete_kline_signals_for_ticker, save_intraday_signals
 from ma_alignment_score import compute_ma_alignment_score
@@ -145,6 +146,10 @@ SEED_BARS = 21
 # 另外保留第一版反推出來的「今天最高曾衝高 K12_MIN_RUSH_PCT% 以上」（教學頁沒寫、老師名單看起來有）。
 K12_MIN_RUSH_PCT = 3.0
 K12_PRE_BREAK_BARS = 12
+# 2026-10-29 使用者給了老師今天 09:05～13:30 的 18 份 1️⃣2️⃣空名單校對：我們多列的那些股票（旺宏、光聖、IET-KY、環宇-KY、愛普*、台光電…）
+# 前一個交易日收盤的均線分數（官網 15 分）幾乎都 ≤6，老師列的 117 筆全部 ≥7（跟他刀功課的「均線≥7」同一個門檻）；
+# 加上這條以後我們多列的從 217 筆掉到 80 筆、老師列的一筆都沒掉。分數算不出來（黑龍表沒有那檔）就不擋。前端用 scoreY 篩。
+K12_MIN_PRIOR_SCORE = 7
 _market_prev_cache: dict[str, str | None] = {}
 
 
@@ -285,6 +290,76 @@ def flush_pending_bars_5m(*, force: bool = False) -> int:
     except Exception:  # noqa: BLE001
         logger.exception("五分鐘K寫入bars_5m失敗 codes=%d", len(batch))
         return 0
+
+
+# ---- 1️⃣2️⃣空名單的備份（2026-10-29 使用者：收盤後 123 的資料不見了——要留著，到隔天開盤之後才消失）----
+# 引擎的狀態在記憶體裡，程式重開（部署、當機）就沒了；收盤後又沒有新的 5 分 K 進來把狀態補回來，名單就一直空到收盤回補跑完。
+# 每次有人打 /api/hub/kill12 而且引擎有今天的狀態，就把這份名單存進資料庫（內容有變、距上次存 ≥20 秒）；
+# 引擎沒有狀態（剛重開）時回最後一份備份（restored＝True），直到引擎有更新的交易日（隔天開盤第一根 5 分 K）才換掉。
+_k12_save_lock = threading.Lock()
+_k12_last_save: dict[str, Any] = {"sig": None, "at": 0.0}
+K12_SAVE_MIN_SECONDS = 20.0
+K12_KEEP_DAYS = 5
+
+
+def _k12_schema(connection) -> None:
+    connection.execute("CREATE TABLE IF NOT EXISTS kill12_snapshot (trade_date TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)")
+
+
+def save_k12_snapshot(snapshot: dict[str, Any]) -> bool:
+    """存一份（同一交易日覆蓋）；內容沒變或離上次存不到 20 秒就不寫。回 True＝有寫。"""
+    import json
+
+    trade_date = snapshot.get("tradeDate")
+    if not trade_date or not snapshot.get("tracked"):
+        return False
+    sig = (trade_date, snapshot.get("lastBarTs"), tuple((x["code"], x.get("high1"), x.get("high2")) for x in snapshot.get("items", [])))
+    with _k12_save_lock:
+        now = time.time()
+        if _k12_last_save["sig"] == sig or now - float(_k12_last_save["at"]) < K12_SAVE_MIN_SECONDS:
+            return False
+        _k12_last_save.update({"sig": sig, "at": now})
+    try:
+        with get_connection() as connection:
+            _k12_schema(connection)
+            connection.execute(
+                "INSERT INTO kill12_snapshot (trade_date, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(trade_date) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+                (trade_date, json.dumps(snapshot, ensure_ascii=False), time.strftime("%Y-%m-%dT%H:%M:%S")),
+            )
+            old = connection.execute("SELECT trade_date FROM kill12_snapshot ORDER BY trade_date DESC LIMIT -1 OFFSET ?", (K12_KEEP_DAYS,)).fetchall()
+            for r in old:
+                connection.execute("DELETE FROM kill12_snapshot WHERE trade_date = ?", (r["trade_date"],))
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("12空名單備份失敗", exc_info=True)
+        return False
+
+
+def load_k12_snapshot() -> dict[str, Any] | None:
+    """最後一份備份（最新交易日）；沒有就 None。"""
+    import json
+
+    try:
+        with get_connection() as connection:
+            _k12_schema(connection)
+            row = connection.execute("SELECT payload FROM kill12_snapshot ORDER BY trade_date DESC LIMIT 1").fetchone()
+        return json.loads(row["payload"]) if row else None
+    except Exception:  # noqa: BLE001
+        logger.warning("讀 12空名單備份失敗", exc_info=True)
+        return None
+
+
+def k12_snapshot_with_backup(monitor: "IntradayKlineSignalMonitor") -> dict[str, Any]:
+    """端點用：引擎有狀態就回現在的（順便備份）；引擎是空的（剛重開）或只有更舊的交易日，回備份的（restored＝True）。"""
+    snap = monitor.k12_snapshot()
+    stored = load_k12_snapshot()
+    if snap.get("tracked") and snap.get("tradeDate") and (not stored or str(snap["tradeDate"]) >= str(stored.get("tradeDate") or "")):
+        save_k12_snapshot(snap)
+        return snap
+    if stored and str(stored.get("tradeDate") or "") > str(snap.get("tradeDate") or ""):
+        return {**stored, "restored": True}
+    return snap
 
 
 class IntradayKlineSignalMonitor:
@@ -517,6 +592,26 @@ class IntradayKlineSignalMonitor:
             state.k12_since = None
         state.k12_on = on
 
+    @staticmethod
+    def _prior_scores(codes: list[str], trade_date: str | None) -> dict[str, int]:
+        """{代號: trade_date 前一個交易日收盤的均線分數（黑龍表 score2）}；黑龍表讀不到就空的（前端不擋）。"""
+        if not codes or not trade_date:
+            return {}
+        try:
+            with get_connection() as connection:
+                row = connection.execute("SELECT MAX(trade_date) AS d FROM heilong_daily WHERE trade_date < ? AND score2 IS NOT NULL", (trade_date,)).fetchone()
+                prior = row["d"] if row else None
+                if not prior:
+                    return {}
+                rows = connection.execute(
+                    f"SELECT stock_code, score2 FROM heilong_daily WHERE trade_date = ? AND score2 IS NOT NULL AND stock_code IN ({','.join('?' for _ in codes)})",
+                    (prior, *codes),
+                ).fetchall()
+            return {str(r["stock_code"]).strip().upper(): int(r["score2"]) for r in rows}
+        except Exception:  # noqa: BLE001
+            logger.warning("12空讀前一天均線分數失敗", exc_info=True)
+            return {}
+
     def k12_snapshot(self) -> dict[str, Any]:
         """現在符合 1️⃣2️⃣空 的股票（最新交易日）。"""
         with self._lock:
@@ -546,9 +641,12 @@ class IntradayKlineSignalMonitor:
                 "since": st.k12_since,
             })
         items.sort(key=lambda x: x["code"])
+        scores = self._prior_scores([x["code"] for x in items], trade_date)
+        for x in items:
+            x["scoreY"] = scores.get(x["code"])
         return {
             "status": "ok", "tradeDate": trade_date, "lastBarTs": last_ts, "tracked": tracked,
-            "rushPct": K12_MIN_RUSH_PCT, "items": items,
+            "rushPct": K12_MIN_RUSH_PCT, "minScore": K12_MIN_PRIOR_SCORE, "items": items,
         }
 
     def _detect_5ma_905_cross(self, state: _KlineState, close: float, ma5: float | None, emit) -> None:
