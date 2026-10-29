@@ -297,6 +297,22 @@ class RadarTests(unittest.TestCase):
         module._cache.update({"at": 0.0, "key": None, "radar": None})
         self.assertEqual(module.latest_chips()["status"], "empty")
 
+    def test_teacher_only_codes_and_raw_tie_break(self) -> None:
+        # 10/22 老師的榜單：倫飛（2364）買超第 6、連續增排行有立端（6245）；廣宇、濱川兩位小數都是 +4.56，他把廣宇放前面（代號比較大）
+        def rows(code: str, big: int) -> list[tuple]:
+            return [(code, 12, 1, big // 4, 0.0), (code, 15, 1, big - big // 4, 0.0), (code, 17, 1000, TOTAL, 100.0)]
+        for i, day in enumerate(WEEKS):
+            fundamentals_daily.save_tdcc(day, rows("6245", 30_000_000 + i * 2_000_000) + rows("3128", 30_000_000) + rows("3219", 30_000_000))
+        fundamentals_daily.save_tdcc("2026-10-02", rows("2364", 30_000_000 + 5_000_000) + rows("3128", 30_000_000 + 4_005_100)
+                                     + rows("3219", 30_000_000 + 4_014_900))
+        fundamentals_daily.save_tdcc("2026-09-24", rows("2364", 30_000_000))
+        out = module.payload()
+        buy = [r["code"] for r in out["lists"][0]["buy"]]
+        self.assertIn("2364", buy)
+        self.assertEqual(module.load_radar().chips["3128"]["2026-10-02"], module.load_radar().chips["3219"]["2026-10-02"])
+        self.assertLess(buy.index("3219"), buy.index("3128"))                       # 沒取整的籌碼 3219 比較大
+        self.assertIn("6245", [r["code"] for r in out["streaks"]["six"]["rows"]])   # 不在族群表、只在連續增排行
+
     def test_endpoints(self) -> None:
         from fastapi.testclient import TestClient
 

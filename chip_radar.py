@@ -90,11 +90,15 @@ ZHUANG_EXTRA = frozenset({
     "6691", "6933", "7777", "8103", "8150", "8155", "8210", "8431", "9958",           # 洋基工程 AMAX-KY 能率亞洲 瀚荃 南茂 博智 勤誠 匯鑽科 世紀鋼
     # 10/16 籌碼暴增榜新出現的（買超：智通 增你強 旭暉應材 律勝 其陽；賣超：台虹 晶宏 亞翔 遠見）
     "8932", "3028", "6698", "3354", "3564", "8039", "3141", "6139", "3040",
+    # 10/22 買超榜：倫飛 +6.68 排第 6（我們族群表沒有他，榜單少一檔、後面名次全差 1）；賣超榜：智晶 −5.3（第 3）、毅嘉 −2.1
+    "2364", "5245", "2402",
 })
 ZHUANG_SKIP = frozenset({"2241"})               # 我們族群表有、他週榜從來不列的（艾姆勒 10/08 +5.13、10/16 +6.4）
 ZHUANG_SKIP_GROUPS = ("金融股",)               # 整組不算（元大金 9/24 +5.5、群益證他都沒列）
 # 只出現在他連續增排行的（10/08 台亞 智原 家登 天瀚，週榜當時沒算；10/16 連三週增有艾姆勒，名字欄只寫 2241）
-ZHUANG_STREAK_EXTRA = frozenset({"2340", "3035", "3680", "6225", "2241"})
+ZHUANG_STREAK_EXTRA = frozenset({"2340", "3035", "3680", "6225", "2241",
+                                 # 10/22 連續增排行（六週：立端 +2.32 天鈺 +1.97 三地開發 +1.87；三週：三地開發 +3.00 立端 +2.66 志信 +2.49 松瑞藥 +2.39 友訊 +2.39）
+                                 "6245", "4961", "1438", "2611", "4167", "2332"})
 ZHUANG_STREAK_SKIP = frozenset({"3543", "4927", "6691"})            # 週榜有、10/08 連續增排行沒有（州巧 泰鼎-KY 洋基工程）
 # 老師週報卡片上的族群標籤（2026-10-10 使用者補 10/08、10/02、9/24、9/18 放大截圖，123 檔裡 118 檔一樣），只用在籌碼週報／雷達：
 ZHUANG_GROUP_ADD = {"6226": "光電", "6168": "光電"}   # 他有掛、我們沒掛（光鼎 10/08 賣超、宏齊 10/02 整族一起動都標「光電」）
@@ -304,10 +308,17 @@ class Radar:
         if key not in self._lists:
             values = [(code, per[day]) for code, per in self.chips.items() if day in per and (code in self.universe) != outside]
             raw = {code: self.raw_xs[code][day] for code, _ in values}
-            buy = [c for c, _ in sorted(values, key=lambda cv: (-cv[1], cv[0])) if raw[c] > 0 and 3 * math.sqrt(raw[c]) >= BUY_MIN]
-            sell = [c for c, _ in sorted(values, key=lambda cv: (cv[1], cv[0])) if raw[c] <= SELL_MAX]
+            buy = [c for c, _ in sorted(values, key=lambda cv: (-cv[1], -self._raw_chip(cv[0], day), cv[0])) if raw[c] > 0 and 3 * math.sqrt(raw[c]) >= BUY_MIN]
+            sell = [c for c, _ in sorted(values, key=lambda cv: (cv[1], self._raw_chip(cv[0], day), cv[0])) if raw[c] <= SELL_MAX]
             self._lists[key] = (buy, sell)
         return self._lists[key]
+
+    def _raw_chip(self, code: str, day: str) -> float:
+        """沒取兩位的籌碼%，只拿來分「兩位小數一樣」的先後（老師 10/22 廣宇、濱川都 +4.56，廣宇排前面）。"""
+        x = self.raw_xs.get(code, {}).get(day)
+        if x is None:
+            return 0.0
+        return 3 * math.sqrt(x) if x > 0 else x
 
     def is_single(self, code: str, day: str) -> bool:
         return day in self.single.get(code, ())
@@ -371,7 +382,7 @@ class Radar:
             if name in RANK_SKIP_GROUPS:
                 continue
             members = sorted(((c, self.chips[c][day]) for c in dict.fromkeys(codes) if c in self.chips and day in self.chips[c]),
-                             key=lambda cv: (-cv[1], cv[0]))
+                             key=lambda cv: (-cv[1], -self._raw_chip(cv[0], day), cv[0]))
             if not members:
                 continue
             top = [v for _, v in members[:GROUP_TOP]]

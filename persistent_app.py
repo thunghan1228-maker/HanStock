@@ -559,9 +559,9 @@ def get_kline_signal_backfill_today_status() -> dict[str, Any]:
 def get_kill12_snapshot() -> dict[str, Any]:
     """1️⃣2️⃣空（機器人 123，2026-10-18 第一版）：現在「今天曾衝高 3% 以上、5 分 K 收在 20MA 下、20MA 往下彎」的股票。
     盤中每根 5 分 K 收完更新；收盤後回補重算也會更新。前端只取老師固定那些族群的成分股。"""
-    from intraday_kline_signals import get_intraday_kline_signal_monitor
+    from intraday_kline_signals import get_intraday_kline_signal_monitor, k12_snapshot_with_backup
 
-    return get_intraday_kline_signal_monitor().k12_snapshot()
+    return k12_snapshot_with_backup(get_intraday_kline_signal_monitor())
 
 
 @app.get("/api/hub/big-holder")

@@ -1113,3 +1113,74 @@ def test_k12_needs_a_break_from_above_20ma_today(monkeypatch):
     monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
     monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 101))        # 最高 +4%、收 101 < 20MA≈104、20MA 下彎
     assert monitor._states["2330"].k12_on is False
+
+
+# ---- 1️⃣2️⃣空名單：前一天均線分數（scoreY）、備份還原（2026-10-29 使用者：收盤後 123 要留著、對老師名單）----
+@pytest.fixture
+def k12_db(monkeypatch, tmp_path):
+    import database
+    import heilong_backtest
+
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "k12.db")
+    database.initialize_database()
+    with database.get_connection() as c:
+        heilong_backtest._schema(c)
+        c.executemany(
+            "INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, change_pct, score2, ma_bits, hi_bits, align_n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [("2026-09-16", "2330", 1, 1, 1, 1, 1, 0.0, 9, 63, 63, 3), ("2026-09-17", "2330", 1, 1, 1, 1, 1, 0.0, 6, 63, 63, 3),
+             ("2026-09-18", "2330", 1, 1, 1, 1, 1, 0.0, 12, 63, 63, 3)])     # 今天（9/18）的整表之後才出來，不能拿來當「前一天」
+    monkeypatch.setattr(module, "_k12_last_save", {"sig": None, "at": 0.0})
+    return database
+
+
+def _k12_on_monitor(monkeypatch):
+    monitor = _flat_seed_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))
+    monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 98.5, 99))
+    return monitor
+
+
+def test_k12_snapshot_carries_prior_day_score(monkeypatch, k12_db):
+    monitor = _k12_on_monitor(monkeypatch)
+    snap = monitor.k12_snapshot()
+    assert snap["minScore"] == 7
+    assert snap["items"][0]["code"] == "2330" and snap["items"][0]["scoreY"] == 6     # 9/17 收盤那天的分數，不是 9/16、也不是今天
+
+
+def test_k12_snapshot_without_heilong_table_leaves_score_empty(monkeypatch, tmp_path):
+    import database
+
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "empty.db")
+    database.initialize_database()
+    monitor = _k12_on_monitor(monkeypatch)
+    assert monitor.k12_snapshot()["items"][0]["scoreY"] is None
+
+
+def test_k12_backup_survives_restart_until_a_newer_day(monkeypatch, k12_db):
+    monitor = _k12_on_monitor(monkeypatch)
+    live = module.k12_snapshot_with_backup(monitor)
+    assert [x["code"] for x in live["items"]] == ["2330"] and "restored" not in live
+    fresh = IntradayKlineSignalMonitor()                      # 重開：引擎沒有狀態
+    assert fresh.k12_snapshot()["tracked"] == 0
+    restored = module.k12_snapshot_with_backup(fresh)
+    assert restored.get("restored") is True and [x["code"] for x in restored["items"]] == ["2330"] and restored["tradeDate"] == live["tradeDate"]
+    # 隔天開盤第一根 5 分K：引擎有更新的交易日，就換成它的（備份的昨天名單消失）
+    tomorrow = IntradayKlineSignalMonitor()
+    tomorrow._states["2330"] = module._KlineState(trade_date="2026-09-19")
+    tomorrow._states["2330"].last_bar_ts = 1
+    nxt = tomorrow.k12_snapshot()
+    assert nxt["tradeDate"] == "2026-09-19" and nxt["tracked"] == 1 and nxt["items"] == []
+    served = module.k12_snapshot_with_backup(tomorrow)
+    assert served["tradeDate"] == "2026-09-19" and "restored" not in served and served["items"] == []
+
+
+def test_k12_backup_not_rewritten_when_unchanged(monkeypatch, k12_db):
+    monitor = _k12_on_monitor(monkeypatch)
+    snap = monitor.k12_snapshot()
+    assert module.save_k12_snapshot(snap) is True
+    assert module.save_k12_snapshot(snap) is False            # 內容沒變
+    assert module.load_k12_snapshot()["tradeDate"] == snap["tradeDate"]
+
+
+def test_k12_backup_ignores_empty_engine(monkeypatch, k12_db):
+    assert module.k12_snapshot_with_backup(IntradayKlineSignalMonitor())["tracked"] == 0     # 沒備份也沒狀態：照舊回空的
