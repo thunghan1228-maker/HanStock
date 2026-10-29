@@ -784,7 +784,11 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     # 體質轉強：問診七科判強勢，再取均線分數比前一交易日跳升 ≥3 者；七科總分高、跳得多的在前（跟學員專區日報同口徑）
     jump = lambda c: (tech[c]["score"] - tech[c]["prevScore"]) if tech[c]["score"] is not None and tech[c]["prevScore"] is not None else None  # noqa: E731
     strong_all = [c for c in eligible if seven[c]["cls"] == "強勢"]
-    body_all = [c for c in strong_all if (jump(c) or 0) >= MA_JUMP_MIN]
+    # 老師：體質轉強＝「從弱轉強的第一天」，昨天已經判強勢的是「續強確認」（兩條名單不重疊，老師 10/29 判強勢 10 檔＝體質轉強 3＋續強確認 7）；
+    # 前一份報告存了強勢名單才能分，沒有就只看跳升。
+    prev_report = _previous_report(as_of)
+    prev_strong = set(((prev_report or {}).get("notes") or {}).get("strongCodes") or [])
+    body_all = [c for c in strong_all if (jump(c) or 0) >= MA_JUMP_MIN and c not in prev_strong]
     # 老師 10 份日報的順序：跳升多的在前，同樣跳升均線分數高的在前（10/29 永捷 +8、GIS-KY 15 分 +5、十銓 11 分 +5；10/28 海悅 11 分、遠雄 10 分都 +7），再同分代號小的在前（凱美 2375 在蜜望實 8043 前）
     body_all.sort()
     body_all.sort(key=lambda c: (jump(c), tech[c]["score"]), reverse=True)
@@ -800,8 +804,6 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     jump_top = [{"code": c, "name": group_and_name(c)[1], "from": tech[c]["prevScore"], "to": tech[c]["score"]} for c in jumped[:5]]
     # 續強確認（昨日已強、今日維持）：昨天問診也判強勢、今天還是強勢、不是今天才跳升的（老師 10/29：有成精密均線只有 7 也在，所以不是看昨天均線分數）；
     # 前一份報告沒存強勢名單才退回「昨天均線分數 ≥10」。照均線分數高的在前（老師 10/29 東台 14、詠昇 13、誠美材 12、創見 11、晶豪科 10、穩懋 10、有成精密 7）
-    prev_report = _previous_report(as_of)
-    prev_strong = set(((prev_report or {}).get("notes") or {}).get("strongCodes") or [])
     if prev_strong:
         sustain_ok = lambda c: c in prev_strong   # noqa: E731
     else:
