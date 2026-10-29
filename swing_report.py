@@ -35,6 +35,7 @@ KEEP_DAYS = 40                 # 表裡最多留幾天
 LOOKBACK_DATES = 10            # 前端可回看的天數
 SUSTAIN_MIN_PREV = 10          # 續強確認：今天問診判強勢，而且昨天均線分數就已 ≥ 這個數（不是今天才跳上來）
 PICK_LIMIT = 5                 # 每個精選名單最多幾檔
+BODY_PICK_LIMIT = 3            # 體質轉強最多 3 檔（老師 10/14～10/29 十份日報：2、3、1、3、2、1、1、3、3、3 檔，從沒超過 3；跳升多的排前面）
 TECH_PICK_LIMIT = 4            # 技術面精選最多 4 檔（老師 10/21：真穿月線 6 檔、只列站上最多的 4 檔：芯鼎 9.4、和益 6.3、上品 5.6、佰鴻 4.8；乙盛-KY 3.2 沒列）
 TECH_MIN_SCORE = 7             # 技術面：均線分數至少 7 才列（老師 10/21 和益 7 有列、乙盛-KY 6 沒列；10/22 眾達-KY 8 有列、定穎投控 6 沒列，站上 3.6% 比眾達 3.1% 高也一樣沒列）；算不出均線分數的不擋
 TECH_MIN_TURNOVER = 5000       # 技術面：成交值（萬元）≥5,000 萬，不到的列在「略過」（老師 10/22 榮星 成交值 4,703 萬略過）
@@ -792,7 +793,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     # 老師 10 份日報的順序：跳升多的在前，同樣跳升均線分數高的在前（10/29 永捷 +8、GIS-KY 15 分 +5、十銓 11 分 +5；10/28 海悅 11 分、遠雄 10 分都 +7），再同分代號小的在前（凱美 2375 在蜜望實 8043 前）
     body_all.sort()
     body_all.sort(key=lambda c: (jump(c), tech[c]["score"]), reverse=True)
-    body_picks = [card(c, f"問診 {seven[c]['total']} 分") for c in body_all[:PICK_LIMIT]]
+    body_picks = [card(c, f"問診 {seven[c]['total']} 分") for c in body_all[:BODY_PICK_LIMIT]]
     # 均線結構轉強：今天新達 15 分（前一交易日 <15）；跳得多、法人 5 日佔股本高的在前
     new_full = [c for c in eligible if tech[c]["score"] == 15 and tech[c]["prevScore"] is not None and tech[c]["prevScore"] < 15]
     new_full.sort(key=lambda c: (tech[c]["score"] - tech[c]["prevScore"], chips.get(c, {}).get("inst5Pct") or 0), reverse=True)
