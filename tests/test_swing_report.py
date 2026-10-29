@@ -194,6 +194,25 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(len(r["qualified"]), 9)
         # 同分才看站上月線多的：均線 10 的三檔都在，第 5 名以後的（9 分以下）不會因為站上多就擠進來
         self.assertNotIn("4977", r["picks"])
+        # 熱門族的先挑：富世達（千元不是熱門族）均線 11 比永捷、晶豪科、鈺創的 10 高，老師沒列；熱門族不夠 4 檔才補非熱門族
+        tech["6805"] = t(6.5, 8000, 1500.0, 6, 11)
+        hot = {"4967", "3006", "4714", "5351", "4977"}
+        self.assertEqual(sorted(module.pick_tech(list(tech), tech, chips, hot)["picks"]), ["3006", "4714", "4967", "5351"])
+        self.assertEqual(sorted(module.pick_tech(list(tech), tech, chips, {"4967", "4714"})["picks"]), ["3006", "4714", "4967", "6805"])
+        self.assertEqual(sorted(module.pick_tech(list(tech), tech, chips)["picks"]), ["3006", "4714", "4967", "6805"])   # 沒給熱門族＝只看均線分數
+
+    def test_daily_hot_groups_three_days(self) -> None:
+        # 老師 10/29（資料基準 10/28）：AI（10/27 第 5、10/28 第 42）、鋼鐵（10/27 前幾名）都標熱門族——當天前 10 名往前算 3 個交易日；千元不算族群、不佔名額
+        def bars(*closes: float) -> list[tuple[str, float, float, float, int]]:
+            days = ["2026-10-22", "2026-10-27", "2026-10-28"][-len(closes):]
+            return [(d, c, c, c, 1000) for d, c in zip(days, closes)]
+
+        bars_by_code = {"A1": bars(100, 110, 110), "B1": bars(100, 100, 105), "C1": bars(100, 99, 99), "D1": bars(100, 100, 100), "K1": bars(100, 120, 130)}
+        members = {"甲": ["A1"], "乙": ["B1"], "丙": ["C1"], "丁": ["D1"], "千元": ["K1"]}
+        groups = [{"name": "千元", "avgChange": 8.3}, {"name": "乙", "avgChange": 5.0}, {"name": "丁", "avgChange": 0.0}, {"name": "甲", "avgChange": 0.0}, {"name": "丙", "avgChange": 0.0}]
+        self.assertEqual(module.daily_hot_groups(groups, bars_by_code, members, "2026-10-28", days=1, top=2), ["乙", "丁"])
+        # 3 天：10/28 前 2 名乙、丁；10/27 甲（+10%）進；10/22 沒有前一根算不出漲跌
+        self.assertEqual(module.daily_hot_groups(groups, bars_by_code, members, "2026-10-28", days=3, top=2), ["乙", "丁", "甲"])
 
     def test_chips_follow_zhuang_1029(self) -> None:
         # 老師 10/29（資料基準 10/28）籌碼面：濱川（連 6 週）、微星（連 8 週）、今國光（連 4 週、均線 8）、富喬（連 3 週、均線 9、法人賣超）；
