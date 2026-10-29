@@ -1219,6 +1219,23 @@ def get_patterns(date: str | None = Query(None), codes: str | None = Query(None)
     return patterns_payload(date, split(codes) or None)
 
 
+@app.get("/api/hub/kbar-dojo/quiz")
+def get_kbar_dojo_quiz(n: int = Query(10, ge=1, le=20), seed: int | None = Query(None)) -> dict[str, Any]:
+    """K 棒型態道場：出 n 題（五個型態平均、同一檔不重複），每題＝型態最後一根以前的日K＋後 10 根（跑圖用）＋框起來的位置。
+    案例池第一次要背景建（status＝building，前端過幾秒再問）。"""
+    from kbar_dojo import quiz
+
+    return quiz(n, seed)
+
+
+@app.get("/api/hub/kbar-dojo/lessons")
+def get_kbar_dojo_lessons() -> dict[str, Any]:
+    """K 棒型態道場：上課用的五個真實案例（每個型態一個）。"""
+    from kbar_dojo import lessons
+
+    return lessons()
+
+
 @app.get("/api/hub/margin-call")
 def get_margin_call(date: str | None = Query(None), groups: str | None = Query(None), codes: str | None = Query(None), limit: int = Query(60, ge=1, le=1000)) -> dict[str, Any]:
     """融資斷頭線（2026-10-23 使用者貼老師 10/22「斷頭線就在腳下」）：A＝近 20 個交易日盤中最高 × 0.78（上櫃 × 0.65），B＝月高那天的 5 日均價 × 0.78（上櫃 × 0.65）；
