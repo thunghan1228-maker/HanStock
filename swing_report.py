@@ -60,6 +60,7 @@ CHIPS_MIN_INST_VOL_PCT = 10.0
 CHIPS_INST_FLOOR_PCT = -0.5     # 前 3 名以外，法人 5 日佔量不能比這個低（老師 10/15 天二 -0.2% 有列；10/14 中纖 -3.9% 沒列）
 CHIPS_MIN_TURNOVER = 5000       # 籌碼面精選：基準日成交值（萬元）≥5,000 萬（老師 10/29：籌碼榜第 1 名佳龍成交值 607 萬、連 1 週，沒列；技術面也是這個門檻）
 CHIPS_DAILY_HOT_GROUPS = 10     # 籌碼面的熱門族也算當天族群漲幅前 10 名（0＝只看週籌碼熱門族）
+HOT_DAILY_DAYS = 3              # 熱門族的「當天前 10 名」往前算 3 個交易日（含基準日）：老師 10/14～10/29 十份，只看當天漏 6 個族群，看 3 天只漏 1 個（微星屬 AI：AI 10/27 前 5、10/28 第 42 名，10/29 還標熱門族）
 HOT_SKIP_GROUPS = ("千元",)     # 熱門族不算千元（老師 10/12～10/16：被動元件的天二科技、光頡標熱門族——週籌碼族群排名千元排第 5、被動元件第 6，千元算進去的話被動元件就不熱門了）
 CHIPS_STREAK_MIN = 3           # 籌碼面第二層：不在榜上前 10，但熱門族、籌碼連續增加 ≥3 週（2026-10-13 老師：天二科技、光頡）
 CHIPS_TIER2_CHIP_MIN = 2.1     # 第二層（榜外）這一週的籌碼% 也要 ≥2.1%（天二科技 3.8%、光頡 4.6%、精誠連 8 週 2.14% 有；微星連 7 週 2.06%、聯寶連 9 週 +0.4%、台光電 +1.5% 老師沒列）
@@ -479,6 +480,42 @@ def radar_week(as_of: str) -> dict[str, Any] | None:
             "groups": [{"name": g["name"], "avg": g["avg"]} for g in hot_groups]}   # 熱門族的週籌碼（族群裡籌碼% 最高 5 檔平均）
 
 
+def daily_hot_groups(groups: list[dict[str, Any]], bars_by_code: dict[str, list], members: dict[str, list[str]], as_of: str,
+                     days: int = HOT_DAILY_DAYS, top: int = CHIPS_DAILY_HOT_GROUPS) -> list[str]:
+    """當天族群漲幅前 top 名（groups 已照當天漲幅排好），再加前 days-1 個交易日各自的前 top 名；千元這種價格型分類老師不當族群，不佔名額。
+    老師 10/29：記憶體（10/28 第 9）、鋼鐵（10/22 第 2、10/28 第 55）、AI（10/27 第 5、10/28 第 42）、台塑四寶（10/13、10/14 第 1，10/16 第 22）都標熱門族。"""
+    names = [g["name"] for g in groups if g["name"] not in HOT_SKIP_GROUPS][:top]
+    if days <= 1:
+        return names
+    pct_by_code: dict[str, dict[str, float]] = {}
+    seen: dict[str, int] = {}
+    for code, all_bars in bars_by_code.items():
+        bars = [b for b in all_bars if b[0] <= as_of]
+        by_day: dict[str, float] = {}
+        for i in range(max(1, len(bars) - days), len(bars)):
+            if bars[i - 1][3] > 0:
+                by_day[bars[i][0]] = (bars[i][3] / bars[i - 1][3] - 1) * 100
+        if by_day:
+            pct_by_code[code] = by_day
+            for d in by_day:
+                seen[d] = seen.get(d, 0) + 1
+    top_seen = max(seen.values(), default=0)
+    trading_days = sorted(d for d, n in seen.items() if n >= top_seen / 2)[-days:]
+    for day in reversed(trading_days):
+        if day == as_of:
+            continue
+        ranked = []
+        for name, codes in members.items():
+            if name in HOT_SKIP_GROUPS:
+                continue
+            vals = [pct_by_code[c][day] for c in codes if day in pct_by_code.get(c, {})]
+            if vals:
+                ranked.append((sum(vals) / len(vals), name))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        names.extend(n for _avg, n in ranked[:top] if n not in names)
+    return names
+
+
 def pick_main_groups(groups: list[dict[str, Any]], hot_names: set[str]) -> list[dict[str, Any]]:
     """資金主軸候選（老師 10/20～10/22 三份）：站上月線過半、法人 5 日買超、至少 5 檔，而且是熱門族（當天族群漲幅前 10 名，或籌碼雷達熱門族）；
     法人 5 日買超多的在前，呼叫端取前 MAIN_GROUP_LIMIT 個。"""
@@ -502,7 +539,7 @@ def order_chips(cand: list[str], radar_stocks: dict[str, dict[str, Any]], scores
     return front + sorted(rest_pool, key=take_order), (front + sorted(taken, key=show_order))[:CHIPS_PICK_LIMIT]
 
 
-def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[str, dict[str, Any]], hot: set[str] | None = None) -> dict[str, Any]:
     """技術面精選：今天才站上月線（真穿）＝站上 ≥3%（比昨天的月線）且量 ≥500 張；回 {crossed, qualified（真穿月線檔數）, skipped, picks}。
     老師 10/22（資料基準 10/21）：真穿月線 8 檔＝列 4 檔（鈞寶、高力、眾達-KY、環科）＋略過 3 檔（新復興、友達營收年增為負、榮星成交值 4,703 萬）＋均線分數 6 的定穎投控沒列。"""
     crossed = [c for c in eligible if tech[c]["crossedMa20"]]
@@ -519,7 +556,8 @@ def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[
     pool = [c for c in qualified if c not in skipped_set and (tech[c]["score"] is None or tech[c]["score"] >= TECH_MIN_SCORE)]
     # 老師 10/29（資料基準 10/28）：真穿月線 12 檔，列均線分數最高的 4 檔（十銓 11、晶豪科 10、永捷 10、鈺創 10，站上 5.0～6.0%）；
     # 站上更多的眾達-KY（7.0%，均線 9）、川寶（6.0%，8）、聯光通（8.3%，7）沒列——不是「站上最多的」，是「均線分數最高的」；同分才看站上多的
-    pool.sort(key=lambda c: (tech[c]["score"] if tech[c]["score"] is not None else -1, tech[c]["abovePrevMa20Pct"]), reverse=True)
+    # 熱門族的先挑，不夠 4 檔才補非熱門族（老師 10/29 十銓、晶豪科、永捷、鈺創全是熱門族，均線 11 的富世達屬千元不是熱門族沒列；10/15、10/16 的 4 檔也全是熱門族）
+    pool.sort(key=lambda c: (c in (hot or ()), tech[c]["score"] if tech[c]["score"] is not None else -1, tech[c]["abovePrevMa20Pct"]), reverse=True)
     picks = pool[:TECH_PICK_LIMIT]
     # 取均線分數最高的幾檔之後，照老師的順序排：均線分數跳升多的在前（10/21 芯鼎 +5、上品 +5、佰鴻 +4、和益 +1；10/22 鈞寶 +4、高力 +4、眾達 +4、環科 +3），同分站上月線多的在前
     picks.sort(key=lambda c: (_jump(tech[c]) or 0, tech[c]["abovePrevMa20Pct"]), reverse=True)
@@ -669,10 +707,12 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         seven[code] = seven_subjects(t["score"], group_rank.get(g), avg, n, (radar_stocks.get(code) or {}).get("chip2"), ch.get("pe"), group_pe_avg.get(g),
                                      ch.get("revenueYoy"), ch.get("inst5"), ch.get("instToday"))
 
-    # 熱門族也包含當天族群漲幅前 10 名（老師 10/12 GIS-KY 屬 AI眼鏡、10/15～10/16 精誠屬資訊都標熱門族，那幾天這兩族都在當天前 10）
-    for g in groups[:CHIPS_DAILY_HOT_GROUPS]:
-        for c, _n in STOCK_GROUPS.get(g["name"], []):
-            hot_of.setdefault(str(c).strip().upper(), g["name"])
+    # 熱門族也包含當天族群漲幅前 10 名（老師 10/12 GIS-KY 屬 AI眼鏡、10/15～10/16 精誠屬資訊都標熱門族，那幾天這兩族都在當天前 10），
+    # 往前 3 個交易日算（見 daily_hot_groups）；千元不算族群
+    daily_hot = daily_hot_groups(groups, bars_by_code, group_members, as_of) if CHIPS_DAILY_HOT_GROUPS else []
+    for name in daily_hot:
+        for c, _n in STOCK_GROUPS.get(name, []):
+            hot_of.setdefault(str(c).strip().upper(), name)
 
     def card(code: str, tag: str) -> dict[str, Any]:
         # 熱門族＝籌碼雷達族群排名前 5（老師卡片上的熱門族：川寶的被動元件、台表科的光學鏡頭…）；還沒有集保週資料才用當天漲幅前 10
@@ -722,7 +762,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     chips_all, chips_shown = order_chips(cand, radar_stocks, {c: tech[c]["score"] for c in cand}, top_pool, {c: hot_rank.get(hot_of.get(c, ""), 99) for c in cand})
     chips_picks = [card(c, f"連 {radar_stocks[c]['streak']} 週") for c in chips_shown]
     # 技術面精選：今天才站上月線（真穿）：站上 ≥3% 且量 ≥500 張；剛站上未達門檻的只算數（細節見 pick_tech）
-    tech_pick = pick_tech(eligible, tech, chips)
+    tech_pick = pick_tech(eligible, tech, chips, {c for c in eligible if (c in hot_of if radar else group_rank.get(group_of.get(c, ""), 99) <= HOT_GROUP_RANK)})
     crossed, tech_skipped, tech_all = tech_pick["crossed"], tech_pick["skipped"], tech_pick["picks"]
     tech_total = len(tech_pick["qualified"])   # 真穿月線檔數（老師 10/21：6 檔、10/22：8 檔，略過的、沒列的都算在內）；精選只列其中站上最多的幾檔
     tech_picks = [card(c, f"站上 +{tech[c]['abovePrevMa20Pct']:.1f}%") for c in tech_all]
@@ -854,7 +894,7 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
                      f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}% 的；法人 5 日賣超、營收年增為負的照列，只在卡片上標風險；名額不夠時有榜上名次的先於榜外的，最多列 {CHIPS_PICK_LIMIT} 檔。"
                      f"觀察名單＝族群表裡、出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
             "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張＝真穿月線；營收年增為負、成交值不到 {TECH_MIN_TURNOVER:,} 萬的列在略過，均線分數 <{TECH_MIN_SCORE} 的不列；"
-                    f"取均線分數最高的 {TECH_PICK_LIMIT} 檔（同分站上月線多的先），均線跳升多的排前面；站上月線第一天，防守就是月線本身",
+                    f"熱門族的先取、取均線分數最高的 {TECH_PICK_LIMIT} 檔（同分站上月線多的先），均線跳升多的排前面；站上月線第一天，防守就是月線本身",
             "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼雷達的籌碼%、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、本益比高於族群均值 {PE_RISK_MULT:g} 倍、營收年增為負、處置中",
