@@ -616,12 +616,12 @@ class SustainedTests(unittest.TestCase):
             r = module.build_report("2026-09-24")
         self.assertEqual(r["notes"]["sustained"][0]["score"], 14)          # 還原後的分數
         self.assertEqual(r["notes"]["strongCodes"], ["2409", "6183"])
-        # 前一份報告存了強勢名單：昨天不在名單裡的（只剩 6183）不算續強；在名單裡才算
-        for strong, expect in ((["6183"], []), (["2409"], ["2409"])):
+        # 前一份報告存了強勢名單：昨天在名單裡的才算續強確認（就算今天均線有跳升，老師：體質轉強是「從弱轉強的第一天」），不在名單的有跳升才算體質轉強
+        for strong, sustained, body in ((["6183"], ["6183"], []), (["2409"], ["2409"], ["6183"])):
             module.save_report({"date": dates[-2], "generatedAt": "2026-09-23T21:50:00+08:00", "status": "ok", "notes": {"strongCodes": strong}})
             with patch.object(module, "_disposition_codes", return_value=set()):
                 r = module.build_report("2026-09-24")
-            self.assertEqual([x["code"] for x in r["notes"]["sustained"]], expect)
+            self.assertEqual(([x["code"] for x in r["notes"]["sustained"]], [x["code"] for x in r["picks"]["body"]]), (sustained, body))
 
 
 if __name__ == "__main__":
