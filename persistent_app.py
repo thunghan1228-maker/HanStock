@@ -1422,6 +1422,20 @@ def get_ma_rank_query(code: str | None = Query(None), group: str | None = Query(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/eps-board")
+def get_eps_board(season: str | None = Query(None, pattern=r"^20[0-9]{2}Q[1-4]$")) -> dict[str, Any]:
+    """季報 EPS 榜（2026-10-29 使用者：老師頁的 Q3 季報 EPS 族群分析、多觀察分析）：一季裡已公布的公司——單季 EPS、去年同季、年增、
+    單季毛利率／營益率／淨利率比上一季、三率三升、🚀／🐢、公布日與公布隔日漲跌。不給 season＝最新有資料的一季；族群與多觀察名單由前端分。"""
+    from fastapi import HTTPException
+
+    from financials import eps_board
+
+    try:
+        return eps_board(season)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/hub/obs-weekly")
 def get_obs_weekly(date: str | None = Query(None)) -> dict[str, Any]:
     """收盤觀察股 週分析（2026-10-29 使用者：波段日報新增「每週多觀察全方面解析」，照老師的版面做）：名單異動、族群總覽、功課重點、
