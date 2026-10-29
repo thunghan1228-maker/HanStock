@@ -58,6 +58,7 @@ CHIPS_TOP_RANK = 3              # 籌碼暴增榜前 3 名（熱門族）一定�
 CHIPS_MIN_SCORE = 12            # 其他的要均線分數 ≥12，或法人 5 日佔量 ≥10%（老師 10/19 台表科均線 9、法人 +15.2% 有列；漢磊均線 11／法人 +1.9%、倍力、汎銓沒列；10/16 天二均線 8／法人 +0.1% 沒列）
 CHIPS_MIN_INST_VOL_PCT = 10.0
 CHIPS_INST_FLOOR_PCT = -0.5     # 前 3 名以外，法人 5 日佔量不能比這個低（老師 10/15 天二 -0.2% 有列；10/14 中纖 -3.9% 沒列）
+CHIPS_MIN_TURNOVER = 5000       # 籌碼面精選：基準日成交值（萬元）≥5,000 萬（老師 10/29：籌碼榜第 1 名佳龍成交值 607 萬、連 1 週，沒列；技術面也是這個門檻）
 CHIPS_DAILY_HOT_GROUPS = 10     # 籌碼面的熱門族也算當天族群漲幅前 10 名（0＝只看週籌碼熱門族）
 HOT_SKIP_GROUPS = ("千元",)     # 熱門族不算千元（老師 10/12～10/16：被動元件的天二科技、光頡標熱門族——週籌碼族群排名千元排第 5、被動元件第 6，千元算進去的話被動元件就不熱門了）
 CHIPS_STREAK_MIN = 3           # 籌碼面第二層：不在榜上前 10，但熱門族、籌碼連續增加 ≥3 週（2026-10-13 老師：天二科技、光頡）
@@ -515,8 +516,12 @@ def pick_tech(eligible: list[str], tech: dict[str, dict[str, Any]], chips: dict[
         elif turnover < TECH_MIN_TURNOVER:
             skipped.append((c, f"成交值 {int(turnover):,} 萬"))
     skipped_set = {c for c, _why in skipped}
-    picks = [c for c in qualified if c not in skipped_set and (tech[c]["score"] is None or tech[c]["score"] >= TECH_MIN_SCORE)][:TECH_PICK_LIMIT]
-    # 取站上月線最多的幾檔之後，照老師的順序排：均線分數跳升多的在前（10/21 芯鼎 +5、上品 +5、佰鴻 +4、和益 +1；10/22 鈞寶 +4、高力 +4、眾達 +4、環科 +3），同分站上月線多的在前
+    pool = [c for c in qualified if c not in skipped_set and (tech[c]["score"] is None or tech[c]["score"] >= TECH_MIN_SCORE)]
+    # 老師 10/29（資料基準 10/28）：真穿月線 12 檔，列均線分數最高的 4 檔（十銓 11、晶豪科 10、永捷 10、鈺創 10，站上 5.0～6.0%）；
+    # 站上更多的眾達-KY（7.0%，均線 9）、川寶（6.0%，8）、聯光通（8.3%，7）沒列——不是「站上最多的」，是「均線分數最高的」；同分才看站上多的
+    pool.sort(key=lambda c: (tech[c]["score"] if tech[c]["score"] is not None else -1, tech[c]["abovePrevMa20Pct"]), reverse=True)
+    picks = pool[:TECH_PICK_LIMIT]
+    # 取均線分數最高的幾檔之後，照老師的順序排：均線分數跳升多的在前（10/21 芯鼎 +5、上品 +5、佰鴻 +4、和益 +1；10/22 鈞寶 +4、高力 +4、眾達 +4、環科 +3），同分站上月線多的在前
     picks.sort(key=lambda c: (_jump(tech[c]) or 0, tech[c]["abovePrevMa20Pct"]), reverse=True)
     return {"crossed": crossed, "qualified": qualified, "skipped": skipped, "picks": picks}
 
@@ -691,10 +696,13 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     just_out = {e["code"] for e in dispo.get("watch") or []}
     watch_days = {e["code"]: e["daysOut"] for e in dispo.get("watch") or []}   # 剛出獄第幾天（卡片風險提示用）
     day_trade = daytrade_pct_map(as_of)   # 隔日沖買超佔成交量%（卡片風險提示用）
+    week_hot = set(radar["hot"]) if radar else set()   # 週籌碼熱門族（不含當天漲幅前 10 名那批）
     def chips_ok(c: str) -> bool:
         rk = radar_stocks[c].get("rank")
-        if rk and rk <= CHIPS_TOP_RANK:
-            return True
+        if rk and rk <= CHIPS_TOP_RANK and hot_of.get(c) in week_hot:
+            return True   # 榜上前 3 名＋週籌碼熱門族一定列（老師 10/10～10/21：緯穎、信昌電、富喬、今國光；10/29 榜第 2 名愛普屬 IP，只是當天漲幅前 10、不是週籌碼熱門族，沒列）
+        if c in top_pool and (radar_stocks[c].get("streak") or 0) >= CHIPS_STREAK_MIN:
+            return True   # 榜上前 10 名、連續增加 ≥3 週的，不看均線和法人（老師 10/29：今國光連 4 週均線 8、富喬連 3 週均線 9、法人賣超 -5.5% 都列）
         inst = chips.get(c, {}).get("inst5VolPct")
         if inst is not None and inst < CHIPS_INST_FLOOR_PCT:
             return False
@@ -702,8 +710,9 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
     top_pool = set(radar["buy"][:CHIPS_POOL_TOP]) if radar else set()
     # 候選：榜上前 10 名，或（不在前 10 名）熱門族、籌碼連續增加 ≥3 週、這一週籌碼% ≥3%（2026-10-13 老師 10/14 報告：台表科、今國光之後還有天二科技連 5 週、光頡連 3 週）。
     # 處置中的不列（分盤交易；10/13 聯茂處置到 10/19、籌碼剛好 +3.0%，老師沒列）；剛出獄 5 天內的只放觀察名單（10/13 嘉晶連 3 週 +3.0%，老師放「觀察名單・出獄第 2 天」）
+    turnover = lambda c: (tech[c]["close"] or 0) * (tech[c]["volume"] or 0) / 10   # noqa: E731  成交值（萬元）
     cand = [c for c, rs in radar_stocks.items()
-            if c in eligible_set and c in hot_of and c not in disposed and c not in just_out and chips_ok(c)
+            if c in eligible_set and c in hot_of and c not in disposed and c not in just_out and turnover(c) >= CHIPS_MIN_TURNOVER and chips_ok(c)
             and (c in top_pool or ((rs.get("streak") or 0) >= CHIPS_STREAK_MIN and _chip2(rs) >= CHIPS_TIER2_CHIP_MIN
                                    and (tech[c]["score"] or 0) >= CHIPS_MIN_SCORE))]   # 榜外的一定要均線 ≥12（10/15 允強均線 7、10/19 敦陽科均線 8 老師沒列）
     # 榜上前 3 名排最前面（老師每天都有富喬、今國光），同樣在前面的照熱門族排（老師 10/22：信昌電〔被動元件、週籌碼族群第 1〕在緯穎〔機殼、第 2〕前面，雖然緯穎籌碼名次第 1）；
@@ -841,11 +850,11 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         "counts": {"chips": len(chips_all), "tech": tech_total, "techNear": len(crossed) - tech_total, "body": len(body_all), "strong": len(strong_all), "full": len(new_full)},
         "rules": {
             "chips": f"籌碼暴增榜（集保 400 張以上大戶週增減換算的籌碼%，跟籌碼雷達同一份；集保週要在日報那天收盤後已經公布，週五收盤的那週週末才公布，所以週五的日報還是看上一週）前 {CHIPS_POOL_TOP} 名裡，"
-                     "屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名一定列，其他的法人 5 日佔量不能低於 -0.5%，榜上的要均線分數 ≥12 或法人 5 日佔量 ≥10%、榜外的要均線分數 ≥12；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
+                     f"屬於熱門族（週籌碼族群排名前 5、不含千元，或當天族群漲幅前 10）、不在處置中也不是剛出獄的；榜上前 3 名且是週籌碼熱門族的一定列（成交值要 ≥{CHIPS_MIN_TURNOVER:,} 萬），榜上前 10 名、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週的也不看均線和法人，其他的法人 5 日佔量不能低於 -0.5%，榜上的要均線分數 ≥12 或法人 5 日佔量 ≥10%、榜外的要均線分數 ≥12；前 3 名之後連續增加週數多的優先（連 N 週＝籌碼% 連續幾週都是正的），同週數均線分數高的在前；"
                      f"榜上那幾檔之後，再補不在前 {CHIPS_POOL_TOP} 名、但熱門族、籌碼連續增加 ≥{CHIPS_STREAK_MIN} 週、這一週籌碼% ≥{CHIPS_TIER2_CHIP_MIN:g}% 的；法人 5 日賣超、營收年增為負的照列，只在卡片上標風險；名額不夠時有榜上名次的先於榜外的，最多列 {CHIPS_PICK_LIMIT} 檔。"
                      f"觀察名單＝族群表裡、出獄 5 個交易日內、籌碼% ≥{CHIPS_WATCH_CHIP_MIN:g}%",
             "tech": f"今天收盤才站上月線（前一天在月線下）、收盤比昨天的月線高 ≥{TECH_MIN_ABOVE_PCT:g}%、量 ≥{TECH_MIN_VOLUME} 張＝真穿月線；營收年增為負、成交值不到 {TECH_MIN_TURNOVER:,} 萬的列在略過，均線分數 <{TECH_MIN_SCORE} 的不列；"
-                    f"取站上月線最多的 {TECH_PICK_LIMIT} 檔，均線跳升多的排前面；站上月線第一天，防守就是月線本身",
+                    f"取均線分數最高的 {TECH_PICK_LIMIT} 檔（同分站上月線多的先），均線跳升多的排前面；站上月線第一天，防守就是月線本身",
             "body": f"問診七科（均線分數、族群平均分、族內名次、籌碼雷達的籌碼%、本益比、營收年增、法人買賣超各 0～2 分，至少 3 科有資料）總分達七成判強勢，再取均線分數（內定）比前一交易日跳升 ≥{MA_JUMP_MIN} 者；續強確認＝今天判強勢、昨天均線分數就已 ≥{SUSTAIN_MIN_PREV}（不是今天才跳升）",
             "full": "均線分數（內定，滿分 15）當天收盤新達 15 分（前一交易日 <15）；跳升最多＝比前一交易日跳升最多的前 5 檔，不限分數",
             "risks": f"季線在頭上、與 5 日線乖離 ≥{DEV5_WARN_PCT:g}%、法人 5 日仍賣超、本益比高於族群均值 {PE_RISK_MULT:g} 倍、營收年增為負、處置中",

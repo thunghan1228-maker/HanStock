@@ -178,6 +178,49 @@ class ReportTests(unittest.TestCase):
         tech = {"1111": {**t(5.0, 2000, 30.0, 0, 0), "score": None, "prevScore": None}}
         self.assertEqual(module.pick_tech(["1111"], tech, {})["picks"], ["1111"])
 
+    def test_pick_tech_from_zhuang_1029(self) -> None:
+        # 老師 10/29（資料基準 10/28）：真穿月線 12 檔，列均線分數最高的 4 檔＝十銓 11、晶豪科 10、永捷 10、鈺創 10；
+        # 站上更多的眾達-KY（7.0%、均線 9）、聯光通（8.3%、7）、川寶（6.0%、8）沒列；華宏、中揚光營收年增為負略過
+        def t(above: float, volume: int, close: float, prev: int, score: int) -> dict:
+            return {"crossedMa20": True, "abovePrevMa20Pct": above, "volume": volume, "close": close, "prevScore": prev, "score": score}
+
+        tech = {"4967": t(5.8, 6174, 279.5, 6, 11), "3006": t(5.9, 18929, 275.5, 7, 10), "4714": t(6.0, 5478, 12.85, 2, 10), "5351": t(5.0, 11728, 114.0, 7, 10),
+                "4977": t(7.0, 7098, 187.0, 4, 9), "1595": t(6.0, 3009, 80.5, 5, 8), "4903": t(8.3, 5767, 52.1, 5, 7),
+                "8240": t(5.5, 9000, 60.0, 5, 9), "6668": t(4.0, 8000, 50.0, 6, 9)}
+        chips = {"8240": {"revenueYoy": -5.0}, "6668": {"revenueYoy": -3.0}}
+        r = module.pick_tech(list(tech), tech, chips)
+        self.assertEqual(sorted(r["picks"]), ["3006", "4714", "4967", "5351"])
+        self.assertEqual([c for c, _w in r["skipped"]], ["8240", "6668"])
+        self.assertEqual(len(r["qualified"]), 9)
+        # 同分才看站上月線多的：均線 10 的三檔都在，第 5 名以後的（9 分以下）不會因為站上多就擠進來
+        self.assertNotIn("4977", r["picks"])
+
+    def test_chips_follow_zhuang_1029(self) -> None:
+        # 老師 10/29（資料基準 10/28）籌碼面：濱川（連 6 週）、微星（連 8 週）、今國光（連 4 週、均線 8）、富喬（連 3 週、均線 9、法人賣超）；
+        # 榜第 1 名佳龍（連 1 週、成交值 607 萬）、榜第 2 名愛普（IP、只是當天漲幅前 10、不是週籌碼熱門族）都沒列
+        self.enterContext(patch.object(module, "CHIPS_DAILY_HOT_GROUPS", 0))
+        for d in trading_dates("2026-09-24", 5):
+            chips_daily.save_institutional(d, "TSE", [{"code": "2330", "name": "台積電", "foreign": 2_000_000, "trust": 0, "dealer": 0, "total": 2_000_000}], "test")
+
+        def picks(buy: list[str], streaks: dict[str, int], hot: list[str], hot_of: dict[str, str]) -> list[str]:
+            fake = {"week": "2026-09-18", "buy": buy, "hot": hot, "hotOf": hot_of,
+                    "stocks": {c: {"chip": 5.0, "streak": streaks.get(c, 1), "rank": i + 1} for i, c in enumerate(buy)}}
+            with patch.object(module, "radar_week", return_value=fake):
+                r = module.build_report("2026-09-24")
+            return [x["code"] for x in r["picks"]["chips"]]
+
+        hot_of = {"6182": "矽晶圓", "6207": "設備股", "2330": "半導體"}
+        # 榜上前 3 名但不是週籌碼熱門族（設備股只是當天漲幅前 10）、均線和法人也不夠的：不列（愛普）；週籌碼熱門族照列（合晶）
+        self.assertEqual(picks(["6182", "6207"], {}, ["矽晶圓"], hot_of), ["6182"])
+        self.assertEqual(picks(["6182", "6207"], {}, ["矽晶圓", "設備股"], hot_of), ["6182", "6207"])
+        # 榜上前 10 名、連續增加 ≥3 週的，不看均線和法人（今國光、富喬）；連 2 週的不行
+        filler = ["9001", "9002", "9003", "9004"]
+        self.assertEqual(picks(filler + ["6207"], {"6207": 3}, ["設備股"], hot_of), ["6207"])
+        self.assertEqual(picks(filler + ["6207"], {"6207": 2}, ["設備股"], hot_of), [])
+        # 成交值不到 5,000 萬的不列（佳龍 607 萬）：把門檻拉到合晶的成交值（1.04 億）以上，合晶就掉出來，台積電（200 億）還在
+        with patch.object(module, "CHIPS_MIN_TURNOVER", 20000):
+            self.assertEqual(picks(["6182", "2330"], {}, ["矽晶圓", "半導體"], hot_of), ["2330"])
+
     def test_order_chips_from_zhuang_1022(self) -> None:
         # 老師 10/22（資料基準 10/21）籌碼面：信昌電、緯穎、台表科、今國光；榜外連 5 週、均線 14 的濱川沒列
         stocks = {"6669": {"chip": 21.5, "streak": 1, "rank": 1}, "6173": {"chip": 17.6, "streak": 1, "rank": 2}, "6278": {"chip": 7.0, "streak": 5, "rank": 6},
