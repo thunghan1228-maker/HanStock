@@ -354,6 +354,10 @@ def k12_snapshot_with_backup(monitor: "IntradayKlineSignalMonitor") -> dict[str,
     """端點用：引擎有狀態就回現在的（順便備份）；引擎是空的（剛重開）或只有更舊的交易日，回備份的（restored＝True）。"""
     snap = monitor.k12_snapshot()
     stored = load_k12_snapshot()
+    # 剛重開、引擎還在回補（追蹤的檔數還沒到備份那時候的數字）：先給備份，也不拿這份不完整的蓋掉備份
+    # （2026-10-29 部署後重開：引擎先追到 40 檔、名單 0 筆，原本會把備份的 36 筆蓋掉、畫面變空）
+    if stored and snap.get("tradeDate") and snap.get("tradeDate") == stored.get("tradeDate") and int(stored.get("tracked") or 0) > int(snap.get("tracked") or 0):
+        return {**stored, "restored": True}
     if snap.get("tracked") and snap.get("tradeDate") and (not stored or str(snap["tradeDate"]) >= str(stored.get("tradeDate") or "")):
         save_k12_snapshot(snap)
         return snap
