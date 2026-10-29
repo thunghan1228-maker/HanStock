@@ -29,7 +29,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from bisect import bisect_right
 from statistics import median
-from typing import Any
+from typing import Any, Iterable
 
 from brew_launch import MA_PERIODS, _latest_bar_date, group_codes, ma_alignment_score, skipped_codes
 from brew_launch_history import group_and_name
@@ -607,6 +607,33 @@ def table_dates() -> list[str]:
     with get_connection() as connection:
         _schema(connection)
         return [str(r["trade_date"]) for r in connection.execute("SELECT DISTINCT trade_date FROM heilong_daily ORDER BY trade_date").fetchall()]
+
+
+def official_scores(dates: list[str], codes: Iterable[str]) -> dict[str, dict[str, int]]:
+    """{交易日: {代號: 均線分數}}：黑龍表（均線分數排行同一份）裡官網式均線分數 score2——分割減資、除息還原後算的，跟老師的還原價一樣。
+    問診七科、波段日報的均線分數用這個，不用沒還原的日K自己算（2026-10-29 老師問診 API 492 檔：沒還原的 437 檔對、除息還原後 469 檔對）。表裡沒有的日子／代號不在結果裡。"""
+    wanted = {str(c).strip().upper() for c in codes}
+    out: dict[str, dict[str, int]] = {}
+    if not dates or not wanted:
+        return out
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        for d in dates:
+            rows = connection.execute("SELECT stock_code, score2 FROM heilong_daily WHERE trade_date = ? AND score2 IS NOT NULL", (d,)).fetchall()
+            got = {str(r["stock_code"]).strip().upper(): int(r["score2"]) for r in rows if str(r["stock_code"]).strip().upper() in wanted}
+            if got:
+                out[d] = got
+    return out
+
+
+def previous_table_date(day: str) -> str | None:
+    """黑龍表裡 day 之前最近的交易日。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        row = connection.execute("SELECT MAX(trade_date) AS d FROM heilong_daily WHERE trade_date < ?", (day,)).fetchone()
+    return str(row["d"]) if row and row["d"] else None
 
 
 def load_rows(days: int | None = None) -> tuple[list[str], dict[str, dict[str, dict[str, Any]]]]:

@@ -600,6 +600,19 @@ def build_report(as_of: str | None = None, *, disposition_codes: set[str] | None
         info = analyze_bars(bars)
         if info:
             tech[code] = info
+    # 均線分數改用黑龍表的（分割減資＋除息還原後算的，均線分數排行同一份）：老師的日K是還原價，沒還原的自己算 492 檔裡有 55 檔差 1～4 分，改用後只剩 21 檔；表裡沒有的才用沒還原的
+    try:
+        from heilong_backtest import official_scores, previous_table_date   # 延遲匯入：heilong_backtest 會 import 這個模組（處置紀錄）
+
+        prev_day = previous_table_date(as_of)
+        adj = official_scores([d for d in (as_of, prev_day) if d], tech)
+        for code, t in tech.items():
+            now_score = adj.get(as_of, {}).get(code)
+            prev_score = adj.get(prev_day, {}).get(code) if prev_day else None
+            if now_score is not None and (prev_score is not None or t["prevScore"] is None):
+                t["score"], t["prevScore"] = now_score, prev_score
+    except Exception:  # noqa: BLE001
+        logger.exception("adjusted ma score failed")
     # 籌碼：法人 5 日（最近 5 個有資料的交易日，≤ 基準日）與主力 5 日
     inst_dates = [d for d in stored_dates(30) if d <= as_of][:INST_DAYS]
     inst_by_date = _institutional_by_date(inst_dates, load) if inst_dates else {}

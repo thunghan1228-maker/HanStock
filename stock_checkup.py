@@ -527,6 +527,19 @@ def _rebuild() -> dict[str, Any]:
         if len(bars) < 21:
             continue
         rows[code] = evaluate_stock(code, bars, latest, ctx)
+    # 均線分數（內定 score2）改用黑龍表的：分割減資＋除息還原後算的（老師的日K是還原價，沒還原的自己算 492 檔有 55 檔差 1～4 分）；表裡沒有的才用沒還原的
+    try:
+        from heilong_backtest import official_scores   # 延遲匯入：heilong_backtest 會反過來用這裡
+
+        adj = official_scores([latest], rows).get(latest, {})
+        for code, r in rows.items():
+            if code in adj and not r["stale"]:
+                r["score2"] = adj[code]
+                r["scores"]["tech"] = tech_score(adj[code])
+                r["scores"]["overall"] = overall_score({k: r["scores"][k] for k in ("fund", "chip", "tech")})
+                r["scores"]["overallLabel"] = overall_label(r["scores"]["overall"])
+    except Exception:  # noqa: BLE001
+        logger.exception("checkup adjusted ma score failed")
     # 族群平均（內定）與族內名次（當天漲跌幅）
     for name, member_codes in _group_members().items():
         fresh = [rows[c] for c in member_codes if c in rows and not rows[c]["stale"]]

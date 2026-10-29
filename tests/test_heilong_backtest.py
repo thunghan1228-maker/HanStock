@@ -473,6 +473,18 @@ class RebuildTests(unittest.TestCase):
         dates, table = module.load_rows()
         self.assertEqual(table[self.dates[240]]["6182"]["score2"], 15)
 
+    def test_official_scores_and_previous_date(self) -> None:
+        """問診七科、波段日報讀的均線分數（黑龍表 score2，除息還原後算的）；沒有的日子／代號不在結果裡。"""
+        module.rebuild()
+        d = self.dates
+        got = module.official_scores([d[240], d[241], "1999-01-01"], ["6182", "2330", "0000"])
+        self.assertEqual(got[d[240]]["6182"], 15)
+        self.assertNotIn("0000", got[d[240]])
+        self.assertNotIn("1999-01-01", got)
+        self.assertEqual(module.official_scores([], ["6182"]), {})
+        self.assertEqual(module.previous_table_date(d[241]), d[240])
+        self.assertIsNone(module.previous_table_date("1999-01-01"))
+
     def test_empty_table(self) -> None:
         r = module.backtest({})
         self.assertEqual(r["status"], "empty")
