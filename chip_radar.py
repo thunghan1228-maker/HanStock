@@ -254,6 +254,11 @@ def _groups() -> tuple[dict[str, list[str]], dict[str, str]]:
 
 # ------------------------------------------------------------------ 計算
 
+def _by_value(values: list[tuple[str, float]], descending: bool) -> list[tuple[str, float]]:
+    """照籌碼%排（買超大到小、賣超小到大）；兩位小數一樣的，代號大的排前面（老師 10/22 廣宇 2328、濱川 1569 都是 +4.56，廣宇在前）。"""
+    return sorted(sorted(values, key=lambda cv: cv[0], reverse=True), key=lambda cv: -cv[1] if descending else cv[1])
+
+
 class Radar:
     """一份算好的雷達（快取用）。chips[代號][日期] ＝ 籌碼%；dates 新到舊、都有上一週可以比。"""
 
@@ -308,17 +313,10 @@ class Radar:
         if key not in self._lists:
             values = [(code, per[day]) for code, per in self.chips.items() if day in per and (code in self.universe) != outside]
             raw = {code: self.raw_xs[code][day] for code, _ in values}
-            buy = [c for c, _ in sorted(values, key=lambda cv: (-cv[1], -self._raw_chip(cv[0], day), cv[0])) if raw[c] > 0 and 3 * math.sqrt(raw[c]) >= BUY_MIN]
-            sell = [c for c, _ in sorted(values, key=lambda cv: (cv[1], self._raw_chip(cv[0], day), cv[0])) if raw[c] <= SELL_MAX]
+            buy = [c for c, _ in _by_value(values, True) if raw[c] > 0 and 3 * math.sqrt(raw[c]) >= BUY_MIN]
+            sell = [c for c, _ in _by_value(values, False) if raw[c] <= SELL_MAX]
             self._lists[key] = (buy, sell)
         return self._lists[key]
-
-    def _raw_chip(self, code: str, day: str) -> float:
-        """沒取兩位的籌碼%，只拿來分「兩位小數一樣」的先後（老師 10/22 廣宇、濱川都 +4.56，廣宇排前面）。"""
-        x = self.raw_xs.get(code, {}).get(day)
-        if x is None:
-            return 0.0
-        return 3 * math.sqrt(x) if x > 0 else x
 
     def is_single(self, code: str, day: str) -> bool:
         return day in self.single.get(code, ())
@@ -381,8 +379,7 @@ class Radar:
         for name, codes in self.group_members.items():
             if name in RANK_SKIP_GROUPS:
                 continue
-            members = sorted(((c, self.chips[c][day]) for c in dict.fromkeys(codes) if c in self.chips and day in self.chips[c]),
-                             key=lambda cv: (-cv[1], -self._raw_chip(cv[0], day), cv[0]))
+            members = _by_value([(c, self.chips[c][day]) for c in dict.fromkeys(codes) if c in self.chips and day in self.chips[c]], True)
             if not members:
                 continue
             top = [v for _, v in members[:GROUP_TOP]]
