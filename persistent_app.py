@@ -1453,6 +1453,18 @@ def get_eps_board(season: str | None = Query(None, pattern=r"^20[0-9]{2}Q[1-4]$"
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/txf-mis")
+def get_txf_mis(market: str = Query("0")) -> dict[str, Any]:
+    """期交所 MIS 臺指期報價代打（tw-groups 的 Worker 直接打期交所被回 HTTP 520 時改走這裡）；原樣回期交所的 JSON。"""
+    from fastapi import HTTPException
+    from txf_mis import quote_list
+
+    try:
+        return quote_list(market)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"期交所 MIS 讀不到：{exc}") from exc
+
+
 @app.get("/api/hub/obs-weekly")
 def get_obs_weekly(date: str | None = Query(None)) -> dict[str, Any]:
     """收盤觀察股 週分析（2026-10-29 使用者：波段日報新增「每週多觀察全方面解析」，照老師的版面做）：名單異動、族群總覽、功課重點、
