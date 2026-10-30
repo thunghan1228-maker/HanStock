@@ -1145,6 +1145,7 @@ def test_k12_snapshot_carries_prior_day_score(monkeypatch, k12_db):
     snap = monitor.k12_snapshot()
     assert snap["minScore"] == 7
     assert snap["items"][0]["code"] == "2330" and snap["items"][0]["scoreY"] == 6     # 9/17 收盤那天的分數，不是 9/16、也不是今天
+    assert snap["items"][0]["scoreY2"] == 9     # 前兩個交易日（9/16）收盤的分數：前端「前一天或前兩天任一天 ≥7」用（2026-10-30 倍力）
 
 
 def test_k12_snapshot_without_heilong_table_leaves_score_empty(monkeypatch, tmp_path):
@@ -1154,6 +1155,7 @@ def test_k12_snapshot_without_heilong_table_leaves_score_empty(monkeypatch, tmp_
     database.initialize_database()
     monitor = _k12_on_monitor(monkeypatch)
     assert monitor.k12_snapshot()["items"][0]["scoreY"] is None
+    assert monitor.k12_snapshot()["items"][0]["scoreY2"] is None
 
 
 def test_k12_backup_survives_restart_until_a_newer_day(monkeypatch, k12_db):
