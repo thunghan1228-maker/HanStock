@@ -616,6 +616,30 @@ class IntradayKlineSignalMonitor:
             logger.warning("12空讀前一天均線分數失敗", exc_info=True)
             return {}
 
+    @staticmethod
+    def _prior_scores2(codes: list[str], trade_date: str | None) -> dict[str, int]:
+        """{代號: trade_date 前兩個交易日收盤的均線分數}。2026-10-30 老師 12:50、13:25 兩份 123 都列了倍力（前一天 10/29 分數 4、前兩天 10/28 分數 9），
+        所以前端的「均線分數 ≥7」改成前一天或前兩天任一天 ≥7 就算（前一天分數 scoreY、前兩天 scoreY2）。"""
+        if not codes or not trade_date:
+            return {}
+        try:
+            with get_connection() as connection:
+                days = connection.execute(
+                    "SELECT DISTINCT trade_date AS d FROM heilong_daily WHERE trade_date < ? AND score2 IS NOT NULL ORDER BY trade_date DESC LIMIT 2",
+                    (trade_date,),
+                ).fetchall()
+                if len(days) < 2:
+                    return {}
+                prior2 = days[1]["d"]
+                rows = connection.execute(
+                    f"SELECT stock_code, score2 FROM heilong_daily WHERE trade_date = ? AND score2 IS NOT NULL AND stock_code IN ({','.join('?' for _ in codes)})",
+                    (prior2, *codes),
+                ).fetchall()
+            return {str(r["stock_code"]).strip().upper(): int(r["score2"]) for r in rows}
+        except Exception:  # noqa: BLE001
+            logger.warning("12空讀前兩天均線分數失敗", exc_info=True)
+            return {}
+
     def k12_snapshot(self) -> dict[str, Any]:
         """現在符合 1️⃣2️⃣空 的股票（最新交易日）。"""
         with self._lock:
@@ -646,8 +670,10 @@ class IntradayKlineSignalMonitor:
             })
         items.sort(key=lambda x: x["code"])
         scores = self._prior_scores([x["code"] for x in items], trade_date)
+        scores2 = self._prior_scores2([x["code"] for x in items], trade_date)
         for x in items:
             x["scoreY"] = scores.get(x["code"])
+            x["scoreY2"] = scores2.get(x["code"])
         return {
             "status": "ok", "tradeDate": trade_date, "lastBarTs": last_ts, "tracked": tracked,
             "rushPct": K12_MIN_RUSH_PCT, "minScore": K12_MIN_PRIOR_SCORE, "items": items,
