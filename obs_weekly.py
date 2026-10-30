@@ -71,13 +71,13 @@ def _load_days(days: list[str], codes: list[str]) -> dict[str, dict[str, tuple]]
     with get_connection() as connection:
         rows = connection.execute(
             f"SELECT trade_date, stock_code, open, high, low, close, change_pct, score2 FROM heilong_daily "
-            f"WHERE score2 IS NOT NULL AND trade_date IN ({','.join('?' for _ in days)})", tuple(days)).fetchall()
+            f"WHERE trade_date IN ({','.join('?' for _ in days)})", tuple(days)).fetchall()      # 新上市櫃還算不出均線分數的（漢達）分數是空的，也要讀進來（老師名單裡有）
     for r in rows:
         code = str(r["stock_code"]).strip().upper()
         if code in want:
             out[str(r["trade_date"])][code] = (
                 float(r["open"] or 0), float(r["high"] or 0), float(r["low"] or 0), float(r["close"] or 0),
-                None if r["change_pct"] is None else float(r["change_pct"]), int(r["score2"]))
+                None if r["change_pct"] is None else float(r["change_pct"]), int(r["score2"] or 0))
     return out
 
 
