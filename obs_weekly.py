@@ -22,7 +22,8 @@ from typing import Any
 
 from database import get_connection, initialize_database
 from heilong_backtest import _load_bars, _schema as _heilong_schema
-from ma_rank import HIDE_GROUPS, _universe
+from ma_rank import HIDE_GROUPS, _stock_name, _universe
+from obs_teacher_lists import TEACHER_LISTS, seed_at
 
 logger = logging.getLogger("hanstock.obs_weekly")
 
@@ -103,9 +104,22 @@ def pool_at(day: str, dates: list[str], rows_by_day: dict[str, dict[str, tuple]]
 
 
 def list_at(day: str, dates: list[str], rows_by_day: dict[str, dict[str, tuple]]) -> dict[str, dict[str, Any]]:
-    """day 當天的名單：{代號: {last（最近一次進池的日期）, days（近 20 個交易日進池幾天）}}。"""
+    """day 當天的名單：{代號: {last（最近一次進池的日期）, days（近 20 個交易日進池幾天）}}。
+    有老師公布的名單（obs_teacher_lists）就以它為基準：名單日當天就是老師那份，之後再加上這之後新進觀察池的股票；沒有就照規則算。"""
     i = dates.index(day)
     out: dict[str, dict[str, Any]] = {}
+    seed = seed_at(day)
+    if seed:
+        seed_day, info = seed
+        for code in info["codes"]:
+            out[code] = {"last": seed_day, "days": 1}
+        for d in dates:
+            if seed_day < d <= day:
+                for code in pool_at(d, dates, rows_by_day):
+                    cur = out.setdefault(code, {"last": d, "days": 0})
+                    cur["last"] = d
+                    cur["days"] += 1
+        return out
     for d in dates[max(0, i - LIST_DAYS + 1):i + 1]:
         for code in pool_at(d, dates, rows_by_day):
             info = out.setdefault(code, {"last": d, "days": 0})
@@ -162,6 +176,8 @@ def _closes(code: str, bars: dict[str, list], rows_by_day: dict[str, dict[str, t
 def _stock_item(code: str, day: str, ctx: dict[str, Any]) -> dict[str, Any]:
     rows_by_day, dates, bars = ctx["rows"], ctx["dates"], ctx["bars"]
     rec = rows_by_day[day][code]
+    if rec[5] is None:    # 新上市櫃還不到 240 天、算不出均線分數
+        rec = (*rec[:5], 0)
     series = _closes(code, bars, rows_by_day, dates, day)
     closes = [c for _d, c in series]
     ma20 = round(sum(closes[-20:]) / 20, 2) if len(closes) >= 20 else None
@@ -169,7 +185,7 @@ def _stock_item(code: str, day: str, ctx: dict[str, Any]) -> dict[str, Any]:
     dist20 = _pct(close, ma20)
     ret20 = _pct(closes[-1], closes[-21]) if len(closes) >= 21 else None
     i = dates.index(day)
-    score_series = [rows_by_day[d][code][5] for d in dates[max(0, i - SERIES_DAYS + 1):i + 1] if code in rows_by_day.get(d, {})]
+    score_series = [(rows_by_day[d][code][5] or 0) for d in dates[max(0, i - SERIES_DAYS + 1):i + 1] if code in rows_by_day.get(d, {})]
     lows = [b[3] for b in (bars.get(code) or []) if b[0] < day][-3:]
     brk3 = bool(len(lows) == 3 and close < min(lows))
     inst = ctx["inst"].get(code) or {}
@@ -209,9 +225,10 @@ def _stock_item(code: str, day: str, ctx: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _removed_reason(item: dict[str, Any], last_in: str | None) -> list[str]:
-    """上一份名單有、這份沒有的：為什麼被刪（名單規則＝超過 20 個交易日沒再進觀察池；後面列今天的狀況給你判斷刪得對不對）。"""
-    reasons = [f"近 {LIST_DAYS} 個交易日沒再進觀察池" + (f"（最後一次 {last_in[5:].replace('-', '/')}）" if last_in else "")]
+def _removed_reason(item: dict[str, Any], last_in: str | None, seeded: bool = False) -> list[str]:
+    """上一份名單有、這份沒有的：為什麼被刪（名單規則＝超過 20 個交易日沒再進觀察池；後面列今天的狀況給你判斷刪得對不對）。
+    上一份是老師公布的名單（seeded）時，他是自己挑的、不是看「多久沒進池」，所以只列今天的狀況。"""
+    reasons = [] if seeded else [f"近 {LIST_DAYS} 個交易日沒再進觀察池" + (f"（最後一次 {last_in[5:].replace('-', '/')}）" if last_in else "")]
     if item["below"]:
         reasons.append("月線下")
     if item["brk3"]:
@@ -222,7 +239,9 @@ def _removed_reason(item: dict[str, Any], last_in: str | None) -> list[str]:
         reasons.append("籌碼轉弱")
     if item["score"] < 8:
         reasons.append(f"均線分 {item['score']}")
-    return reasons
+    if seeded and item["fundOk"] is False and item["ck"] and item["ck"]["fund"] is not None and item["ck"]["fund"] < HOMEWORK_FUND_MIN:
+        reasons.append(f"基本面弱（健診基本 {item['ck']['fund']}）")
+    return reasons or ["老師從名單移出"]
 
 
 # ------------------------------------------------------------------ 載入各面向資料
@@ -259,6 +278,10 @@ def _safe(fn, default, label: str):
 
 def _load_context(day: str, dates: list[str]) -> dict[str, Any]:
     groups_of, names = _universe()
+    for code in sorted({c for v in TEACHER_LISTS.values() for c in v["codes"]}):   # 老師名單裡不在我們族群表的股票（威鋒、亞通…）也要讀
+        if code not in groups_of:
+            groups_of[code] = []
+            names.setdefault(code, _stock_name(code))
     codes = sorted(groups_of)
     lists = _weekly_list_dates(dates, day)
     need_days = set()
@@ -504,9 +527,23 @@ def build(date: str | None = None) -> dict[str, Any]:
     ctx["hits"] = hits_at(day, dates, ctx["rows"])
     _fill_ctx(ctx, day, pools, latest)
 
-    items = [_stock_item(c, day, ctx) for c in sorted(pools[day])]
+    seed = seed_at(day)
+    seed_info = seed[1] if seed and seed[0] == day else None     # 名單日當天才套老師的族群歸類、段落；之後的日子只用他的名單當基準
+    items = [_stock_item(c, day, ctx) for c in sorted(pools[day]) if c in ctx["rows"][day]]
+    if seed_info and seed_info.get("gname"):
+        for it in items:
+            it["grp"] = seed_info["gname"].get(it["code"], it["grp"])
     groups = _group_overview(items)
+    if seed_info and seed_info.get("groups"):
+        order = {name: i for i, name in enumerate(seed_info["groups"])}
+        groups.sort(key=lambda g: order.get(g["name"], 99))
     sections = _section_lists(items, groups)
+    if seed_info and seed_info.get("sections"):
+        by_code = {it["code"]: it for it in items}
+        sections = {k: [by_code[c] for c in seed_info["sections"].get(k, []) if c in by_code] for k in sections}
+        danger = set(seed_info["sections"].get("danger", []))
+        for it in items:
+            it["danger"] = it["code"] in danger          # 危險個股的健診三科（基本／籌碼／技術）老師的算法跟我們不一樣，以他的為準
 
     diff = None
     if lists:
@@ -514,7 +551,7 @@ def build(date: str | None = None) -> dict[str, Any]:
         prev, now = set(pools[base]), set(pools[day])
         removed_items = [_stock_item(c, day, ctx) for c in sorted(prev - now) if c in ctx["rows"][day]]
         for it in removed_items:
-            it["reasons"] = _removed_reason(it, (members[base].get(it["code"]) or {}).get("last"))
+            it["reasons"] = _removed_reason(it, (members[base].get(it["code"]) or {}).get("last"), seeded=base in TEACHER_LISTS)
             it["gname"] = it["grp"]
         added = [i for i in items if i["code"] not in prev]
         diff = {"base": base, "added": added, "removed": removed_items, "kept": len(prev & now), "baseCount": len(prev)}
@@ -529,7 +566,7 @@ def build(date: str | None = None) -> dict[str, Any]:
     chip_dates = sorted({v.get("date") for v in ctx["tdcc"].values() if v.get("date")})
     payload = {
         "status": "ok", "date": day, "latest": latest, "dates": [d for d in dates[-20:] if dates.index(d) >= POOL_DAYS - 1],
-        "n": len(items), "items": items, "groups": groups, "sections": {k: [i["code"] for i in v] for k, v in sections.items()},
+        "n": len(items), "items": items, "groups": groups, "teacher": ({"date": seed[0], "exact": seed[0] == day} if seed else None), "sections": {k: [i["code"] for i in v] for k, v in sections.items()},
         "diff": diff, "backtest": backtest, "reminders": _reminders(items, sections, groups, diff),
         "basis": {
             "close": day, "checkup": ck_dates, "instTo": ctx["instDays"][-1] if ctx["instDays"] else None,

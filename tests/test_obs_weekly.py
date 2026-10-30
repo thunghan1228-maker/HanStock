@@ -63,6 +63,8 @@ class ObsWeeklyTests(unittest.TestCase):
         self.patches = [
             patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db"),
             patch.object(ma_rank, "STOCK_GROUPS", GROUPS),
+            patch.object(module, "TEACHER_LISTS", {}),                    # 老師名單另外測（test_teacher_seed）；這裡測的是規則本身
+            patch.object(module, "seed_at", lambda day: None),
         ]
         for p in self.patches:
             p.start()
@@ -200,6 +202,31 @@ class ObsWeeklyTests(unittest.TestCase):
         self.assertEqual((r.status_code, r.json()["date"], r.json()["n"]), (200, D, 4), r.text[:300])
         self.assertEqual(client.get("/api/hub/obs-weekly", params={"date": "2026-01-02"}).status_code, 404)
         self.assertEqual(client.get("/api/hub/obs-weekly", params={"date": "10/08"}).status_code, 422)
+
+    def test_teacher_seed(self) -> None:
+        """名單日當天＝老師那份（族群歸類、段落、順序都照他）；之後的日子＝他的名單＋之後新進池的；上一份是老師的，刪除原因只寫今天的狀況。"""
+        seed = {
+            "2026-10-23": {"codes": ["1111", "3333"]},
+            D: {"codes": ["1111", "6666", "5555"], "sections": {"homework": [], "high": [], "below": ["6666"], "danger": ["6666"], "watch": ["5555", "1111"]},
+                "groups": ["乙", "其他"], "gname": {"1111": "乙", "6666": "乙", "5555": "甲"}},
+        }
+        with patch.object(module, "TEACHER_LISTS", seed), patch.object(module, "seed_at", lambda day: (lambda ks: (max(ks), seed[max(ks)]) if ks else None)([k for k in seed if k <= day])):
+            out = module.build(D)
+            self.assertEqual(sorted(i["code"] for i in out["items"]), ["1111", "5555", "6666"])        # 規則算出來的 2222、7777 不在（老師沒列）
+            self.assertEqual(out["sections"]["watch"], ["5555", "1111"])                                # 段落、順序照老師
+            self.assertEqual(out["sections"]["danger"], ["6666"])
+            self.assertEqual([g["name"] for g in out["groups"]], ["乙", "其他"])                         # 族群順序照老師（不到 2 檔的併進其他）
+            self.assertEqual({i["code"]: i["grp"] for i in out["items"]}["6666"], "乙")
+            self.assertEqual(out["teacher"], {"date": D, "exact": True})
+            diff = out["diff"]
+            self.assertEqual(diff["base"], "2026-10-23")
+            self.assertEqual(sorted(i["code"] for i in diff["added"]), ["5555", "6666"])
+            self.assertEqual([i["code"] for i in diff["removed"]], ["3333"])
+            self.assertFalse(any("沒再進觀察池" in r for r in diff["removed"][0]["reasons"]))           # 老師的名單不是看多久沒進池
+            module._cache.clear()
+            later = module.build("2026-10-27")                                                          # 名單日之前的一天：用 10/23 那份＋之後新進池的
+            self.assertEqual(later["teacher"], {"date": "2026-10-23", "exact": False})
+            self.assertEqual({"1111", "3333"} <= {i["code"] for i in later["items"]}, True)
 
 
 if __name__ == "__main__":
