@@ -1479,6 +1479,23 @@ def get_obs_weekly(date: str | None = Query(None)) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/hub/obs-weekly-custom")
+def post_obs_weekly_custom(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """自選觀察股 週分析（2026-11-01 使用者：籌碼日報再加一個單位，統計自選股裡自己建的分組）。
+    body＝{groups: [{name, codes: [代號], names: {代號: 股名}}], date?: YYYY-MM-DD}；自選股只存在使用者的瀏覽器，所以名單由前端送來。"""
+    from fastapi import HTTPException
+
+    from obs_weekly import build_custom
+
+    date = body.get("date") if isinstance(body.get("date"), str) else None
+    try:
+        return build_custom(body.get("groups"), _ma_date(date))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/hub/river")
 def get_river(q: str = Query(...)) -> dict[str, Any]:
     """估值河流圖・本站版（2026-10-10 使用者：照老師估值河流圖做）：q＝股號或股名；分水嶺＝近 4 季 EPS × 同族群本益比中位數，

@@ -176,7 +176,8 @@ def _closes(code: str, bars: dict[str, list], rows_by_day: dict[str, dict[str, t
 def _stock_item(code: str, day: str, ctx: dict[str, Any]) -> dict[str, Any]:
     rows_by_day, dates, bars = ctx["rows"], ctx["dates"], ctx["bars"]
     rec = rows_by_day[day][code]
-    if rec[5] is None:    # 新上市櫃還不到 240 天、算不出均線分數
+    no_score = rec[5] is None      # 還沒有均線分數（新上市櫃不到 240 天、或自選股裡不在族群表的股票：只有日K，沒進整表）
+    if no_score:
         rec = (*rec[:5], 0)
     series = _closes(code, bars, rows_by_day, dates, day)
     closes = [c for _d, c in series]
@@ -197,7 +198,7 @@ def _stock_item(code: str, day: str, ctx: dict[str, Any]) -> dict[str, Any]:
     chg = rec[4]
     item = {
         "code": code, "name": ctx["names"].get(code, code), "grp": _primary_group(code, ctx["groupsOf"]),
-        "close": close, "chg": chg, "score": rec[5], "scoreSeries": score_series,
+        "close": close, "chg": chg, "score": rec[5], "scoreSeries": [] if no_score else score_series, "noScore": no_score,
         "ma20": ma20, "dist20": dist20, "ret20": ret20,
         "inst5": inst.get("inst5"), "inst10": inst.get("inst10"),
         "chipWeek": chip.get("bigChangePct"), "chipWeeks": chip.get("weeks"),
@@ -321,16 +322,21 @@ def _fmt_lots(n: float | None) -> str:
     return "—" if n is None else f"{n:+,.0f}"
 
 
-def _group_overview(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _group_overview(items: list[dict[str, Any]], small: int = SMALL_GROUP) -> list[dict[str, Any]]:
     """族群總覽：不到 2 檔的併進「其他」（老師那份也是一堆小族群放其他）；檔數多的在前、其他放最後。"""
     count: dict[str, int] = {}
     for it in items:
         count[it["grp"]] = count.get(it["grp"], 0) + 1
     for it in items:
-        it["gname"] = it["grp"] if count[it["grp"]] >= SMALL_GROUP else "其他"
+        it["gname"] = it["grp"] if count[it["grp"]] >= small else "其他"
     by: dict[str, list[dict[str, Any]]] = {}
     for it in items:
         by.setdefault(it["gname"], []).append(it)
+    return _overview_rows(by)
+
+
+def _overview_rows(by: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """{分組名: [個股]} → 族群總覽的每一列（檔數、站上月線、營收中位、法人、一句話）。一檔股可以同時在好幾組（自選股的多個分組）。"""
     rows = []
     for name, members in by.items():
         have_ma = [m for m in members if m["ma20"]]
@@ -385,7 +391,8 @@ def _section_lists(items: list[dict[str, Any]], groups: list[dict[str, Any]]) ->
     return {"homework": homework, "high": high, "below": below, "danger": danger, "watch": watch}
 
 
-def _backtest(day: str, pools: dict[str, dict[str, int]], lists: list[str], ctx: dict[str, Any]) -> dict[str, Any]:
+def _backtest(day: str, pools: dict[str, dict[str, int]], lists: list[str], ctx: dict[str, Any], group_keys=None) -> dict[str, Any]:
+    """group_keys：代號 → 要歸進哪些分組（自選股週分析用自己的分組）；不給＝族群表的第一個族群。"""
     rows_by_day, dates, bars = ctx["rows"], ctx["dates"], ctx["bars"]
     names, groups_of = ctx["names"], ctx["groupsOf"]
 
@@ -415,7 +422,8 @@ def _backtest(day: str, pools: dict[str, dict[str, int]], lists: list[str], ctx:
         have_ma = [c for c in rets if ma20_on(c, day) is not None]
         by_group: dict[str, list[float]] = {}
         for c, r in rets.items():
-            by_group.setdefault(_primary_group(c, groups_of), []).append(r)
+            for g in (group_keys(c) if group_keys else [_primary_group(c, groups_of)]):
+                by_group.setdefault(g, []).append(r)
         group_rows = sorted(({"name": g, "median": _median(v), "n": len(v)} for g, v in by_group.items() if len(v) >= SMALL_GROUP),
                             key=lambda x: -x["median"])
         ordered = sorted(rets.items(), key=lambda kv: -kv[1])
@@ -480,7 +488,7 @@ def _reminders(items: list[dict[str, Any]], sections: dict[str, list[dict[str, A
         why = []
         if i["epsQ"] and i["epsQ"]["eps"] is not None and i["epsQ"]["eps"] < 0:
             why.append("虧損")
-        if i["score"] <= 3:
+        if i["score"] <= 3 and not i.get("noScore"):
             why.append(f"均線 {i['score']}")
         if i["ck"] and i["ck"]["fund"] is not None and i["ck"]["fund"] < 20:
             why.append("基本面 <20 分")
@@ -500,6 +508,11 @@ def _reminders(items: list[dict[str, Any]], sections: dict[str, list[dict[str, A
 
 
 # ------------------------------------------------------------------ 對外
+
+def _rules() -> dict[str, Any]:
+    return {"listDays": LIST_DAYS, "poolDays": POOL_DAYS, "minHits": POOL_MIN_HITS, "minScore": POOL_MIN_SCORE, "highDist": HIGH_DIST, "highRet20": HIGH_RET20,
+            "crossMax": CROSS_MAX, "dangerBelow": DANGER_BELOW, "homeworkMinScore": HOMEWORK_MIN_SCORE, "homeworkFundMin": HOMEWORK_FUND_MIN}
+
 
 def build(date: str | None = None) -> dict[str, Any]:
     """date＝名單日（YYYY-MM-DD），不給＝最新一個交易日收盤。"""
@@ -574,9 +587,121 @@ def build(date: str | None = None) -> dict[str, Any]:
             "revYm": max((i["revYm"] for i in items if i["revYm"]), default=None),
             "season": max((i["epsQ"]["label"] for i in items if i["epsQ"]), default=None),
         },
-        "rules": {"listDays": LIST_DAYS, "poolDays": POOL_DAYS, "minHits": POOL_MIN_HITS, "minScore": POOL_MIN_SCORE, "highDist": HIGH_DIST, "highRet20": HIGH_RET20,
-                  "crossMax": CROSS_MAX, "dangerBelow": DANGER_BELOW, "homeworkMinScore": HOMEWORK_MIN_SCORE, "homeworkFundMin": HOMEWORK_FUND_MIN},
+        "rules": _rules(),
     }
     with _lock:
         _cache[day] = (key, time.time(), payload)
+    return payload
+
+
+# ------------------------------------------------------------------ 自選觀察股 週分析
+
+CUSTOM_MAX = 300               # 一次最多幾檔
+_custom_cache: dict[str, Any] = {}
+
+
+def _clean_custom_groups(groups: Any) -> tuple[list[str], dict[str, list[str]], dict[str, str]]:
+    """前端送來 [{name, codes: [代號], names: {代號: 股名}}]；回傳（分組順序、{代號: [所屬分組…]}、{代號: 前端給的股名}）。"""
+    order: list[str] = []
+    tags: dict[str, list[str]] = {}
+    given: dict[str, str] = {}
+    for g in groups if isinstance(groups, list) else []:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name") or "").strip()[:20] or "自選"
+        if name not in order:
+            order.append(name)
+        names = g.get("names") if isinstance(g.get("names"), dict) else {}
+        for raw in g.get("codes") or []:
+            code = str(raw).strip().upper()
+            if not (4 <= len(code) <= 6 and code.isalnum()):
+                continue
+            if name not in tags.setdefault(code, []):
+                tags[code].append(name)
+            if names.get(code):
+                given.setdefault(code, str(names[code])[:20])
+    return order, tags, given
+
+
+def build_custom(groups: Any, date: str | None = None) -> dict[str, Any]:
+    """自選觀察股 週分析（2026-11-01 使用者：籌碼日報再加一個單位，把自選股裡自己建的分組——多觀察、自選三、以後新增的——放進來做統計）。
+    跟收盤觀察股 週分析同一套指標與段落，只是名單換成使用者自己的自選股：第一個總覽是「自選分組」，另附族群總覽、功課重點、高檔、月線下、
+    危險個股、觀察、四週回測（每週最後一個交易日持有這份名單到今天的表現）、提醒。沒有名單異動（自選股沒有歷史快照）。
+    股票不在族群表（沒有均線分數）的只用日K算月線、離月線、20 日漲，均線分顯示「—」；連日K都沒有的列在 missing。"""
+    order, tags, given = _clean_custom_groups(groups)
+    if not tags:
+        raise ValueError("自選股裡沒有股票")
+    if len(tags) > CUSTOM_MAX:
+        raise ValueError(f"一次最多 {CUSTOM_MAX} 檔（現在 {len(tags)} 檔）")
+    dates = _dates()
+    if not dates:
+        raise LookupError("還沒有均線分數（收盤後整表完才有）")
+    latest = dates[-1]
+    day = date or latest
+    if day not in dates:
+        raise LookupError(f"{day} 沒有資料（只留最近 {len(dates)} 個交易日）")
+    key = f"{day}|{latest}|{len(dates)}|" + "|".join(f"{n}:{','.join(sorted(c for c, t in tags.items() if n in t))}" for n in order)
+    with _lock:
+        hit = _custom_cache.get(key)
+    if hit and time.time() - hit[0] < CACHE_SECONDS:
+        return hit[1]
+
+    groups_of, uni_names = _universe()
+    codes = sorted(tags)
+    names = {c: uni_names.get(c) or given.get(c) or _stock_name(c) for c in codes}
+    i = dates.index(day)
+    lists = _weekly_list_dates(dates, day)
+    days = dates[max(0, i - max(MA_FALLBACK_DAYS, SERIES_DAYS)):i + 1]
+    rows = _load_days(days, codes)
+    ctx: dict[str, Any] = {"groupsOf": groups_of, "names": names, "codes": codes, "lists": lists, "rows": rows, "dates": dates,
+                           "hits": {}, "members": {day: {c: {"last": None, "days": 0} for c in codes}}, "poolToday": set()}
+    pools = {d: {c: 0 for c in codes} for d in [day, *lists]}
+    _fill_ctx(ctx, day, pools, latest)
+    for code in codes:                         # 不在整表裡的股票：用日K補一份（沒有均線分數）
+        series = ctx["bars"].get(code) or []
+        for k, b in enumerate(series):
+            if b[0] in rows and code not in rows[b[0]]:
+                prev = series[k - 1][4] if k else None
+                rows[b[0]][code] = (b[1], b[2], b[3], b[4], round((b[4] / prev - 1) * 100, 2) if prev else None, None)
+
+    items = [_stock_item(c, day, ctx) for c in codes if c in rows.get(day, {})]
+    got = {it["code"] for it in items}
+    missing = [{"code": c, "name": names[c], "tags": tags[c]} for c in codes if c not in got]
+    base = lists[0] if lists else None
+    for it in items:
+        it["tags"] = tags[it["code"]]
+        it["isNew"] = False
+        start = None
+        if base:
+            series = _closes(it["code"], ctx["bars"], rows, dates, base)
+            start = series[-1][1] if series and series[-1][0] == base else None
+        it["weekRet"] = _pct(it["close"], start) if start else None
+    industry = _group_overview(items, small=1)                  # 自己的清單不併「其他」，每個族群都列
+    mine_by = {n: [it for it in items if n in it["tags"]] for n in order}
+    mine = _overview_rows({n: v for n, v in mine_by.items() if v})
+    mine.sort(key=lambda g: order.index(g["name"]))
+    for row in mine:
+        row["total"] = sum(1 for t in tags.values() if row["name"] in t)
+        row["weekMedian"] = _median([it["weekRet"] for it in mine_by[row["name"]] if it["weekRet"] is not None])
+    sections = _section_lists(items, industry)
+    backtest = _backtest(day, pools, lists, ctx, group_keys=lambda c: tags.get(c, []))
+    chip_dates = sorted({v.get("date") for v in ctx["tdcc"].values() if v.get("date")})
+    payload = {
+        "status": "ok", "custom": True, "date": day, "latest": latest, "dates": [d for d in dates[-20:]],
+        "n": len(items), "items": items, "groups": industry, "mine": mine, "missing": missing, "weekBase": base,
+        "teacher": None, "sections": {k: [i["code"] for i in v] for k, v in sections.items()},
+        "diff": None, "backtest": backtest, "reminders": _reminders(items, sections, industry, None),
+        "basis": {
+            "close": day, "checkup": day if ctx["checkup"] else None, "instTo": ctx["instDays"][-1] if ctx["instDays"] else None,
+            "chipWeek": chip_dates[-1] if chip_dates else None,
+            "revYm": max((i["revYm"] for i in items if i["revYm"]), default=None),
+            "season": max((i["epsQ"]["label"] for i in items if i["epsQ"]), default=None),
+        },
+        "rules": _rules(),
+    }
+    with _lock:
+        _custom_cache[key] = (time.time(), payload)
+        if len(_custom_cache) > 40:
+            for k in sorted(_custom_cache, key=lambda x: _custom_cache[x][0])[:20]:
+                _custom_cache.pop(k, None)
     return payload
