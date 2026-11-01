@@ -76,6 +76,7 @@ class ObsWeeklyTests(unittest.TestCase):
                 """INSERT INTO heilong_daily (trade_date, stock_code, open, high, low, close, volume, change_pct, score2, ma_bits, hi_bits, align_n)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
         module._cache.clear()
+        module._custom_cache.clear()
         ck = lambda fund, chip, tech: {"scores": {"fund": fund, "chip": chip, "tech": tech, "overall": 60, "overallLabel": "中上"}}  # noqa: E731
         self.mocks = [
             patch.object(module, "_institutional", lambda day, codes: (
@@ -97,6 +98,7 @@ class ObsWeeklyTests(unittest.TestCase):
         for p in self.mocks + self.patches:
             p.stop()
         module._cache.clear()
+        module._custom_cache.clear()
         self.temp_dir.cleanup()
 
     def test_pool_rules(self) -> None:
@@ -185,6 +187,52 @@ class ObsWeeklyTests(unittest.TestCase):
         self.assertIn("條件單", text)
         self.assertIn("三者同時成立才上功課", text)
         self.assertIn("法人 10 日大賣", text)
+
+    def test_custom_list(self) -> None:
+        """自選觀察股：自己的分組（多觀察、自選三…）當名單；不在族群表的股票用日K補（沒有均線分數）；連日K都沒有的列 missing。"""
+        n = len(DAYS)
+        bars = [("8888", f"{d}T00:00:00+00:00", 50.0, 51.0, 49.0, 50.0 + (i if i >= n - 6 else 0) * 1.0, 1000) for i, d in enumerate(DAYS)]
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", bars)
+        groups = [
+            {"name": "多觀察", "codes": ["1111", "6666", "8888", "0000"], "names": {"8888": "八八", "0000": "查無"}},
+            {"name": "自選三", "codes": ["1111", "7777"]},
+            {"name": "空組", "codes": []},
+        ]
+        out = module.build_custom(groups)
+        self.assertTrue(out["custom"])
+        self.assertEqual((out["date"], out["n"]), (D, 4))                                     # 1111、6666、7777 + 日K補的 8888
+        self.assertEqual([m["code"] for m in out["missing"]], ["0000"])
+        by = {i["code"]: i for i in out["items"]}
+        self.assertEqual(by["1111"]["tags"], ["多觀察", "自選三"])                               # 同一檔在兩個分組
+        self.assertTrue(by["8888"]["noScore"] and by["8888"]["score"] == 0 and by["8888"]["scoreSeries"] == [])
+        self.assertEqual(by["8888"]["name"], "八八")
+        self.assertIsNotNone(by["8888"]["ma20"])
+        self.assertTrue(by["6666"]["below"] and by["7777"]["high"])
+        self.assertEqual(by["7777"]["weekRet"], 4.5)                                           # 10/23 收 134 → 10/28 收 140
+        self.assertEqual([g["name"] for g in out["mine"]], ["多觀察", "自選三"])                 # 照使用者分組順序、空組不列
+        duo = out["mine"][0]
+        self.assertEqual((duo["n"], duo["total"]), (3, 4))
+        self.assertEqual(out["mine"][1]["n"], 2)
+        self.assertIn("1111", out["sections"]["homework"])
+        self.assertNotIn("8888", out["sections"]["homework"])
+        self.assertIsNone(out["diff"])
+        last = out["backtest"]["weeks"][-1]
+        self.assertEqual(last["date"], BASE)
+        self.assertEqual({g["name"] for g in last["groups"]}, {"多觀察", "自選三"})             # 回測的「族群」卡用自己的分組
+        self.assertFalse(any("均線 0" in r for r in out["reminders"]))                 # 沒有均線分數的不當「均線 0」刪除候選
+
+    def test_custom_endpoint_and_errors(self) -> None:
+        from fastapi.testclient import TestClient
+
+        import persistent_app
+
+        client = TestClient(persistent_app.app)
+        r = client.post("/api/hub/obs-weekly-custom", json={"groups": [{"name": "多觀察", "codes": ["1111", "7777"]}]})
+        self.assertEqual((r.status_code, r.json()["n"]), (200, 2), r.text[:300])
+        self.assertEqual(client.post("/api/hub/obs-weekly-custom", json={"groups": []}).status_code, 422)
+        self.assertEqual(client.post("/api/hub/obs-weekly-custom", json={"groups": [{"name": "a", "codes": ["1111"]}], "date": "2026-01-02"}).status_code, 404)
+        self.assertEqual(client.post("/api/hub/obs-weekly-custom", json={"groups": [{"name": "a", "codes": ["1111"]}], "date": "10/08"}).status_code, 422)
 
     def test_missing_date(self) -> None:
         with self.assertRaises(LookupError):
