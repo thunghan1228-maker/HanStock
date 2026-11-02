@@ -1,8 +1,9 @@
 """開低站上 VWAP(88)／開高跌破 VWAP(87)：每根 1 分 K 收完就判斷（2026-11-02 使用者）。
 
-88（多）：今天開盤價 < 昨收（開低），而這根 1 分 K 收盤 > 當下的 VWAP（今日均價）。
-87（空）：今天開盤價 > 昨收（開高），而這根 1 分 K 收盤 < 當下的 VWAP。
-開平盤（開盤＝昨收）兩個都不算。每檔每天各發一次，時間＝第一次符合的那根 1 分 K 收盤。
+88（多）：今天開盤價 < 昨收（開低），而這根 1 分 K 收盤比當下的 VWAP（今日均價）高 1% 以上。
+87（空）：今天開盤價 > 昨收（開高），而這根 1 分 K 收盤比當下的 VWAP 低 1% 以上。
+開平盤（開盤＝昨收）兩個都不算；09:05 以後收盤的 1 分 K 才判斷（2026-11-02 使用者：開盤前幾分鐘
+VWAP 還沒成形，站上／跌破很常見，加 09:05、離 VWAP 1% 兩個條件）。每檔每天各發一次，時間＝第一次符合的那根 1 分 K 收盤。
 
 即時路徑跟主力副圖共用 market_data_hub 的 1 分 K aggregator，不新增任何 Shioaji 訂閱；
 開盤價、昨收、VWAP 優先用 Shioaji tick 本身帶的當日 open／price_chg／avg_price（較晚才
@@ -30,7 +31,9 @@ TW_TZ = timezone(timedelta(hours=8))
 ONE_MIN_MS = 60_000
 OPEN_MINUTE = 9 * 60
 # 判定規則版本：規則一改，收盤後重播排程會把已完成的日期再重播一次。
-GAP_VWAP_RULES_VERSION = 1
+GAP_VWAP_RULES_VERSION = 2   # v2：09:05 以後才判斷、離 VWAP 至少 1%
+JUDGE_FROM_MINUTE = 9 * 60 + 5   # 1 分 K 收盤時間 ≥ 09:05 才判斷（09:04 那根收在 09:05）
+MIN_VWAP_DISTANCE_PCT = 1.0      # 88：收盤 ≥ VWAP × 1.01；87：收盤 ≤ VWAP × 0.99
 KIND_BULL = "gapDownAboveVwap"   # 機器人代碼 88
 KIND_BEAR = "gapUpBelowVwap"     # 機器人代碼 87
 GAP_VWAP_SIGNAL_KINDS = {KIND_BULL, KIND_BEAR}
@@ -110,6 +113,7 @@ class GapVwapMonitor:
                 "firedBear87": self._fired["bear"],
                 "lastBarAt": self._last_bar_at,
                 "rulesVersion": GAP_VWAP_RULES_VERSION,
+                "judgeFrom": "09:05", "minVwapDistancePct": MIN_VWAP_DISTANCE_PCT,
             }
 
     def _new_state(self, code: str, trade_date: str, prev_close: float | None = None) -> _GapState:
@@ -201,6 +205,8 @@ class GapVwapMonitor:
                 vwap = state.cum_close_volume / state.cum_volume
         if not vwap or not state.day_open or not state.prev_close:
             return []
+        if taipei_minute_of_day(close_ts) < JUDGE_FROM_MINUTE:
+            return []
 
         gap_pct = (state.day_open / state.prev_close - 1) * 100
         distance_pct = (close / vwap - 1) * 100
@@ -214,10 +220,10 @@ class GapVwapMonitor:
             ),
         }
         signals: list[dict[str, Any]] = []
-        if not state.fired_bull and state.day_open < state.prev_close and close > vwap:
+        if not state.fired_bull and state.day_open < state.prev_close and distance_pct >= MIN_VWAP_DISTANCE_PCT:
             state.fired_bull = True
             signals.append({**common, "kind": KIND_BULL, "label": LABEL_BULL})
-        if not state.fired_bear and state.day_open > state.prev_close and close < vwap:
+        if not state.fired_bear and state.day_open > state.prev_close and distance_pct <= -MIN_VWAP_DISTANCE_PCT:
             state.fired_bear = True
             signals.append({**common, "kind": KIND_BEAR, "label": LABEL_BEAR})
         return signals
