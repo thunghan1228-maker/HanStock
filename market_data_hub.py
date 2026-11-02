@@ -501,6 +501,13 @@ class MarketDataHub:
                     get_main_force_flip_monitor().on_bar_completed(code, completed_bar_1m.to_dict())
             except Exception:  # noqa: BLE001
                 logger.exception("主力累計翻多空偵測失敗 code=%s", code)
+            try:
+                from gap_vwap_signals import get_gap_vwap_monitor
+                from stock_groups import industry_group_codes
+                if code in industry_group_codes():  # 88 開低站上VWAP／87 開高跌破VWAP（2026-11-02 使用者）
+                    get_gap_vwap_monitor().on_bar_completed(code, completed_bar_1m.to_dict())
+            except Exception:  # noqa: BLE001
+                logger.exception("88/87 開低開高VWAP偵測失敗 code=%s", code)
             self._broadcast({
                 "type": "bar1m_completed",
                 "interval": "1m",

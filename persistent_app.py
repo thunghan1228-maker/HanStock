@@ -81,6 +81,8 @@ from intraday_kline_signals import kline_signal_backfill_status, start_kline_sig
 from kline_signal_backfill_collector import start_kline_signal_backfill_collector
 from market_data_hub import get_market_data_hub
 from main_force_flip_backfill_collector import start_main_force_flip_backfill_collector
+from gap_vwap_backfill_collector import start_gap_vwap_backfill_collector
+from gap_vwap_signals import gap_vwap_backfill_status, get_gap_vwap_monitor, start_gap_vwap_backfill
 from main_force_flip_signals import (
     flip_signal_backfill_status,
     get_main_force_flip_monitor,
@@ -178,6 +180,8 @@ async def _persistent_lifespan(fastapi_app):
             # 主力累計翻多空：收盤後用kbars+已落盤的主力副圖重播今天，補回偵測器
             # 不在線時漏掉的訊號；額度用完那天補不成就隔天開盤前再補。
             start_main_force_flip_backfill_collector()
+            # 88 開低站上VWAP／87 開高跌破VWAP：收盤後用當天完整 1 分 K 重播今天（2026-11-02 使用者）
+            start_gap_vwap_backfill_collector()
             start_disposition_collector()
             # 冷門股整根 5 分 K 沒成交就等不到下一筆 tick 收尾：時間到了由背景執行緒收掉（123 才抓得到燁興這種）
             get_market_data_hub().start_bar_flusher()
@@ -273,6 +277,8 @@ def get_persistence_status() -> dict[str, Any]:
             "klineSignalBackfill": kline_signal_backfill_status(),
             "mainForceFlip": get_main_force_flip_monitor().status(),
             "mainForceFlipBackfill": flip_signal_backfill_status(),
+            "gapVwap": get_gap_vwap_monitor().status(),
+            "gapVwapBackfill": gap_vwap_backfill_status(),
         },
     }
 
@@ -448,6 +454,24 @@ def post_main_force_flip_backfill(trade_date: str | None = Query(None)) -> dict[
 @app.get("/api/hub/main-force-flip/backfill-status")
 def get_main_force_flip_backfill_status() -> dict[str, Any]:
     return {"status": "ok", "data": flip_signal_backfill_status()}
+
+
+@app.post("/api/hub/gap-vwap/backfill")
+def post_gap_vwap_backfill(trade_date: str | None = Query(None)) -> dict[str, Any]:
+    """手動觸發 88（開低站上VWAP）／87（開高跌破VWAP）的當日重播回補（背景執行，結果看
+    backfill-status）；預設今天。盤中觸發會跟即時偵測互相干擾，請在收盤後或開盤前使用。"""
+    if trade_date:
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="trade_date 必須是 YYYY-MM-DD") from exc
+    return {"status": "ok", **start_gap_vwap_backfill(trade_date)}
+
+
+@app.get("/api/hub/gap-vwap/backfill-status")
+def get_gap_vwap_backfill_status() -> dict[str, Any]:
+    return {"status": "ok", "data": gap_vwap_backfill_status()}
 
 
 @app.get("/api/hub/main-force-flip/inspect")

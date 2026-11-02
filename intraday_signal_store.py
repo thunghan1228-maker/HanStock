@@ -21,6 +21,8 @@ ONCE_PER_DAY_KINDS = {
     "triangleVolumeBreakout",
     "fourGateBuy",
     "fourGateSell",
+    "gapDownAboveVwap",  # 88 開低站上VWAP（2026-11-02 使用者）
+    "gapUpBelowVwap",    # 87 開高跌破VWAP
 }
 ONCE_PER_BAR_KINDS = {"daytradeEarlySell50", "daytradeEarlyBuy50"}
 # 同一檔同 kind 5 分鐘內只留第一筆：瞬間大單一秒一筆會連發；主力累計翻多空一天可以發多次
