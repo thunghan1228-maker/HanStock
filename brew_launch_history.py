@@ -870,14 +870,14 @@ def _market_open(now: datetime | None = None) -> bool:
     return 8 * 60 + 25 <= minutes <= 13 * 60 + 45 and is_trading_day(now.date())
 
 
-# 盤前撮合（2026-10-22 使用者）：要用即時股價算出來選股的功能（首頁各欄、機器人代碼、盤中333…），從 08:40 盤前試撮開始就要算，
+# 盤前撮合（2026-10-22 使用者）：要用即時股價算出來選股的功能（首頁各欄、機器人代碼、盤中333…），從盤前試撮開始就要算（2026-11-02 使用者查證交易所：試撮從 08:30 起，原本寫 08:40 改 08:30），
 # 不要等到 09:00 開盤；用前一天收盤資料選股的功能不受影響。試撮價來自 Shioaji 的 simtrade 逐筆（close＝試算成交價）。
-PREOPEN_FROM_MINUTE = 8 * 60 + 40
+PREOPEN_FROM_MINUTE = 8 * 60 + 30
 PREOPEN_UNTIL_MINUTE = 9 * 60
 
 
 def _preopen_window(now: datetime | None = None) -> bool:
-    """交易日 08:40～09:00：盤前試撮時段（還沒有真的成交，只有試算價）。"""
+    """交易日 08:30～09:00：盤前試撮時段（還沒有真的成交，只有試算價）。"""
     now = now or datetime.now(TW_TZ)
     minutes = now.hour * 60 + now.minute
     return PREOPEN_FROM_MINUTE <= minutes < PREOPEN_UNTIL_MINUTE and is_trading_day(now.date())
@@ -898,7 +898,7 @@ def count_preopen_ticks(ticks: dict[str, Any] | None, now: datetime | None = Non
 
 
 def _overlay_preopen_ticks(payload: dict[str, Any], ticks: dict[str, Any], now: datetime) -> dict[str, Any]:
-    """盤前試撮（08:40～09:00）：證交所那份這時候幾乎都是昨收、沒有漲跌，改把 Shioaji 的試撮價（simtrade 逐筆的 close）蓋上去，
+    """盤前試撮（08:30～09:00）：證交所那份這時候幾乎都是昨收、沒有漲跌，改把 Shioaji 的試撮價（simtrade 逐筆的 close）蓋上去，
     價格／漲跌／漲跌停旗標都用試算價算；量一律 None（還沒有成交量，各名單的成交量門檻當作不知道、不擋）；
     每檔標 preopen=True，整份標 preopen=True、日期改今天、時間用最新一筆試撮。沒有試撮逐筆的股票維持原樣。"""
     quotes = payload.get("quotes") or {}
@@ -974,7 +974,7 @@ def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None
     不動快取裡那份（回新的一份），其他吃 group_quotes_payload 的地方（均線排行、醞釀發動）照舊。
     判斷誰比較新：同一天的成交、累積成交量（張）比證交所那份多＝它比較新；一樣多或比較少就維持證交所的。
     試撮、盤中零股、暫停交易的逐筆不算；收盤後不蓋（報價不會動）。
-    盤前 08:40～09:00 例外：改蓋上試撮價（_overlay_preopen_ticks），讓用即時價選股的功能從盤前撮合就開始算（2026-10-22 使用者）。
+    盤前 08:30～09:00 例外：改蓋上試撮價（_overlay_preopen_ticks），讓用即時價選股的功能從盤前撮合就開始算（2026-10-22 使用者）。
     """
     if not ticks:
         return payload

@@ -1025,7 +1025,7 @@ PREOPEN_MIN_TICKS = 30  # 盤前試撮逐筆至少要有這麼多檔，才提前
 
 
 def release_hold_for_preopen(result: dict[str, Any], now: datetime | None = None, ticks_fn: Callable[[list[str]], Any] | None = None) -> dict[str, Any]:
-    """盤前撮合（2026-10-22 使用者）：交易日 08:40～09:00、試撮逐筆已經有一批時，把 held 改成 False（並標 preopen=True），
+    """盤前撮合（2026-10-22 使用者）：交易日 08:30～09:00、試撮逐筆已經有一批時，把 held 改成 False（並標 preopen=True），
     tw-groups 首頁就不再用昨收取代報價，改用 group-quotes 蓋上去的試撮價，各名單從盤前撮合就開始算；
     試撮資料不夠（沒登入／還沒開始）就維持 held（08:45 前照舊顯示昨收）。"""
     now = now or datetime.now(TW_TZ)
@@ -1048,7 +1048,7 @@ def get_session_close_endpoint() -> dict[str, Any]:
     """休市日（週末、假日）與交易日 08:45 前，tw-groups 首頁／盤中333 等即時行情改顯示上一個交易日收盤用：
     回現在該不該暫留（held）、要顯示的那個交易日（session），以及族群成員那天的日K收盤／漲跌／成交量／
     漲跌停旗標。使用者 2026-10-04：週末 TWSE 測試盤會回假價，不能再拿即時報價。快取 5 分鐘。
-    2026-10-22 起：08:40～09:00 盤前試撮資料夠多時不暫留（held=False、preopen=True），改用試撮價算。"""
+    2026-10-22 起：08:30～09:00（11/02 起，原本 08:40）盤前試撮資料夠多時不暫留（held=False、preopen=True），改用試撮價算。"""
     from session_close import get_session_close
 
     return release_hold_for_preopen(get_session_close())
