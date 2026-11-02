@@ -18,6 +18,7 @@ from otc_index import TW_TZ, aggregate_1m_to_5m, normalize_kbars_1m, taipei_minu
 from stock_bar_bootstrap import _default_hub, _default_service, _history_slots, _resolve_stock_contract
 from history_cache import HistoryCache
 from history_quota import history_quota
+from stock_bars_5m_store import load_stock_bars_5m_before
 from history_sources import fetch_minute_bars_chain, stock_market
 
 logger = logging.getLogger("hanstock.stock_history_service")
@@ -478,6 +479,19 @@ def _gap_info(gap: Optional[_TodayGapEntry], filled: int, live_first_ts: Optiona
     }
 
 
+def _db_history_5m(code: str, trade_date: str) -> list[dict[str, Any]]:
+    """本機資料庫 bars_5m 裡已經存好的前幾天 5 分K（即時路徑每走完一根就存、保留約 15 天）。
+
+    2026-11-02 使用者：很多股票開 5 分K 圖只有今天兩三根。原因是前幾天要靠 Shioaji kbars 回補，但同時只有 2 個名額（拿不到就回「歷史回補處理中」、
+    不排隊）、記憶體快取又只放得下約 44 檔，重新部署還會整個清空，抽樣 80 檔只有 6 檔拿得到歷史。kbars 還沒補好的時候先用資料庫這份，馬上就有前幾天；
+    kbars 補到了照舊用 kbars（兩邊都有的時間點，kbars 為準）。"""
+    try:
+        return load_stock_bars_5m_before(code, trade_date, MAX_HISTORY_5M)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Stock History5m] %s 讀資料庫 5 分K 失敗: %s", code, exc)
+        return []
+
+
 def get_stock_history_bars_5m(
     stock_code: str,
     *,
@@ -534,8 +548,9 @@ def get_stock_history_bars_5m(
     live_first = _first_ts_on(live, trade_date)
     gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_5m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
+    db_bars = _db_history_5m(code, trade_date) if not entry.bars_5m else []   # kbars 還沒補好（或被快取擠掉）：先用資料庫那份
     merged: dict[int, dict[str, Any]] = {}
-    for source in (entry.bars_5m, gap_bars, live):
+    for source in (db_bars, entry.bars_5m, gap_bars, live):
         for raw in source:
             bar = _safe_bar(raw)
             if bar is None:
@@ -556,12 +571,13 @@ def get_stock_history_bars_5m(
             "trade_date": trade_date,
             "start_date": start_date,
             "history_5m": len(entry.bars_5m),
+            "db_history_5m": len(db_bars),
             "history_ok": entry.ok,
-            "history_source": entry.source,
+            "history_source": entry.source if entry.bars_5m or not db_bars else "db_bars_5m",
             "error": entry.error,
             "today_gap": _gap_info(gap, len(gap_bars), live_first),
             "subscription": subscription,
-            "source": "shioaji_kbars_range+realtime_hub",
+            "source": "shioaji_kbars_range+realtime_hub" if not db_bars else "db_bars_5m+realtime_hub",
             "max_history_5m": MAX_HISTORY_5M,
         },
     }

@@ -206,6 +206,38 @@ class StockHistoryServiceTests(unittest.TestCase):
         )
         self.assertTrue(retry["bootstrap"]["history_ok"])
 
+    def test_busy_budget_uses_saved_db_bars_for_previous_days(self):
+        """kbars 還沒補好（名額被佔滿）：前幾天先用資料庫 bars_5m 那份，馬上就有；history_ok 仍是 False（前端會再重抓等 kbars 補到）。"""
+        saved = [
+            {"ts": ts(2026, 8, 5, 13, 20), "open": 60, "high": 62, "low": 59, "close": 61, "volume": 500},
+            {"ts": ts(2026, 8, 6, 13, 25), "open": 70, "high": 72, "low": 69, "close": 71, "volume": 600},
+        ]
+        self.assertTrue(_history_slots.acquire(blocking=False))
+        self.assertTrue(_history_slots.acquire(blocking=False))
+        try:
+            with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved) as loader:
+                result = get_stock_history_bars_5m("2344", service=self.service, hub=self.hub, now_ms=self.now_ms)
+        finally:
+            _history_slots.release()
+            _history_slots.release()
+        loader.assert_called_once()
+        self.assertFalse(result["bootstrap"]["history_ok"])
+        self.assertEqual(result["bootstrap"]["db_history_5m"], 2)
+        self.assertEqual(result["bootstrap"]["history_source"], "db_bars_5m")
+        closes = {bar["ts"]: bar["close"] for bar in result["bars"]}
+        self.assertEqual(closes[ts(2026, 8, 5, 13, 20)], 61)       # 前幾天來自資料庫
+        self.assertEqual(closes[ts(2026, 8, 6, 13, 25)], 71)
+        self.assertEqual(result["bars"][-1]["close"], 111)          # 今天仍是即時 Hub
+        self.assertEqual(self.service.api.calls, [])                # 沒打 Shioaji
+
+    def test_kbars_history_wins_over_db_bars(self):
+        saved = [{"ts": ts(2026, 8, 6, 13, 25), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+        with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved) as loader:
+            result = get_stock_history_bars_5m("2344", service=self.service, hub=self.hub, now_ms=self.now_ms)
+        loader.assert_not_called()                                  # kbars 補到了就不讀資料庫
+        self.assertTrue(result["bootstrap"]["history_ok"])
+        self.assertEqual(result["bootstrap"]["db_history_5m"], 0)
+
     def test_duplicate_request_does_not_wait_for_running_history(self):
         code_lock = _code_lock("2344")
         code_lock.acquire()
