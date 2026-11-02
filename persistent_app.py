@@ -2020,7 +2020,7 @@ def get_strategy_history_5m(
 ) -> dict[str, Any]:
     """股票 K 線歷史資料；保留供即時行情頁面的個股圖表使用。"""
     code = _normalize_stock_code(stock_code)
-    return get_stock_history_bars_5m(code, calendar_days=calendar_days)
+    return get_stock_history_bars_5m(code, calendar_days=calendar_days, blocking=False)   # 圖表請求不等 Shioaji kbars（常常 30 秒才逾時），背景補、前端會重抓
 
 
 @app.get("/api/hub/history1m/{stock_code}")
@@ -2031,4 +2031,4 @@ def get_strategy_history_1m(
     """股票1分K多日歷史（含今天）；跟history5m共用同一份Shioaji多日kbars快取，
     不會為了1分K多打一次Shioaji歷史查詢。"""
     code = _normalize_stock_code(stock_code)
-    return get_stock_history_bars_1m(code, calendar_days=calendar_days)
+    return get_stock_history_bars_1m(code, calendar_days=calendar_days, blocking=False)

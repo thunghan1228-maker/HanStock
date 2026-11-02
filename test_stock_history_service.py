@@ -230,6 +230,21 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertEqual(result["bars"][-1]["close"], 111)          # 今天仍是即時 Hub
         self.assertEqual(self.service.api.calls, [])                # 沒打 Shioaji
 
+    def test_chart_request_does_not_wait_for_kbars_and_fills_in_background(self):
+        """圖表請求（blocking=False）：kbars 沒快取時不等它（它常常 30 秒才逾時），先回資料庫＋即時 Hub，kbars 在背景補，補到後下一次請求就有。"""
+        import threading
+        saved = [{"ts": ts(2026, 8, 6, 13, 25), "open": 70, "high": 72, "low": 69, "close": 71, "volume": 600}]
+        with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved):
+            first = get_stock_history_bars_5m("2344", service=self.service, hub=self.hub, now_ms=self.now_ms, blocking=False)
+            for thread in [t for t in threading.enumerate() if t.name.startswith("history-bg-")]:
+                thread.join(5)
+            second = get_stock_history_bars_5m("2344", service=self.service, hub=self.hub, now_ms=self.now_ms, blocking=False)
+        self.assertFalse(first["bootstrap"]["history_ok"])
+        self.assertEqual(first["bars"][-1]["close"], 111)           # 今天仍是即時 Hub
+        self.assertTrue(second["bootstrap"]["history_ok"])          # 背景補到了
+        self.assertEqual(second["bootstrap"]["db_history_5m"], 0)   # 有 kbars 就不讀資料庫
+        self.assertGreaterEqual(len(self.service.api.calls), 1)
+
     def test_kbars_history_wins_over_db_bars(self):
         saved = [{"ts": ts(2026, 8, 6, 13, 25), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
         with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved) as loader:
