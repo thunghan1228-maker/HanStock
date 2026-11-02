@@ -18,7 +18,7 @@ from otc_index import TW_TZ, aggregate_1m_to_5m, normalize_kbars_1m, taipei_minu
 from stock_bar_bootstrap import _default_hub, _default_service, _history_slots, _resolve_stock_contract
 from history_cache import HistoryCache
 from history_quota import history_quota
-from stock_bars_5m_store import load_stock_bars_5m_before
+from stock_bars_5m_store import load_stock_bars_5m_before, load_stock_bars_5m_on
 from history_sources import fetch_minute_bars_chain, stock_market
 
 logger = logging.getLogger("hanstock.stock_history_service")
@@ -526,6 +526,31 @@ def _db_history_5m(code: str, trade_date: str) -> list[dict[str, Any]]:
         return []
 
 
+def _db_today_5m(code: str, trade_date: str) -> list[dict[str, Any]]:
+    """今天已經走完、已存進 bars_5m 的 5 分K（即時路徑每走完一根就排隊、約 30 秒寫入一次）。
+
+    2026-11-02 09:25 部署重啟後，Hub（只在記憶體）從 09:25 才重新累積，開盤到重啟之間的 09:00～09:20 要等 kbars 補缺口；
+    kbars 常常 30 秒逾時、同時只有 2 個名額，很多股票十幾分鐘都補不到（使用者：5 分K 還停在 09:15、沒回補）。
+    這些 K 棒其實重啟前已經存在資料庫，直接拿來補，不用等 kbars。"""
+    try:
+        return load_stock_bars_5m_on(code, trade_date)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Stock History5m] %s 讀資料庫今天 5 分K 失敗: %s", code, exc)
+        return []
+
+
+def _db_today_covers(db_today: list[dict[str, Any]], live_first: Optional[int], now_ms: int) -> bool:
+    """資料庫今天的 K 棒跟 Hub 的第一根（沒有 Hub 就跟現在）幾乎接得上（最多差一根）→ 缺口已經補了，不必再打 kbars。"""
+    if not db_today:
+        return False
+    try:
+        last_db = max(int(bar["ts"]) for bar in db_today)
+    except (KeyError, TypeError, ValueError):
+        return False
+    reference = live_first if live_first is not None else now_ms - (now_ms % FIVE_MIN_MS)
+    return last_db >= reference - 2 * FIVE_MIN_MS
+
+
 def get_stock_history_bars_5m(
     stock_code: str,
     *,
@@ -587,15 +612,19 @@ def get_stock_history_bars_5m(
     # 歷史先放、今天開盤到 Hub 第一根之前的缺口次之、即時最後；同 timestamp 由即時 Hub 覆蓋。
     live = list(hub.get_live_bars(code) or [])
     live_first = _first_ts_on(live, trade_date)
-    if not blocking:      # 缺口也丟背景補，這次只用已快取的
-        _run_in_background(f"gap:{code}", lambda: _today_gap_bars(
-            code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=True, priority=priority))
-        fetch_gap = False
-    gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
+    db_today = _db_today_5m(code, trade_date)
+    db_today_ok = _db_today_covers(db_today, live_first, now_value)   # 重啟前已存的今天 K 棒接得上 Hub：缺口不必再等 kbars
+    gap = None
+    if not db_today_ok:
+        if not blocking:      # 缺口也丟背景補，這次只用已快取的
+            _run_in_background(f"gap:{code}", lambda: _today_gap_bars(
+                code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=True, priority=priority))
+            fetch_gap = False
+        gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_5m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     db_bars = _db_history_5m(code, trade_date) if not entry.bars_5m else []   # kbars 還沒補好（或被快取擠掉）：先用資料庫那份
     merged: dict[int, dict[str, Any]] = {}
-    for source in (db_bars, entry.bars_5m, gap_bars, live):
+    for source in (db_bars, db_today, entry.bars_5m, gap_bars, live):
         for raw in source:
             bar = _safe_bar(raw)
             if bar is None:
@@ -617,6 +646,7 @@ def get_stock_history_bars_5m(
             "start_date": start_date,
             "history_5m": len(entry.bars_5m),
             "db_history_5m": len(db_bars),
+            "db_today_5m": len(db_today),
             "history_ok": entry.ok,
             "history_source": entry.source if entry.bars_5m or not db_bars else "db_bars_5m",
             "error": entry.error,
