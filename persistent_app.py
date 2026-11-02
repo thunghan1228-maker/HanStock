@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -201,7 +202,15 @@ async def _persistent_lifespan(fastapi_app):
         try:
             yield state
         finally:
-            pass
+            # 部署／重啟（SIGTERM）走到這裡：即時路徑走完的 5 分K 先排隊、約 30 秒才成批寫進 bars_5m，
+            # 排隊中還沒寫的會跟著程序一起消失。重啟後 Hub 只在記憶體重新累積，開盤到重啟之間的 K 棒要靠 bars_5m 補
+            # （見 stock_history_service._db_today_5m），所以關閉前先把排隊中的存起來，重啟當下不會缺最後那一兩根。
+            try:
+                from intraday_kline_signals import flush_pending_bars_5m
+
+                flush_pending_bars_5m(force=True)
+            except Exception:  # noqa: BLE001
+                logging.getLogger("hanstock.persistent_app").exception("關閉前寫入排隊中的 5 分K失敗")
 
 
 app.router.lifespan_context = _persistent_lifespan

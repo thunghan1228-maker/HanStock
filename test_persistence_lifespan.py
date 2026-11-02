@@ -54,6 +54,32 @@ class PersistenceLifespanTests(unittest.TestCase):
         kline_backfill_worker.assert_called_once_with()
         flip_backfill_worker.assert_called_once_with()
 
+    def test_lifespan_shutdown_flushes_queued_5m_bars(self) -> None:
+        """部署／重啟時排隊中還沒寫進 bars_5m 的 5 分K要先存起來（不然重啟當下最後一兩根就缺了）。"""
+        async def exercise_lifespan() -> None:
+            async with persistent_app.app.router.lifespan_context(persistent_app.app):
+                pass
+
+        with ExitStack() as stack:
+            for name in dir(persistent_app):
+                if name.startswith("start_"):
+                    stack.enter_context(patch.object(persistent_app, name))
+            flush = stack.enter_context(patch("intraday_kline_signals.flush_pending_bars_5m", return_value=3))
+            asyncio.run(exercise_lifespan())
+        flush.assert_called_once_with(force=True)
+
+    def test_lifespan_shutdown_survives_flush_failure(self) -> None:
+        async def exercise_lifespan() -> None:
+            async with persistent_app.app.router.lifespan_context(persistent_app.app):
+                pass
+
+        with ExitStack() as stack:
+            for name in dir(persistent_app):
+                if name.startswith("start_"):
+                    stack.enter_context(patch.object(persistent_app, name))
+            stack.enter_context(patch("intraday_kline_signals.flush_pending_bars_5m", side_effect=RuntimeError("db locked")))
+            asyncio.run(exercise_lifespan())   # 寫入失敗只記 log，不讓關閉流程炸掉
+
 
 if __name__ == "__main__":
     unittest.main()
