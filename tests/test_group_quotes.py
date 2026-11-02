@@ -257,7 +257,7 @@ class GroupQuotesTests(unittest.TestCase):
         self.assertEqual(fallback["quotes"]["2317"]["price"], 101.0)   # 逐筆拿不到就維持證交所那份
 
 
-    # ---- 盤前撮合（2026-10-22 使用者：用即時價選股的功能從 08:40 盤前試撮開始就要算）----
+    # ---- 盤前撮合（2026-10-22 使用者：用即時價選股的功能從盤前試撮開始就要算；2026-11-02 起 08:30 開始，原本 08:40）----
     @staticmethod
     def _sim(code: str, close: float, chg: float, clock: str = "08:41:05", day: str = "2026-10-06", **extra):
         return {"code": code, "close": close, "price_chg": chg, "total_volume": 0, "tick_time": f"{day}T{clock}.000000+08:00",
@@ -270,8 +270,8 @@ class GroupQuotesTests(unittest.TestCase):
         return dt(2026, 10, 6, hour, minute, tzinfo=module.TW_TZ)   # 2026-10-06 是週二
 
     def test_preopen_window(self) -> None:
-        self.assertFalse(module._preopen_window(self._at(8, 39)))
-        self.assertTrue(module._preopen_window(self._at(8, 40)))
+        self.assertFalse(module._preopen_window(self._at(8, 29)))
+        self.assertTrue(module._preopen_window(self._at(8, 30)))
         self.assertTrue(module._preopen_window(self._at(8, 59)))
         self.assertFalse(module._preopen_window(self._at(9, 0)))
         from datetime import datetime as dt
@@ -299,8 +299,8 @@ class GroupQuotesTests(unittest.TestCase):
         # 沒有任何試撮逐筆＝維持證交所那份、不標 preopen
         self.assertIs(module.overlay_realtime_ticks(payload, {}, now=self._at(8, 45)), payload)
         self.assertIs(module.overlay_realtime_ticks(payload, {"1002": ticks["1002"]}, now=self._at(8, 45)), payload)
-        # 08:40 之前、09:00 之後都不走盤前那條（09:00 之後試撮不算，照盤中規則）
-        self.assertIs(module.overlay_realtime_ticks(payload, {"1000": ticks["1000"]}, now=self._at(8, 30)), payload)
+        # 08:30 之前、09:00 之後都不走盤前那條（09:00 之後試撮不算，照盤中規則）
+        self.assertIs(module.overlay_realtime_ticks(payload, {"1000": ticks["1000"]}, now=self._at(8, 29)), payload)
         self.assertIs(module.overlay_realtime_ticks(payload, {"1000": ticks["1000"]}, now=self._at(9, 5)), payload)
 
     def test_session_close_released_early_only_with_enough_trial_ticks(self) -> None:
@@ -315,7 +315,7 @@ class GroupQuotesTests(unittest.TestCase):
         self.assertEqual((released["held"], released["preopen"]), (False, True))
         self.assertTrue(held["held"])                                          # 原本那份不能被改（快取共用）
         self.assertIs(persistent_app.release_hold_for_preopen(held, now, ticks_for(5)), held)      # 試撮不夠多：維持暫留
-        self.assertIs(persistent_app.release_hold_for_preopen(held, self._at(8, 39), ticks_for(35)), held)   # 08:40 以前
+        self.assertIs(persistent_app.release_hold_for_preopen(held, self._at(8, 29), ticks_for(35)), held)   # 08:30 以前
         not_held = {**held, "held": False}
         self.assertIs(persistent_app.release_hold_for_preopen(not_held, now, ticks_for(35)), not_held)   # 本來就沒暫留：不動
 
