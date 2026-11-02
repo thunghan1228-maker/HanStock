@@ -479,6 +479,40 @@ def _gap_info(gap: Optional[_TodayGapEntry], filled: int, live_first_ts: Optiona
     }
 
 
+_bg_running: set[str] = set()
+
+
+def _run_in_background(key: str, fn: Callable[[], Any]) -> None:
+    """圖表請求不等 kbars：Shioaji kbars 常常 30 秒才逾時（2026-11-02 實測 Timeout Topic: api/v1/data/kbars 30000ms），
+    請求卡著就是 30 秒空白圖。改丟背景做（同一個 key 同時只跑一個），補到的資料下一次請求（前端每 6 秒重抓）就有。"""
+    with _lock:
+        if key in _bg_running:
+            return
+        _bg_running.add(key)
+
+    def run() -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Stock History] 背景回補 %s 失敗: %s", key, exc)
+        finally:
+            with _lock:
+                _bg_running.discard(key)
+
+    threading.Thread(target=run, name=f"history-bg-{key}", daemon=True).start()
+
+
+def _background_history(code: str, trade_date: str, start_date: str, *, service: Any, now_ms: int, monotonic_fn: Callable[[], float], priority: str) -> None:
+    code_lock = _code_lock(code)
+    if not code_lock.acquire(blocking=False):
+        return
+    try:
+        if _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_ms) is None:
+            _fetch_history(code, trade_date, start_date, service=service, now_ms=now_ms, monotonic_fn=monotonic_fn, priority=priority)
+    finally:
+        code_lock.release()
+
+
 def _db_history_5m(code: str, trade_date: str) -> list[dict[str, Any]]:
     """本機資料庫 bars_5m 裡已經存好的前幾天 5 分K（即時路徑每走完一根就存、保留約 15 天）。
 
@@ -501,9 +535,11 @@ def get_stock_history_bars_5m(
     now_ms: Optional[int] = None,
     monotonic_fn: Callable[[], float] = time.monotonic,
     priority: str = PRIORITY_INTERACTIVE,
+    blocking: bool = True,
 ) -> dict[str, Any]:
     """取得策略用多日 5 分 K；歷史由 Shioaji kbars，今天即時由 Hub 覆蓋。
-    priority="backfill"（收盤後訊號校正）可以用到永豐留給它的保留額度，其他呼叫剩不到保留額度就走備援。"""
+    priority="backfill"（收盤後訊號校正）可以用到永豐留給它的保留額度，其他呼叫剩不到保留額度就走備援。
+    blocking=False（圖表請求）：kbars 沒快取就丟背景去補、這次先回資料庫＋即時 Hub，不等 kbars（它常常 30 秒才逾時）。"""
     code = str(stock_code).strip().upper()
     days = max(3, min(int(calendar_days), 31))
     service = service if service is not None else _default_service()
@@ -522,7 +558,12 @@ def get_stock_history_bars_5m(
 
     entry = _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_value)
     fetch_gap = True
-    if entry is None:
+    if entry is None and not blocking:
+        _run_in_background(f"hist:{code}", lambda: _background_history(
+            code, trade_date, start_date, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, priority=priority))
+        entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
+        fetch_gap = False
+    elif entry is None:
         code_lock = _code_lock(code)
         if not code_lock.acquire(blocking=False):
             entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
@@ -546,6 +587,10 @@ def get_stock_history_bars_5m(
     # 歷史先放、今天開盤到 Hub 第一根之前的缺口次之、即時最後；同 timestamp 由即時 Hub 覆蓋。
     live = list(hub.get_live_bars(code) or [])
     live_first = _first_ts_on(live, trade_date)
+    if not blocking:      # 缺口也丟背景補，這次只用已快取的
+        _run_in_background(f"gap:{code}", lambda: _today_gap_bars(
+            code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=True, priority=priority))
+        fetch_gap = False
     gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_5m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     db_bars = _db_history_5m(code, trade_date) if not entry.bars_5m else []   # kbars 還沒補好（或被快取擠掉）：先用資料庫那份
@@ -592,8 +637,9 @@ def get_stock_history_bars_1m(
     now_ms: Optional[int] = None,
     monotonic_fn: Callable[[], float] = time.monotonic,
     priority: str = PRIORITY_INTERACTIVE,
+    blocking: bool = True,
 ) -> dict[str, Any]:
-    """取得個股多日1分K；歷史由Shioaji kbars，今天即時由Hub覆蓋。跟5分K共用
+    """取得個股多日1分K；歷史由Shioaji kbars，今天即時由Hub覆蓋（blocking=False：圖表請求不等 kbars，丟背景補）。跟5分K共用
     同一份多日kbars抓取快取（_fetch_history*一次抓kbars同時產出1分/5分兩種，
     不會為了1分K多打一次Shioaji API）。"""
     code = str(stock_code).strip().upper()
@@ -613,7 +659,12 @@ def get_stock_history_bars_1m(
 
     entry = _cached(code, trade_date, start_date, monotonic_fn(), now_ms=now_value)
     fetch_gap = True
-    if entry is None:
+    if entry is None and not blocking:
+        _run_in_background(f"hist:{code}", lambda: _background_history(
+            code, trade_date, start_date, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, priority=priority))
+        entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
+        fetch_gap = False
+    elif entry is None:
         code_lock = _code_lock(code)
         if not code_lock.acquire(blocking=False):
             entry = _deferred_history(code, trade_date, start_date, monotonic_fn())
@@ -636,6 +687,10 @@ def get_stock_history_bars_1m(
 
     live = list(hub.get_live_bars_1m(code) or [])
     live_first = _first_ts_on(live, trade_date)
+    if not blocking:
+        _run_in_background(f"gap:{code}", lambda: _today_gap_bars(
+            code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=True, priority=priority))
+        fetch_gap = False
     gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_1m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
     merged: dict[int, dict[str, Any]] = {}
