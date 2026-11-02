@@ -245,6 +245,29 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertEqual(second["bootstrap"]["db_history_5m"], 0)   # 有 kbars 就不讀資料庫
         self.assertGreaterEqual(len(self.service.api.calls), 1)
 
+    def test_today_bars_saved_before_restart_fill_the_gap_without_kbars(self):
+        """Railway 中途重啟後 Hub 只從重啟那刻累積：重啟前已經存進 bars_5m 的今天 K 棒直接拿來補開盤到 Hub 第一根之間，不用等 kbars（常 30 秒逾時）。"""
+        saved_today = [{"ts": ts(2026, 8, 7, 9, 0), "open": 98, "high": 100, "low": 97, "close": 99, "volume": 300}]
+        with patch("stock_history_service.load_stock_bars_5m_on", return_value=saved_today):
+            result = get_stock_history_bars_5m("2344", service=self.service, hub=self.hub, now_ms=self.now_ms)
+        today_bars = [b for b in result["bars"] if datetime.fromtimestamp(b["ts"] / 1000, TW_TZ).strftime("%Y-%m-%d") == "2026-08-07"]
+        self.assertEqual([b["ts"] for b in today_bars], [ts(2026, 8, 7, 9, 0), ts(2026, 8, 7, 9, 5)])
+        self.assertEqual(today_bars[0]["close"], 99)                # 09:00 來自資料庫，不是 kbars 的 104.5
+        self.assertEqual(today_bars[1]["close"], 111)               # 09:05 仍以即時 Hub 為準
+        self.assertEqual(result["bootstrap"]["db_today_5m"], 1)
+        self.assertIsNone(result["bootstrap"]["today_gap"])         # 缺口已被資料庫補上，沒再打今天的缺口 kbars
+
+    def test_today_db_bars_not_adjacent_to_live_still_use_kbars_gap(self):
+        """資料庫今天的 K 棒跟 Hub 第一根差太多（中間缺好幾根）→ 照舊用今天的 kbars 補缺口。"""
+        stale = [{"ts": ts(2026, 8, 7, 9, 0), "open": 98, "high": 100, "low": 97, "close": 99, "volume": 300}]
+        later_hub = SimpleNamespace(
+            get_live_bars=lambda code: [{"ts": ts(2026, 8, 7, 9, 30), "open": 1, "high": 2, "low": 1, "close": 2, "volume": 5, "tick_count": 1}],
+            get_live_bars_1m=lambda code: [],
+        )
+        with patch("stock_history_service.load_stock_bars_5m_on", return_value=stale):
+            result = get_stock_history_bars_5m("2344", service=self.service, hub=later_hub, now_ms=ts(2026, 8, 7, 9, 32))
+        self.assertIsNotNone(result["bootstrap"]["today_gap"])
+
     def test_kbars_history_wins_over_db_bars(self):
         saved = [{"ts": ts(2026, 8, 6, 13, 25), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
         with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved) as loader:
