@@ -174,6 +174,41 @@ class ScreenTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.screen({"mup": "x"})
 
+    def test_main_force_net_condition(self) -> None:
+        # 2026-11-04 使用者：找「主力用融資買進」的股票——融資大增 ＋ 今天主力（盤中大單）淨買超。D[1]＝2026-10-05
+        import main_force_store
+        import margin_balance
+        from datetime import datetime, timedelta, timezone
+
+        ts = int(datetime(2026, 10, 5, 10, 0, tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
+
+        def bar(buy: int, sell: int) -> dict:
+            return {"ts": ts, "main_force_available": True, "main_buy_volume": buy, "main_sell_volume": sell, "main_buy_amount": buy * 1000.0,
+                    "main_sell_amount": sell * 1000.0, "main_tick_count": 5, "total_amount": 1e8}
+
+        main_force_store.save_main_force_bars("1111", "5m", [bar(900, 100)])      # 淨買 800 張
+        main_force_store.save_main_force_bars("2222", "5m", [bar(100, 600)])      # 淨賣 500 張
+        module._cache.clear()
+        out = module.screen({}, D[1])
+        self.assertTrue(out["mfReady"])
+        by = {r["code"]: r for r in out["rows"]}
+        self.assertEqual((by["1111"]["mfnet"], by["2222"]["mfnet"], by["3333"]["mfnet"]), (800, -500, None))
+        self.assertEqual(self.codes({"mf": 500}), ["1111"])
+        self.assertEqual(self.codes({"mf": 800}), ["1111"])           # ≥ 含等於
+        self.assertEqual(self.codes({"mf": 801}), [])
+        self.assertEqual(self.codes({"mf": -600}), ["1111", "2222"])  # 淨賣不到 600 張的也算；沒資料的（3333）不符合
+        # 疑似主力融資買進：融資增加 ＋ 大單淨買
+        def row(code: str, prev: int, balance: int) -> dict:
+            return {"code": code, "buy": 1, "sell": 1, "repay": 0, "prev": prev, "balance": balance, "limit": 100000, "short": 10}
+
+        margin_balance.save_margin(D[0], "TSE", [row("1111", 100, 100), row("2222", 100, 100)], "twse")
+        margin_balance.save_margin(D[1], "TSE", [row("1111", 100, 800), row("2222", 100, 900)], "twse")
+        module._cache.clear()
+        self.assertEqual(self.codes({"mup": 500, "mf": 300}), ["1111"])      # 2222 融資也大增但主力在賣
+        self.assertEqual(module.screen({"mf": 1}, D[2])["mfReady"], False)    # 那天沒有主力資料
+        with self.assertRaises(ValueError):
+            module.screen({"mf": "x"})
+
     def test_futures_fallback(self) -> None:
         module._futures.update({"at": 0.0, "std": None})
         with patch.object(module, "_fetch_text", side_effect=OSError("blocked")):

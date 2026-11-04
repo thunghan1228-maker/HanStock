@@ -545,6 +545,20 @@ def load_daily_main_force_net(stock_code: str, interval: str = "5m") -> dict[str
     return {row["trade_date"]: int(row["net_volume"] or 0) for row in rows}
 
 
+def load_daily_main_force_net_map(trade_date: str, interval: str = "5m") -> dict[str, int]:
+    """某一天全市場每檔的主力累計淨量（張，正＝買超）：{代號: 淨量}（系統選股「大單淨買」條件用，2026-11-04 使用者）。
+    只涵蓋資料保留天數內（prune_old_bars 預設 30 個交易日）、而且有被收集器追蹤到的股票；沒資料的代號不在裡面。"""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"不支援 interval: {interval}")
+    _ensure_table()
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            "SELECT stock_code, SUM(main_net_volume) AS net_volume FROM main_force_bars WHERE trade_date = ? AND interval = ? GROUP BY stock_code",
+            (trade_date, interval),
+        ).fetchall()
+    return {str(row["stock_code"]).upper(): int(row["net_volume"] or 0) for row in rows}
+
+
 def load_daily_big_amounts(stock_code: str, interval: str = "5m") -> dict[str, tuple[float, float]]:
     """老師版大戶（同秒同方向併單 ≥7 張）依交易日彙總的買、賣金額（元），給日線圖副圖「老師版」用。
     那天只要有一根 5 分K 沒有老師版資料（還沒開始存、或只存了半天）就不給，避免畫出少算的半天；
