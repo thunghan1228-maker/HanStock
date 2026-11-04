@@ -70,6 +70,31 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual((m["chg1"], m["chg5Pct"], m["sinceHighPct"], m["util"]), (None, None, None, None))   # 只有一天：能算的才算
 
 
+class DayChangesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self) -> None:
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def row(self, code: str, prev: int, balance: int, short: int) -> dict:
+        return {"code": code, "buy": 1, "sell": 1, "repay": 0, "prev": prev, "balance": balance, "limit": 100000, "short": short}
+
+    def test_margin_and_short_changes(self) -> None:
+        module.save_margin("2026-10-21", "TSE", [self.row("2408", 100, 100, 500), self.row("2303", 100, 100, 70)], "twse")
+        module.save_margin("2026-10-22", "TSE", [self.row("2408", 100, 1250, 380), self.row("2303", 0, 90, 70), self.row("9999", 5, 5, 9)], "twse")
+        out = module.day_changes("2026-10-22")
+        self.assertEqual(out["2408"], {"mbal": 1250, "mchg": 1150, "sbal": 380, "schg": -120})      # 融資 +1150 張、融券 −120 張
+        self.assertEqual(out["2303"], {"mbal": 90, "mchg": -10, "sbal": 70, "schg": 0})              # 前日餘額欄是 0 → 跟前一天比
+        self.assertEqual(out["9999"], {"mbal": 5, "mchg": 0, "sbal": 9, "schg": None})               # 前一天沒這檔 → 券增減不亂猜
+        self.assertEqual(module.day_changes("2026-10-21")["2408"]["schg"], None)                     # 只有一天（前一個交易日沒存）
+        self.assertEqual(module.day_changes("2026-10-20"), {})                                      # 那天沒資料
+
+
 class CollectTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

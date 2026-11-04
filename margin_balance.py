@@ -263,6 +263,33 @@ def history(codes: list[str], since: str, until: str) -> dict[str, dict[str, dic
     return out
 
 
+def day_changes(day: str) -> dict[str, dict[str, int | None]]:
+    """全市場每一檔在 day 的融資／融券今天增減（張）：{代號: {mbal, mchg, sbal, schg}}（系統選股「融資／融券增減」條件用）。
+    融資增減＝今日餘額 − 前日餘額（交易所表上的「前日餘額」欄，沒有就跟前一個交易日比）；融券交易所表只存今日餘額，
+    增減＝今日券餘額 − 前一個交易日的券餘額（前一個交易日沒存、或兩天之間缺了交易日 → None，不亂猜）。那天沒有融資資料 → {}。"""
+    initialize_database()
+    try:
+        before_day = previous_trading_day(date.fromisoformat(day)).isoformat()
+    except Exception:  # noqa: BLE001
+        before_day = ""
+    with get_connection() as connection:
+        _schema(connection)
+        today = connection.execute(
+            "SELECT stock_code, margin_balance, margin_prev, short_balance FROM margin_daily WHERE trade_date = ?", (day,)).fetchall()
+        before = connection.execute(
+            "SELECT stock_code, margin_balance, short_balance FROM margin_daily WHERE trade_date = ?", (before_day,)).fetchall() if before_day else []
+    old = {str(r["stock_code"]).upper(): r for r in before}
+    out: dict[str, dict[str, int | None]] = {}
+    for row in today:
+        code = str(row["stock_code"]).upper()
+        last = old.get(code)
+        balance, short = int(row["margin_balance"]), int(row["short_balance"])
+        prev = int(row["margin_prev"]) if row["margin_prev"] else (int(last["margin_balance"]) if last else None)
+        out[code] = {"mbal": balance, "mchg": balance - prev if prev is not None else None,
+                     "sbal": short, "schg": short - int(last["short_balance"]) if last else None}
+    return out
+
+
 def series(code: str, days: int = 60) -> list[dict[str, Any]]:
     """單檔近 days 個有資料的交易日的融資序列，日期由舊到新（K線圖的融資副圖用，2026-10-23 使用者）。
     每天：餘額（張）、當天增減（張，前日餘額欄；沒有就跟前一天比）、買進／賣出／現償（張）、使用率（餘額÷次一營業日限額，%）。"""

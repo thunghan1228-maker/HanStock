@@ -147,6 +147,33 @@ class ScreenTests(unittest.TestCase):
         with self.assertRaises(LookupError):
             module.screen({}, "2026-01-02")
 
+    def test_margin_change_conditions(self) -> None:
+        # 2026-11-04 使用者：融資／融券今天增減 ≥ N 張。D[0]、D[1] 是連續交易日（10/02、10/05）
+        import margin_balance
+
+        def row(code: str, prev: int, balance: int, short: int) -> dict:
+            return {"code": code, "buy": 1, "sell": 1, "repay": 0, "prev": prev, "balance": balance, "limit": 100000, "short": short}
+
+        margin_balance.save_margin(D[0], "TSE", [row("1111", 1000, 1000, 400), row("2222", 500, 500, 100), row("3333", 50, 50, 10)], "twse")
+        margin_balance.save_margin(D[1], "TSE", [row("1111", 1000, 2500, 450), row("2222", 500, 300, 1600), row("3333", 50, 60, 10)], "twse")
+        module._cache.clear()
+        out = module.screen({}, D[1])
+        self.assertTrue(out["marginReady"])
+        by = {r["code"]: r for r in out["rows"]}
+        self.assertEqual((by["1111"]["mchg"], by["1111"]["schg"], by["1111"]["mbal"], by["1111"]["sbal"]), (1500, 50, 2500, 450))
+        self.assertEqual(self.codes({"mup": 1000}), ["1111"])
+        self.assertEqual(self.codes({"mup": 1500}), ["1111"])           # ≥ 含等於
+        self.assertEqual(self.codes({"mup": 1501}), [])
+        self.assertEqual(self.codes({"mdn": 200}), ["2222"])            # 融資減少 200 張
+        self.assertEqual(self.codes({"sup": 1000}), ["2222"])           # 融券增加 1500 張
+        self.assertEqual(self.codes({"sdn": 1}), [])
+        self.assertEqual(self.codes({"mup": 10, "sup": 10}), ["1111"])  # 兩個條件是「且」
+        # 融資資料還沒出來的日子（10/06 沒存）：全部 None、條件都不符合、marginReady＝False
+        later = module.screen({"mup": 1}, D[2])
+        self.assertEqual((later["marginReady"], later["count"]), (False, 0))
+        with self.assertRaises(ValueError):
+            module.screen({"mup": "x"})
+
     def test_futures_fallback(self) -> None:
         module._futures.update({"at": 0.0, "std": None})
         with patch.object(module, "_fetch_text", side_effect=OSError("blocked")):

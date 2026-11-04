@@ -7,6 +7,8 @@
 - 法人 3／5 日累積買超・估量 ≥：近 3／5 個交易日三大法人合計買賣超張數 ÷ 同期成交量；要是累積買超（✓）才算。
 - 雙劍出擊・兩張榜各取前 N 名：均線常客（近 20 個交易日每天取均線分數前 10 名，同分全算，數上榜天數）
   ∩ 籌碼常客（近 9 週每週取籌碼暴增買超榜前 10 名，數上榜週數），兩張榜都排進前 N 名才算。
+- 融資／融券增減（2026-11-04 使用者）：mup／mdn＝今天融資增加／減少 ≥ N 張，sup／sdn＝今天融券增加／減少 ≥ N 張；
+  每列帶 mchg／schg（今天增減張數）與 mbal／sbal（餘額）；融資餘額表晚上才出來，當天沒資料的股票視為不符合。
 - 處置股倒數 ≤：目前在處置中、還要關幾個交易日（處置迄日當天＝1，下一個交易日出關）。
 - 有股票期貨／有小型股票期貨：期交所股票期貨標的清單（一般 2,000 股、小型 100 股）。
 - 排除處置股：處置中，以及交易所已公告、下一個交易日開始處置的。
@@ -53,7 +55,7 @@ MINI_FUTURES_FALLBACK = frozenset((
     "3680", "3711", "5269", "5274", "5904", "6139", "6223", "6472", "6488", "6510", "6526", "6669", "8046", "8299", "9958",
 ))
 
-PARAM_KEYS = ("score", "chip", "etf", "inst3", "inst5", "sword", "dispo", "river", "fut", "mini", "exdispo", "k", "kmin", "kmax")
+PARAM_KEYS = ("score", "chip", "etf", "inst3", "inst5", "sword", "dispo", "river", "fut", "mini", "exdispo", "k", "kmin", "kmax", "mup", "mdn", "sup", "sdn")
 RIVER_ZONES = ("跌破特價", "特價", "便宜", "貴", "昂貴", "超昂貴")
 
 _lock = threading.Lock()
@@ -294,6 +296,12 @@ def _facts(day: str, dates: list[str]) -> dict[str, Any]:
     jailed, upcoming = _dispositions(day, after[0] if after else _next_trading(day))
     chip_week, chips, chip_counts, chip_order = _chip_info(day)
     ma_counts, ma_order = _ma_regulars(day)
+    try:
+        from margin_balance import day_changes
+        margin = day_changes(day)      # 融資／融券今天增減（張），晚上才有；沒有就全部 None
+    except Exception:  # noqa: BLE001
+        logger.exception("screener: 讀融資融券增減失敗")
+        margin = {}
     river = _river_zones()      # 河流位置是「目前」的（本益比與股價都是最新一天），回測過去的日子也照用
     std, mini, fut_source = futures_sets()
     groups = _groups_of()
@@ -316,6 +324,8 @@ def _facts(day: str, dates: list[str]) -> dict[str, Any]:
             "k": "red" if c > o else ("black" if c < o else "flat"),
             "chip": round(chip, 2) if chip is not None else None, "chipOn": chip is not None and chip >= CHIP_BUY_MIN,
             "maHits": ma_counts.get(code), "chipHits": chip_counts.get(code),
+            "mbal": (margin.get(code) or {}).get("mbal"), "mchg": (margin.get(code) or {}).get("mchg"),
+            "sbal": (margin.get(code) or {}).get("sbal"), "schg": (margin.get(code) or {}).get("schg"),
             "etf": etf.get(code, 0), "dispo": jailed.get(code), "upcoming": code in upcoming,
             "river": river.get(code), "riverName": RIVER_ZONES[river[code]] if code in river else None,
             "fut": code in std or code in mini, "mini": code in mini, "futLabel": "小期" if code in mini else ("期" if code in std else None),
@@ -326,7 +336,7 @@ def _facts(day: str, dates: list[str]) -> dict[str, Any]:
     return {
         "rows": out, "next": after[:2], "latestDate": latest_day if after else None,
         "chipWeek": chip_week, "etfDates": sorted(set(etf_dates)), "instDays": inst_days, "futSource": fut_source,
-        "maOrder": ma_order, "chipOrder": chip_order,
+        "maOrder": ma_order, "chipOrder": chip_order, "marginReady": bool(margin),
     }
 
 
@@ -359,6 +369,8 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
         "etf": _num(raw.get("etf"), "etf", integer=True), "inst3": _num(raw.get("inst3"), "inst3"), "inst5": _num(raw.get("inst5"), "inst5"),
         "sword": _num(raw.get("sword"), "sword", integer=True), "dispo": _num(raw.get("dispo"), "dispo", integer=True),
         "river": _num(raw.get("river"), "river", integer=True),
+        "mup": _num(raw.get("mup"), "mup", integer=True), "mdn": _num(raw.get("mdn"), "mdn", integer=True),
+        "sup": _num(raw.get("sup"), "sup", integer=True), "sdn": _num(raw.get("sdn"), "sdn", integer=True),
         "fut": _flag(raw.get("fut")), "mini": _flag(raw.get("mini")), "exdispo": _flag(raw.get("exdispo")),
         "k": (raw.get("k") or "any").strip().lower(), "kmin": _num(raw.get("kmin"), "kmin"), "kmax": _num(raw.get("kmax"), "kmax"),
     }
@@ -383,6 +395,9 @@ def _match(row: dict[str, Any], p: dict[str, Any], sword: tuple[set[str], set[st
         return False
     if p["river"] is not None and (row["river"] is None or row["river"] > p["river"]):
         return False
+    for key, field, sign in (("mup", "mchg", 1), ("mdn", "mchg", -1), ("sup", "schg", 1), ("sdn", "schg", -1)):
+        if p[key] is not None and not (row[field] is not None and row[field] * sign >= p[key]):
+            return False
     if p["fut"] and not row["fut"]:
         return False
     if p["mini"] and not row["mini"]:
@@ -429,7 +444,7 @@ def screen(raw: dict[str, Any] | None = None, date: str | None = None, *, in_uni
         "status": "ok", "date": day, "latest": dates[-1], "dates": dates[-LIST_DATES:], "params": p, "count": len(rows),
         "universe": sum(1 for r in facts["rows"] if r["inUni"]),
         "rows": rows, "next": facts["next"], "latestDate": facts["latestDate"], "chipWeek": facts["chipWeek"], "etfDates": facts["etfDates"],
-        "instDays": facts["instDays"], "futSource": facts["futSource"],
+        "instDays": facts["instDays"], "futSource": facts["futSource"], "marginReady": facts["marginReady"],
     }
 
 
