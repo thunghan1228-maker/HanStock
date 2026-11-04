@@ -81,6 +81,35 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue(module._shadow(sh))
         self.assertFalse(module._shadow({**sh, "chg_3": 6.0}))
 
+    def test_version_11_rules_from_zhuang_1104(self) -> None:
+        """第十一版（老師 11/04 名單）：穿惡量 1462 張、突破惡紅下影線 4.98%、極限黑龍量 2421 張、三日飛龍今天量 203 張＋三天前跌 0.78%（用 11/04 收盤的真實特徵）。"""
+        self.assertGreaterEqual(module.RULES_VERSION, 11)
+        # 穿惡：量 1000～1462 張的（11/04 上品 1114 張不是老師的）不再算
+        cross = {"bw": 16.6697, "c_ma120": 13.3855, "c_ma20": 8.5534, "c_ma240": 34.611, "c_ma5": 10.5239, "c_ma60": 7.771, "dd60": -10.5116, "h_ma20": 8.5534,
+                 "hiago60": 32, "ma60_slope": 0.3222, "ma60_slope5": 0.62, "pc_ma20": -1.0293, "range": 8.2286, "run60": 59.4955, "v_v5": 4.0, "vol": 10337.0}
+        self.assertTrue(module._cross2022(cross))
+        self.assertTrue(module._cross2022({**cross, "vol": 1500}))
+        self.assertFalse(module._cross2022({**cross, "vol": 1114}))
+        # 玉山金：老師 11/04 15:00 有列；下影線超過 4.98% 的不算
+        br = {"below_cnt20": 5, "body": 0.2105, "c_m5_prev": -2.268, "c_ma20": -0.3089, "c_ma240": 33.1771, "chg": 0.4219, "chg_3": 0.102, "close_pos": 0.875, "dd60": -4.99,
+              "h_ma20": 0.0052, "l_ma20": -2.508, "l_ma5": -3.7229, "l_pl": -0.9574, "lshadow": 2.0042, "ma20_ma60": 9.0478, "ma5_slope": -0.3093, "vma5": 31675.0}
+        self.assertTrue(module._breakred(br))
+        self.assertTrue(module._breakred({**br, "lshadow": 4.97}))
+        self.assertFalse(module._breakred({**br, "lshadow": 5.5}))
+        # 極限黑龍：量 2421 張以上（緯創 35943 張照舊算）
+        xd2 = {"black": True, "c_m5_prev": 5.6911, "c_ma60": 2.786, "chg": -2.5641, "close_pos": 0.0526, "hiago20": 1, "l_ma5": 1.1746, "lshadow": 0.2564,
+               "ma20_ma60": 0.6357, "ma20_slope5": 0.3101, "ma5_slope": 1.5176, "range": 4.8718, "vol": 35943.0}
+        self.assertTrue(module._xdragon(xd2))
+        self.assertTrue(module._xdragon({**xd2, "vol": 2500}))
+        self.assertFalse(module._xdragon({**xd2, "vol": 2000}))
+        # 旭品：三日飛龍；今天量不到 203 張、三天前跌超過 0.78% 的不算
+        fly = {"above5_cnt3": 3, "chg_3": 9.6774, "chg_prev": -8.6207, "h_ph": -2.0979, "l_ma20": 9.136, "launch_chg": 9.6774, "ma60_slope5": 1.2128, "nh60_2": True,
+               "ret3": 2.9412, "vma5": 842.4, "vol": 551.0}
+        self.assertTrue(module._fly3(fly))
+        self.assertFalse(module._fly3({**fly, "vol": 150}))
+        self.assertTrue(module._fly3({**fly, "chg_3": -0.77}))
+        self.assertFalse(module._fly3({**fly, "chg_3": -0.9}))
+
     def test_version_10_rules_from_zhuang_1022(self) -> None:
         """第十版（老師 10/22 名單）：穿惡量比 9.1 倍、極限黑龍跌停鎖死放寬＋季線 2.7%、黑飛舞 2021 離 120 日高點 18.7%、突破惡紅年線 8%（用 10/22 收盤的真實特徵）。"""
         self.assertGreaterEqual(module.RULES_VERSION, 10)
@@ -106,7 +135,7 @@ class FeatureTests(unittest.TestCase):
         self.assertFalse(module._bfw2021({**bf, "dd120": -25.0}))
         # 突破惡紅：收盤比年線高 5.28%（10/22 的 2607 老師沒列）→ 擋掉
         br = {"below_cnt20": 2, "body": 0.7233, "c_m5_prev": -2.4904, "c_ma20": 0.3784, "c_ma240": 5.2814, "chg": 0.1799, "chg_3": -2.5641, "close_pos": 0.8571, "dd60": -6.8562,
-              "h_ma20": 0.5587, "l_ma20": -0.7028, "l_ma5": -2.5813, "l_pl": -0.7207, "ma20_ma60": 5.6902, "ma5_slope": -0.8067, "vma5": 899.2}
+              "h_ma20": 0.5587, "l_ma20": -0.7028, "l_ma5": -2.5813, "l_pl": -0.7207, "ma20_ma60": 5.6902, "ma5_slope": -0.8067, "vma5": 899.2, "lshadow": 0.5}
         self.assertFalse(module._breakred(br))
         self.assertTrue(module._breakred({**br, "c_ma240": 12.0}))
 
