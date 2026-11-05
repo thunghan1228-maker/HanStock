@@ -432,6 +432,16 @@ YAHOO_OTC_MAX_DATES = 10  # 只檢查最近 10 個櫃買沒給資料的交易日
 # 原因：一天的上櫃日K只要到齊前一天檔數的 97% 就當「收齊了」（otc_day_complete），剩下 3% 以內（約 30 檔）從此不會再補；
 # Yahoo 逐檔補的那一輪遇到 429／價格對不上的幾檔，下一輪因為這天已經「收齊」就跳過。收齊的最近幾天，再補一次族群股裡缺日K的上櫃代號（不看 97% 門檻）。
 YAHOO_OTC_GAP_DAYS = 3
+# 2026-11-05 補漏第一次跑，碩禾 3691 還是沒補上：它 10/23 除息，Yahoo 回的 10/19～10/22 是除息還原價（−2.01%），跟我們的原始日K對不上，
+# 重疊 12 天有 3 天差超過 1%、超過 10% 的容許，整檔被當成「價格對不上」不寫。要補的是最新那幾天，所以改成只核對最近 3 個重疊日（都在除息之後就對得上）。
+YAHOO_OTC_RECENT_MATCH_DAYS = 3
+
+
+def _recent_prices_match(days: dict[str, dict[str, Any]], existing: dict[str, float]) -> bool:
+    """Yahoo 跟我們的官方日K，最近 3 個都有的日子收盤價要對上（差 1% 以內）；更早的日子 Yahoo 可能是除息還原價，不看。"""
+    from daily_bars_history_backfill import PRICE_MATCH_TOLERANCE
+    overlap = sorted(day for day in days if existing.get(day, 0) > 0)
+    return all(abs(days[day]["close"] / existing[day] - 1) <= PRICE_MATCH_TOLERANCE for day in overlap[-YAHOO_OTC_RECENT_MATCH_DAYS:])
 
 
 def _otc_presence(since: str, until: str) -> dict[str, set[str]]:
@@ -507,7 +517,7 @@ def _yahoo_otc_fill(
     67 個族群的上櫃股先補，失敗的隔一下再試一輪。
     同一天 3 小時內不重打（收集器每小時一輪）；今天要 14:30 以後才補（Yahoo 當天日K那時才是最終值）。
     group_only＝只補族群股（industry_group_codes）裡缺日K的代號、而且 Yahoo 那天沒成交量的不寫（收齊的日子補漏用，見 YAHOO_OTC_GAP_DAYS）；attempt_key 讓這輪的 3 小時節流跟主流程分開算。"""
-    from daily_bars_history_backfill import _existing_closes, _prices_match, fetch_yahoo_daily
+    from daily_bars_history_backfill import _existing_closes, fetch_yahoo_daily
     from otc_gap_backfill import _known_stock_names
     from stock_groups import industry_group_codes
 
@@ -551,7 +561,7 @@ def _yahoo_otc_fill(
         except Exception:  # noqa: BLE001
             return False
         existing = _existing_closes(code, since, until)
-        if not _prices_match(days, existing):
+        if not _recent_prices_match(days, existing):
             mismatched.append(code)
             return True
         rows = [

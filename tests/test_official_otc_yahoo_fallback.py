@@ -152,6 +152,30 @@ class OtcYahooFallbackTests(unittest.TestCase):
                                        now=datetime(2026, 9, 24, 17, 0, tzinfo=TW), group_only=True, attempt_key="gap:")
         self.assertIn("skipped", again)                                              # 補漏自己 3 小時內不重打
 
+    def test_ex_dividend_adjusted_older_prices_do_not_block_filling_the_latest_day(self) -> None:
+        # 碩禾 3691：10/23 除息，Yahoo 回的除息前日子是還原價（−2%），最近 3 個重疊日（除息後）對得上 → 照補最新那天
+        calls: list[str] = []
+        _save_day([_bar("8069", "元太", "OTC", day, 100.0) for day in ("2026-09-17", "2026-09-18")])   # 除息前兩天（我們是原始價 100）
+
+        def fetch(url, params):
+            symbol = url.rsplit("/", 1)[-1]
+            calls.append(symbol)
+            code = symbol.split(".")[0]
+            if code == "8069":   # Yahoo 除息前兩天是還原價 97，最近 3 個重疊日（9/21～9/23）對得上
+                return _yahoo_payload({"2026-09-17": 97.0, "2026-09-18": 97.0, "2026-09-21": 100.0, "2026-09-22": 100.0, "2026-09-23": 100.0, "2026-09-24": 105.0})
+            return _yahoo_payload({day: 100.0 for day in DAYS} | {"2026-09-24": 105.0})
+        with patch.object(stock_groups, "industry_group_codes", return_value=frozenset({"8069"})):
+            result = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=fetch,
+                                            now=datetime(2026, 9, 24, 16, 0, tzinfo=TW), group_only=True, attempt_key="gap:")
+        self.assertEqual(result["mismatched"], [])
+        self.assertEqual(self._closes("8069")["2026-09-24"], (105.0, 3000))
+
+    def test_recent_prices_still_must_match(self) -> None:
+        days = {d: {"close": c} for d, c in {"2026-09-21": 100.0, "2026-09-22": 150.0, "2026-09-23": 150.0, "2026-09-24": 150.0}.items()}
+        existing = {"2026-09-21": 100.0, "2026-09-22": 100.0, "2026-09-23": 100.0}
+        self.assertFalse(module._recent_prices_match(days, existing))            # 最近 3 個重疊日差 50%：不是同一檔
+        self.assertTrue(module._recent_prices_match({"2026-09-24": {"close": 105.0}}, existing))   # 沒有重疊日：不擋
+
     def test_collected_days_skip_official_requests(self) -> None:
         # 9/23 上市、上櫃都收齊了：不打證交所也不打櫃買；9/24 上市收過、上櫃還缺：只走上櫃備援
         tse_codes = [f"{1000 + n}" for n in range(500)]
