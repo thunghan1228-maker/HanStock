@@ -120,6 +120,38 @@ class OtcYahooFallbackTests(unittest.TestCase):
         self.assertTrue(module.otc_day_complete(date(2026, 9, 24)))             # 110／113 ≥ 97%
         self.assertFalse(module.otc_day_complete(date(2026, 9, 25)))            # 一檔都沒有
 
+    def test_gap_fill_for_complete_day_only_fetches_group_stocks_missing_the_day(self) -> None:
+        # 2026-11-05：上櫃這天已經到齊 97%（otc_day_complete）所以收集器不再補，但碩禾這類族群股那天缺日K → 補漏只打族群股、Yahoo 沒成交量的不寫
+        otc_codes = [f"{6000 + n}" for n in range(110)]
+        for day in DAYS:
+            _save_day([_bar(code, code, "OTC", day, 30.0) for code in otc_codes])
+        _save_day([_bar(code, code, "OTC", "2026-09-24", 30.0) for code in otc_codes])   # 9/24 也到齊了
+        self.assertTrue(module.otc_day_complete(date(2026, 9, 24)))
+        calls: list[str] = []
+        with patch.object(stock_groups, "industry_group_codes", return_value=frozenset({"8069", "6488"})):
+            def fetch(url, params):
+                symbol = url.rsplit("/", 1)[-1]
+                code = symbol.split(".")[0]
+                calls.append(symbol)
+                closes = {day: 100.0 for day in DAYS}
+                closes["2026-09-24"] = 105.0
+                payload = _yahoo_payload(closes)
+                if code == "6488":   # 這檔 Yahoo 那天沒成交（量 0）
+                    payload["chart"]["result"][0]["indicators"]["quote"][0]["volume"] = [3_000_000, 3_000_000, 3_000_000, 0]
+                return payload
+            result = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=fetch,
+                                            now=datetime(2026, 9, 24, 16, 0, tzinfo=TW), group_only=True, attempt_key="gap:")
+        self.assertEqual(sorted(calls), ["6488.TWO", "8069.TWO"])                  # 3529（不在族群）和六千多號那 110 檔都不打
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(self._closes("8069")["2026-09-24"], (105.0, 3000))
+        self.assertNotIn("2026-09-24", self._closes("6488"))                         # 量 0：不寫
+        # 補漏的 3 小時節流跟主流程分開：同一天主流程剛補過，補漏照樣可以跑
+        module._yahoo_otc_attempted["2026-09-24"] = 0.0
+        calls.clear()
+        again = module._yahoo_otc_fill([date(2026, 9, 24)], delay=0, retry_pause=0, fetcher=lambda u, p: _yahoo_payload({d: 100.0 for d in DAYS}),
+                                       now=datetime(2026, 9, 24, 17, 0, tzinfo=TW), group_only=True, attempt_key="gap:")
+        self.assertIn("skipped", again)                                              # 補漏自己 3 小時內不重打
+
     def test_collected_days_skip_official_requests(self) -> None:
         # 9/23 上市、上櫃都收齊了：不打證交所也不打櫃買；9/24 上市收過、上櫃還缺：只走上櫃備援
         tse_codes = [f"{1000 + n}" for n in range(500)]
