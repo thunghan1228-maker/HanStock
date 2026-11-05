@@ -193,5 +193,84 @@ class CollectAndPayloadTests(unittest.TestCase):
         self.assertIn("mirrorBase", status)
 
 
+class InstRankTests(unittest.TestCase):
+    """研究室「外資／投信買賣超」：全市場一般股票、上市上櫃分開、往回查日期、連買連賣與近 5 日累計。"""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+        self.codes_patch = patch.object(module, "industry_group_codes", return_value=frozenset({"2330"}))
+        self.codes_patch.start()
+        self.groups_patch = patch.object(brew_launch_history, "STOCK_GROUPS", {"半導體": [("2330", "台積電")]})
+        self.groups_patch.start()
+        brew_launch_history._group_by_code.clear()
+        module._rank_cache.clear()
+
+        def row(code, name, foreign, trust):
+            return {"code": code, "name": name, "foreign": foreign * 1000, "trust": trust * 1000, "dealer": 0, "total": (foreign + trust) * 1000}
+
+        # 三個交易日：上市 2330（外資連買）、2603（外資賣、投信買）、0050（ETF 不算）、2881A（特別股不算）；上櫃 6207（外資投信同賣）、3016
+        days = {
+            "2026-09-22": ([row("2330", "台積電", 1000, 0), row("2603", "長榮", -100, 5), row("0050", "元大台灣50", 5000, 0)], [row("6207", "雷科", -50, -20)]),
+            "2026-09-23": ([row("2330", "台積電", 2000, 10), row("2603", "長榮", -300, 20), row("2881A", "富邦特", 99, 99)], [row("6207", "雷科", -80, -30), row("3016", "嘉晶", 400, 0)]),
+            "2026-09-24": ([row("2330", "台積電", 3000, 50), row("2603", "長榮", -500, 40), row("1101", "台泥", 0, 0), row("0050", "元大台灣50", 9000, 0)], []),   # 9/24 上櫃還沒進來
+        }
+        for day, (tse, otc) in days.items():
+            module.save_institutional(day, "TSE", tse, "twse")
+            if otc:
+                module.save_institutional(day, "OTC", otc, "mirror")
+        with database.get_connection() as c:
+            c.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+                ("2330", "2026-09-23T00:00:00", 1000, 1010, 990, 1000, 20000), ("2330", "2026-09-24T00:00:00", 1000, 1030, 995, 1020, 25000),
+                ("2603", "2026-09-23T00:00:00", 200, 205, 198, 200, 9000), ("2603", "2026-09-24T00:00:00", 200, 201, 190, 192, 12000),
+            ])
+
+    def tearDown(self) -> None:
+        brew_launch_history._group_by_code.clear()
+        module._rank_cache.clear()
+        self.groups_patch.stop()
+        self.codes_patch.stop()
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_latest_day_rows_and_filters(self) -> None:
+        data = module.inst_rank()
+        self.assertEqual((data["status"], data["date"], data["markets"]), ("ok", "2026-09-24", ["TSE"]))   # 最新一天只有上市
+        self.assertEqual([d["date"] for d in data["dates"]], ["2026-09-24", "2026-09-23", "2026-09-22"])
+        self.assertEqual(data["dates"][0]["markets"], ["TSE"])
+        self.assertEqual(sorted(data["dates"][1]["markets"]), ["OTC", "TSE"])
+        by = {r["code"]: r for r in data["rows"]}
+        self.assertEqual(sorted(by), ["2330", "2603"])          # ETF、特別股、買賣超 0 的 1101 都不在
+        tsmc = by["2330"]
+        self.assertEqual((tsmc["f"], tsmc["t"], tsmc["mkt"], tsmc["g"]), (3000, 50, "TSE", "半導體"))
+        self.assertEqual((tsmc["fs"], tsmc["ts"]), (3, 2))        # 外資連買 3 天；投信 9/22 是 0 所以連買 2 天
+        self.assertEqual((tsmc["f5"], tsmc["t5"]), (6000, 60))
+        self.assertEqual((tsmc["c"], tsmc["p"], tsmc["v"]), (1020.0, 2.0, 25000))
+        ship = by["2603"]
+        self.assertEqual((ship["f"], ship["t"], ship["fs"], ship["ts"], ship["g"]), (-500, 40, -3, 3, ""))   # 外資連賣、投信連買、不在 67 族群
+
+    def test_past_date_has_otc_and_endpoint(self) -> None:
+        data = module.inst_rank("2026-09-23")
+        self.assertEqual(sorted(data["markets"]), ["OTC", "TSE"])
+        self.assertEqual(data["counts"], {"TSE": 2, "OTC": 2})
+        by = {r["code"]: r for r in data["rows"]}
+        self.assertEqual((by["6207"]["f"], by["6207"]["t"], by["6207"]["mkt"], by["6207"]["fs"], by["6207"]["ts"]), (-80, -30, "OTC", -2, -2))
+        self.assertEqual((by["3016"]["f"], by["3016"]["t"]), (400, 0))
+        self.assertEqual((by["2330"]["fs"], by["2330"]["ts"], by["2330"]["f5"]), (2, 1, 3000))   # 回到 9/23：只算到那天為止
+        client = TestClient(persistent_app.app)
+        body = client.get("/api/hub/inst-rank?date=2026-09-22").json()
+        self.assertEqual((body["status"], body["date"], len(body["rows"])), ("ok", "2026-09-22", 3))
+        self.assertEqual(client.get("/api/hub/inst-rank?date=bad").status_code, 422)
+        self.assertEqual(client.get("/api/hub/inst-rank?date=2026-01-01").json()["status"], "empty")
+
+    def test_no_data(self) -> None:
+        with database.get_connection() as c:
+            c.execute("DELETE FROM institutional_daily")
+        module._rank_cache.clear()
+        self.assertEqual(module.inst_rank()["status"], "empty")
+
+
 if __name__ == "__main__":
     unittest.main()

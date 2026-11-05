@@ -41,7 +41,7 @@ from brew_launch_history import (
 )
 from trading_days import is_trading_day
 from watchlist_store import WatchlistError, load as watchlist_load, save as watchlist_save
-from chips_daily import chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
+from chips_daily import inst_rank as inst_rank_payload, chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
@@ -1169,6 +1169,19 @@ def get_chips_daily(date: str | None = Query(None)) -> dict[str, Any]:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return chips_daily_payload(date)
+
+
+@app.get("/api/hub/inst-rank")
+def get_inst_rank(date: str | None = Query(None)) -> dict[str, Any]:
+    """研究室「外資買賣超」「投信買賣超」：一天全市場（上市＋上櫃）一般股票的外資、投信買賣超（張）＋收盤、漲跌幅、連買連賣天數、近 5 日累計。
+    date 沒給就是最新有法人資料的交易日；dates 是日期選單（帶各日已有哪些市場）。排序與篩選（上市／上櫃、外資投信同買同賣）由前端做。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return inst_rank_payload(date)
 
 
 @app.get("/api/hub/chips/status")
