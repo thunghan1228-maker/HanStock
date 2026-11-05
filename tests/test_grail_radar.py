@@ -72,9 +72,16 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue(module._flyburst(fb))
         self.assertFalse(module._flyburst({**fb, "ma20_ma60": 1.0}))
         # 富喬：創 120 日新高、收黑 1.28%（原本要 1.8% 的長黑）
-        pa = {"body": -1.282, "c_m5_prev": 12.327, "c_ma20": 20.172, "chg": 0.0, "h_ph": 4.87, "hiago120": 0, "ma5_ma20": 10.73, "vol": 188839.0}
+        pa = {"body": -1.282, "c_m5_prev": 12.327, "c_ma20": 20.172, "chg": 0.0, "h_ph": 4.87, "hiago120": 0, "ma5_ma20": 10.73, "vol": 188839.0, "newhi_cnt3": 3}
         self.assertTrue(module._panther(pa))
-        self.assertFalse(module._panther({**pa, "body": -1.0}))
+        self.assertFalse(module._panther({**pa, "body": -0.4}))          # 收黑不到 0.5%
+        # 第十二版（11/05 老師的超黑豹）：力新跌 6.98%、昨天離 5 日線 16.1%；佳大昨天離 5 日線只有 9.05%
+        li = {"body": -10.24, "c_m5_prev": 16.08, "c_ma20": 12.08, "chg": -6.98, "h_ph": 8.94, "hiago120": 0, "ma5_ma20": 7.57, "vol": 18350.0, "newhi_cnt3": 3}
+        self.assertTrue(module._panther(li))
+        self.assertTrue(module._panther({**li, "chg": -3.11, "c_m5_prev": 9.05, "h_ph": 4.15, "body": -5.44}))
+        self.assertFalse(module._panther({**li, "chg": -10.5}))           # 跌超過 10%
+        self.assertFalse(module._panther({**li, "newhi_cnt3": 1}))        # 近 3 天要有 2 天創 20 日新高
+        self.assertFalse(module._panther({**li, "vol": 6000.0}))
         # 聯光通：神下影；近 3 天漲幅超過 5.5% 的不算（10/12～10/19 多出來的幾檔）
         sh = {"body": 0.931, "c_ma5": -0.587, "c_ma60": 35.712, "chg": 0.931, "chg_3": -2.041, "chg_max4": 9.848, "l_ge_pl": False, "lshadow": 3.911,
               "ma20_ma60": 17.045, "ma5_slope": 1.075, "v_v20": 1.714, "vol": 19172.0, "z_min5": 1.374}

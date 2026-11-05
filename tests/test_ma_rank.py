@@ -266,6 +266,20 @@ class MaRankTests(unittest.TestCase):
         self.assertIn("1111", [r["code"] for r in module.hits()["rows"]])
         self.assertEqual(module.ranking()["n"], 5)              # 切過去再切回來，原本的資料沒被動到
 
+    def test_universe_since_drops_days_before_the_stock_entered_teacher_list(self) -> None:
+        """老師名單從某天起才有的股票（東捷資訊 11/03 起）：之前的日子不算進名次、連續上榜天數。"""
+        normal = module.ranking()
+        first = next(x for x in normal["stocks"] if x["code"] == "1111")
+        with patch.object(module, "UNIVERSE_SINCE", {"1111": D[2]}):
+            module._cache.update({"key": None, "data": None})
+            cut = module.ranking()
+        module._cache.update({"key": None, "data": None})
+        again = next(x for x in module.ranking()["stocks"] if x["code"] == "1111")
+        got = next(x for x in cut["stocks"] if x["code"] == "1111")
+        self.assertEqual(first["streak"], 4)
+        self.assertEqual(got["streak"], 2)                    # 只算 D[2]、D[3] 兩天
+        self.assertEqual(again["streak"], 4)                  # 沒有設定就跟原本一樣
+
     def test_bias_columns(self) -> None:
         """月乖離／季乖離：收盤 ÷ 20／60 日均線 − 1（%）；日K不夠或當天沒日K就是 None；讀日K失敗不影響排行。"""
         def bar(day: str, close: float) -> tuple:

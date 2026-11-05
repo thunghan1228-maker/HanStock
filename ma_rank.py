@@ -48,7 +48,10 @@ SKIP_CODES = frozenset({"2241"})
 # 所以是老師那天的名單沒有）。2026-10-24 使用者決定名單維持我們的、但要能切換成「對照老師名單」看名次（排行頁的切換鈕）。
 # 2026-10-29 老師的範圍長大了：他收盤後（14:01）全市場 535 檔已計分、我們 538 檔，前 60 名出現了佳大、麗臺、玉晶光、新建、振發、碩禾、大立（都拿掉）；
 # 我們前 60 名多的易發（10 分）、茂綸（9 分）、恩德（8 分）他沒有——剛好多 3 檔，其他都在他的範圍裡。
-TEACHER_ABSENT = frozenset({"6425", "6227", "1528"})
+TEACHER_ABSENT = frozenset({"6425", "6227", "1528", "4527"})   # 4527 方土霖：2026-11-05 老師前 60 名裡沒有（我們 6 分排第 43，老師第 60 名才 5 分）
+# 老師名單「從哪天起才有」這檔（我們是回頭補進族群的，之前的日子老師那邊沒有它，連續上榜天數、名次都不能算進去）：
+# 東捷資訊 6697 老師 11/05 連續上榜 3 天（11/03 才開始有），我們原本回溯算出 12 天（2026-11-05 使用者貼老師畫面對照）。
+UNIVERSE_SINCE = {"6697": "2026-11-03"}
 
 _lock = threading.Lock()
 _cache: dict[str, Any] = {"key": None, "data": None}
@@ -147,8 +150,9 @@ def _load() -> dict[str, Any]:
                 ).fetchall()
                 for r in rows:
                     d = str(r["trade_date"])
-                    if d in by_date:
-                        by_date[d][str(r["stock_code"]).strip().upper()] = _record(r)
+                    code = str(r["stock_code"]).strip().upper()
+                    if d in by_date and not (code in UNIVERSE_SINCE and d < UNIVERSE_SINCE[code]):
+                        by_date[d][code] = _record(r)
     order: dict[str, list[str]] = {}
     rank: dict[str, dict[str, int]] = {}
     for d, recs in by_date.items():

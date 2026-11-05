@@ -69,6 +69,7 @@ def collector_status() -> dict:
         "error": _last_run["error"], "mode": result.get("mode"), "insertedBars": result.get("inserted_bars"),
         "sourceFailureCount": len(failures), "lastSourceFailures": failures[-3:],
         "yahooOtc": result.get("yahoo_otc"),
+        "yahooOtcGap": result.get("yahoo_otc_gap"),
         "progress": download_progress(),
     }
 

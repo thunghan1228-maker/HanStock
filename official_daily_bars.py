@@ -428,6 +428,10 @@ _yahoo_otc_attempted: dict[str, float] = {}
 
 
 YAHOO_OTC_MAX_DATES = 10  # 只檢查最近 10 個櫃買沒給資料的交易日
+# 2026-11-05 使用者對老師均線分數排行：碩禾 3691 等十幾檔上櫃股（11/04、11/05 兩天都有）我們前 60 名裡完全沒有，因為那天的日K沒補到。
+# 原因：一天的上櫃日K只要到齊前一天檔數的 97% 就當「收齊了」（otc_day_complete），剩下 3% 以內（約 30 檔）從此不會再補；
+# Yahoo 逐檔補的那一輪遇到 429／價格對不上的幾檔，下一輪因為這天已經「收齊」就跳過。收齊的最近幾天，再補一次族群股裡缺日K的上櫃代號（不看 97% 門檻）。
+YAHOO_OTC_GAP_DAYS = 3
 
 
 def _otc_presence(since: str, until: str) -> dict[str, set[str]]:
@@ -495,12 +499,14 @@ def _day_done(trade_date: date) -> tuple[bool, bool]:
 def _yahoo_otc_fill(
     missing_dates: list[date], *, delay: float = 0.3, retry_pause: float = 20.0,
     fetcher: Callable[..., Any] | None = None, now: datetime | None = None,
+    group_only: bool = False, attempt_key: str = "",
 ) -> dict[str, Any]:
     """櫃買中心被擋、FinMind 也拿不到（2026-09-23 付費方案到期）的日子：逐檔用 Yahoo 日K補上櫃。
     只打真的缺那幾天的代號（中途被部署打斷，下一輪只補剩下的；很久沒日K的下市股不打），
     每檔一個請求涵蓋它缺的日子，往前多抓兩週跟已經有的官方日K對收盤價，對不上那檔就不寫；
     67 個族群的上櫃股先補，失敗的隔一下再試一輪。
-    同一天 3 小時內不重打（收集器每小時一輪）；今天要 14:30 以後才補（Yahoo 當天日K那時才是最終值）。"""
+    同一天 3 小時內不重打（收集器每小時一輪）；今天要 14:30 以後才補（Yahoo 當天日K那時才是最終值）。
+    group_only＝只補族群股（industry_group_codes）裡缺日K的代號、而且 Yahoo 那天沒成交量的不寫（收齊的日子補漏用，見 YAHOO_OTC_GAP_DAYS）；attempt_key 讓這輪的 3 小時節流跟主流程分開算。"""
     from daily_bars_history_backfill import _existing_closes, _prices_match, fetch_yahoo_daily
     from otc_gap_backfill import _known_stock_names
     from stock_groups import industry_group_codes
@@ -509,13 +515,13 @@ def _yahoo_otc_fill(
     clock = time.monotonic()
     dates = sorted({
         day for day in missing_dates
-        if clock - _yahoo_otc_attempted.get(day.isoformat(), float("-inf")) >= YAHOO_OTC_RETRY_SECONDS
+        if clock - _yahoo_otc_attempted.get(attempt_key + day.isoformat(), float("-inf")) >= YAHOO_OTC_RETRY_SECONDS
         and not (day == tw_now.date() and (tw_now.hour, tw_now.minute) < YAHOO_OTC_READY_AFTER)
     })
     if not dates:
         return {"skipped": "這幾天 3 小時內已經用 Yahoo 補過，或今天還沒到 14:30"}
     for day in dates:
-        _yahoo_otc_attempted[day.isoformat()] = clock
+        _yahoo_otc_attempted[attempt_key + day.isoformat()] = clock
     wanted = sorted(day.isoformat() for day in dates)
     since = (dates[0] - timedelta(days=YAHOO_OTC_OVERLAP_DAYS)).isoformat()
     until = dates[-1].isoformat()
@@ -531,6 +537,8 @@ def _yahoo_otc_fill(
     with get_connection() as connection:
         names = _known_stock_names(connection)
     priority = industry_group_codes()
+    if group_only:
+        missing_by_code = {code: days for code, days in missing_by_code.items() if code in priority}
     codes = sorted(missing_by_code, key=lambda code: (code not in priority, code))
     inserted = 0
     mismatched: list[str] = []
@@ -551,7 +559,8 @@ def _yahoo_otc_fill(
                 "stock_code": code, "stock_name": names.get(code) or code, "market": "OTC",
                 "time": datetime.combine(date.fromisoformat(day), datetime_time.min, tzinfo=UTC), **bar,
             }
-            for day, bar in sorted(days.items()) if day in missing_by_code[code] and day not in existing
+            for day, bar in sorted(days.items())
+            if day in missing_by_code[code] and day not in existing and not (group_only and not bar.get("volume"))
         ]
         if rows:
             inserted += _save_day(rows)
@@ -591,6 +600,7 @@ def download_official_daily_bars(
     inserted = 0
     source_failures: list[dict[str, str]] = []
     otc_unsourced: list[date] = []
+    gap_days: list[date] = []
     tpex_down: str | None = None
     _progress.update({"phase": "official", "date": None, "index": 0, "total": len(dates), "yahooDone": 0, "yahooTotal": 0})
     for index, trade_date in enumerate(dates, start=1):
@@ -599,6 +609,7 @@ def download_official_daily_bars(
         # 限流時連今天都抓不到，上櫃備援也跟著跳過）
         tse_done, otc_done = _day_done(trade_date)
         if tse_done and otc_done:
+            gap_days.append(trade_date)   # 收齊的日子：最後再補一次族群股裡缺的上櫃代號
             continue
         if tse_done:
             twse_rows = []  # 上市已經收過了：這天確定有開市，只差上櫃
@@ -657,6 +668,14 @@ def download_official_daily_bars(
         except Exception as error:  # noqa: BLE001
             yahoo_otc = {"error": f"{type(error).__name__}: {error}"}
         print(f"上櫃日K Yahoo 備援：{yahoo_otc}", flush=True)
+    yahoo_gap: dict[str, Any] | None = None
+    if gap_days:
+        try:
+            yahoo_gap = _yahoo_otc_fill(gap_days[-YAHOO_OTC_GAP_DAYS:], group_only=True, attempt_key="gap:")
+            inserted += int(yahoo_gap.get("inserted") or 0)
+        except Exception as error:  # noqa: BLE001
+            yahoo_gap = {"error": f"{type(error).__name__}: {error}"}
+        print(f"上櫃日K 收齊日子補漏（族群股）：{yahoo_gap}", flush=True)
     _progress["phase"] = "done"
 
     with get_connection() as connection:
@@ -679,6 +698,7 @@ def download_official_daily_bars(
         "bar_count": bar_count,
         "source_failures": source_failures,
         "yahoo_otc": yahoo_otc,
+        "yahoo_otc_gap": yahoo_gap,
         "triangle_scan": scan_summary,
     }
 
