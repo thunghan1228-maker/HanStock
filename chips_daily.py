@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -432,6 +433,94 @@ def chips_daily(trade_date: str | None = None) -> dict[str, Any]:
         "sources": sources, "mainForceRows": len(today_mf), "stockCount": len(stocks), "stocks": stocks,
         "generatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
     }
+
+
+# ------------------------------------------------------------------ 外資／投信買賣超排行（研究室，2026-11-05 使用者）
+# 使用者：研究室右邊加「外資買賣超」「投信買賣超」兩個分頁；可以選日期往回查、上市／上櫃分開看、
+# 還有「外資跟投信同買、同賣」的篩選。範圍是全市場的一般股票（4 碼數字；ETF、特別股、權證不算），不只 67 個族群。
+RANK_DATES = 90                        # 日期選單回看幾個有資料的交易日
+RANK_STREAK_WINDOW = STREAK_DAYS       # 連買／連賣天數、近 5 日累計用這個窗口
+RANK_CACHE_SECONDS = 120
+_COMMON_STOCK = re.compile(r"^[1-9]\d{3}$")
+_rank_cache: dict[str, Any] = {}
+
+
+def _lots(shares: int | float | None) -> int:
+    """股 → 張（四捨五入到整張）。"""
+    return int(round((shares or 0) / 1000))
+
+
+def inst_rank(trade_date: str | None = None) -> dict[str, Any]:
+    """一天全市場（上市＋上櫃）一般股票的外資、投信買賣超（張），附收盤、漲跌幅、成交量、族群、連買／連賣天數、近 5 日累計。
+    rows 只放外資或投信有買賣的股票；排序、篩選（上市／上櫃、同買同賣）交給前端。
+    dates＝日期選單（新的在前），每個日期帶有哪幾個市場已經有資料（上櫃常比上市晚一些才進來）。"""
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        cover = connection.execute(
+            "SELECT trade_date, market FROM institutional_daily GROUP BY trade_date, market ORDER BY trade_date DESC"
+        ).fetchall()
+    markets_by_date: dict[str, list[str]] = {}
+    for row in cover:
+        markets_by_date.setdefault(str(row["trade_date"]), []).append(str(row["market"]))
+    all_dates = list(markets_by_date)[:RANK_DATES]
+    if not all_dates:
+        return {"status": "empty", "date": None, "dates": [], "rows": []}
+    if not trade_date:
+        trade_date = all_dates[0]
+    if trade_date not in markets_by_date:
+        return {"status": "empty", "date": trade_date, "dates": [{"date": d, "markets": sorted(markets_by_date[d])} for d in all_dates], "rows": []}
+    window = [d for d in all_dates if d <= trade_date][:RANK_STREAK_WINDOW]
+    cache_key = f"{trade_date}|{window[0]}|{len(window)}|{sorted(markets_by_date[trade_date])}"
+    hit = _rank_cache.get("entry")
+    if hit and hit["key"] == cache_key and time.time() - hit["at"] < RANK_CACHE_SECONDS:
+        return {**hit["data"], "dates": [{"date": d, "markets": sorted(markets_by_date[d])} for d in all_dates]}
+    series: dict[str, dict[str, list[int | None]]] = {}
+    names: dict[str, tuple[str, str]] = {}
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""SELECT trade_date, stock_code, market, stock_name, foreign_net, trust_net FROM institutional_daily
+                WHERE trade_date IN ({','.join('?' for _ in window)})""",
+            tuple(window),
+        ).fetchall()
+    index = {d: i for i, d in enumerate(window)}
+    for row in rows:
+        code = str(row["stock_code"]).strip().upper()
+        if not _COMMON_STOCK.match(code):
+            continue
+        entry = series.setdefault(code, {"foreign": [None] * len(window), "trust": [None] * len(window)})
+        entry["foreign"][index[str(row["trade_date"])]] = int(row["foreign_net"])
+        entry["trust"][index[str(row["trade_date"])]] = int(row["trust_net"])
+        if str(row["trade_date"]) == trade_date:
+            names[code] = (str(row["market"]), str(row["stock_name"] or ""))
+    codes = sorted(code for code in names if series[code]["foreign"][0] or series[code]["trust"][0])
+    quotes = daily_quotes(trade_date, codes)
+    grouped = industry_group_codes()
+    from brew_launch_history import group_and_name
+    out_rows: list[dict[str, Any]] = []
+    for code in codes:
+        foreign, trust = series[code]["foreign"], series[code]["trust"]    # window[0] 就是 trade_date（新的在前）
+        market, name = names[code]
+        f, t = _lots(foreign[0]), _lots(trust[0])
+        if f == 0 and t == 0:
+            continue
+        quote = quotes.get(code) or {}
+        out_rows.append({
+            "code": code, "name": name, "mkt": market,
+            "f": f, "t": t,
+            "fs": _streak(foreign), "ts": _streak(trust),                           # 連買（正）／連賣（負）天數
+            "f5": _lots(sum(v or 0 for v in foreign[:5])), "t5": _lots(sum(v or 0 for v in trust[:5])),   # 近 5 個交易日累計（張）
+            "c": quote.get("close"), "p": quote.get("changePct"), "v": quote.get("volume"),
+            "g": group_and_name(code)[0] if code in grouped else "",
+        })
+    data = {
+        "status": "ok", "date": trade_date, "markets": sorted(markets_by_date[trade_date]),
+        "counts": {m: sum(1 for r in out_rows if r["mkt"] == m) for m in ("TSE", "OTC")},
+        "streakDays": len(window), "rows": out_rows,
+        "generatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+    }
+    _rank_cache["entry"] = {"key": cache_key, "at": time.time(), "data": data}
+    return {**data, "dates": [{"date": d, "markets": sorted(markets_by_date[d])} for d in all_dates]}
 
 
 # ------------------------------------------------------------------ 收集
