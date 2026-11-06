@@ -145,6 +145,58 @@ class ThresholdTests(DbTestCase):
         self.assertFalse([line for line in th2["lines"] if line["kind"] == "volume"])   # 連 3 日第一款那條只看第一款
 
 
+class OutlookTests(DbTestCase):
+    """第一次第一款的處置機率（2026-11-06 使用者：老師的表，機率／週一收盤低於／週二累計低於（假設週一平盤））。"""
+
+    # 2026-11-06 老師那份表的 15 檔（漢測沒有日K，不算）：(週一 slack, 週二 slack, 老師的機率)；漲停也會中＝99
+    TEACHER = [(99, 4.6, "高"), (99, 2.6, "高"), (99, 2.8, "高"), (9.9, 5.2, "高"), (9.0, 5.0, "高"), (8.6, 4.3, "高"),
+               (4.1, 3.7, "中"), (1.5, 2.9, "中"), (7.1, -0.7, "中低"), (3.8, -2.1, "中低"), (4.0, -2.9, "中低"), (5.4, -3.3, "中低"),
+               (-0.5, -8.9, "低"), (-8.4, -9.0, "低"), (-8.7, -9.1, "低")]
+
+    def test_tier_matches_teacher_table(self) -> None:
+        for mon, tue, expected in self.TEACHER:
+            self.assertEqual(module.outlook_tier(mon, tue), expected, (mon, tue))
+        self.assertEqual(module.outlook_tier(99, 99), "極高")            # 漢測：週一週二漲停也會中
+        self.assertEqual(module.outlook_tier(module.SLACK_NEVER, module.SLACK_NEVER), "低")
+
+    def test_edge_view_rounds_toward_strict_and_words(self) -> None:
+        down = lambda pct: {"sign": -1, "pct": pct, "always": False}   # noqa: E731
+        up = lambda pct: {"sign": 1, "pct": pct, "always": False}      # noqa: E731
+        # 跌多的：收盤低於門檻就中，% 取到 0.1 往下取（老師：台虹 -0.43% 寫「要跌 0.5%」、台燿 8.66% 寫 +8.6%）
+        self.assertEqual(module._edge_view(down(-0.43), True)["text"], "要跌 0.5%")
+        self.assertEqual(module._edge_view(down(8.66), True)["text"], "+8.6%")
+        self.assertEqual(module._edge_view(down(-0.65), False)["text"], "要再跌 0.7%")     # 週二寫「要再跌」
+        self.assertEqual(module._edge_view(down(4.17), False)["text"], "+4.1%")
+        self.assertEqual(module._edge_view(down(-0.43), True)["slack"], -0.5)
+        # 漲多的鏡像：收盤高於門檻才中、往上取
+        self.assertEqual(module._edge_view(up(4.12), True)["text"], "要漲 4.2%")
+        self.assertEqual(module._edge_view(up(-4.31), False)["text"], "-4.3%")
+        self.assertEqual(module._edge_view(up(4.12), True)["slack"], -4.2)
+        self.assertEqual(module._edge_view({"sign": -1, "pct": 10.0, "always": True}, True)["text"], "漲停也會中")
+        self.assertEqual(module._edge_view({"sign": 1, "pct": -10.0, "always": True}, False)["text"], "跌停也會中")
+        self.assertEqual(module._edge_view(None, True)["text"], "一天到不了")
+
+    def test_outlook_from_bars(self) -> None:
+        # 跌多的：6 日累積已經大跌，週一漲停也還是中；週二（假設週一平盤）門檻 +5.5%（上市）／+7.5%（上櫃）
+        deep = [100, 100, 100, 100, 100, 100, 92, 84, 76, 69, 62]
+        self.add_bars("9101", deep)
+        o = module.first_time_outlook("9101", "TSE", "2026-10-08")
+        self.assertEqual((o["tier"], o["tierRank"], o["side"]), ("高", 1, "down"))
+        self.assertEqual((o["mon"]["text"], o["mon"]["always"], o["tue"]["text"]), ("漲停也會中", True, "+5.5%"))
+        self.assertEqual(module.first_time_outlook("9101", "OTC", "2026-10-08")["tue"]["text"], "+7.5%")
+        # 漲多的：跌停也會中
+        self.add_bars("9102", [100, 100, 100, 100, 100, 100, 108, 118, 128, 140, 153])
+        up = module.first_time_outlook("9102", "TSE", "2026-10-08")
+        self.assertEqual((up["side"], up["mon"]["text"], up["tue"]["text"]), ("up", "跌停也會中", "-4.3%"))
+        # 兩天都漲停（跌停）也中 → 極高
+        self.add_bars("9103", [100, 100, 100, 100, 100, 100, 90, 81, 73, 66, 59])
+        self.assertEqual(module.first_time_outlook("9103", "OTC", "2026-10-08")["tier"], "極高")
+        # 日K不夠（新上市）、或今天的日K還沒進來 → 沒有
+        self.add_bars("9104", [50, 51, 52])
+        self.assertIsNone(module.first_time_outlook("9104", "TSE", "2026-10-08"))
+        self.assertIsNone(module.first_time_outlook("9101", "TSE", "2026-10-09"))
+
+
 class PayloadTests(DbTestCase):
     def test_sections(self) -> None:
         now = datetime(2026, 10, 8, 20, 40, tzinfo=TW)
@@ -170,6 +222,7 @@ class PayloadTests(DbTestCase):
         with patch.object(module, "_mirror_url", lambda name, volatile: name):
             module.collect(now=now, fetcher=fake, days=20)
         self.add_bars("5228", [45.0, 47, 50, 53, 56, 59, 61.3], volume=4797)
+        self.add_bars("3236", [40.0, 42, 45, 48, 52, 55, 58.9], volume=9000)      # 千如：第一次第一款，有日K → 算週一、週二門檻
         fundamentals_daily.save_shares("OTC", {"5228": 38_060_000})
         p = module.build_payload(now)
         self.assertEqual((p["dataDate"], p["nextDay"], p["nextWeekday"]), ("2026-10-08", "2026-10-12", "一"))
@@ -194,6 +247,9 @@ class PayloadTests(DbTestCase):
         # 機器人 628 出獄股：勤凱 9/29 迄 → 9/30 出獄；天擎、聯茂還在關不算
         self.assertEqual([(r["code"], r["release"]) for r in p["released"]], [("4760", "2026-09-30")])
         self.assertEqual([f["code"] for f in p["firstTime"]], ["3236", "6708"])   # 華新科 10/07 也有第一款，不算第一次
+        first = {f["code"]: f for f in p["firstTime"]}
+        self.assertEqual(set(first["3236"]["outlook"]), {"tier", "tierRank", "side", "mon", "tue"})
+        self.assertIsNone(first["6708"]["outlook"])                                # 天擎沒有日K：沒有機率，排最後
         suspect = next(s for s in p["suspects"] if s["code"] == "5228")
         self.assertEqual(suspect["status"], "連2 第一款 警告")
         self.assertTrue(suspect["lines"])

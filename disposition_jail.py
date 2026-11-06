@@ -17,6 +17,8 @@
   第二款（30/60/90 日起迄漲跌持續超標，收紅就再中）。門檻數字取自證交所第四條異常標準詳細數據（115.08.03 版），
   上櫃的從櫃買實際公告的數字反推（8/10 新制後：第一款最低 30.02%、23.38%＋價差 40.5 元；第三／四款 27%；週轉率 5%）
 - 今日第一次第一款：資料日觸及第一款、前 9 個交易日都沒有第一款（出獄後重新算：關完之前的第一款不算，耀穎 10/08）
+  每檔附「處置機率」（2026-11-06 使用者：老師的表）：第一次要走到處置得連 3 天被注意，所以算週一收盤、週二累計（假設週一平盤）的第一款價格門檻，
+  分極高／高／中／中低／低（用老師 11/06 那份 16 檔對過，數字差不超過 0.1%），見 first_time_outlook
 - 個股處置前科索引／查詢：處置迄日在近 95 天內、或近 25 個交易日內被注意過的股票（照老師 10/08 的 293 檔反推），
   每檔的處置紀錄、注意日期與款別、明天判定
 
@@ -594,6 +596,98 @@ def thresholds(code: str, market: str, data_day: str, *, need_any: bool, recent_
     return {"lines": lines, "high": bool(high), "close": c, "volume": vol, "s5": round(s5, 2), "easiest": easiest}
 
 
+# ------------------------------------------------------------------ 第一次第一款的處置機率（週一、週二）
+# 2026-11-06 使用者：照老師的表（機率 極高／高／中／中低／低、股號股名、週一收盤低於、週二累計低於（假設週一平盤））放進處置監獄與首頁。
+# 第一次觸及第一款的股票要走到處置，得連 3 個營業日都被注意：週一、週二都要再中一次。
+# 週一門檻＝跟「明天門檻」同一套（第一款價格那條，最容易中的那個）；週二門檻＝假設週一收盤＝今天收盤（平盤），6 日窗口往後移一天再算一次。
+# 跌多的（6 日累積是跌）收盤「低於」門檻就中，漲多的收盤「高於」門檻就中。顯示的 % 取到 0.1 位、往保守（嚴格低於／高於）那邊取，
+# 用 2026-11-06 老師那份 16 檔對過：週一、週二的數字最多差 0.1（老師是無條件捨去、我們原本是四捨五入）。
+OUTLOOK_TIERS = ("極高", "高", "中", "中低", "低")
+SLACK_ALWAYS = 99.0     # 漲停（跌停）也會中
+SLACK_NEVER = -99.0     # 一天到不了
+
+
+def _first_clause_edge(closes: list[float], market: str) -> dict[str, Any] | None:
+    """第一款價格那條在「下一天」最容易中的門檻（相對 closes 最後一個收盤，%）。算法跟 thresholds() 的第一款一樣。
+    回 {sign, pct, always}：sign＝-1 跌多的（收盤低於門檻就中）、+1 漲多的（高於）；always＝漲停／跌停都會中；一天到不了回 None。"""
+    if len(closes) < 7 or closes[-1] < 5:
+        return None
+    rule = RULES.get(market, RULES["TSE"])
+    c = closes[-1]
+    s5 = sum((closes[-k] / closes[-k - 1] - 1) * 100 for k in range(1, 6) if closes[-k - 1] > 0)
+    start_close = closes[-5]
+    up = s5 >= 0
+    sign = 1 if up else -1
+
+    def price_for(cum: float) -> float:
+        return c * (1 + (sign * cum - s5) / 100)
+
+    prices = [price_for(rule["c1"])]
+    alt = price_for(rule["c1alt"])
+    alt = max(alt, start_close + rule["c1diff"]) if up else min(alt, start_close - rule["c1diff"])
+    if (up and alt < prices[0] - 0.005) or (not up and alt > prices[0] + 0.005):
+        prices.append(alt)
+    pcts: list[float] = []
+    always = False
+    for price in prices:
+        pct = (price / c - 1) * 100
+        if sign * pct > LIMIT_PCT:
+            continue
+        if sign * pct <= -LIMIT_PCT:
+            always = True
+            pcts.append(-LIMIT_PCT * sign)
+            continue
+        pcts.append(pct)
+    if not pcts:
+        return None
+    easiest = min(pcts, key=lambda p: sign * p)
+    return {"sign": sign, "pct": easiest, "always": always}
+
+
+def _edge_view(edge: dict[str, Any] | None, monday: bool) -> dict[str, Any]:
+    """一格的顯示：文字、取到 0.1 的 %、slack（越大越容易中：跌多的＝門檻 %，漲多的＝-門檻 %；漲停也會中＝99、到不了＝-99）。"""
+    if edge is None:
+        return {"text": "一天到不了", "pct": None, "always": False, "slack": SLACK_NEVER}
+    sign = edge["sign"]
+    if edge["always"]:
+        return {"text": "漲停也會中" if sign < 0 else "跌停也會中", "pct": None, "always": True, "slack": SLACK_ALWAYS}
+    if sign < 0:
+        v = math.floor(edge["pct"] * 10 + 1e-9) / 10
+        text = f"+{v:.1f}%" if v >= 0 else ("要跌 " if monday else "要再跌 ") + f"{abs(v):.1f}%"
+        return {"text": text, "pct": v, "always": False, "slack": v}
+    v = math.ceil(edge["pct"] * 10 - 1e-9) / 10
+    text = f"{v:.1f}%" if v <= 0 else ("要漲 " if monday else "要再漲 ") + f"{v:.1f}%"
+    return {"text": text, "pct": v, "always": False, "slack": -v}
+
+
+def outlook_tier(mon_slack: float, tue_slack: float) -> str:
+    """機率等級（用老師 2026-11-06 那份 16 檔反推）：週一就算漲停（跌停）也中、週二也是 → 極高；週一一定中，或週一門檻 ≥ 8% 且週二 ≥ 4% → 高；
+    週二門檻 > 0（假設週一平盤也還中）→ 中；週二要再跌（漲）不到 5% → 中低；要 5% 以上 → 低。"""
+    if mon_slack >= SLACK_ALWAYS and tue_slack >= SLACK_ALWAYS:
+        return "極高"
+    if mon_slack >= SLACK_ALWAYS or (mon_slack >= 8 and tue_slack >= 4):
+        return "高"
+    if tue_slack > 0:
+        return "中"
+    if tue_slack > -5:
+        return "中低"
+    return "低"
+
+
+def first_time_outlook(code: str, market: str, data_day: str) -> dict[str, Any] | None:
+    """第一次第一款那檔的週一、週二門檻與機率等級；日K不夠（新上市）或今天的日K還沒進來就回 None。"""
+    bars = load_daily_bars(code, limit=100)
+    if len(bars) < 7 or str(bars[-1]["ts"])[:10] != data_day:
+        return None
+    closes = [b["close"] for b in bars]
+    mon_edge = _first_clause_edge(closes, market)
+    tue_edge = _first_clause_edge(closes + [closes[-1]], market)     # 假設週一收盤＝今天收盤（平盤）
+    mon, tue = _edge_view(mon_edge, True), _edge_view(tue_edge, False)
+    tier = outlook_tier(mon["slack"], tue["slack"])
+    side = "down" if (mon_edge or tue_edge or {"sign": -1})["sign"] < 0 else "up"
+    return {"tier": tier, "tierRank": OUTLOOK_TIERS.index(tier), "side": side, "mon": mon, "tue": tue}
+
+
 def _status_text(acc: dict[str, Any], last_clauses: list[int], jailed: bool) -> str:
     if acc["pathA"]:
         text = "連2 第一款 警告"
@@ -792,8 +886,10 @@ def _build(now: datetime) -> dict[str, Any]:
             continue
         served = max((p["end"] for p in by_code_punish.get(code, []) if p["release"] <= data_day), default="")
         if not any(1 in day_map.get(d, []) for d in prev9 if d > served):
-            first_time.append({"code": code, "name": names.get(code, ""), "market": MARKET_LABEL.get(markets.get(code, ""), "")})
-    first_time.sort(key=lambda r: r["code"])
+            outlook = first_time_outlook(code, markets.get(code, "TSE"), data_day)
+            first_time.append({"code": code, "name": names.get(code, ""), "market": MARKET_LABEL.get(markets.get(code, ""), ""), "outlook": outlook})
+    # 機率高的在前（極高→低），沒算出來的（日K不夠）排最後；同等級照週二門檻由寬到嚴、再照股號
+    first_time.sort(key=lambda r: ((r["outlook"] or {}).get("tierRank", 9), -((r["outlook"] or {}).get("tue", {}).get("slack", SLACK_NEVER)), r["code"]))
 
     # 前科索引：處置迄日近 95 天內、或近 25 個交易日內被注意
     punish_cut = (_d(data_day) - timedelta(days=INDEX_PUNISH_DAYS)).isoformat()
