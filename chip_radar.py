@@ -192,8 +192,13 @@ def _names() -> dict[str, tuple[str, str | None]]:
     return {str(r["stock_code"]).strip().upper(): (str(r["stock_name"] or ""), r["market"]) for r in rows}
 
 
+SCORE_FALLBACK_DAYS = 7   # 當天（最新一個交易日）還沒有那檔的分數（上櫃的盤後資料晚到），往前找這麼多日曆天內最近一天的
+
+
 def _ma_scores() -> tuple[str | None, dict[str, int]]:
-    """最近一個交易日的均線分數（官網那套，score2）。黑龍表還沒建好就是空的。"""
+    """最近一個交易日的均線分數（官網那套，score2）。黑龍表還沒建好就是空的。
+    上櫃的盤後資料常常晚到，最新那天只有上市的：沒有當天分數的股票改用往前 SCORE_FALLBACK_DAYS 天內最近一天的
+    （2026-11-09 老師雷達頁 14:00 每檔都有分數，我們上櫃那幾檔變「—」）。"""
     initialize_database()
     try:
         with get_connection() as connection:
@@ -201,10 +206,23 @@ def _ma_scores() -> tuple[str | None, dict[str, int]]:
             day = row["d"] if row else None
             if not day:
                 return None, {}
-            rows = connection.execute("SELECT stock_code, score2 FROM heilong_daily WHERE trade_date = ?", (day,)).fetchall()
+            floor = (datetime.strptime(str(day), "%Y-%m-%d") - timedelta(days=SCORE_FALLBACK_DAYS)).strftime("%Y-%m-%d")
+            rows = connection.execute(
+                "SELECT stock_code, score2 FROM heilong_daily WHERE trade_date >= ? AND trade_date <= ? AND score2 IS NOT NULL ORDER BY trade_date",
+                (floor, day),
+            ).fetchall()
     except Exception:  # noqa: BLE001  （黑龍表不存在）
         return None, {}
-    return str(day), {str(r["stock_code"]).upper(): int(r["score2"]) for r in rows if r["score2"] is not None}
+    return str(day), {str(r["stock_code"]).upper(): int(r["score2"]) for r in rows}   # 日期舊到新排，後面的蓋掉前面的
+
+
+def _previous_score_day(day: str) -> str | None:
+    try:
+        with get_connection() as connection:
+            row = connection.execute("SELECT MAX(trade_date) AS d FROM heilong_daily WHERE trade_date < ?", (day,)).fetchone()
+        return str(row["d"]) if row and row["d"] else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _biases(codes: list[str], day: str | None) -> dict[str, tuple[float | None, float | None]]:
@@ -217,7 +235,14 @@ def _biases(codes: list[str], day: str | None) -> dict[str, tuple[float | None, 
 
         rows: list[dict[str, Any]] = [{"code": c} for c in codes]
         _attach_bias(rows, day)
-        return {r["code"]: (r.get("b20"), r.get("b60")) for r in rows}
+        out = {r["code"]: (r.get("b20"), r.get("b60")) for r in rows}
+        missing = [c for c, v in out.items() if v == (None, None)]
+        prev = _previous_score_day(day) if missing else None       # 上櫃當天日K晚到：改用前一個交易日的乖離
+        if prev:
+            rows2: list[dict[str, Any]] = [{"code": c} for c in missing]
+            _attach_bias(rows2, prev)
+            out.update({r["code"]: (r.get("b20"), r.get("b60")) for r in rows2 if r.get("b20") is not None or r.get("b60") is not None})
+        return out
     except Exception:  # noqa: BLE001
         logger.exception("[chip radar] 月季乖離讀不到")
         return {}

@@ -342,6 +342,12 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(f("2026-10-16", "2026-10-19"))
         self.assertTrue(f("2026-10-08", "2026-10-08"))
         self.assertFalse(f("2026-10-16", "2026-10-15"))
+        # 2026-11-09 起週一版等週末籌碼：基準日週五的報告，過了週末（today 比基準日晚）才用那個週五結算的那週
+        self.assertTrue(f("2026-11-06", "2026-11-06", "2026-11-09"))
+        self.assertTrue(f("2026-11-06", "2026-11-06", "2026-11-08"))
+        self.assertFalse(f("2026-11-06", "2026-11-06", "2026-11-06"))      # 週五晚上當天算的：還沒有
+        self.assertFalse(f("2026-11-06", "2026-11-06"))
+        self.assertFalse(f("2026-11-13", "2026-11-06", "2026-11-09"))      # 比基準日還晚的週永遠不能用
 
     def test_chips_limit_four(self) -> None:
         self.enterContext(patch.object(module, "CHIPS_DAILY_HOT_GROUPS", 0))
