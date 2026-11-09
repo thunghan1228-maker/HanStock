@@ -432,28 +432,33 @@ def _judge_group(ratio: float, inst5: float, has_inst: bool) -> str:
     return "資金未進、型態未翻：先看族群再看個股"
 
 
-def _tdcc_week_available(week: str, as_of: str) -> bool:
+def _tdcc_week_available(week: str, as_of: str, today: str | None = None) -> bool:
     """集保結算週 week 的資料，在 as_of 那天收盤後的日報拿不拿得到。
     老師 10/16（週五）那份用的還是 10/08 那週，10/19 才換成 10/16 那週：週五收盤的那週集保週末才公布，當天日報看不到；
-    10/12～10/15 都是 10/08 那週。例外：連假提前結算的那週（10/08 週四，10/09 放假）老師 10/08 那份就用了 10/08 那週。"""
+    10/12～10/15 都是 10/08 那週。例外：連假提前結算的那週（10/08 週四，10/09 放假）老師 10/08 那份就用了 10/08 那週。
+    2026-11-09 起老師週一版改成「等週末籌碼出來、週日早上 8 點公告」（11/09 盤前讀＝11/06 收盤＋11/06 那週集保）：
+    基準日是週五的報告，要是在週末之後（today 比 as_of 晚）才算，就看得到那個週五結算的那週；週五晚上當天算的還是看不到。"""
     if week < as_of:
         return True
     if week == as_of:
         try:
-            return date.fromisoformat(week).weekday() < 4
+            if date.fromisoformat(week).weekday() < 4:
+                return True
         except ValueError:
             return False
+        return bool(today) and str(today) > as_of
     return False
 
 
-def radar_week(as_of: str) -> dict[str, Any] | None:
+def radar_week(as_of: str, today: str | None = None) -> dict[str, Any] | None:
     """籌碼雷達（chip_radar）裡基準日當下最新的那一週：買超榜、熱門族（族群排名前 5）、每檔籌碼%、連續增加幾週、榜上名次。
     老師的籌碼面卡片：「籌碼 +5.6%（集保 10/8 週，連 4 週，榜第 9）」；連 N 週＝籌碼% 連續幾週 >0（台表科 10/08 往回
     5.61、2.62、4.20、1.31、−0.14 → 連 4 週；富喬上週 −3.24 → 連 1 週）。"""
     import chip_radar   # 延遲匯入：chip_radar 會讀黑龍表，跟這個模組有循環
 
     radar = chip_radar.load_radar()
-    week = next((d for d in radar.dates if _tdcc_week_available(d, as_of)), None)
+    today = today or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    week = next((d for d in radar.dates if _tdcc_week_available(d, as_of, today)), None)
     if not week:
         return None
     buy, _sell = radar.lists(week)

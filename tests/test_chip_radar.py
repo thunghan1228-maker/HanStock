@@ -195,6 +195,22 @@ class RadarTests(unittest.TestCase):
         self.assertEqual((row["6127"]["b20"], row["6127"]["b60"]), (None, None))      # 沒算到的就是空
         module._cache.update({"at": 0.0, "key": None, "radar": None})
 
+    def test_ma_scores_fall_back_to_recent_day_for_late_otc(self) -> None:
+        """最新一天只有上市的分數（上櫃盤後資料晚到）：上櫃那檔改用前一天的，不要變「—」。"""
+        from database import get_connection
+
+        with get_connection() as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS heilong_daily (trade_date TEXT, stock_code TEXT, score2 INTEGER)")
+            connection.executemany("INSERT INTO heilong_daily (trade_date, stock_code, score2) VALUES (?, ?, ?)", [
+                ("2026-11-06", "6214", 7), ("2026-11-06", "5202", 12), ("2026-11-09", "6214", 5),
+                ("2026-10-20", "9999", 8),      # 太舊（超過 7 天）不用
+            ])
+        day, scores = module._ma_scores()
+        self.assertEqual(day, "2026-11-09")
+        self.assertEqual(scores.get("6214"), 5)         # 上市：當天的
+        self.assertEqual(scores.get("5202"), 12)        # 上櫃：當天還沒有，用 11/06 的
+        self.assertNotIn("9999", scores)
+
     def test_skipped_week_small_capital_cut_and_all_window(self) -> None:
         # 方土霖 4527：9/24 那週減資停止過戶、集保查無資料 → 10/02 改跟 9/18 比；總股數 7615 萬 → 6854 萬（−10%）、
         # 大戶 51,420,250 → 45,529,718 → x −8.59（老師 10/08 賣超榜 −8.6%），籌碼% 不大照列
