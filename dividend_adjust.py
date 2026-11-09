@@ -15,6 +15,12 @@
 事件來源：
 - twse：證交所「除權除息計算結果表」TWT49U（正式站主機直接抓，一個月一份）。
 - tpex：櫃買「除權息計算結果表」exDailyQ（櫃買擋正式站主機，走 tw-groups data 分支的鏡像 tpex/actions/exdiv-YYYY.json）。
+
+**算均線分數時只用證交所（上市）的除息事件，櫃買（上櫃）的不還原**（2026-11-09 老師均線分數排行頁 11/06 前 60 名）：
+上市股老師都有還原（零壹 3/19、華航、資通、凌群、佰鴻、伊雲谷、日友、海悅都要還原才對得上），但上櫃的力新（8/27 除息）、東友（6/29 除息）
+兩檔還原後都多 1 分（力新 60 日線 vs 120 日線 −0.07% → +0.61%、排列多 1 分；東友收盤 vs 240 日線 −2.6% → +0.01%、站上均線多 1 格），老師的分數等於沒還原
+（力新 12、東友 10）；10/22、11/04 兩份老師名單裡上櫃股的除息事件都不影響分數，沒有反例。老師的還原價看起來只涵蓋上市股，所以上櫃的除息先不還原。
+事件還是照樣存進 dividend_events（來源 tpex），要改回來只要把 SCORE_SKIP_SOURCES 清空。
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from price_adjust import adjust_bars
 TW_TZ = timezone(timedelta(hours=8))
 MIN_FACTOR = 0.4           # 一次除權息價格掉超過六成不合理（配股最多也才到 0.67）：資料怪就不套
 MAX_FACTOR = 1.6
+SCORE_SKIP_SOURCES = ("tpex",)   # 均線分數不用的事件來源（上櫃除息老師沒還原，見檔頭說明）
 TWSE_DIVIDEND_URL = "https://www.twse.com.tw/rwd/zh/exRight/TWT49U"
 
 
@@ -154,12 +161,14 @@ def save_events(events: Iterable[dict[str, Any]]) -> int:
     return changed
 
 
-def load_events(codes: Iterable[str] | None = None) -> dict[str, list[tuple[str, float]]]:
-    """{代號: [(除權息日, 因子), ...舊到新]}。"""
+def load_events(codes: Iterable[str] | None = None, *, skip_sources: Iterable[str] = ()) -> dict[str, list[tuple[str, float]]]:
+    """{代號: [(除權息日, 因子), ...舊到新]}。skip_sources＝不要的事件來源（twse／tpex）。"""
     initialize_database()
+    skip = {str(x) for x in skip_sources}
     with get_connection() as connection:
         _schema(connection)
-        rows = connection.execute("SELECT stock_code, ex_date, factor FROM dividend_events ORDER BY ex_date").fetchall()
+        rows = connection.execute("SELECT stock_code, ex_date, factor, source FROM dividend_events ORDER BY ex_date").fetchall()
+    rows = [r for r in rows if str(r["source"]) not in skip]
     wanted = {str(c).strip().upper() for c in codes} if codes is not None else None
     out: dict[str, list[tuple[str, float]]] = {}
     for r in rows:
@@ -192,9 +201,9 @@ def cash_reduction_undo(codes: Iterable[str] | None = None) -> dict[str, list[tu
 
 
 def score_events(codes: Iterable[str] | None = None) -> dict[str, list[tuple[str, float]]]:
-    """算均線分數時，要在「已套分割減資還原」的日K上再乘的事件：現金股利（除息）因子＋現金減資的反向因子。"""
+    """算均線分數時，要在「已套分割減資還原」的日K上再乘的事件：上市現金股利（除息）因子（上櫃的不用，見 SCORE_SKIP_SOURCES）＋現金減資的反向因子。"""
     codes = list(codes) if codes is not None else None
-    out: dict[str, list[tuple[str, float]]] = {c: list(v) for c, v in load_events(codes).items()}
+    out: dict[str, list[tuple[str, float]]] = {c: list(v) for c, v in load_events(codes, skip_sources=SCORE_SKIP_SOURCES).items()}
     for code, events in cash_reduction_undo(codes).items():
         out.setdefault(code, []).extend(events)
     return {c: sorted(v) for c, v in out.items()}

@@ -97,7 +97,7 @@ class StoreTests(unittest.TestCase):
             {"code": "1516", "date": "2026-10-27", "prevClose": 18.55, "refPrice": 24.73, "kind": "reduction", "source": "twse", "note": "彌補虧損"},
             {"code": "1563", "date": "2026-09-07", "prevClose": 66.0, "refPrice": 84.66, "kind": "reduction", "source": "twse", "note": "退還股款"},   # 證交所的現金減資：老師 11/04 也沒還原
         ])
-        module.save_events([{"code": "6173", "date": "2026-07-09", "prevClose": 273.0, "refPrice": 271.2, "source": "tpex"}])
+        module.save_events([{"code": "6173", "date": "2026-07-09", "prevClose": 273.0, "refPrice": 271.2, "source": "twse"}])   # （測試用：當成上市的除息）
         out = module.score_events(["6173", "1516", "1563"])
         self.assertEqual(set(out), {"6173", "1563"})
         self.assertAlmostEqual(out["1563"][0][1], 66.0 / 84.66, places=6)
@@ -108,6 +108,17 @@ class StoreTests(unittest.TestCase):
         back = module.adjust(adjusted, [e for e in out["6173"] if e[0] == "2026-10-19"])
         self.assertAlmostEqual(back[0][4], 301.49 * 284.0 / 301.49, places=3)
         self.assertEqual(back[1][4], 301.49)
+
+    def test_score_events_skip_tpex_dividends(self) -> None:
+        """均線分數只還原上市（證交所）的除息；上櫃（櫃買）的除息照樣存、但算分數不用（老師 11/06：力新 8/27、東友 6/29 沒還原）。"""
+        module.save_events([
+            {"code": "5202", "date": "2026-08-27", "prevClose": 12.05, "refPrice": 11.85, "source": "tpex", "note": "除息"},
+            {"code": "3029", "date": "2026-03-19", "prevClose": 100.0, "refPrice": 95.34, "source": "twse", "note": "息"},
+        ])
+        self.assertEqual(set(module.load_events()), {"5202", "3029"})                       # 事件本身都在
+        self.assertEqual(set(module.load_events(skip_sources=["tpex"])), {"3029"})
+        self.assertEqual(set(module.score_events()), {"3029"})                              # 算分數的只有上市的
+        self.assertEqual(set(module.score_events(["5202"])), set())
 
     def test_refresh_months_and_errors(self) -> None:
         calls = []
