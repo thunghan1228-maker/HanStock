@@ -37,6 +37,15 @@ SEEN = {"month": "2026-09", "baseline": "2026-10-02T12:31+08:00",
                   "8111": "2026-10-08T18:31+08:00"}}
 
 
+class NegativeBaseTests(unittest.TestCase):
+    def test_pct_negative_base_follows_teacher(self) -> None:
+        """基期是負的：老師 (本期 − 基期) ÷ 基期（鑽石投資年增 +447.81%），觀測站除以絕對值（−447.81%）；基期是正的照觀測站。"""
+        self.assertEqual(module._pct(-6_900_000, -1_260_000, -447.62), 447.62)
+        self.assertEqual(module._pct(-6_900_000, 3_410_000, -302.05), -302.05)
+        self.assertEqual(module._pct(5, 0, 12.3), 12.3)
+        self.assertEqual(module._pct(None, -3, 7.0), 7.0)
+
+
 class PureTests(unittest.TestCase):
     def test_parse_mirror(self) -> None:
         month, rows = module.parse_mirror(SEP)

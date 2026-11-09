@@ -94,6 +94,18 @@ def parse_mirror(payload: Any) -> tuple[str | None, list[dict[str, Any]]]:
     return month, out
 
 
+def _pct(cur: Any, base: Any, official: Any) -> Any:
+    """年增／月增／累計年增：基準期（去年同月／上月／去年累計）是負的時，照老師的算法 (本期 − 基期) ÷ 基期、不取絕對值，
+    觀測站公布的百分比是除以基期的絕對值、正負號會反過來（2026-11-09 老師 10 月營收：鑽石投資 6901 年增 +447.81%、累計 −252.64%，觀測站公布的是 −447.81%、+252.63%）。
+    基期是正的、缺金額、基期是 0 都用觀測站公布的百分比（跟老師只差小數第二位的四捨五入）。"""
+    try:
+        if cur is not None and base is not None and float(base) < 0:
+            return round((float(cur) - float(base)) / float(base) * 100, 2)
+    except (TypeError, ValueError):
+        pass
+    return official
+
+
 def save_month(month: str, rows: list[dict[str, Any]], first_seen: dict[str, str]) -> int:
     if not rows:
         return 0
@@ -108,7 +120,8 @@ def save_month(month: str, rows: list[dict[str, Any]], first_seen: dict[str, str
                    yoy = excluded.yoy, cum_rev = excluded.cum_rev, cum_last = excluded.cum_last, cum_yoy = excluded.cum_yoy,
                    note = excluded.note, first_seen = COALESCE(revenue_month.first_seen, excluded.first_seen)""",
             [(r["code"], month, r["market"], str(r.get("name") or ""), r.get("industry"), r.get("rev"), r.get("prevRev"),
-              r.get("lastYearRev"), r.get("momPct"), r.get("yoyPct"), r.get("cumRev"), r.get("cumLastYearRev"), r.get("cumPct"),
+              r.get("lastYearRev"), _pct(r.get("rev"), r.get("prevRev"), r.get("momPct")), _pct(r.get("rev"), r.get("lastYearRev"), r.get("yoyPct")),
+              r.get("cumRev"), r.get("cumLastYearRev"), _pct(r.get("cumRev"), r.get("cumLastYearRev"), r.get("cumPct")),
               r.get("note"), first_seen.get(r["code"])) for r in rows],
         )
     return len(rows)
