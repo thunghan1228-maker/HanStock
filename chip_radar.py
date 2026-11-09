@@ -92,6 +92,8 @@ ZHUANG_EXTRA = frozenset({
     "8932", "3028", "6698", "3354", "3564", "8039", "3141", "6139", "3040",
     # 10/22 買超榜：倫飛 +6.68 排第 6（我們族群表沒有他，榜單少一檔、後面名次全差 1）；賣超榜：智晶 −5.3（第 3）、毅嘉 −2.1
     "2364", "5245", "2402",
+    # 11/06 週（老師 11/09 貼的籌碼暴增排序 84）：買超竹陞科技 +4.1、沛亨 +4.1；賣超偉詮電 −1.9、光寶科 −1.9、鏵友益 −1.6、jpp-KY −1.5——我們原本都放在「不在範圍內」
+    "6739", "6291", "2436", "2301", "6877", "5284",
 })
 ZHUANG_SKIP = frozenset({"2241"})               # 我們族群表有、他週榜從來不列的（艾姆勒 10/08 +5.13、10/16 +6.4）
 ZHUANG_SKIP_GROUPS = ("金融股",)               # 整組不算（元大金 9/24 +5.5、群益證他都沒列）
@@ -314,7 +316,8 @@ class Radar:
             values = [(code, per[day]) for code, per in self.chips.items() if day in per and (code in self.universe) != outside]
             raw = {code: self.raw_xs[code][day] for code, _ in values}
             buy = [c for c, _ in _by_value(values, True) if raw[c] > 0 and 3 * math.sqrt(raw[c]) >= BUY_MIN]
-            sell = [c for c, _ in _by_value(values, False) if raw[c] <= SELL_MAX]
+            # 賣超門檻看四捨五入到兩位的值、要「小於」−1.5（老師 11/06 週：華邦電 −1.50 沒列、信昌電 −1.52 有列）
+            sell = [c for c, _ in _by_value(values, False) if round(raw[c], 2) < SELL_MAX]
             self._lists[key] = (buy, sell)
         return self._lists[key]
 
