@@ -760,7 +760,9 @@ def select_rows(rows: dict[str, dict[str, Any]], p: dict[str, Any]) -> list[dict
     for r in rows.values():
         if r.get(score_key) is None or r[score_key] < p["score"]:
             continue
-        if p["k"] == "black" and not (r["open"] > 0 and r["close"] < r["open"]):
+        # 黑K＝收盤低於開盤，而且不是平盤（2026-11-09 老師創高黑龍 11/09 收盤：10/27、10/29 各有 1 檔、10/28 有 3 檔「收盤＝昨收、但比開盤低」的股票
+        # （華經、億光、大成鋼、凌群、敦陽科），老師的當天名單檔數比我們少 1、1、2，其他天一模一樣；平盤的不算黑K）
+        if p["k"] == "black" and not (r["open"] > 0 and r["close"] < r["open"] and not (r["changePct"] is not None and abs(r["changePct"]) < 1e-9)):
             continue
         if p["k"] == "red" and not (r["open"] > 0 and r["close"] > r["open"]):
             continue

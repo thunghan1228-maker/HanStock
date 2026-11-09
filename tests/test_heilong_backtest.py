@@ -159,6 +159,7 @@ class ExitTests(unittest.TestCase):
             "E": row("E", disposed=True),                 # 處置中
             "F": row("F", weekPct=None, score=15, changePct=-3.0),
             "G": row("G", score=15, changePct=-2.0, hits20=0, val5=1.0),
+            "H": row("H", open=101, close=100, changePct=0.0),   # 收盤＝昨收（平盤）但比開盤低：不算黑K（老師創高黑龍 10/27～10/29 的名單少這種）
         }
         p = module.normalize_params({})
         self.assertEqual([r["code"] for r in module.select_rows(rows, p)], ["F", "G", "A"])
@@ -167,7 +168,7 @@ class ExitTests(unittest.TestCase):
         self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"hits": 1, "val": 3}))], ["F", "A"])
         self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"cap": 1}))], ["F"])
         self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"k": "red"}))], ["C"])
-        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"k": "any", "min": -5, "max": 5}))], ["F", "G", "A", "C", "D"])
+        self.assertEqual([r["code"] for r in module.select_rows(rows, module.normalize_params({"k": "any", "min": -5, "max": 5}))], ["F", "G", "A", "C", "D", "H"])
 
     def test_normalize_params(self) -> None:
         p = module.normalize_params({"score": "12", "k": "any", "min": "-5", "max": "5", "week": "", "tp": "5", "days": 0, "exdispo": "0"})
