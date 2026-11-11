@@ -117,6 +117,45 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue(module._fly3({**fly, "chg_3": -0.77}))
         self.assertFalse(module._fly3({**fly, "chg_3": -0.9}))
 
+    def test_version_13_rules_from_zhuang_1111(self) -> None:
+        """第十三版（老師 11/11 名單）：穿惡最高過月線 1.0%、帶寬 40.2%、量 1380 張、量比 9.2 倍；突破惡紅最高不低於月線 -1.8%；三紅劍糾結 6.1%；黑飛舞 905 量 8810 張（用 11/11 收盤的特徵）。"""
+        self.assertGreaterEqual(module.RULES_VERSION, 13)
+        # 台化：最高只過月線 1.02%（原本門檻 1.6%）
+        c1326 = {"bw": 26.6628, "c_ma120": 16.7145, "c_ma20": 0.1977, "c_ma240": 42.0307, "c_ma5": 7.582, "c_ma60": 6.3573, "dd60": -14.6341, "h_ma20": 1.0156,
+                 "hiago60": 17, "ma60_slope": 0.3364, "ma60_slope5": 1.1712, "pc_ma20": -2.7476, "range": 5.035, "run60": 53.4759, "v_v5": 1.0338, "vol": 28474.0}
+        self.assertTrue(module._cross2022(c1326))
+        self.assertFalse(module._cross2022({**c1326, "h_ma20": 0.9}))
+        # 營邦：布林帶寬 40.17%（原本門檻 29.3%）；超過 40.2% 的不算
+        c3693 = {"bw": 40.1718, "c_ma120": 17.875, "c_ma20": 4.8747, "c_ma240": 35.9, "c_ma5": 16.7009, "c_ma60": 5.8595, "dd60": -13.5615, "h_ma20": 4.8747,
+                 "hiago60": 21, "ma60_slope": 0.4678, "ma60_slope5": 0.9506, "pc_ma20": -4.9881, "range": 10.0, "run60": 61.3497, "v_v5": 2.931, "vol": 3060.0}
+        self.assertTrue(module._cross2022(c3693))
+        self.assertFalse(module._cross2022({**c3693, "bw": 41.0}))
+        # 天鈺：量 1384 張（原本門檻 1462）；11/04 上品 1114 張照舊不算
+        c4961 = {"bw": 18.1281, "c_ma120": 8.6883, "c_ma20": 2.6417, "c_ma240": 16.5853, "c_ma5": 8.1787, "c_ma60": 5.9509, "dd60": -10.3365, "h_ma20": 2.6417,
+                 "hiago60": 9, "ma60_slope": 0.128, "ma60_slope5": 0.0189, "pc_ma20": -3.9205, "range": 7.1839, "run60": 38.206, "v_v5": 1.3609, "vol": 1384.0}
+        self.assertTrue(module._cross2022(c4961))
+        self.assertFalse(module._cross2022({**c4961, "vol": 1114}))
+        # 精材：量是 5 日均量 9.13 倍（原本門檻 9.1）
+        c3374 = {"bw": 29.0887, "c_ma120": 29.1752, "c_ma20": 3.5459, "c_ma240": 76.0806, "c_ma5": 12.5452, "c_ma60": 9.3295, "dd60": -11.9811, "h_ma20": 3.5459,
+                 "hiago60": 23, "ma60_slope": 0.536, "ma60_slope5": 1.7851, "pc_ma20": -5.9332, "range": 11.7786, "run60": 84.0278, "v_v5": 9.1318, "vol": 23980.0}
+        self.assertTrue(module._cross2022(c3374))
+        self.assertFalse(module._cross2022({**c3374, "v_v5": 9.3}))
+        # 台灣大：即將突破惡(紅) 最高比月線低 1.79%（原本門檻 -1.6%）
+        b3045 = {"below_cnt20": 2, "body": 1.1765, "c_m5_prev": -2.9568, "c_ma20": -1.7891, "c_ma240": 13.7211, "chg": 0.7812, "chg_3": 0.3774, "close_pos": 1.0, "dd60": -5.4945,
+                 "h_ma20": -1.7891, "l_ma20": -4.4537, "l_ma5": -3.9786, "l_pl": -1.1811, "lshadow": 1.5625, "ma20_ma60": 6.8755, "ma5_slope": -0.9098, "vma5": 10650.0}
+        self.assertTrue(module._breakred(b3045))
+        self.assertFalse(module._breakred({**b3045, "h_ma20": -1.9}))
+        # 晉泰：三紅劍 5/10/20 日線糾結 6.02%（原本門檻 5.8%）
+        r6221 = {"c_ma20": 15.4048, "c_ma240": 59.0184, "c_ma5": 8.852, "chg_max4": 6.5246, "chg_prev": 3.375, "close_pos": 0.777, "consec_red": 4, "dd60": -3.4103,
+                 "ma60_ma120": 14.0113, "run20": 42.0313, "spread3": 6.02, "ushadow": 3.7485, "vol": 16303.0, "z_min5": 0.328}
+        self.assertTrue(module._red3(r6221))
+        self.assertFalse(module._red3({**r6221, "spread3": 6.5}))
+        # 廣寰科：黑飛舞 905 今天量 8805 張（原本門檻 8420）
+        w3287 = {"below_cnt20": 0, "body": -5.0505, "bw_min10": 45.6837, "hiago120": 1, "hup_max20": 13.0197, "l_ma5": -2.0, "ma60_ma120": 19.2655, "prev_black": True,
+                 "vol": 8805.0, "vol_prev": 7147.0}
+        self.assertTrue(module._bfw905(w3287))
+        self.assertFalse(module._bfw905({**w3287, "vol": 9000.0}))
+
     def test_version_10_rules_from_zhuang_1022(self) -> None:
         """第十版（老師 10/22 名單）：穿惡量比 9.1 倍、極限黑龍跌停鎖死放寬＋季線 2.7%、黑飛舞 2021 離 120 日高點 18.7%、突破惡紅年線 8%（用 10/22 收盤的真實特徵）。"""
         self.assertGreaterEqual(module.RULES_VERSION, 10)
