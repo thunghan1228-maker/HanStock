@@ -48,6 +48,15 @@ def test_saves_current_slot_once_and_cleans_rows():
     assert data["dates"] == ["2026-10-19"]
 
 
+def test_saves_fire23_list_and_old_payload_gets_empty_list():
+    """2026-11-13：火多多(23) 的名單也一起存（機器人 23 的「第一次進名單」時間用）；沒送的舊版前端存成空清單。"""
+    save_snapshot(_payload(f23=[{"code": "1409", "name": "新纖", "g": "化學二", "gr": 9, "mk": "🐎", "pct": 4.55}, {"code": "bad!"}]), now=NOW)
+    snap = load_snapshots("2026-10-19")["slots"]["09:30"]
+    assert [r["code"] for r in snap["f23"]] == ["1409"] and snap["f23"][0]["mk"] == "🐎" and snap["f23"][0]["gr"] == 9
+    save_snapshot(_payload(slot="09:35"), now=NOW.replace(minute=36))
+    assert load_snapshots("2026-10-19")["slots"]["09:35"]["f23"] == []
+
+
 def test_rejects_other_days_and_slots_far_from_now():
     with pytest.raises(ValueError):
         save_snapshot(_payload(date="2026-10-18"), now=NOW)
