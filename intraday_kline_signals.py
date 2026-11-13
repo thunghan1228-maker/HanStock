@@ -485,16 +485,20 @@ class IntradayKlineSignalMonitor:
         high = float(bar["high"])
         low = float(bar["low"])
 
-        if state.limit_hit:
-            return []
-        if (
+        if state.limit_hit or (
             (state.limit_up is not None and close >= state.limit_up - _LIMIT_EPS)
             or (state.limit_down is not None and close <= state.limit_down + _LIMIT_EPS)
         ):
             # 漲停/跌停鎖死後，連續好幾根K棒收盤價完全相同，MA5/MA20會被這些
             # 沒有實際價格發現意義的平盤K棒拖著「追上」，跨越MA只是算術上的
             # 假象，不是真正的多空轉折。當天鎖住後就不再偵測任何5分鐘K訊號。
+            # 2026-11-13 例外：1️⃣2️⃣空照算。老師 11/13 13:30 的 123 列了創意、世芯-KY、誠美材、玉晶光——
+            # 都是盤中有一根 5 分K收在漲停、之後打開往下殺、跌破 5 分K 20MA（20MA 下彎、反彈沒過 1高），正是 12空 的樣子；
+            # 以前鎖死後連 12空 一起停，這四檔整天都抓不到。12空 要的 20MA 照看盤軟體算（漲停那幾根也算進去）。
             state.limit_hit = True
+            state.closes.append(close)
+            state.lows.append(low)
+            self._update_k12(state, close, high, close_ts)
             return []
 
         state.bar_count += 1

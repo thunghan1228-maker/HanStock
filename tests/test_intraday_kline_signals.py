@@ -510,7 +510,7 @@ def test_limit_up_hit_suppresses_all_further_signal_detection(monkeypatch):
     # 之後即使走勢看起來會觸發訊號（例如帶量急跌），鎖死後也不該再偵測。
     result2 = monitor.on_bar_completed("2330", bar(9, 10, 110.0, 110.0, 95.0, 96.0))
     assert result2 == []
-    assert state.bar_count == bar_count_after_hit  # 鎖死後不再累積bar_count/closes
+    assert state.bar_count == bar_count_after_hit  # 鎖死後不再累積bar_count（closes 照記，只給 12空 用）
 
 
 def test_limit_down_hit_suppresses_all_further_signal_detection(monkeypatch):
@@ -1060,6 +1060,23 @@ def test_k12_without_any_reference_close_stays_off(monkeypatch):
     monitor.on_bar_completed("2330", bar(9, 5, 103, 103, 98.5, 99))
     assert monitor._states["2330"].k12_on is False
     assert monitor.k12_snapshot()["items"] == []
+
+
+def test_k12_keeps_tracking_after_limit_up_bar(monkeypatch):
+    # 2026-11-13 老師 123 列了創意、世芯-KY 這種：盤中一根 5 分K收在漲停，打開後往下殺、跌破 20MA。
+    # 漲停後其他 5 分K訊號照舊停，但 12空 要照算。
+    monitor = _flat_seed_monitor(monkeypatch)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 104, 100, 103))
+    monitor.on_bar_completed("2330", bar(9, 5, 103, 110, 103, 110.0))     # 收在漲停（110）：鎖死
+    state = monitor._states["2330"]
+    assert state.limit_hit is True and state.k12_on is False
+    monitor.on_bar_completed("2330", bar(9, 10, 110, 110, 104, 105))
+    monitor.on_bar_completed("2330", bar(9, 15, 105, 105, 96, 96.5))      # 打開往下殺、收在 20MA 下、20MA 下彎
+    state = monitor._states["2330"]
+    assert state.k12_on is True
+    assert state.k12_h1 == 110.0
+    assert [x["code"] for x in monitor.k12_snapshot()["items"]] == ["2330"]
+    assert monitor.on_bar_completed("2330", bar(9, 20, 96.5, 97, 95, 95.5)) == []   # 其他訊號照樣不發
 
 
 def test_k12_first_high_is_recent_peak_not_opening_spike(monkeypatch):
