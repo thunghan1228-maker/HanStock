@@ -156,6 +156,51 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue(module._bfw905(w3287))
         self.assertFalse(module._bfw905({**w3287, "vol": 9000.0}))
 
+    def test_version_14_rules_from_zhuang_1113(self) -> None:
+        """第十四版（老師 11/13 名單）：穿惡最高過月線 0.96%、量 1340 張；黑飛舞 2021 昨收在 5 日線上 0.4%、長黑 9.5%、最窄帶寬 4.3%；
+        黑飛舞 905 近 20 天最多 1 天在月線下；黑飛舞(股期) 60 天高低差 18.8%；極限黑龍月線 5 天內最多下彎 0.45%（用 11/13 收盤的真實特徵）。"""
+        self.assertGreaterEqual(module.RULES_VERSION, 14)
+        # 上海商銀：最高只過月線 0.968%（原本門檻 1.0%）
+        c5876 = {"bw": 9.8443, "c_ma120": 16.1985, "c_ma20": 0.4042, "c_ma240": 24.682, "c_ma5": 2.6134, "c_ma60": 8.4704, "dd60": -5.4867, "h_ma20": 0.9683,
+                 "hiago60": 13, "ma60_slope": 0.3755, "ma60_slope5": 1.5924, "pc_ma20": -0.9416, "range": 3.4221, "run60": 34.8449, "v_v5": 0.6994, "vol": 4560.0}
+        self.assertTrue(module._cross2022(c5876))
+        self.assertFalse(module._cross2022({**c5876, "h_ma20": 0.9}))
+        # 達發：老師 13:00 那時量 1346 張（原本門檻 1380）；11/04 上品 1114 張照舊不算
+        c6526 = {"bw": 28.1429, "c_ma120": 12.1884, "c_ma20": 2.0449, "c_ma240": 29.2437, "c_ma5": 7.3254, "c_ma60": 6.9156, "dd60": -14.5763, "h_ma20": 2.0449,
+                 "hiago60": 26, "ma60_slope": 0.3453, "ma60_slope5": 1.0047, "pc_ma20": -7.4211, "range": 5.0872, "run60": 57.754, "v_v5": 1.2642, "vol": 1346.0}
+        self.assertTrue(module._cross2022(c6526))
+        self.assertFalse(module._cross2022({**c6526, "vol": 1114.0}))
+        # 濱川：黑飛舞 2021 今天長黑 9.49%（原本只收 5.5% 以內）；跌更多的不算
+        w1569 = {"above5_cnt3": 3, "body": -9.4884, "bw": 35.5966, "bw_min10": 31.013, "c_m5_prev": 9.743, "dd120": -10.7339, "h_gt_ph": False, "h_ma20": 20.6713,
+                 "hiago60": 1, "hup_max20": 5.7063, "l_ma10": 6.6418, "newhi_cnt3": 2, "prev_black": True, "ret3": 2.4211, "run20": 50.3448, "v_pv": 0.594, "vol_prev": 23855.0}
+        self.assertTrue(module._bfw2021(w1569))
+        self.assertFalse(module._bfw2021({**w1569, "body": -9.8}))
+        # 華航：昨收只在 5 日線上 1.74%（原本 2.2%）、近 10 天最窄帶寬 4.35%（原本 6.3%）
+        w2610 = {"above5_cnt3": 3, "body": 0.8696, "bw": 19.8776, "bw_min10": 4.3451, "c_m5_prev": 1.7403, "dd120": -6.2626, "h_gt_ph": False, "h_ma20": 9.8641,
+                 "hiago60": 1, "hup_max20": 4.6939, "l_ma10": 3.0857, "newhi_cnt3": 2, "prev_black": True, "ret3": 1.7544, "run20": 17.7057, "v_pv": 0.7026, "vol_prev": 56890.0}
+        self.assertTrue(module._bfw2021(w2610))
+        self.assertFalse(module._bfw2021({**w2610, "bw_min10": 4.0}))
+        # 邁達特：昨收只在 5 日線上 0.44%
+        w6112 = {"above5_cnt3": 3, "body": 3.5461, "bw": 28.7832, "bw_min10": 14.4698, "c_m5_prev": 0.4383, "dd120": -8.0315, "h_gt_ph": False, "h_ma20": 17.1291,
+                 "hiago60": 1, "hup_max20": 14.0947, "l_ma10": 5.1131, "newhi_cnt3": 2, "prev_black": True, "ret3": 2.4561, "run20": 47.8463, "v_pv": 0.6965, "vol_prev": 24578.0}
+        self.assertTrue(module._bfw2021(w6112))
+        self.assertFalse(module._bfw2021({**w6112, "c_m5_prev": 0.2}))
+        # 達航科技：黑飛舞 905 近 20 天有 1 天收在月線下（原本一天都不行）；2 天的不算
+        w4577 = {"below_cnt20": 1, "body": 1.4706, "bw_min10": 46.9928, "hiago120": 1, "hup_max20": 12.8436, "l_ma5": 2.8727, "ma60_ma120": 3.8484, "prev_black": True,
+                 "vol": 4774.0, "vol_prev": 7713.0}
+        self.assertTrue(module._bfw905(w4577))
+        self.assertFalse(module._bfw905({**w4577, "below_cnt20": 2}))
+        # 華航：黑飛舞(股期) 60 天高低差 18.89%（原本門檻 40.5%）
+        f2610 = {"below_cnt10": 0, "bigred_cnt3": 1, "c_ma60": 12.5849, "chg_prev": -2.9787, "futures": True, "h_ph": -1.4831, "hup_max20": 4.6939, "newhi_cnt3": 2,
+                 "ret3_min": -2.9787, "run60": 18.8917, "v_v20": 1.099, "v_v5": 0.5449, "vma5": 71196.8}
+        self.assertTrue(module._bfwfut(f2610))
+        self.assertFalse(module._bfwfut({**f2610, "run60": 15.0}))
+        # 泰鼎-KY：極限黑龍月線 5 天內小彎 0.43%（原本要往上 0.1%）；彎更多的不算
+        x4927 = {"black": True, "c_m5_prev": 9.5659, "c_ma60": 23.2046, "chg": -1.5437, "close_pos": 0.1389, "hiago20": 1, "l_ma5": 1.2204, "lshadow": 1.7153,
+                 "ma20_ma60": 14.5814, "ma20_slope5": -0.429, "ma5_slope": 4.7172, "range": 12.3499, "vol": 25488.0}
+        self.assertTrue(module._xdragon(x4927))
+        self.assertFalse(module._xdragon({**x4927, "ma20_slope5": -0.6}))
+
     def test_version_10_rules_from_zhuang_1022(self) -> None:
         """第十版（老師 10/22 名單）：穿惡量比 9.1 倍、極限黑龍跌停鎖死放寬＋季線 2.7%、黑飛舞 2021 離 120 日高點 18.7%、突破惡紅年線 8%（用 10/22 收盤的真實特徵）。"""
         self.assertGreaterEqual(module.RULES_VERSION, 10)
