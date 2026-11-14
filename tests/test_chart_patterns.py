@@ -85,6 +85,19 @@ class DetectTests(unittest.TestCase):
         lower = series([(90, 60), (70, 20), (85, 15), (66, 12), (74, 5)], 50.0)                  # C 破了 A 的低
         self.assertIsNone(module.detect_hl(lower))
 
+    def test_higher_low_c_moves_to_newer_low_and_b_not_same_bar_as_c(self) -> None:
+        """2026-11-15（大立 4716）：C 之後又跌到更低（還在 A 之上）→ C 要換成那個新低點；B＝A、C 中間最高的，不會跟 C 同一根。"""
+        bars = series([(90, 60), (70, 20), (88, 15), (80, 8), (87, 6), (75, 10), (81, 5)], 50.0)
+        hl = module.detect_hl(bars)
+        self.assertIsNotNone(hl, module.zigzag(bars, 0.08))
+        self.assertAlmostEqual(hl["c"]["price"], 75 * 0.996, delta=0.5)                           # 不是先前那個 80 的低點
+        self.assertAlmostEqual(hl["b"]["price"], 88 * 1.004, delta=0.5)
+        self.assertLess(hl["b"]["date"], hl["c"]["date"])
+        low_after_c = min(b[2] for b in bars if b[0] > hl["c"]["date"])
+        self.assertGreaterEqual(low_after_c, hl["c"]["price"])                                    # C 之後沒有跌破 C
+        broke_a = series([(90, 60), (70, 20), (88, 15), (80, 8), (87, 6), (69, 10), (76, 5)], 50.0)   # 後來的低點跌破 A：不算
+        self.assertIsNone(module.detect_hl(broke_a))
+
     def test_vcp_shrinking_pullbacks(self) -> None:
         pts = [(100, 80), (80, 15), (98, 10), (88, 10), (97, 8), (92, 6), (95, 3)]
         n = len(series(pts, 50.0))
