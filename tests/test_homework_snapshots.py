@@ -75,6 +75,18 @@ def test_saves_strong_of_strong_list():
     assert load_snapshots("2026-10-19")["slots"]["09:35"]["ss"] == []
 
 
+def test_saves_any_of_four_lists():
+    """2026-11-14：四份名單任何一份有的也存（h4，收盤觀察股的符合時間用）；一份就收，不認得的名單名稱丟掉。"""
+    save_snapshot(_payload(h4=[
+        {"code": "2603", "name": "長榮", "tags": ["240"]},
+        {"code": "1303", "tags": ["260", "亂寫的"]},
+        {"code": "1301", "tags": ["亂寫的"]},
+    ]), now=NOW)
+    snap = load_snapshots("2026-10-19")["slots"]["09:30"]
+    assert snap["h4"] == [{"code": "2603", "name": "長榮", "tags": ["240"]}, {"code": "1303", "name": "", "tags": ["260"]}]
+    assert snap["ss"] == []
+
+
 def test_rejects_other_days_and_slots_far_from_now():
     with pytest.raises(ValueError):
         save_snapshot(_payload(date="2026-10-18"), now=NOW)
