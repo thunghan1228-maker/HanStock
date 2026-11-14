@@ -1,4 +1,4 @@
-"""今日功課的盤中紀錄：每 5 分鐘一份刀劍空名單（網站前端算好送來；另附 12空、火多多），回放與「刀功課廣播」用。
+"""今日功課的盤中紀錄：每 5 分鐘一份刀劍空名單（網站前端算好送來；另附 12空、火多多、強中強），回放與「刀功課廣播」用。
 
 刀劍空(32) 的規則在 tw-groups 前端（race333Model），後端沒有一份一樣的；所以由開著網站的瀏覽器在每個 5 分鐘時段
 送一份上來，先送到的算數（同一時段不覆蓋），誰的網站開著都能幫大家記到。為了不讓人亂塞資料：
@@ -19,6 +19,7 @@ KEEP_DAYS = 30
 MAX_ROWS = 300
 SLOT_WINDOW_MINUTES = 10
 ZONES = {"upper", "middle", "lower", "harvest"}
+SS_TAGS = {"強勢股觀察中", "強勢紅K", "240", "260"}   # 強中強(888) 的四份名單
 CODE_RE = re.compile(r"^[0-9A-Z]{4,6}$")
 SLOT_RE = re.compile(r"^(0[9]|1[0-3]):[0-5][05]$")
 _table_lock = threading.Lock()
@@ -89,6 +90,20 @@ def _clean_row(raw: Any, *, zone_required: bool) -> Optional[dict[str, Any]]:
     return row
 
 
+def _clean_ss(raw: Any) -> Optional[dict[str, Any]]:
+    """強中強一檔：代號、股名、在哪幾份名單（四份裡至少兩份）。"""
+    if not isinstance(raw, dict):
+        return None
+    code = _text(raw.get("code"), 6).upper()
+    if not CODE_RE.match(code):
+        return None
+    tags = raw.get("tags") if isinstance(raw.get("tags"), list) else []
+    tags = list(dict.fromkeys(t for t in (_text(x, 10) for x in tags[:4]) if t in SS_TAGS))
+    if len(tags) < 2:
+        return None
+    return {"code": code, "name": _text(raw.get("name"), 16), "tags": tags}
+
+
 def clean_payload(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("格式不對")
@@ -96,11 +111,14 @@ def clean_payload(raw: Any) -> dict[str, Any]:
     k12 = [row for row in (_clean_row(r, zone_required=False) for r in (raw.get("k12") or [])[:MAX_ROWS]) if row]
     # 2026-11-13 使用者：火多多(23)（新刀劍空的多方顛倒版）也記每 5 分鐘的名單，機器人 23 才有「第一次進名單」的時間（跨電腦一樣）
     f23 = [row for row in (_clean_row(r, zone_required=False) for r in (raw.get("f23") or [])[:MAX_ROWS]) if row]
+    # 2026-11-14 使用者：強中強(888) 也記每 5 分鐘的名單，才有「兩份名單同時符合」最早的時間（跨電腦一樣）
+    ss = [row for row in (_clean_ss(r) for r in (raw.get("ss") or [])[:MAX_ROWS]) if row]
     total = _num(raw.get("total"), 0)
     return {
         "rows": rows,
         "k12": k12,
         "f23": f23,
+        "ss": ss,
         "total": int(total) if total and 0 < total < 200 else None,
         "otcLabel": _text(raw.get("otcLabel"), 8),
         "otcPct": _num(raw.get("otcPct")),
