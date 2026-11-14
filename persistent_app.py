@@ -1395,6 +1395,15 @@ def get_momentum_rank(top: float = Query(5)) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get("/api/hub/momentum-pulse")
+def get_momentum_pulse() -> dict[str, Any]:
+    """日動能／週動能／法人動能（2026-11-14 使用者：照券商 App「動能節奏測驗」，用我們自己的規則）：動能＝1.4×(收盤÷8 日指數平均線−1)×100，
+    強勢 ≥ +6、弱勢 ≤ −6 照成交金額排；另回每檔到最新一天的 EMA／上榜天數狀態（rows＋cols），網頁盤中拿即時價重算。法人動能四張名單。"""
+    from momentum_pulse import payload as momentum_pulse_payload
+
+    return momentum_pulse_payload()
+
+
 @app.get("/api/hub/picker")
 def get_picker(request: Request) -> dict[str, Any]:
     """創高黑選股（2026-10-04 使用者：照老師 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、
