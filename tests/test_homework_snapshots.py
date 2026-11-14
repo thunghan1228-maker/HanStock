@@ -57,6 +57,24 @@ def test_saves_fire23_list_and_old_payload_gets_empty_list():
     assert load_snapshots("2026-10-19")["slots"]["09:35"]["f23"] == []
 
 
+def test_saves_strong_of_strong_list():
+    """2026-11-14：強中強(888) 的名單也存（「兩份名單同時符合」最早的時間用）；不認得的名單名稱丟掉，剩不到兩份的那檔不收。"""
+    save_snapshot(_payload(ss=[
+        {"code": "3374", "name": "精材", "tags": ["強勢股觀察中", "強勢紅K", "240", "260"]},
+        {"code": "2468", "name": "華經", "tags": ["240", "亂寫的", "260", "240"]},
+        {"code": "1802", "name": "台玻", "tags": ["240", "亂寫的"]},
+        {"code": "bad!", "tags": ["240", "260"]},
+        "not-a-dict",
+    ]), now=NOW)
+    snap = load_snapshots("2026-10-19")["slots"]["09:30"]
+    assert snap["ss"] == [
+        {"code": "3374", "name": "精材", "tags": ["強勢股觀察中", "強勢紅K", "240", "260"]},
+        {"code": "2468", "name": "華經", "tags": ["240", "260"]},
+    ]
+    save_snapshot(_payload(slot="09:35"), now=NOW.replace(minute=36))
+    assert load_snapshots("2026-10-19")["slots"]["09:35"]["ss"] == []
+
+
 def test_rejects_other_days_and_slots_far_from_now():
     with pytest.raises(ValueError):
         save_snapshot(_payload(date="2026-10-18"), now=NOW)
