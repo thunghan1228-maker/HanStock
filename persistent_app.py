@@ -1381,6 +1381,20 @@ def get_trend_high() -> dict[str, Any]:
     return trend_high_payload()
 
 
+@app.get("/api/hub/momentum-rank")
+def get_momentum_rank(top: float = Query(5)) -> dict[str, Any]:
+    """動能排行（2026-11-14 使用者：照券商 App「動能選股 → 動能排行」做機器人代碼）：收盤創 240 日新高、本週／本月／本季／今年以來
+    漲幅都在全市場前 top%（預設 5%）的股票；另回「差一個」（三個在前 top%）的名單。"""
+    from fastapi import HTTPException
+
+    from momentum_rank import payload as momentum_payload
+
+    try:
+        return momentum_payload(top)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/hub/picker")
 def get_picker(request: Request) -> dict[str, Any]:
     """創高黑選股（2026-10-04 使用者：照老師 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、

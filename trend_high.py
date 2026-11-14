@@ -6,6 +6,9 @@ App 的兩個欄位用 11/13 那六檔（台玻、華南金、富邦金、國泰
   金融股、創意差的就是配息）。
 App 挑股還看「新聞熱度」，我們沒有新聞資料；這裡只算價格的部分，熱度由前端用成交值近似、讓使用者自己調門檻。
 
+還原：創高黑選股那份日K只還原分割／減資，再乘上除權息因子（dividend_adjust 的除息事件，上市＋上櫃都算）。
+2026-11-14 第一版沒乘：台玻（沒配息）對、金融股少 5～7%（富邦金 73.10% vs App 78.97%）——差的就是現金股利。
+
 資料用創高黑選股那份記憶體特徵（heilong_picker.load_panel：全市場還原日K，收盤後整理），算最新一天每檔的：
   close、hi240、g240（離 240 日高幾 % 由前端算）、
   以及「下一個交易日盤中」要用的 hi239（最近 239 天的最高收盤）、b239（下一個交易日的 240 日漲幅基準價）
@@ -15,10 +18,15 @@ App 挑股還看「新聞熱度」，我們沒有新聞資料；這裡只算價�
 
 from __future__ import annotations
 
+import logging
 import threading
+from datetime import date, timedelta
 from typing import Any
 
+import dividend_adjust
 import heilong_picker
+
+logger = logging.getLogger(__name__)
 
 WINDOW = 240
 NEAR_PCT = 12.0          # 回傳範圍：收盤離 240 日最高收盤在這個 % 以內
@@ -33,26 +41,62 @@ def _r(value: float | None, digits: int = 2) -> float | None:
     return round(float(value), digits)
 
 
-def compute(panel: heilong_picker.Panel, *, near_pct: float = NEAR_PCT) -> dict[str, Any]:
-    """最新一天（panel.dates 最後一天）有成交的股票，各算 240 日最高收盤、240 日漲幅，以及隔天盤中用的 hi239／b239。"""
+def load_dividends(codes: Any = None) -> dict[str, list[tuple[str, float]]]:
+    """除息事件（上市＋上櫃）；讀不到就當沒有（只是漲幅會少算股利），不要讓整個名單出不來。"""
+    try:
+        return dividend_adjust.load_events(codes)
+    except Exception:  # noqa: BLE001
+        logger.warning("熱門趨勢／動能排行：讀不到除息事件，先不還原股利", exc_info=True)
+        return {}
+
+
+def _next_weekday(day: str) -> str:
+    d = date.fromisoformat(day) + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.isoformat()
+
+
+def div_factor(events: list[tuple[str, float]] | None, after: str, upto: str | None = None) -> float:
+    """after（不含）～upto（含；None＝不設上限）之間的除權息因子連乘：那天以前的收盤乘上這個就是還原價。"""
+    f = 1.0
+    for day, k in events or ():
+        if day > after and (upto is None or day <= upto):
+            f *= k
+    return f
+
+
+def compute(panel: heilong_picker.Panel, *, near_pct: float = NEAR_PCT, dividends: dict[str, list[tuple[str, float]]] | None = None) -> dict[str, Any]:
+    """最新一天（panel.dates 最後一天）有成交的股票，各算 240 日最高收盤、240 日漲幅，以及隔天盤中用的 hi239／b239。
+    dividends＝{代號: [(除息日, 因子)]}，收盤價再乘上除息因子（今天的值只算到今天的事件；隔天用的 hi239／b239 連今天以後已公告的也算）。"""
     if not panel.dates:
         return {"status": "empty", "date": None, "rows": []}
     last = len(panel.dates) - 1
+    today = panel.dates[last]
+    tomorrow = _next_weekday(today)                 # 隔天盤中用的值：只算到下一個交易日（含）已公告的除息
+    dividends = dividends or {}
     rows: list[dict[str, Any]] = []
     for code, s in panel.series.items():
         valid = s.valid()
         if not valid or valid[-1] != last:          # 最新一天沒成交（停牌、還沒上市）
             continue
-        closes = [s.c[j] for j in valid[-WINDOW:]]
+        ev = dividends.get(code)
+        window = valid[-WINDOW:]
+        closes = [s.c[j] * div_factor(ev, panel.dates[j], today) if ev else s.c[j] for j in window]
         close = closes[-1]
         if not close or close <= 0:
             continue
         hi240 = max(closes)
         if (close / hi240 - 1) * 100 < -near_pct:
             continue
-        g240 = (close / s.c[valid[-WINDOW - 1]] - 1) * 100 if len(valid) > WINDOW else None
-        hi239 = max(closes[-(WINDOW - 1):])
-        b239 = s.c[valid[-WINDOW]] if len(valid) >= WINDOW else None
+        if len(valid) > WINDOW:
+            jb = valid[-WINDOW - 1]
+            g240 = (close / (s.c[jb] * div_factor(ev, panel.dates[jb], today)) - 1) * 100
+        else:
+            g240 = None
+        nxt = [s.c[j] * div_factor(ev, panel.dates[j], tomorrow) if ev else s.c[j] for j in window[-(WINDOW - 1):]]
+        hi239 = max(nxt)
+        b239 = s.c[valid[-WINDOW]] * div_factor(ev, panel.dates[valid[-WINDOW]], tomorrow) if len(valid) >= WINDOW else None
         ch = s.chg[last]
         rows.append({
             "code": code, "name": s.name, "group": s.group,
@@ -71,7 +115,7 @@ def payload() -> dict[str, Any]:
     with _lock:
         if _cache["key"] == panel.key and _cache["payload"] is not None:
             return _cache["payload"]
-    out = compute(panel)
+    out = compute(panel, dividends=load_dividends())
     out["loadedAt"] = panel.loaded_at
     with _lock:
         _cache["key"], _cache["payload"] = panel.key, out
