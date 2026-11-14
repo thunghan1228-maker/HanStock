@@ -90,8 +90,8 @@ def _clean_row(raw: Any, *, zone_required: bool) -> Optional[dict[str, Any]]:
     return row
 
 
-def _clean_ss(raw: Any) -> Optional[dict[str, Any]]:
-    """強中強一檔：代號、股名、在哪幾份名單（四份裡至少兩份）。"""
+def _clean_ss(raw: Any, min_tags: int = 2) -> Optional[dict[str, Any]]:
+    """強中強一檔：代號、股名、在哪幾份名單（四份裡至少 min_tags 份；h4 用 1）。"""
     if not isinstance(raw, dict):
         return None
     code = _text(raw.get("code"), 6).upper()
@@ -99,7 +99,7 @@ def _clean_ss(raw: Any) -> Optional[dict[str, Any]]:
         return None
     tags = raw.get("tags") if isinstance(raw.get("tags"), list) else []
     tags = list(dict.fromkeys(t for t in (_text(x, 10) for x in tags[:4]) if t in SS_TAGS))
-    if len(tags) < 2:
+    if len(tags) < min_tags:
         return None
     return {"code": code, "name": _text(raw.get("name"), 16), "tags": tags}
 
@@ -113,12 +113,15 @@ def clean_payload(raw: Any) -> dict[str, Any]:
     f23 = [row for row in (_clean_row(r, zone_required=False) for r in (raw.get("f23") or [])[:MAX_ROWS]) if row]
     # 2026-11-14 使用者：強中強(888) 也記每 5 分鐘的名單，才有「兩份名單同時符合」最早的時間（跨電腦一樣）
     ss = [row for row in (_clean_ss(r) for r in (raw.get("ss") or [])[:MAX_ROWS]) if row]
+    # 2026-11-14 使用者：四份名單裡「任何一份」有的也記（h4），首頁收盤觀察股才有「跟哪一份相同」最早的時間
+    h4 = [row for row in (_clean_ss(r, 1) for r in (raw.get("h4") or [])[:MAX_ROWS]) if row]
     total = _num(raw.get("total"), 0)
     return {
         "rows": rows,
         "k12": k12,
         "f23": f23,
         "ss": ss,
+        "h4": h4,
         "total": int(total) if total and 0 < total < 200 else None,
         "otcLabel": _text(raw.get("otcLabel"), 8),
         "otcPct": _num(raw.get("otcPct")),
