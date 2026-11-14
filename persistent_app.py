@@ -1372,6 +1372,15 @@ def get_price_adjust_events(limit: int = Query(200, ge=1, le=2000)) -> dict[str,
     return {"status": "ok", "events": list_price_adjust_events(limit)}
 
 
+@app.get("/api/hub/trend-high")
+def get_trend_high() -> dict[str, Any]:
+    """熱門趨勢概念股（2026-11-14 使用者：照券商 App「動能選股 → 熱門趨勢概念股」做機器人代碼）：最新一天收盤離 240 日最高收盤
+    12% 以內的股票，每檔帶 240 日最高收盤、240 日漲幅（還原股價），以及下一個交易日盤中用即時價重算要的 hi239／b239。"""
+    from trend_high import payload as trend_high_payload
+
+    return trend_high_payload()
+
+
 @app.get("/api/hub/picker")
 def get_picker(request: Request) -> dict[str, Any]:
     """創高黑選股（2026-10-04 使用者：照老師 App「創高黑」做）：view＝today（模擬帳戶、今天要做）／picks（選股漏斗、每週名單、
