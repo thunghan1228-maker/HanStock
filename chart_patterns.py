@@ -181,32 +181,52 @@ def detect_hs(bars: list[Bar]) -> dict[str, Any] | None:
 
 
 def detect_hl(bars: list[Bar]) -> dict[str, Any] | None:
-    """C 不破 A 的低：低 A → 反彈 B → 低 C，C 明顯比 A 高（低點墊高），價在季線之上。"""
+    """C 不破 A 的低：低 A → 反彈 B → 低 C，C 明顯比 A 高（低點墊高），價在季線之上。
+
+    2026-11-15 使用者（大立 4716：B、C 標在同一天，C 之後又跌到比 A 還低，圖上的 C 還停在舊的點）：
+    - C＝B 之後到今天最低的那個波段低點（C 之後跌破 C、或 B 和 C 中間有更低的，它都不是 C）；
+    - A＝C 前面的波段低點，A 到 C 之間沒有比 A 更低的價（最近一個不夠低的就往前找）；
+    - B＝A、C 中間（不含兩端那根）最高的價，所以 B、C 不會落在同一根 K 棒。
+    """
     pivs = zigzag(bars, ZIG["hl"])
     n = len(bars)
     ma60 = _ma(bars, 60)
     if ma60 is None or bars[-1][3] < ma60:
         return None
-    for k in range(len(pivs) - 1, 1, -1):
-        c, b, a = pivs[k], pivs[k - 1], pivs[k - 2]
-        if not (c["kind"] == "L" and b["kind"] == "H" and a["kind"] == "L"):
-            continue
+    lows = [p for p in pivs if p["kind"] == "L"]
+    for ci in range(len(lows) - 1, 0, -1):
+        c = lows[ci]
         if n - 1 - c["i"] > RECENT_BARS:
             break
-        if c["price"] < a["price"] * (1 + HL_HIGHER) or b["price"] < a["price"] * (1 + HL_BOUNCE):
-            continue
-        if not (10 <= c["i"] - a["i"] <= 90):
-            continue
-        if (b["price"] - c["price"]) / b["price"] > 0.30:        # C 的回檔太深就不算強
-            continue
-        if bars[-1][3] < c["price"] * 0.99:
-            continue
-        st = _state(bars, b["price"])
-        if st is None:
-            continue
-        return _mk("C不破A低", st, b["price"], c["price"] * 0.98, b["price"] + (b["price"] - c["price"]), a={"date": a["date"], "price": a["price"]},
-                   b={"date": b["date"], "price": b["price"]}, c={"date": c["date"], "price": c["price"]}, higherLowPct=round((c["price"] / a["price"] - 1) * 100, 1),
-                   points=[_pt("A", a), _pt("B", b), _pt("C", c)], line={"label": "前高B", "price": round(b["price"], 2), "from": b["date"]})
+        if c["i"] + 1 < n and min(bar[2] for bar in bars[c["i"] + 1:]) < c["price"]:
+            continue                                          # C 之後跌破過 C：不是 C
+        for ai in range(ci - 1, -1, -1):
+            a = lows[ai]
+            span = c["i"] - a["i"]
+            if span > 90:
+                break
+            if span < 10 or c["price"] < a["price"] * (1 + HL_HIGHER):
+                continue
+            if min(bar[2] for bar in bars[a["i"]:c["i"] + 1]) < a["price"]:
+                continue                                      # A、C 中間有比 A 更低的：A 不是那一段的低點
+            if c["i"] - a["i"] < 2:
+                continue
+            bi = max(range(a["i"] + 1, c["i"]), key=lambda j: bars[j][1])
+            b = {"i": bi, "price": bars[bi][1], "date": bars[bi][0]}
+            if b["price"] < a["price"] * (1 + HL_BOUNCE):
+                continue
+            if c["i"] - b["i"] > 1 and min(bar[2] for bar in bars[b["i"] + 1:c["i"]]) < c["price"]:
+                continue                                      # B 之後、C 之前有更低的：C 不是 B 之後的回檔低點（真正的 C 在前面）
+            if (b["price"] - c["price"]) / b["price"] > 0.30:     # C 的回檔太深就不算強
+                continue
+            if bars[-1][3] < c["price"] * 0.99:
+                continue
+            st = _state(bars, b["price"])
+            if st is None:
+                break
+            return _mk("C不破A低", st, b["price"], c["price"] * 0.98, b["price"] + (b["price"] - c["price"]), a={"date": a["date"], "price": a["price"]},
+                       b={"date": b["date"], "price": b["price"]}, c={"date": c["date"], "price": c["price"]}, higherLowPct=round((c["price"] / a["price"] - 1) * 100, 1),
+                       points=[_pt("A", a), _pt("B", b), _pt("C", c)], line={"label": "前高B", "price": round(b["price"], 2), "from": b["date"]})
     return None
 
 
