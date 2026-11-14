@@ -5,7 +5,8 @@ App 的說明：「找出週、月、季、年漲幅前 5% 的創高強勢股」
   App 上這 4 檔的數字一模一樣；跟「最近 20 個交易日」對不上，所以是日曆的週、月。季、年照同一個算法：本季以來、今年以來。
 - 4 檔當天收盤都是最近 240 個交易日最高的收盤 → 創高＝收盤是 240 日最高收盤。
 - 前 5%＝全市場一般股（4 位數、排除 00 開頭的 ETF，跟創高黑選股同一份）四個漲幅各自排，四個都在前 5%。
-價格用還原股價（創高黑選股那份記憶體還原日K：heilong_picker.load_panel）。資料是收盤後的，盤中不變。
+價格用還原股價：創高黑選股那份記憶體日K（heilong_picker.load_panel，已還原分割／減資）再乘上除息因子
+（dividend_adjust 的除息事件，上市＋上櫃；跟熱門趨勢概念股同一套，見 trend_high.div_factor）。資料是收盤後的，盤中不變。
 另外回「差一個」的名單（創高、四個裡面三個在前 N%），給前端參考。
 """
 
@@ -18,6 +19,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import heilong_picker
+from trend_high import div_factor, load_dividends
 
 WINDOW = 240
 METRICS = (("wtd", "週"), ("mtd", "月"), ("qtd", "季"), ("ytd", "年"))
@@ -45,7 +47,7 @@ def period_starts(day: str) -> dict[str, str]:
     }
 
 
-def compute(panel: heilong_picker.Panel, *, top: float = DEFAULT_TOP) -> dict[str, Any]:
+def compute(panel: heilong_picker.Panel, *, top: float = DEFAULT_TOP, dividends: dict[str, list[tuple[str, float]]] | None = None) -> dict[str, Any]:
     if not panel.dates:
         return {"status": "empty", "date": None, "rows": []}
     last = len(panel.dates) - 1
@@ -53,6 +55,7 @@ def compute(panel: heilong_picker.Panel, *, top: float = DEFAULT_TOP) -> dict[st
     starts = period_starts(day)
     # 每個期間的基準日＝期間開始之前最後一個交易日（全表的交易日 index；個股那天沒成交就往前找）
     base_index = {k: bisect_left(panel.dates, v) - 1 for k, v in starts.items()}
+    dividends = dividends or {}
     stats: list[dict[str, Any]] = []
     for code, s in panel.series.items():
         valid = s.valid()
@@ -61,12 +64,13 @@ def compute(panel: heilong_picker.Panel, *, top: float = DEFAULT_TOP) -> dict[st
         close = s.c[last]
         if not close or close <= 0:
             continue
-        closes = [s.c[j] for j in valid[-WINDOW:]]
+        ev = dividends.get(code)
+        closes = [s.c[j] * div_factor(ev, panel.dates[j], day) if ev else s.c[j] for j in valid[-WINDOW:]]
         row: dict[str, Any] = {"code": code, "s": s, "close": close, "newHigh": close >= max(closes) - 1e-9}
         for key, _label in METRICS:
             bi = base_index[key]
             pos = bisect_left(valid, bi + 1) - 1          # 基準日（含）以前最後一個有成交的日子
-            base = s.c[valid[pos]] if bi >= 0 and pos >= 0 else None
+            base = s.c[valid[pos]] * div_factor(ev, panel.dates[valid[pos]], day) if bi >= 0 and pos >= 0 else None
             row[key] = (close / base - 1) * 100 if base else None
         stats.append(row)
     cuts: dict[str, float | None] = {}
@@ -122,7 +126,7 @@ def payload(top: float | None = None) -> dict[str, Any]:
     with _lock:
         if key in _cache:
             return _cache[key]
-    result = compute(panel, top=top)
+    result = compute(panel, top=top, dividends=load_dividends())
     result["loadedAt"] = panel.loaded_at
     with _lock:
         for old in [k for k in _cache if k[0] != panel.key]:

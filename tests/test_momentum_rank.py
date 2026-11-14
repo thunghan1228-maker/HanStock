@@ -96,6 +96,15 @@ class MomentumTest(unittest.TestCase):
         almost = {r["code"]: r["miss"] for r in out["almost"]}
         self.assertEqual(almost.get("7777"), ["週"])
 
+    def test_dividend_adjusted_base_and_new_high(self):
+        # 去年底 50、今年 7/1 除息（因子 0.9）後 45、今天 45：沒還原是 −10%、而且沒創高；還原後年漲幅 0%、今天平高點算創高
+        cs = self.series(50.0, {"2026-07-01": 45.0})
+        panel = make_panel(self.dates, {"2882": cs})
+        raw = momentum_rank.compute(panel, top=100)
+        self.assertEqual(raw["rows"], [])
+        adj = momentum_rank.compute(panel, top=100, dividends={"2882": [("2026-07-01", 0.9)]})
+        self.assertEqual(adj["rows"][0]["ytd"], 0.0)
+
     def test_skip_not_traded_today(self):
         cs = self.series(10.0, {"2026-11-12": 20.0})
         cs[-1] = None
@@ -106,7 +115,7 @@ class MomentumTest(unittest.TestCase):
         panel = make_panel(self.dates, {"9999": self.series(10.0, {"2026-11-13": 20.0})})
         momentum_rank._cache.clear()
         client = TestClient(persistent_app.app)
-        with patch.object(momentum_rank.heilong_picker, "load_panel", return_value=panel):
+        with patch.object(momentum_rank.heilong_picker, "load_panel", return_value=panel), patch.object(momentum_rank, "load_dividends", return_value={}):
             ok = client.get("/api/hub/momentum-rank")
             bad = client.get("/api/hub/momentum-rank?top=7")
         self.assertEqual(ok.status_code, 200)

@@ -89,10 +89,32 @@ class TrendHighTest(unittest.TestCase):
         panel = make_panel(self.dates, {"1000": a, "2000": b})
         self.assertEqual([r["code"] for r in trend_high.compute(panel)["rows"]], ["2000", "1000"])
 
+    def test_dividend_adjusted(self):
+        # 一直 100 元，第 200 天除息 5 元（因子 0.95）之後 95 元：還原後 240 天都是 95 → 漲幅 0%、今天就是 240 日最高
+        cs = [100.0] * 200 + [95.0] * 60
+        panel = make_panel(self.dates, {"2881": cs})
+        raw = trend_high.compute(panel)["rows"][0]
+        self.assertEqual(raw["hi240"], 100.0)
+        adj = trend_high.compute(panel, dividends={"2881": [(self.dates[200], 0.95)]})["rows"][0]
+        self.assertEqual(adj["hi240"], 95.0)
+        self.assertEqual(adj["g240"], 0.0)
+        self.assertEqual(adj["close"], 95.0)
+        self.assertEqual(adj["b239"], 95.0)
+
+    def test_dividend_tomorrow_only_for_next_day_values(self):
+        # 明天除息（因子 0.9）：今天的值不動，隔天盤中用的 hi239／b239 先乘；更後面的除息不算
+        cs = [10.0 + i * 0.01 for i in range(260)]
+        panel = make_panel(self.dates, {"1101": cs})
+        tomorrow = trend_high._next_weekday(self.dates[-1])
+        out = trend_high.compute(panel, dividends={"1101": [(tomorrow, 0.9), ("2099-01-01", 0.5)]})["rows"][0]
+        self.assertEqual(out["hi240"], round(cs[-1], 2))
+        self.assertEqual(out["hi239"], round(cs[-1] * 0.9, 2))
+        self.assertEqual(out["b239"], round(cs[-240] * 0.9, 4))
+
     def test_endpoint(self):
         panel = make_panel(self.dates, {"1802": [10.0] * 20 + [10.0 + i * 0.1 for i in range(240)]})
         trend_high._cache.update({"key": None, "payload": None})
-        with patch.object(trend_high.heilong_picker, "load_panel", return_value=panel):
+        with patch.object(trend_high.heilong_picker, "load_panel", return_value=panel), patch.object(trend_high, "load_dividends", return_value={}):
             res = TestClient(persistent_app.app).get("/api/hub/trend-high")
         self.assertEqual(res.status_code, 200)
         body = res.json()
