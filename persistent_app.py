@@ -616,6 +616,17 @@ def get_big_holder(
         return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
 
 
+@app.get("/api/hub/extra-holder")
+def get_extra_holder(codes: str = Query(...)) -> Any:
+    """族群表以外股票的收盤後大戶力（2026-11-15 使用者）：有算好的回 pct，沒算好的排進背景用歷史逐筆補算。"""
+    from extra_holder import payload as extra_holder_payload
+
+    try:
+        return extra_holder_payload(codes.split(","))
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "error": str(exc)})
+
+
 @app.post("/api/hub/big-holder/backfill")
 def post_big_holder_backfill(codes: str = Query(...), trade_date: str = Query(...)) -> Any:
     """補某一天的老師版大戶欄位（用歷史逐筆重算，只寫回已經存在的 K 棒的 big_*；這功能上線前的日子用）。"""
