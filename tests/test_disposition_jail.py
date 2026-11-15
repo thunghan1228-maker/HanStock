@@ -298,5 +298,26 @@ class PayloadTests(DbTestCase):
         self.assertFalse({"1111", "2478"} & index)       # 9/01、7/03 太舊
 
 
+    def test_as_of_shows_that_days_list(self) -> None:
+        """2026-11-15 使用者：照老師的「每日名單」可以切前幾天——只算那天（含）以前的公告，dataDate／明天門檻都以那天為準。"""
+        now = datetime(2026, 10, 8, 20, 40, tzinfo=TW)
+
+        def notice(code: str, day: str, clauses: list[int]) -> dict:
+            return {"code": code, "date": day, "market": "TSE", "name": code, "clauses": clauses, "info": "", "close": 10.0}
+
+        module.save_notices([notice("9001", "2026-10-06", [1]), notice("9001", "2026-10-07", [1]), notice("9002", "2026-10-08", [1])])
+        latest = module.build_payload(now)
+        self.assertEqual(latest["dataDate"], "2026-10-08")
+        self.assertIsNone(latest["asOf"])
+        self.assertEqual(latest["recentDays"][:3], ["2026-10-08", "2026-10-07", "2026-10-06"])
+        self.assertIn("9002", {r["code"] for r in latest["index"]})
+        past = module.build_payload(now, as_of="2026-10-07")
+        self.assertEqual((past["dataDate"], past["asOf"], past["nextDay"]), ("2026-10-07", "2026-10-07", "2026-10-08"))
+        self.assertNotIn("9002", {r["code"] for r in past["index"]})            # 10/08 才被注意，10/07 那天還看不到
+        self.assertIn("9001", [s["code"] for s in past["suspects"]])             # 10/07 那天：連 2 日第一款
+        self.assertEqual(past["recentDays"], latest["recentDays"])               # 日期按鈕一樣
+        self.assertIsNone(module.build_payload(now, as_of="2026-10-08")["asOf"])  # 選最新一天＝不用切
+
+
 if __name__ == "__main__":
     unittest.main()
