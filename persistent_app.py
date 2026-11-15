@@ -1757,10 +1757,16 @@ def post_grail_radar_run_close(date: str = Query(...), force: bool = Query(False
 
 
 @app.get("/api/hub/jail")
-def get_jail() -> dict[str, Any]:
+def get_jail(date: str | None = Query(default=None)) -> Any:
     """處置監獄（2026-10-09 使用者：照老師「處置股・出獄與嫌疑名單」做）：一週出獄時間表、犯罪集團、今日入獄、
-    嫌疑名單（明天門檻）、今日第一次第一款、前科索引。資料是證交所／櫃買中心的注意股、處置股公告。"""
-    return jail_payload()
+    嫌疑名單（明天門檻）、今日第一次第一款、前科索引。資料是證交所／櫃買中心的注意股、處置股公告。
+    date＝看前幾天的名單（2026-11-15 使用者：照老師的「每日名單」日期切換）。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return JSONResponse(status_code=422, content={"status": "error", "error": "date 必須是 YYYY-MM-DD"})
+    return jail_payload(as_of=date)
 
 
 @app.get("/api/hub/jail/stock")

@@ -522,10 +522,16 @@ def _fmt_lots(value: float) -> str:
     return f"{_lots_over(value):,}"
 
 
+def _bars_until(code: str, day: str, limit: int = 100) -> list[dict[str, Any]]:
+    """到 day（含）為止最近 limit 根日K（看前幾天的名單時，門檻要用那天的收盤算）。"""
+    bars = load_daily_bars(code, limit=limit + 40)
+    return [b for b in bars if str(b["ts"])[:10] <= day][-limit:]
+
+
 def thresholds(code: str, market: str, data_day: str, *, need_any: bool, recent_clauses: set[int], verb: str,
                shares: int | None) -> dict[str, Any]:
     """明天的門檻（用公開收盤價反推）。回 {lines, high, note, close, volume}。"""
-    bars = load_daily_bars(code, limit=100)
+    bars = _bars_until(code, data_day)
     if len(bars) < 7 or str(bars[-1]["ts"])[:10] != data_day:
         return {"lines": [], "high": False, "close": None, "volume": None, "missing": True}
     closes = [b["close"] for b in bars]
@@ -676,7 +682,7 @@ def outlook_tier(mon_slack: float, tue_slack: float) -> str:
 
 def first_time_outlook(code: str, market: str, data_day: str) -> dict[str, Any] | None:
     """第一次第一款那檔的週一、週二門檻與機率等級；日K不夠（新上市）或今天的日K還沒進來就回 None。"""
-    bars = load_daily_bars(code, limit=100)
+    bars = _bars_until(code, data_day)
     if len(bars) < 7 or str(bars[-1]["ts"])[:10] != data_day:
         return None
     closes = [b["close"] for b in bars]
@@ -720,8 +726,24 @@ def _week_monday(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def build_payload(now: datetime | None = None) -> dict[str, Any]:
+_past_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+
+
+def build_payload(now: datetime | None = None, as_of: str | None = None) -> dict[str, Any]:
+    """as_of＝看哪一天的名單（2026-11-15 使用者：照老師上面那排「每日名單」可以切前幾天）；不給＝最新一天。"""
     now = now or _now()
+    if as_of:
+        key = (_state.get("lastCollect"), now.date().isoformat(), as_of)
+        with _lock:
+            hit = _past_cache.get(key)
+            if hit and time.time() - hit[0] < 600:
+                return hit[1]
+        payload = _build(now, as_of)
+        with _lock:
+            if len(_past_cache) > 12:
+                _past_cache.clear()
+            _past_cache[key] = (time.time(), payload)
+        return payload
     key = (_state.get("lastCollect"), now.date().isoformat())
     with _lock:
         if _cache["key"] == key and _cache["payload"] is not None and time.time() - _cache["at"] < 120:
@@ -732,11 +754,20 @@ def build_payload(now: datetime | None = None) -> dict[str, Any]:
     return payload
 
 
-def _build(now: datetime) -> dict[str, Any]:
+def _build(now: datetime, as_of: str | None = None) -> dict[str, Any]:
     today = now.date()
+    if as_of:
+        today = min(today, _d(as_of))
     since = (today - timedelta(days=HISTORY_DAYS + 30)).isoformat()
     notices = load_notices(since)
     punishes = load_punishes(since)
+    # 每日名單：最近 6 個有注意公告的日子（前端那排日期按鈕）
+    list_days = sorted({n["date"] for n in load_notices((now.date() - timedelta(days=21)).isoformat())}, reverse=True)[:6]
+    if as_of and list_days and as_of >= list_days[0]:
+        as_of = None                                   # 選的是最新一天＝不用切
+    if as_of:                                          # 只看那天（含）以前公告的
+        notices = [n for n in notices if n["date"] <= as_of]
+        punishes = [p for p in punishes if (p.get("announce") or p["start"]) <= as_of]
     if not notices:
         return {"status": "empty", "message": "處置／注意資料還在抓，晚一點再看", "collector": collector_status()}
     latest = _latest_by_market(notices)
@@ -906,6 +937,7 @@ def _build(now: datetime) -> dict[str, Any]:
         "suspects": suspects, "suspectCounts": {"high": sum(s["high"] for s in suspects), "low": sum(not s["high"] for s in suspects)},
         "firstTime": first_time, "index": index, "copyText": copy_text(next_day, suspects),
         "jailedNow": len(jailed_now), "jailedNext": len(jailed_next), "jailedList": jailed_list, "released": released,
+        "recentDays": list_days, "asOf": as_of,
     }
     return payload
 
