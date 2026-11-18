@@ -390,6 +390,39 @@ class GroupQuotesTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             module.group_quotes_payload("1000,1001", fetcher=mis_fetcher(fail_codes={"1000", "1001"}))
 
+    # ---- 2026-11-18 使用者對老師 177：全譜整天沒成交、安鈦克收盤價沒抓到，電腦周邊名次差 13 名 ----
+    @staticmethod
+    def _close_book(url: str):
+        return {"msgArray": [
+            # 全譜：整天一張都沒成交，只有委買 19.00／委賣 19.05 → 平盤（老師 0.00%），不是中間價 19.025
+            {"c": "6228", "n": "全譜", "z": "-", "b": "19.00_18.95_", "a": "19.05_19.10_", "y": "19.45", "o": "-", "v": "0",
+             "u": "21.35", "w": "17.55", "d": "20261118", "t": "13:30:00"},
+            # 安鈦克：有成交（31 張）但這一盤沒成交價，只給委買委賣 → 中間價 12.55（推估的）
+            {"c": "6276", "n": "安鈦克", "z": "-", "b": "12.50_", "a": "12.60_", "y": "11.75", "o": "11.55", "v": "31",
+             "u": "12.90", "w": "10.60", "d": "20261118", "t": "13:30:00"},
+            # 整天沒成交但跌停鎖死（只剩委賣＝跌停價）：照舊用跌停價
+            {"c": "9999", "n": "鎖跌停", "z": "-", "b": "-", "a": "90_90.5_", "y": "100", "o": "-", "v": "0",
+             "u": "110", "w": "90", "d": "20261118", "t": "13:30:00"},
+        ]}
+
+    def test_no_trade_all_day_is_flat_and_locked_book_kept(self) -> None:
+        q = module.group_quotes_payload("6228,6276,9999", fetcher=self._close_book)["quotes"]
+        self.assertEqual((q["6228"]["price"], q["6228"]["change"], q["6228"]["priceSource"]), (19.45, 0.0, "notrade"))
+        self.assertEqual((q["6276"]["price"], q["6276"]["priceSource"]), (12.55, "mid"))
+        self.assertEqual((q["9999"]["price"], q["9999"]["limitDown"], q["9999"]["priceSource"]), (90.0, True, "book"))
+
+    def test_estimated_price_replaced_by_last_trade_even_after_close(self) -> None:
+        payload = module.group_quotes_payload("6228,6276", fetcher=self._close_book)
+        ticks = {"6276": self._tick("6276", 12.75, 31, clock="13:30:00", day="2026-11-18")}   # 量一樣，但這才是真的收盤價
+        got = module.overlay_realtime_ticks(payload, ticks)["quotes"]["6276"]
+        self.assertEqual((got["price"], got["volume"], got["priceSource"]), (12.75, 31, "tick"))
+        self.assertAlmostEqual(got["changePercent"], 8.5106, places=3)
+        with patch.object(module, "_market_open", return_value=False):   # 收盤後也蓋（只蓋推估價的）
+            after = module.overlay_realtime_ticks(payload, ticks)["quotes"]["6276"]
+            self.assertEqual(after["price"], 12.75)
+            normal = module.group_quotes_payload("1000", fetcher=mis_fetcher())   # 有成交價的：收盤後不蓋
+            self.assertIs(module.overlay_realtime_ticks(normal, {"1000": self._tick("1000", 103.5, 830)}), normal)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -638,7 +638,11 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 # 2026-10-05：千附委買委賣平均算出 69.30000000000001（例如 69.2／69.4），比箱頂 69.3 多一點點就被當成過箱頂；
                 # 證交所價格最多 4 位小數，平均價四捨五入到 4 位
                 price = bid if bid and not ask else ask if ask and not bid else round((bid + ask) / 2, 4) if bid and ask else None
-                source = "book"
+                source = "mid" if bid and ask else "book"      # mid＝委買委賣兩邊都有、取中間（推估的，不是成交價）
+                if source == "mid" and not int(_num(item.get("v")) or 0):
+                    # 2026-11-18 使用者對老師 177：全譜整天沒成交，老師算 0.00%，我們拿委買 19.00／委賣 19.05 的中間價 19.025 算成 −2.19%，
+                    # 電腦周邊的族群平均被拉低、名次差 13 名。今天一張都沒成交＝平盤（昨收）；只剩委買或委賣（漲停／跌停鎖死）的照舊
+                    price, source = prev_close, "notrade"
             if price is None:
                 # 2026-10-15 天二科技跌停鎖死整個早上，證交所回的這盤沒成交、委買委賣也全是 "-"，退回開盤價 156 顯示成 -4%（其實 146.5 跌停）。
                 # 沒成交也沒委買委賣、但今天最低＝跌停價（或最高＝漲停價）：幾乎一定是鎖在那個價，就用跌停／漲停價。
@@ -821,7 +825,7 @@ def _fetch_group_quotes(codes: list[str], key: str, fetcher: Callable[[str], Any
                 out[code] = {
                     "price": price, "prevClose": prev, "change": round(price - prev, 4), "changePercent": (price - prev) / prev * 100,
                     "open": q.get("open"), "limitUp": bool(q.get("limitUp")), "limitDown": bool(q.get("limitDown")),
-                    "volume": q.get("volume"), "name": q.get("name"),
+                    "volume": q.get("volume"), "name": q.get("name"), "priceSource": q.get("priceSource"),
                 }
                 day, clock = _stamp(q)
                 if day > latest_date or (day == latest_date and clock > latest_time):
@@ -980,8 +984,10 @@ def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None
         return payload
     if _preopen_window(now):
         return _overlay_preopen_ticks(payload, ticks, now or datetime.now(TW_TZ))
-    if not _market_open(now):
-        return payload
+    # 2026-11-18 使用者對老師 177：安鈦克收盤 12.75（+8.51%），證交所那份這一盤沒成交、只給委買委賣，我們拿中間價 12.55（+6.81%）一整晚。
+    # 證交所的價格是推估的（mid＝委買委賣中間、fallback＝只剩開盤價）時，同一天的逐筆成交（真的最後成交價）一律蓋上去，
+    # 不管量有沒有比較多、收盤後也蓋；證交所有成交價的，照舊只在盤中、量比較多時才蓋
+    estimate_only = not _market_open(now)
     quotes = payload.get("quotes") or {}
     day = str(payload.get("quoteDate") or "")
     if not quotes or not day:
@@ -998,7 +1004,10 @@ def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None
         close, total = tick.get("close"), tick.get("total_volume")
         if stamp[:10] != day or not close or close <= 0 or total is None:
             continue
-        if total <= (old.get("volume") or 0):
+        estimated = old.get("priceSource") in ("mid", "fallback")
+        if estimate_only and not estimated:
+            continue
+        if total <= (old.get("volume") or 0) and not estimated:
             continue
         prev = round(old["price"] - old["change"], 4)
         if prev <= 0:
@@ -1010,10 +1019,11 @@ def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None
             "price": close,
             "change": round(close - prev, 4),
             "changePercent": (close - prev) / prev * 100,
-            "volume": total,
+            "volume": max(total, old.get("volume") or 0),
             "open": old.get("open") or tick.get("open"),
             "limitUp": (bool(old.get("limitUp")) and was_locked) or close >= up - 1e-6,
             "limitDown": (bool(old.get("limitDown")) and was_locked) or close <= down + 1e-6,
+            "priceSource": "tick",
         }
         clock = stamp[11:19]
         if clock > latest_clock:
