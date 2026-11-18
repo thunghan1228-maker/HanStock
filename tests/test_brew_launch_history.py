@@ -720,7 +720,7 @@ class FetchMisQuotesLimitPriceTests(unittest.TestCase):
         base = {"c": "2330", "y": "100.0", "u": "110.0", "w": "90.0", "d": "20261005", "t": "09:55:00", "v": "100", "o": "101.0"}
         self.assertEqual(self._fetch([{**base, "z": "105.0"}])["2330"]["priceSource"], "trade")
         book = self._fetch([{**base, "z": "-", "b": "104.5_104.0_", "a": "105.0_105.5_"}])["2330"]
-        self.assertEqual((book["priceSource"], book["price"]), ("book", 104.75))
+        self.assertEqual((book["priceSource"], book["price"]), ("mid", 104.75))   # 2026-11-18：委買委賣兩邊都有的中間價標 mid（推估的，逐筆成交會蓋過）
         locked = self._fetch([{**base, "z": "-", "b": "110.0_109.5_", "a": "-"}])["2330"]
         self.assertEqual((locked["priceSource"], locked["price"], locked["limitUp"]), ("book", 110.0, True))
         fallback = self._fetch([{**base, "z": "-", "b": "-", "a": "-"}])["2330"]

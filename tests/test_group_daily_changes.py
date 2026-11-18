@@ -64,21 +64,22 @@ class GroupDailyChangesTests(unittest.TestCase):
         self.assertNotIn("2454", str(result["groups"]))
 
     def test_unranked_groups_keep_closes_but_no_rank(self) -> None:
-        # 2026-10-16：老師沒有的功率半導體／散裝不算族群名次，但成員照樣有收盤價
+        # 2026-10-16：老師沒有的功率半導體不算族群名次，但成員照樣有收盤價（散裝 2026-11-18 放回名次）
         rows = _rows() + [("2606", "2026-09-18", 40.0), ("2606", "2026-09-19", 44.0), ("2606", "2026-09-22", 48.4)]
-        groups = dict(FAKE_GROUPS, 散裝=[("2606", "裕民")])
+        groups = dict(FAKE_GROUPS, 功率半導體=[("2606", "裕民")])
         with patch.object(module, "STOCK_GROUPS", groups), patch.object(module, "_load_rows", lambda codes, today: rows):
             result = module.compute_group_daily_changes(3, today="2026-09-23")
-        self.assertNotIn("散裝", result["groups"])
-        self.assertEqual(result["rankedCount"], [2, 2])                 # 散裝漲最多也不擠掉別人的名次
+        self.assertNotIn("功率半導體", result["groups"])
+        self.assertEqual(result["rankedCount"], [2, 2])                 # 功率半導體漲最多也不擠掉別人的名次
         self.assertEqual(result["groups"]["水泥"]["rank"], [1, 1])
         self.assertEqual(result["stocks"]["2606"]["pct"], [10.0, 10.0])
 
     def test_unranked_names(self) -> None:
         from stock_groups import STOCK_GROUPS, UNRANKED_GROUP_NAMES
-        self.assertEqual(UNRANKED_GROUP_NAMES, {"股期標的", "功率半導體", "散裝"})   # 2026-10-18 金融股老師有算，放回名次
+        self.assertEqual(UNRANKED_GROUP_NAMES, {"股期標的", "功率半導體"})   # 2026-10-18 金融股、2026-11-18 散裝老師有算，放回名次
         self.assertIn("小電機", STOCK_GROUPS)
-        self.assertEqual(len([n for n in STOCK_GROUPS if n not in UNRANKED_GROUP_NAMES]), 66)   # 老師 67 族，還差一族不知道名稱
+        self.assertIn("散裝", STOCK_GROUPS)
+        self.assertEqual(len([n for n in STOCK_GROUPS if n not in UNRANKED_GROUP_NAMES]), 67)   # 跟老師一樣 67 族
 
     def test_endpoint_and_cache(self) -> None:
         calls = []
