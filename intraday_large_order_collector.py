@@ -21,7 +21,7 @@ TW_TZ = timezone(timedelta(hours=8))
 _started = False
 _lock = threading.Lock()
 _prepared_at: float | None = None
-_last_recovery_at = 0.0
+_last_recovery_at = float("-inf")   # 還沒重連過（0.0 的話，剛開機 monotonic 還不到冷卻秒數，第一次重連會被當成冷卻中跳過）
 
 
 def _market_session_open(now: datetime | None = None) -> bool:
@@ -32,23 +32,38 @@ def _market_session_open(now: datetime | None = None) -> bool:
     return dt_time(8, 55) <= clock <= dt_time(13, 35)
 
 
+def _ticks_expected(now: datetime | None = None) -> bool:
+    """候選還沒好時的看門狗時段：開盤後 09:02～13:30（避開 09:00 前沒有成交、收盤後不再有 Tick）。"""
+    current = (now or datetime.now(TW_TZ)).astimezone(TW_TZ)
+    if current.weekday() >= 5:
+        return False
+    clock = current.time().replace(tzinfo=None)
+    return dt_time(9, 2) <= clock <= dt_time(13, 30)
+
+
 def _recover_if_stock_ticks_stale(service, status: dict) -> dict:
-    """盤中候選已就緒卻 90 秒無任何台股 Tick 時，自動重建行情連線。"""
+    """盤中候選已就緒卻 90 秒無任何台股 Tick 時，自動重建行情連線。
+
+    2026-11-19：前一晚收盤後重新部署，行情 Session 斷了一整個早上（主連線＋共享池都沒有 Tick，共享池 Session down）。
+    候選名單要靠 Tick 算族群排名（要 48 族以上），沒有 Tick 就永遠「waiting_group_snapshot」，看門狗原本只在候選就緒後才檢查，
+    變成死結、整個早上都沒重連（12空、905／1+2 突破、大戶力全停）。候選還沒好時，只要有訂閱、開盤後（09:02 起）一筆 Tick 都沒有，也要重連。"""
     global _prepared_at, _last_recovery_at
     monitor = get_intraday_large_order_monitor()
     now_mono = time.monotonic()
-    if not bool(status.get("prepared")):
+    prepared = bool(status.get("prepared"))
+    health = service.get_stock_health()
+    age = health.get("stock_quote_age_seconds")
+    subscribed = int(health.get("active_subscription_count") or 0) > 0
+    if not prepared and not (subscribed and _ticks_expected()):
         _prepared_at = None
         monitor.update_status(watchdogState="waiting_candidates")
         return status
     if _prepared_at is None:
         _prepared_at = now_mono
 
-    health = service.get_stock_health()
-    age = health.get("stock_quote_age_seconds")
     stale = age is None or float(age) > STALE_SECONDS
     monitor.update_status(
-        watchdogState="stale" if stale else "healthy",
+        watchdogState=("stale" if stale else "healthy") if prepared else ("stale_waiting_candidates" if stale else "waiting_candidates"),
         stockQuoteAgeSeconds=age,
         stockQuoteStale=stale,
         stockActiveSubscriptionCount=health.get("active_subscription_count"),
