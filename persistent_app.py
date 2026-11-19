@@ -51,6 +51,7 @@ from grail_radar import collector_status as grail_radar_status, day_payload as g
 from ma_rank import hits as ma_rank_hits, query as ma_rank_query, ranking as ma_rank_payload
 from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, stock as screener_stock
 from grail_radar import start_grail_radar_collector
+from turnover_rank import turnover_rank as turnover_rank_payload
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
 from revenue_rank import build_payload as revenue_payload, collector_status as revenue_status, run_collect as revenue_run_collect
@@ -1193,6 +1194,13 @@ def get_inst_rank(date: str | None = Query(None)) -> dict[str, Any]:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return inst_rank_payload(date)
+
+
+@app.get("/api/hub/turnover-rank")
+def get_turnover_rank(top: int = Query(20, ge=1, le=50)) -> dict[str, Any]:
+    """首頁「週轉率高」（2026-11-19 使用者：強中強下面，每天前 20 檔，當沖最愛）：今天成交量 ÷ 已發行股數。
+    盤中用證交所即時報價（3 分鐘更新），抓不到或還沒開盤就用最近一個交易日的官方日K。"""
+    return turnover_rank_payload(top)
 
 
 @app.get("/api/hub/chips/status")
