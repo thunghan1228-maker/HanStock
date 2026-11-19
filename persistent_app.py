@@ -52,6 +52,7 @@ from ma_rank import hits as ma_rank_hits, query as ma_rank_query, ranking as ma_
 from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, stock as screener_stock
 from grail_radar import start_grail_radar_collector
 from turnover_rank import turnover_rank as turnover_rank_payload
+from daytrade_rank import collector_status as daytrade_collector_status, daytrade_rank as daytrade_rank_payload, start_daytrade_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
 from revenue_rank import build_payload as revenue_payload, collector_status as revenue_status, run_collect as revenue_run_collect
@@ -139,6 +140,7 @@ async def _persistent_lifespan(fastapi_app):
             start_group_history_backfill()
             start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
             start_chips_collector()  # 盤後籌碼：三大法人（上市直抓、上櫃鏡像）＋主力大單每日
+            start_daytrade_collector()  # 現股當沖排行：上市證交所直抓、上櫃鏡像（首頁「週轉率高／現股當沖」，2026-11-19 使用者）
             start_fundamentals_collector()  # 本益比、月營收、股本、集保週籌碼（波段日報第二階段）
             start_etf_collector()  # 主動式 ETF 五檔每日持股（下午報第三階段）
             start_swing_report_collector()  # 波段日報：收盤後整理、每日保存（2026-09-26 使用者）
@@ -1201,6 +1203,23 @@ def get_turnover_rank(top: int = Query(20, ge=1, le=50)) -> dict[str, Any]:
     """首頁「週轉率高」（2026-11-19 使用者：強中強下面，每天前 20 檔，當沖最愛）：今天成交量 ÷ 已發行股數。
     盤中用證交所即時報價（3 分鐘更新），抓不到或還沒開盤就用最近一個交易日的官方日K。"""
     return turnover_rank_payload(top)
+
+
+@app.get("/api/hub/daytrade-rank")
+def get_daytrade_rank(top: int = Query(20, ge=1, le=50), date: str | None = Query(None)) -> dict[str, Any]:
+    """首頁「現股當沖」（2026-11-19 使用者：照券商 App 現股當沖個股排行榜）：最近一個收盤日當沖成交張數前幾名＋當沖占比%。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return daytrade_rank_payload(top, date)
+
+
+@app.get("/api/hub/daytrade/status")
+def get_daytrade_status() -> dict[str, Any]:
+    return {"status": "ok", **daytrade_collector_status()}
 
 
 @app.get("/api/hub/chips/status")

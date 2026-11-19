@@ -43,7 +43,7 @@ class TurnoverRankTests(unittest.TestCase):
         def fetcher(url: str):
             if calls is not None:
                 calls.append(url)
-            return {"msgArray": [{"c": code, "o": f"{px:.2f}", "h": f"{px:.2f}", "l": f"{px:.2f}", "z": f"{px:.2f}", "y": f"{prev:.2f}",
+            return {"msgArray": [{"c": code, "o": f"{px:.2f}", "h": f"{px * 1.02:.2f}", "l": f"{px * 0.98:.2f}", "z": f"{px:.2f}", "y": f"{prev:.2f}",
                                   "v": str(vol), "d": "20261119", "t": "10:29:55"} for code, (px, prev, vol) in quotes.items()]}
         return fetcher
 
@@ -61,6 +61,7 @@ class TurnoverRankTests(unittest.TestCase):
         self.assertEqual(top["turnover"], 12.0)                      # 60,000 張 ×1000 ÷ 5 億股
         self.assertEqual(top["chg"], -10.0)
         self.assertEqual(top["sharesLots"], 500_000)
+        self.assertEqual(top["amp"], 3.6)                            # 振幅：(41.31 − 39.69) ÷ 昨收 45
         self.assertEqual(payload["rows"][1]["turnover"], 8.0)
 
     def test_top_limits_rows_and_cache_skips_refetch(self) -> None:

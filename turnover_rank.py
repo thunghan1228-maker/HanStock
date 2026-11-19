@@ -43,14 +43,14 @@ def _session_open(now: datetime) -> bool:
 
 
 def _rank(universe: dict[str, dict[str, str]], quotes: dict[str, dict[str, Any]], shares: dict[str, int]) -> list[dict[str, Any]]:
-    """quotes：{代號: {close, prevClose, volume(張)}}；回照週轉率排的全部列（大到小）。"""
+    """quotes：{代號: {close, high, low, prevClose, volume(張)}}；回照週轉率排的全部列（大到小）。"""
     rows = []
     for code, q in quotes.items():
         info, count = universe.get(code), shares.get(code)
         volume = float(q.get("volume") or 0)
         if not info or not count or count <= 0 or volume <= 0:
             continue
-        price, prev = q.get("close"), q.get("prevClose")
+        price, prev, high, low = q.get("close"), q.get("prevClose"), q.get("high"), q.get("low")
         rows.append({
             "code": code, "name": info["name"], "market": info["market"],
             "price": round(float(price), 2) if price else None,
@@ -58,31 +58,32 @@ def _rank(universe: dict[str, dict[str, str]], quotes: dict[str, dict[str, Any]]
             "volume": int(round(volume)),                                # 張
             "turnover": round(volume * 1000 / count * 100, 2),           # %
             "sharesLots": int(round(count / 1000)),
+            "amp": round((float(high) - float(low)) / float(prev) * 100, 2) if high and low and prev else None,   # 振幅 %（券商「高週轉振幅」）
         })
     rows.sort(key=lambda r: (-r["turnover"], r["code"]))
     return rows
 
 
 def _latest_bars(codes: set[str]) -> tuple[str | None, dict[str, dict[str, Any]]]:
-    """最近一個交易日的官方日K：(日期, {代號: {close, prevClose, volume}})。"""
+    """最近一個交易日的官方日K：(日期, {代號: {close, high, low, prevClose, volume}})。"""
     initialize_database()
     since = (_now().date() - timedelta(days=20)).isoformat()
-    series: dict[str, list[tuple[str, float, float]]] = {}
+    series: dict[str, list[tuple[str, float, float, float, float]]] = {}
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT stock_code, substr(bar_time, 1, 10) AS d, close, volume FROM bars_1d WHERE bar_time >= ? ORDER BY stock_code, bar_time",
+            "SELECT stock_code, substr(bar_time, 1, 10) AS d, high, low, close, volume FROM bars_1d WHERE bar_time >= ? ORDER BY stock_code, bar_time",
             (since,),
         )
         for row in rows:
             code = str(row["stock_code"]).strip().upper()
             if code in codes:
-                series.setdefault(code, []).append((str(row["d"]), float(row["close"]), float(row["volume"] or 0)))
+                series.setdefault(code, []).append((str(row["d"]), float(row["close"]), float(row["volume"] or 0), float(row["high"]), float(row["low"])))
     day = max((bars[-1][0] for bars in series.values() if bars), default=None)
     out = {}
     for code, bars in series.items():
         if bars[-1][0] != day:
             continue
-        out[code] = {"close": bars[-1][1], "prevClose": bars[-2][1] if len(bars) > 1 else None, "volume": bars[-1][2]}
+        out[code] = {"close": bars[-1][1], "high": bars[-1][3], "low": bars[-1][4], "prevClose": bars[-2][1] if len(bars) > 1 else None, "volume": bars[-1][2]}
     return day, out
 
 
