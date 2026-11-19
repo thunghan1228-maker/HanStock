@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 
 from daily_bars_store import daily_bars_storage_status, prune_old_daily_bars
 from official_daily_bars import download_official_daily_bars, download_progress
@@ -21,6 +21,13 @@ CATCHUP_DAYS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_CATCHUP_DAYS", "5")))
 # 正式站要是有設 HANSTOCK_DAILY_BARS_KEEP_DAYS（例如以前的 365），也不能比「補幾年」還短，不然補進來的歷史隔一輪就被刪掉。
 HISTORY_YEARS = max(1, int(os.getenv("HANSTOCK_DAILY_BARS_HISTORY_YEARS", "3")))
 KEEP_DAYS = max(30, int(os.getenv("HANSTOCK_DAILY_BARS_KEEP_DAYS", "800")), HISTORY_YEARS * 252 + 30)
+# 2026-11-19 使用者：強勢紅K／創高黑龍（系統選股）收盤後一直停在前一天——官方日K 14:00～15:00 才公布，原本 60 分鐘才抓一次，
+# 名單要到 15:00～16:00 才換。交易日 13:35～16:30、今天的日K還沒抓齊（上市＋上櫃）時，改成每 FAST_POLL_SECONDS 秒抓一次。
+FAST_POLL_SECONDS = max(300, int(os.getenv("HANSTOCK_DAILY_BARS_FAST_SECONDS", "600")))
+FAST_FROM = dt_time(13, 35)
+FAST_UNTIL = dt_time(16, 30)
+FAST_COMPLETE_RATIO = 0.9   # 今天的檔數到前一個交易日的九成＝上市、上櫃都進來了
+TW_TZ = timezone(timedelta(hours=8))
 _started = False
 _lock = threading.Lock()
 _last_run: dict = {"running": False, "startedAt": None, "finishedAt": None, "result": None, "error": None}
@@ -71,7 +78,54 @@ def collector_status() -> dict:
         "yahooOtc": result.get("yahoo_otc"),
         "yahooOtcGap": result.get("yahoo_otc_gap"),
         "progress": download_progress(),
+        "nextSleepSeconds": _last_run.get("nextSleepSeconds"),
     }
+
+
+def _day_counts(today: str) -> tuple[int, int]:
+    """(今天的日K檔數, 前一個有日K的交易日檔數)。"""
+    from database import get_connection
+
+    since = (date.fromisoformat(today) - timedelta(days=14)).isoformat()
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT substr(bar_time, 1, 10) AS d, COUNT(*) AS n FROM bars_1d WHERE bar_time >= ? GROUP BY d ORDER BY d DESC LIMIT 3",
+            (since,),
+        ).fetchall()
+    counts = {str(r["d"]): int(r["n"]) for r in rows}
+    prev = next((n for d, n in counts.items() if d < today), 0)
+    return counts.get(today, 0), prev
+
+
+def _is_trading_day(day: date) -> bool:
+    if day.weekday() >= 5:
+        return False
+    try:
+        from trading_days import is_trading_day
+
+        return bool(is_trading_day(day))
+    except Exception:  # noqa: BLE001 — 休市日表讀不到就照平日處理
+        return True
+
+
+def next_sleep_seconds(now: datetime | None = None, counts: tuple[int, int] | None = None) -> int:
+    """下一輪等多久：交易日 13:35～16:30 今天的日K還沒抓齊 → FAST_POLL_SECONDS；13:35 前不超過 13:35；其他照舊 POLL_SECONDS。"""
+    now = (now or datetime.now(TW_TZ)).astimezone(TW_TZ)
+    if not _is_trading_day(now.date()):
+        return POLL_SECONDS
+    clock = now.time().replace(tzinfo=None)
+    if clock < FAST_FROM:
+        until = datetime.combine(now.date(), FAST_FROM, tzinfo=TW_TZ) - now
+        return max(60, min(POLL_SECONDS, int(until.total_seconds()) + 1))
+    if clock > FAST_UNTIL:
+        return POLL_SECONDS
+    try:
+        today_n, prev_n = counts if counts is not None else _day_counts(now.strftime("%Y-%m-%d"))
+    except Exception:  # noqa: BLE001
+        return FAST_POLL_SECONDS
+    if today_n and today_n >= prev_n * FAST_COMPLETE_RATIO:
+        return POLL_SECONDS
+    return FAST_POLL_SECONDS
 
 
 def _loop() -> None:
@@ -86,7 +140,12 @@ def _loop() -> None:
             logger.exception("日K背景收集失敗")
         finally:
             _last_run.update({"running": False, "finishedAt": _now_text()})
-        time.sleep(POLL_SECONDS)
+        try:
+            wait = next_sleep_seconds()
+        except Exception:  # noqa: BLE001
+            wait = POLL_SECONDS
+        _last_run["nextSleepSeconds"] = wait
+        time.sleep(wait)
 
 
 def start_daily_bars_collector() -> bool:

@@ -99,3 +99,36 @@ class NeedsFullBackfillTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NextSleepTests(unittest.TestCase):
+    """2026-11-19 使用者：強勢紅K／創高黑龍收盤後一直停在前一天——收盤後等官方日K時改成每 10 分鐘抓。"""
+    TW = timezone(timedelta(hours=8))
+
+    def at(self, hh, mm, day=19):
+        return datetime(2026, 11, day, hh, mm, tzinfo=self.TW)   # 11/19 週四、11/21 週六
+
+    def test_after_close_until_today_complete_polls_fast(self):
+        with patch.object(collector, "_is_trading_day", return_value=True):
+            self.assertEqual(collector.next_sleep_seconds(self.at(13, 45), counts=(0, 1900)), collector.FAST_POLL_SECONDS)
+            # 上市先進來、上櫃還沒：還是快
+            self.assertEqual(collector.next_sleep_seconds(self.at(14, 35), counts=(1050, 1900)), collector.FAST_POLL_SECONDS)
+            # 上市上櫃都到了：回到原本的間隔
+            self.assertEqual(collector.next_sleep_seconds(self.at(15, 5), counts=(1890, 1900)), collector.POLL_SECONDS)
+            # 16:30 以後照舊
+            self.assertEqual(collector.next_sleep_seconds(self.at(17, 0), counts=(0, 1900)), collector.POLL_SECONDS)
+
+    def test_before_window_wakes_up_at_1335(self):
+        with patch.object(collector, "_is_trading_day", return_value=True):
+            self.assertEqual(collector.next_sleep_seconds(self.at(13, 5)), 30 * 60 + 1)
+            self.assertEqual(collector.next_sleep_seconds(self.at(9, 0)), collector.POLL_SECONDS)
+
+    def test_holiday_keeps_normal_interval(self):
+        self.assertEqual(collector.next_sleep_seconds(self.at(14, 0, day=21), counts=(0, 1900)), collector.POLL_SECONDS)   # 週六
+
+    def test_day_counts_reads_today_and_previous_trading_day(self):
+        for d, n in (("2026-11-18", 3), ("2026-11-19", 1)):
+            for i in range(n):
+                save_bars("bars_1d", str(2330 + i), [{"time": datetime.fromisoformat(d + "T00:00:00+08:00"),
+                                                      "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1}])
+        self.assertEqual(collector._day_counts("2026-11-19"), (1, 3))   # bar_time 存成台北時間（+08:00），前 10 碼就是交易日
