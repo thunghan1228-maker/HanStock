@@ -52,7 +52,7 @@ from ma_rank import hits as ma_rank_hits, query as ma_rank_query, ranking as ma_
 from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, stock as screener_stock
 from grail_radar import start_grail_radar_collector
 from turnover_rank import turnover_rank as turnover_rank_payload
-from daytrade_rank import collector_status as daytrade_collector_status, daytrade_rank as daytrade_rank_payload, start_daytrade_collector
+from daytrade_rank import collector_status as daytrade_collector_status, daytrade_rank as daytrade_rank_payload, run_collect as run_daytrade_collect, start_daytrade_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
 from revenue_rank import build_payload as revenue_payload, collector_status as revenue_status, run_collect as revenue_run_collect
@@ -1220,6 +1220,12 @@ def get_daytrade_rank(top: int = Query(20, ge=1, le=50), date: str | None = Quer
 @app.get("/api/hub/daytrade/status")
 def get_daytrade_status() -> dict[str, Any]:
     return {"status": "ok", **daytrade_collector_status()}
+
+
+@app.post("/api/hub/daytrade/collect")
+def post_daytrade_collect() -> dict[str, Any]:
+    """立刻抓一次（tw-groups 的排程工作流程把上櫃現股當沖推到鏡像後會戳這裡）。"""
+    return {"status": "ok", "result": run_daytrade_collect()}
 
 
 @app.get("/api/hub/chips/status")
