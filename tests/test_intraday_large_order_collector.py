@@ -30,10 +30,10 @@ class FakeService:
 @pytest.fixture(autouse=True)
 def reset_state():
     module._prepared_at = None
-    module._last_recovery_at = 0.0
+    module._last_recovery_at = float("-inf")
     yield
     module._prepared_at = None
-    module._last_recovery_at = 0.0
+    module._last_recovery_at = float("-inf")
 
 
 def run(service, status, *, expected=True, session=True, elapsed=True):

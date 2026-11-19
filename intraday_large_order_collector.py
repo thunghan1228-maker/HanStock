@@ -21,7 +21,7 @@ TW_TZ = timezone(timedelta(hours=8))
 _started = False
 _lock = threading.Lock()
 _prepared_at: float | None = None
-_last_recovery_at = 0.0
+_last_recovery_at = float("-inf")   # 還沒重連過（0.0 的話，剛開機 monotonic 還不到冷卻秒數，第一次重連會被當成冷卻中跳過）
 
 
 def _market_session_open(now: datetime | None = None) -> bool:
