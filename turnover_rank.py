@@ -59,6 +59,7 @@ def _rank(universe: dict[str, dict[str, str]], quotes: dict[str, dict[str, Any]]
             "turnover": round(volume * 1000 / count * 100, 2),           # %
             "sharesLots": int(round(count / 1000)),
             "amp": round((float(high) - float(low)) / float(prev) * 100, 2) if high and low and prev else None,   # 振幅 %（券商「高週轉振幅」）
+            "value": round(volume * float(price) / 1e5, 2) if price else None,   # 成交值（億，量×現價估的，盤中 MIS 沒給成交金額）
         })
     rows.sort(key=lambda r: (-r["turnover"], r["code"]))
     return rows
@@ -112,22 +113,61 @@ def build(now: datetime | None = None, fetcher: Callable[[str], Any] | None = No
     return {
         "status": "ok" if rows else "empty", "date": day, "source": source, "asOf": as_of,
         "session": _session_open(now), "universe": len(wanted), "quoted": len(quotes),
-        "updatedAt": now.isoformat(timespec="seconds"), "rows": rows[:MAX_TOP],
+        "updatedAt": now.isoformat(timespec="seconds"), "rows": rows,   # 全部留著（首頁「週轉率觀察」要查指定的股票）；turnover_rank 再截前幾名
     }
 
 
-def turnover_rank(top: int = 20, *, now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
-    """週轉率前 top 名（快取：盤中 3 分鐘、盤外 15 分鐘；同一時間只抓一次）。"""
-    now = now or _now()
-    top = max(1, min(MAX_TOP, int(top)))
+def _cached(now: datetime, fetcher: Callable[[str], Any] | None) -> dict[str, Any]:
+    """全市場週轉率（快取：盤中 3 分鐘、盤外 15 分鐘；同一時間只抓一次）。"""
     with _lock:
         ttl = LIVE_TTL_SECONDS if _session_open(now) else IDLE_TTL_SECONDS
         cached, at = _cache["payload"], _cache["at"]
         if cached is None or at is None or time.monotonic() - at >= ttl:
             cached = build(now, fetcher)
             _cache.update({"payload": cached, "at": time.monotonic()})
+    return cached
+
+
+def turnover_rank(top: int = 20, *, now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """週轉率前 top 名。"""
+    now = now or _now()
+    top = max(1, min(MAX_TOP, int(top)))
+    cached = _cached(now, fetcher)
     payload = dict(cached)
     payload["rows"] = cached["rows"][:top]
     payload["top"] = top
     payload["refreshSeconds"] = LIVE_TTL_SECONDS if payload.get("session") else IDLE_TTL_SECONDS
     return payload
+
+
+def turnover_watch(codes: list[str], *, now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """首頁「週轉率觀察」（2026-11-21 使用者：自己那份報價組合的股票，照週轉率排、標股期／小型股期，
+    同一欄看成交最熱絡、當沖占比最高）：指定股票的週轉率、成交值（盤中即時），加上有沒有股期、最近一天的現股當沖占比。"""
+    from daytrade_rank import ratios as daytrade_ratios
+    from screener import futures_sets
+
+    now = now or _now()
+    wanted = list(dict.fromkeys(str(c).strip().upper() for c in codes if str(c).strip()))[:400]
+    cached = _cached(now, fetcher)
+    by_code = {r["code"]: r for r in cached.get("rows") or []}
+    try:
+        std, mini, fut_source = futures_sets()
+    except Exception:  # noqa: BLE001
+        logger.exception("週轉率觀察：股期清單抓不到")
+        std, mini, fut_source = set(), set(), None
+    dt_date, dt = daytrade_ratios(wanted)
+    rows = []
+    for code in wanted:
+        base = by_code.get(code)
+        if not base:
+            continue
+        d = dt.get(code) or {}
+        rows.append({**base, "std": code in std, "mini": code in mini,
+                     "dtLots": d.get("dtLots"), "dtRatio": d.get("ratio"), "dtVolume": d.get("volume")})
+    rows.sort(key=lambda r: (-r["turnover"], r["code"]))
+    return {
+        "status": "ok" if rows else "empty", "date": cached.get("date"), "source": cached.get("source"), "asOf": cached.get("asOf"),
+        "session": cached.get("session"), "updatedAt": cached.get("updatedAt"),
+        "refreshSeconds": LIVE_TTL_SECONDS if cached.get("session") else IDLE_TTL_SECONDS,
+        "dtDate": dt_date, "futSource": fut_source, "requested": len(wanted), "missing": [c for c in wanted if c not in by_code], "rows": rows,
+    }

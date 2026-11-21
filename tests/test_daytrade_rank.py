@@ -98,6 +98,16 @@ class DaytradeRankTests(unittest.TestCase):
         self.assertFalse(module.daytrade_rank(2)["partial"])
         self.assertEqual(len(module.daytrade_rank(2)["rows"]), 2)
 
+    def test_ratios_use_each_stocks_latest_day(self) -> None:
+        module.save_daytrade("2026-11-18", "TSE", module.parse_daytrade(TWSE_1118)[1], "twse")
+        module.save_daytrade("2026-11-17", "OTC", [{"code": "6182", "name": "合晶", "shares": 1_000_000, "buy": 1, "sell": 1, "suspend": ""}], "mirror")
+        day, got = module.ratios(["2409", "6182", "9999"])
+        self.assertEqual(day, "2026-11-18")
+        self.assertEqual(got["2409"], {"date": "2026-11-18", "dtLots": 170705, "volume": 232758, "ratio": 73.34})
+        self.assertEqual(got["6182"]["date"], "2026-11-17")                   # 上櫃那天還沒進來：用它自己最近的一天
+        self.assertIsNone(got["6182"]["ratio"])                                # 測試資料沒有合晶的日K
+        self.assertNotIn("9999", got)
+
     def test_empty(self) -> None:
         self.assertEqual(module.daytrade_rank(20)["status"], "empty")
 
