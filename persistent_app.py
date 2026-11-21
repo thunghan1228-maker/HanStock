@@ -53,6 +53,7 @@ from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, sto
 from grail_radar import start_grail_radar_collector
 from turnover_rank import turnover_rank as turnover_rank_payload, turnover_watch as turnover_watch_payload, turnover_watch_market as turnover_watch_market_payload
 from daytrade_rank import collector_status as daytrade_collector_status, daytrade_rank as daytrade_rank_payload, run_collect as run_daytrade_collect, start_daytrade_collector
+from margin_maintenance import collector_status as margin_maintenance_status, payload as margin_maintenance_payload, start_margin_maintenance_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
 from revenue_rank import build_payload as revenue_payload, collector_status as revenue_status, run_collect as revenue_run_collect
@@ -160,6 +161,7 @@ async def _persistent_lifespan(fastapi_app):
             from margin_balance import start_margin_collector
 
             start_margin_collector()  # 個股融資餘額：上市證交所直抓、上櫃走鏡像，融資斷頭線看那檔融資還剩多少（2026-10-23 使用者）
+            start_margin_maintenance_collector()  # 大盤融資維持率：證交所融資融券彙總×收盤價，每天 21:00 後（首頁融資那塊最上面，2026-11-21 使用者）
             from fund_umbrella import start_fund_umbrella_collector
 
             start_fund_umbrella_collector()  # 資金保護傘：上市融資餘額＋加權／櫃買日K（FinMind 公開資料），每天晚上更新（2026-10-10 使用者）
@@ -1216,6 +1218,18 @@ def get_turnover_watch(codes: str | None = Query(None, max_length=4000), scope: 
         from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="我的名單模式要給 codes")
     return turnover_watch_payload(codes.split(","))
+
+
+@app.get("/api/hub/margin-maintenance")
+def get_margin_maintenance(days: int = Query(20, ge=2, le=120)) -> dict[str, Any]:
+    """大盤融資維持率（2026-11-21 使用者：首頁融資那塊最上面，每天更新）：上市所有融資股票市值 ÷ 融資借款；
+    最新一天、比前一天差多少、最近幾天走勢（新到舊）；130% 是追繳線。"""
+    return margin_maintenance_payload(days)
+
+
+@app.get("/api/hub/margin-maintenance/status")
+def get_margin_maintenance_status() -> dict[str, Any]:
+    return {"status": "ok", **margin_maintenance_status()}
 
 
 @app.get("/api/hub/daytrade-rank")
