@@ -93,6 +93,23 @@ class TurnoverRankTests(unittest.TestCase):
         self.assertEqual(payload["source"], "bars")
         self.assertEqual(len(payload["rows"]), 2)
 
+    def test_watch_returns_requested_codes_with_futures_and_daytrade(self) -> None:
+        import daytrade_rank
+        live = {"2368": (121.0, 110.0, 8000), "6182": (40.5, 45.0, 60000), "3037": (200.0, 200.0, 30000)}
+        daytrade_rank.save_daytrade("2026-11-18", "TSE", [{"code": "2368", "name": "金像電", "shares": 2_500_000, "buy": 1, "sell": 1, "suspend": ""}], "twse")
+        with patch.object(module, "MIN_LIVE_QUOTES", 2), patch("screener.futures_sets", return_value=({"2368", "3037"}, {"2368"}, "期交所")):
+            payload = module.turnover_watch(["3037", "2368", "9999", "0050"], now=NOW, fetcher=self.mis(live))
+        self.assertEqual([r["code"] for r in payload["rows"]], ["2368", "3037"])     # 照週轉率排；沒資料、ETF 不列
+        self.assertEqual(payload["missing"], ["9999", "0050"])
+        top = payload["rows"][0]
+        self.assertTrue(top["std"] and top["mini"])
+        self.assertEqual(top["value"], 9.68)                                   # 8,000 張 × 121 元 ÷ 1e5 ＝ 9.68 億
+        self.assertEqual(top["dtLots"], 2500)
+        self.assertEqual(top["dtRatio"], 50.0)                                 # 2,500 張 ÷ 11/18 日K 5,000 張
+        self.assertEqual(payload["dtDate"], "2026-11-18")
+        self.assertFalse(payload["rows"][1]["mini"])
+        self.assertIsNone(payload["rows"][1]["dtRatio"])
+
     def test_no_shares_yet(self) -> None:
         with database.get_connection() as connection:
             connection.execute("DELETE FROM stock_shares")

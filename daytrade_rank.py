@@ -309,3 +309,40 @@ def daytrade_rank(top: int = 20, trade_date: str | None = None) -> dict[str, Any
     markets = sorted({str(r["market"]) for r in rows})
     return {"status": "ok", "date": trade_date, "markets": markets, "partial": "OTC" not in markets, "top": top,
             "rows": out, "dates": [d["date"] for d in stored_dates(10)]}
+
+
+def ratios(codes: list[str]) -> tuple[str | None, dict[str, dict[str, Any]]]:
+    """指定股票最近一天的現股當沖：(最新的日期, {代號: {date, dtLots, ratio(%), volume(張)}})。
+    上櫃常比上市晚一兩個小時進來：那天還沒有的股票用它自己最近有資料的那天。"""
+    wanted = [str(c).strip().upper() for c in codes if str(c).strip()]
+    if not wanted:
+        return None, {}
+    initialize_database()
+    latest: dict[str, tuple[str, int]] = {}
+    with get_connection() as connection:
+        _schema(connection)
+        days = [str(r["trade_date"]) for r in connection.execute(
+            "SELECT DISTINCT trade_date FROM daytrade_daily ORDER BY trade_date DESC LIMIT 5").fetchall()]
+        if not days:
+            return None, {}
+        for start in range(0, len(wanted), 400):
+            batch = wanted[start:start + 400]
+            rows = connection.execute(
+                f"""SELECT trade_date, stock_code, dt_shares FROM daytrade_daily
+                    WHERE stock_code IN ({','.join('?' for _ in batch)}) AND trade_date >= ?""",
+                (*batch, days[-1]),
+            ).fetchall()
+            for row in rows:
+                code, day = str(row["stock_code"]), str(row["trade_date"])
+                if code not in latest or day > latest[code][0]:
+                    latest[code] = (day, int(row["dt_shares"]))
+    out: dict[str, dict[str, Any]] = {}
+    for day in sorted({d for d, _ in latest.values()}):
+        codes_that_day = [c for c, (d, _) in latest.items() if d == day]
+        bars = _day_bars(day, codes_that_day)
+        for code in codes_that_day:
+            shares = latest[code][1]
+            volume = (bars.get(code) or {}).get("volume") or 0
+            out[code] = {"date": day, "dtLots": int(round(shares / 1000)), "volume": int(round(volume)) if volume else None,
+                         "ratio": round(shares / (volume * 1000) * 100, 2) if volume > 0 else None}
+    return days[0], out
