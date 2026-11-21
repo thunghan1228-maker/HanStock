@@ -51,7 +51,7 @@ from grail_radar import collector_status as grail_radar_status, day_payload as g
 from ma_rank import hits as ma_rank_hits, query as ma_rank_query, ranking as ma_rank_payload
 from screener import PARAM_KEYS as SCREENER_KEYS, screen as screener_screen, stock as screener_stock
 from grail_radar import start_grail_radar_collector
-from turnover_rank import turnover_rank as turnover_rank_payload, turnover_watch as turnover_watch_payload
+from turnover_rank import turnover_rank as turnover_rank_payload, turnover_watch as turnover_watch_payload, turnover_watch_market as turnover_watch_market_payload
 from daytrade_rank import collector_status as daytrade_collector_status, daytrade_rank as daytrade_rank_payload, run_collect as run_daytrade_collect, start_daytrade_collector
 from disposition_jail import build_payload as jail_payload, collector_status as jail_status, run_collect as jail_run_collect
 from disposition_jail import start_jail_collector, stock_detail as jail_stock_detail
@@ -1206,9 +1206,15 @@ def get_turnover_rank(top: int = Query(20, ge=1, le=50)) -> dict[str, Any]:
 
 
 @app.get("/api/hub/turnover-watch")
-def get_turnover_watch(codes: str = Query(..., min_length=4, max_length=4000)) -> dict[str, Any]:
+def get_turnover_watch(codes: str | None = Query(None, max_length=4000), scope: str = Query("mine", pattern="^(mine|market)$")) -> dict[str, Any]:
     """首頁「週轉率觀察」（2026-11-21 使用者）：指定股票（逗號分隔，最多 400 檔）的即時週轉率、成交值，
-    有沒有股期／小型股期，最近一天的現股當沖占比；照週轉率排。"""
+    有沒有股期／小型股期，最近一天的現股當沖占比；照週轉率排，另附成交最熱絡（hot）、當沖占比最高（dtTop）。
+    scope=market：不看名單，全市場週轉率前 50 名，hot／dtTop 也從全市場挑（「全市場／我的名單」切換）。"""
+    if scope == "market":
+        return turnover_watch_market_payload()
+    if not codes or len(codes.strip()) < 4:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="我的名單模式要給 codes")
     return turnover_watch_payload(codes.split(","))
 
 

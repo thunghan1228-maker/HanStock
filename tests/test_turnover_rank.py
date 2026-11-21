@@ -110,6 +110,30 @@ class TurnoverRankTests(unittest.TestCase):
         self.assertFalse(payload["rows"][1]["mini"])
         self.assertIsNone(payload["rows"][1]["dtRatio"])
 
+    def test_watch_market_scope_ranks_whole_market_with_hot_lists(self) -> None:
+        import daytrade_rank
+        module._market_cache.update({"key": None, "payload": None})
+        live = {"2368": (121.0, 110.0, 8000), "6182": (40.5, 45.0, 60000), "3037": (200.0, 200.0, 30000)}
+        daytrade_rank.save_daytrade("2026-11-18", "TSE", [{"code": "2368", "name": "金像電", "shares": 4_000_000, "buy": 1, "sell": 1, "suspend": ""}], "twse")
+        with patch.object(module, "MIN_LIVE_QUOTES", 2), patch("screener.futures_sets", return_value=({"3037"}, set(), "期交所")):
+            payload = module.turnover_watch_market(now=NOW, fetcher=self.mis(live))
+            again = module.turnover_watch_market(now=NOW, fetcher=self.mis(live))
+        self.assertIs(again, payload)                                           # 週轉率、當沖資料沒換就不重算
+        self.assertEqual(payload["scope"], "market")
+        self.assertEqual([r["code"] for r in payload["rows"]], ["6182", "2368", "3037"])
+        self.assertEqual([r["code"] for r in payload["hot"]], ["3037", "6182", "2368"])   # 成交值：60 億、24.3 億、9.68 億
+        self.assertEqual([r["code"] for r in payload["dtTop"]], ["2368"])                  # 只有金像電有當沖、11/18 成交 5,000 張 ≥ 1,000
+        self.assertEqual(payload["dtTop"][0]["dtRatio"], 80.0)
+        self.assertTrue(next(r for r in payload["rows"] if r["code"] == "3037")["std"])
+
+    def test_watch_mine_scope_also_returns_hot_lists(self) -> None:
+        live = {"2368": (121.0, 110.0, 8000), "6182": (40.5, 45.0, 60000), "3037": (200.0, 200.0, 30000)}
+        with patch.object(module, "MIN_LIVE_QUOTES", 2), patch("screener.futures_sets", return_value=(set(), set(), "期交所")):
+            payload = module.turnover_watch(["2368", "3037"], now=NOW, fetcher=self.mis(live))
+        self.assertEqual(payload["scope"], "mine")
+        self.assertEqual([r["code"] for r in payload["hot"]], ["3037", "2368"])
+        self.assertEqual(payload["dtTop"], [])
+
     def test_no_shares_yet(self) -> None:
         with database.get_connection() as connection:
             connection.execute("DELETE FROM stock_shares")
