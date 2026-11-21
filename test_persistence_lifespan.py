@@ -1,11 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import inspect
+import re
 import unittest
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 import persistent_app
+
+
+def block_background_workers(stack: ExitStack) -> None:
+    """lifespan 會啟動的背景工作全部擋掉，不然測試會開真的連網路收集器、整場測試都在背景寫資料庫。
+    除了 persistent_app 命名空間裡的 start_*，還有在 lifespan 函式內才 `from X import start_Y` 的（財報、融資餘額、
+    期貨籌碼、內部人…）要到來源模組擋，K 棒收尾、主力回補排程的背景執行緒也擋（2026-11-21 main 的 CI 連兩次
+    各炸在不同測試：別的測試清暫存資料夾時「Directory not empty」，就是這些執行緒還在往裡面寫）。"""
+    for name in dir(persistent_app):
+        if name.startswith("start_") and not isinstance(getattr(persistent_app, name), Mock):
+            stack.enter_context(patch.object(persistent_app, name))
+    for module_name, func_name in set(re.findall(r"^\s+from (\w+) import (start_\w+)", inspect.getsource(persistent_app), flags=re.M)):
+        source = importlib.import_module(module_name)
+        if not isinstance(getattr(source, func_name, None), Mock):
+            stack.enter_context(patch.object(source, func_name))
+    stack.enter_context(patch.object(type(persistent_app.get_market_data_hub()), "start_bar_flusher"))
+    stack.enter_context(patch.object(persistent_app, "prune_pending_backfill_jobs"))
+    stack.enter_context(patch.object(persistent_app, "queue_backfill_for_all_group_stocks"))
 
 
 class PersistenceLifespanTests(unittest.TestCase):
@@ -39,9 +59,7 @@ class PersistenceLifespanTests(unittest.TestCase):
             ExitStack() as other_workers,
         ):
             # 其他後來加的背景工作（醞釀、籌碼、飆股雷達…）也一律擋掉，不然測試會啟動真的連網路收集器。
-            for name in dir(persistent_app):
-                if name.startswith("start_") and not isinstance(getattr(persistent_app, name), Mock):
-                    other_workers.enter_context(patch.object(persistent_app, name))
+            block_background_workers(other_workers)
             asyncio.run(exercise_lifespan())
 
         main_force_worker.assert_called_once_with()
@@ -61,9 +79,7 @@ class PersistenceLifespanTests(unittest.TestCase):
                 pass
 
         with ExitStack() as stack:
-            for name in dir(persistent_app):
-                if name.startswith("start_"):
-                    stack.enter_context(patch.object(persistent_app, name))
+            block_background_workers(stack)
             flush = stack.enter_context(patch("intraday_kline_signals.flush_pending_bars_5m", return_value=3))
             asyncio.run(exercise_lifespan())
         flush.assert_called_once_with(force=True)
@@ -74,9 +90,7 @@ class PersistenceLifespanTests(unittest.TestCase):
                 pass
 
         with ExitStack() as stack:
-            for name in dir(persistent_app):
-                if name.startswith("start_"):
-                    stack.enter_context(patch.object(persistent_app, name))
+            block_background_workers(stack)
             stack.enter_context(patch("intraday_kline_signals.flush_pending_bars_5m", side_effect=RuntimeError("db locked")))
             asyncio.run(exercise_lifespan())   # 寫入失敗只記 log，不讓關閉流程炸掉
 
