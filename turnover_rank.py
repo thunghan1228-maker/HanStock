@@ -140,24 +140,25 @@ def turnover_rank(top: int = 20, *, now: datetime | None = None, fetcher: Callab
     return payload
 
 
-def turnover_watch(codes: list[str], *, now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
-    """首頁「週轉率觀察」（2026-11-21 使用者：自己那份報價組合的股票，照週轉率排、標股期／小型股期，
-    同一欄看成交最熱絡、當沖占比最高）：指定股票的週轉率、成交值（盤中即時），加上有沒有股期、最近一天的現股當沖占比。"""
+HOT_TOP = 10              # 成交最熱絡、當沖占比最高各列幾檔
+DT_MIN_VOLUME = 1000     # 當沖占比最高只看那天成交 ≥ 1,000 張的（冷門股一兩張也可能 100%）
+_market_cache: dict[str, Any] = {"key": None, "payload": None}
+
+
+def _enrich(cached: dict[str, Any], codes: list[str]) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """指定股票的週轉率列，加上有沒有股期／小型股期、最近一天的現股當沖占比；照週轉率排。"""
     from daytrade_rank import ratios as daytrade_ratios
     from screener import futures_sets
 
-    now = now or _now()
-    wanted = list(dict.fromkeys(str(c).strip().upper() for c in codes if str(c).strip()))[:400]
-    cached = _cached(now, fetcher)
     by_code = {r["code"]: r for r in cached.get("rows") or []}
     try:
         std, mini, fut_source = futures_sets()
     except Exception:  # noqa: BLE001
         logger.exception("週轉率觀察：股期清單抓不到")
         std, mini, fut_source = set(), set(), None
-    dt_date, dt = daytrade_ratios(wanted)
+    dt_date, dt = daytrade_ratios([c for c in codes if c in by_code])
     rows = []
-    for code in wanted:
+    for code in codes:
         base = by_code.get(code)
         if not base:
             continue
@@ -165,9 +166,51 @@ def turnover_watch(codes: list[str], *, now: datetime | None = None, fetcher: Ca
         rows.append({**base, "std": code in std, "mini": code in mini,
                      "dtLots": d.get("dtLots"), "dtRatio": d.get("ratio"), "dtVolume": d.get("volume")})
     rows.sort(key=lambda r: (-r["turnover"], r["code"]))
-    return {
-        "status": "ok" if rows else "empty", "date": cached.get("date"), "source": cached.get("source"), "asOf": cached.get("asOf"),
-        "session": cached.get("session"), "updatedAt": cached.get("updatedAt"),
-        "refreshSeconds": LIVE_TTL_SECONDS if cached.get("session") else IDLE_TTL_SECONDS,
-        "dtDate": dt_date, "futSource": fut_source, "requested": len(wanted), "missing": [c for c in wanted if c not in by_code], "rows": rows,
-    }
+    return rows, dt_date, fut_source
+
+
+def _hot_lists(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """成交最熱絡（成交值前幾名）、當沖占比最高（那天成交 ≥ DT_MIN_VOLUME 張）。"""
+    hot = sorted((r for r in rows if r.get("value") is not None), key=lambda r: (-r["value"], r["code"]))[:HOT_TOP]
+    dt_top = sorted((r for r in rows if r.get("dtRatio") is not None and (r.get("dtVolume") or 0) >= DT_MIN_VOLUME),
+                    key=lambda r: (-r["dtRatio"], r["code"]))[:HOT_TOP]
+    return hot, dt_top
+
+
+def _meta(cached: dict[str, Any]) -> dict[str, Any]:
+    return {"date": cached.get("date"), "source": cached.get("source"), "asOf": cached.get("asOf"), "session": cached.get("session"),
+            "updatedAt": cached.get("updatedAt"), "refreshSeconds": LIVE_TTL_SECONDS if cached.get("session") else IDLE_TTL_SECONDS}
+
+
+def turnover_watch(codes: list[str], *, now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """首頁「週轉率觀察」（2026-11-21 使用者：自己那份報價組合的股票，照週轉率排、標股期／小型股期，
+    同一欄看成交最熱絡、當沖占比最高）：指定股票的週轉率、成交值（盤中即時），加上有沒有股期、最近一天的現股當沖占比。"""
+    now = now or _now()
+    wanted = list(dict.fromkeys(str(c).strip().upper() for c in codes if str(c).strip()))[:400]
+    cached = _cached(now, fetcher)
+    rows, dt_date, fut_source = _enrich(cached, wanted)
+    hot, dt_top = _hot_lists(rows)
+    have = {r["code"] for r in rows}
+    return {"status": "ok" if rows else "empty", "scope": "mine", **_meta(cached), "dtDate": dt_date, "futSource": fut_source,
+            "requested": len(wanted), "missing": [c for c in wanted if c not in have], "rows": rows, "hot": hot, "dtTop": dt_top}
+
+
+def turnover_watch_market(*, now: datetime | None = None, fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """「週轉率觀察」的全市場模式（2026-11-21 使用者：加「全市場／我的名單」切換）：全市場一般個股週轉率前 MAX_TOP 名，
+    成交最熱絡、當沖占比最高也從全市場挑；跟週轉率排行共用快取，當沖占比那份等週轉率或當沖資料換了才重算。"""
+    from daytrade_rank import stored_dates
+
+    now = now or _now()
+    cached = _cached(now, fetcher)
+    dates = stored_dates(1)
+    key = (cached.get("updatedAt"), dates[0]["date"] if dates else None, tuple(sorted((dates[0]["markets"] if dates else {}).items())))
+    with _lock:
+        if _market_cache["key"] == key and _market_cache["payload"] is not None:
+            return _market_cache["payload"]
+    rows, dt_date, fut_source = _enrich(cached, [r["code"] for r in cached.get("rows") or []])
+    hot, dt_top = _hot_lists(rows)
+    payload = {"status": "ok" if rows else "empty", "scope": "market", **_meta(cached), "dtDate": dt_date, "futSource": fut_source,
+               "universe": len(rows), "rows": rows[:MAX_TOP], "hot": hot, "dtTop": dt_top}
+    with _lock:
+        _market_cache.update({"key": key, "payload": payload})
+    return payload
