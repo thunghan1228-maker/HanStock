@@ -41,7 +41,7 @@ from brew_launch_history import (
 )
 from trading_days import is_trading_day
 from watchlist_store import WatchlistError, load as watchlist_load, save as watchlist_save
-from chips_daily import inst_rank as inst_rank_payload, chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
+from chips_daily import inst_rank as inst_rank_payload, trust_big_rank as trust_big_payload, chips_daily as chips_daily_payload, collector_status as chips_collector_status, run_collect as run_chips_collect, start_chips_collector
 from swing_report import run_once as run_swing_report, start_swing_report_collector, swing_report as swing_report_payload
 from etf_holdings import collector_status as etf_status, run_collect as run_etf_collect, start_etf_collector
 from heilong_backtest import backtest as heilong_backtest_payload, collector_status as heilong_status, rebuild as rebuild_heilong
@@ -1198,6 +1198,19 @@ def get_inst_rank(date: str | None = Query(None)) -> dict[str, Any]:
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
     return inst_rank_payload(date)
+
+
+@app.get("/api/hub/trust-big")
+def get_trust_big(top: int = Query(20, ge=5, le=50), date: str | None = Query(None)) -> dict[str, Any]:
+    """首頁「大戶＋投信同買／同賣」（2026-11-22 使用者：大戶跟投信同時買超的前二十大，買超／賣超切換）：
+    大戶＝老師版大戶（同秒併單 ≥7 張）那天淨額，投信＝三大法人買賣超；兩邊同方向的照合計金額排。date 沒給就是最新有法人＋大戶資料的交易日。"""
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="date 必須是 YYYY-MM-DD") from exc
+    return trust_big_payload(date, top)
 
 
 @app.get("/api/hub/turnover-rank")
