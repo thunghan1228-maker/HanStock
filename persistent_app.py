@@ -1897,6 +1897,15 @@ def get_revenue_status() -> dict[str, Any]:
     return {"status": "ok", **revenue_status()}
 
 
+@app.get("/api/hub/revenue-tech")
+def get_revenue_tech(top: int = Query(20, ge=5, le=50)) -> dict[str, Any]:
+    """首頁「營收＋技術面」（2026-11-22 使用者：營收面跟技術面綜合評分比較好的個股抓 20 檔，每天更新）：
+    營收分（年增、累計年增、加速、月增，滿分 50）＋技術分（均線分數 score2 換算，滿分 50），5 日均成交值 ≥5,000 萬。"""
+    from revenue_tech import payload as revenue_tech_payload
+
+    return revenue_tech_payload(top)
+
+
 @app.post("/api/hub/revenue/collect")
 def post_revenue_collect() -> dict[str, Any]:
     """馬上從鏡像拉一次（排程主機推完營收彙總表會戳這裡）。"""
