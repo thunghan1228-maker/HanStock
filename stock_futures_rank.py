@@ -7,6 +7,11 @@
 - 契約對到哪一檔股票：期交所「股票期貨、選擇權商品標的」頁（第 1 欄兩碼代號、第 3 欄股票代號、第 4 欄簡稱、第 12 欄每口股數：
   2,000＝一般、100＝小型，ETF 期貨另有 1,000／10,000），半天抓一次。
 收盤後期交所才公布；收集器 13:50 以後每 20 分鐘看一次，抓到當天的就停到下一個交易日，每天存一份（看得到比前一天量多少）。
+
+買進／賣出前 30（2026-11-22 使用者：除了成交量，再分買進前 30、賣出前 30）：期貨每筆成交都是一買一賣，期交所也沒有
+「各檔股期的三大法人」（只有全部股期合計），所以用期交所「大額交易人未沖銷部位」（網站下載 largeTraderFutDown，可以指定日期、
+抓得到前幾天）：全部月份（999999）前十大交易人的多單 − 空單＝淨部位，比前一個交易日增加＝買進、減少＝賣出；
+照金額（口數 × 每口股數 × 近月收盤）排，一般、小型股期才比得起來。
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ TW_TZ = timezone(timedelta(hours=8))
 DAILY_URL = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
 LISTS_URL = "https://www.taifex.com.tw/cht/2/stockLists"
 LISTS_REFRESH_SECONDS = 12 * 3600
+LARGE_URL = "https://www.taifex.com.tw/cht/3/largeTraderFutDown?queryStartDate={start}&queryEndDate={end}"
+LARGE_LOOKBACK_DAYS = 14    # 大額交易人一次抓最近兩週（連假後也找得到前一個交易日）
 PUBLISH_AFTER = dt_time(13, 50)
 POLL_SECONDS = 20 * 60
 TOP = 30
@@ -55,6 +62,17 @@ def _schema(connection) -> None:
             near_month TEXT,
             near_last REAL,
             near_change_pct REAL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date, contract)
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS stock_futures_large (
+            trade_date TEXT NOT NULL,
+            contract TEXT NOT NULL,
+            buy5 INTEGER, sell5 INTEGER, buy10 INTEGER NOT NULL, sell10 INTEGER NOT NULL,
+            inst_buy10 INTEGER, inst_sell10 INTEGER,
+            oi_market INTEGER,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (trade_date, contract)
         )"""
@@ -135,6 +153,58 @@ def parse_daily(payload: Any, mapping: dict[str, dict[str, Any]]) -> tuple[str |
     return day, rows
 
 
+def parse_large(text: str, mapping: dict[str, dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """期交所大額交易人下載檔（CSV）：{日期: [每個股期契約一列]}，只取全部月份合計（999999），
+    交易人類別 0＝前五大／前十大交易人、1＝其中屬於特定法人的。"""
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split(",")]
+        if len(cells) < 10 or not re.fullmatch(r"\d{4}/\d{2}/\d{2}", cells[0]) or cells[3] != "999999":
+            continue
+        contract = cells[1] + "F"
+        if contract not in mapping:
+            continue
+        day = cells[0].replace("/", "-")
+        row = out.setdefault(day, {}).setdefault(contract, {"contract": contract})
+        buy5, sell5, buy10, sell10, oi = (_int(c) for c in cells[5:10])
+        if cells[4] == "0":
+            row.update({"buy5": buy5, "sell5": sell5, "buy10": buy10, "sell10": sell10, "oi": oi})
+        elif cells[4] == "1":
+            row.update({"instBuy10": buy10, "instSell10": sell10})
+    return {day: [r for r in rows.values() if r.get("buy10") is not None and r.get("sell10") is not None] for day, rows in out.items()}
+
+
+def save_large(trade_date: str, rows: list[dict[str, Any]]) -> int:
+    initialize_database()
+    now = datetime.now(TW_TZ).isoformat(timespec="seconds")
+    with get_connection() as connection:
+        _schema(connection)
+        connection.execute("DELETE FROM stock_futures_large WHERE trade_date = ?", (trade_date,))
+        connection.executemany(
+            """INSERT INTO stock_futures_large (trade_date, contract, buy5, sell5, buy10, sell10, inst_buy10, inst_sell10, oi_market, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(trade_date, r["contract"], r.get("buy5"), r.get("sell5"), r["buy10"], r["sell10"], r.get("instBuy10"), r.get("instSell10"), r.get("oi"), now)
+             for r in rows],
+        )
+    return len(rows)
+
+
+def large_dates(limit: int = 5) -> list[str]:
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        return [str(r["trade_date"]) for r in connection.execute(
+            "SELECT DISTINCT trade_date FROM stock_futures_large ORDER BY trade_date DESC LIMIT ?", (limit,)).fetchall()]
+
+
+def _fetch_csv(url: str, timeout: int = 60) -> str:
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; HanStock/1.0)", "Accept-Language": "zh-TW,zh;q=0.9"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        return response.read().decode("cp950", errors="replace")
+
+
 def save(trade_date: str, rows: list[dict[str, Any]]) -> int:
     initialize_database()
     now = datetime.now(TW_TZ).isoformat(timespec="seconds")
@@ -158,12 +228,62 @@ def stored_dates(limit: int = 5) -> list[str]:
             "SELECT DISTINCT trade_date FROM stock_futures_daily ORDER BY trade_date DESC LIMIT ?", (limit,)).fetchall()]
 
 
-def collect_once(fetcher: Callable[[str], Any] | None = None, text_fetcher: Callable[[str], str] | None = None) -> dict[str, Any]:
+def collect_once(fetcher: Callable[[str], Any] | None = None, text_fetcher: Callable[[str], str] | None = None,
+                 csv_fetcher: Callable[[str], str] | None = None, now: datetime | None = None) -> dict[str, Any]:
     mapping = contracts(text_fetcher)
     day, rows = parse_daily((fetcher or _default_fetcher)(DAILY_URL), mapping)
-    if not day or not rows:
-        return {"date": day, "saved": 0}
-    return {"date": day, "saved": save(day, rows)}
+    result: dict[str, Any] = {"date": day, "saved": save(day, rows) if day and rows else 0}
+    now = now or datetime.now(TW_TZ)
+    start = (now.date() - timedelta(days=LARGE_LOOKBACK_DAYS)).strftime("%Y/%m/%d").replace("/", "%2F")
+    end = now.date().strftime("%Y/%m/%d").replace("/", "%2F")
+    try:
+        by_day = parse_large((csv_fetcher or _fetch_csv)(LARGE_URL.format(start=start, end=end)), mapping)
+        have = set(large_dates(LARGE_LOOKBACK_DAYS))
+        latest = max(by_day) if by_day else None
+        saved = {d: save_large(d, r) for d, r in sorted(by_day.items()) if r and (d not in have or d == latest)}
+        result["large"] = {"dates": sorted(by_day), "saved": saved}
+    except Exception as error:  # noqa: BLE001  行情存好了，大額交易人下一輪再試
+        result["large"] = {"error": f"{type(error).__name__}: {error}"[:200]}
+    return result
+
+
+def _flows(top: int) -> dict[str, Any]:
+    """大額交易人買進／賣出：最新兩天全部月份前十大交易人淨部位（多單 − 空單）的差，照金額排。"""
+    dates = large_dates(2)
+    if len(dates) < 2:
+        return {"flowDate": dates[0] if dates else None, "flowPrevDate": None, "buy": [], "sell": []}
+    with get_connection() as connection:
+        today = connection.execute("SELECT * FROM stock_futures_large WHERE trade_date = ?", (dates[0],)).fetchall()
+        prev = {str(r["contract"]): r for r in connection.execute("SELECT * FROM stock_futures_large WHERE trade_date = ?", (dates[1],)).fetchall()}
+        info_day = connection.execute("SELECT MAX(trade_date) AS d FROM stock_futures_daily WHERE trade_date <= ?", (dates[0],)).fetchone()["d"]
+        info = {str(r["contract"]): r for r in connection.execute(   # 代號、每口股數、近月收盤：同一天的行情（沒有就用之前最近一天）
+            "SELECT contract, stock_code, stock_name, shares, near_last, near_change_pct FROM stock_futures_daily WHERE trade_date = ?", (info_day,)).fetchall()}
+    rows = []
+    for r in today:
+        contract, p, f = str(r["contract"]), prev.get(str(r["contract"])), info.get(str(r["contract"]))
+        if not p or not f:
+            continue
+        net, prev_net = int(r["buy10"]) - int(r["sell10"]), int(p["buy10"]) - int(p["sell10"])
+        change = net - prev_net
+        if change == 0:
+            continue
+        code, shares, price = str(f["stock_code"]), f["shares"], f["near_last"]
+        amount = change * shares * price / 1e8 if shares and price else None
+        inst = int(r["inst_buy10"]) - int(r["inst_sell10"]) if r["inst_buy10"] is not None and r["inst_sell10"] is not None else None
+        rows.append({
+            "contract": contract, "code": code, "name": f["stock_name"], "shares": shares,
+            "kind": "etf" if code.startswith("00") else "mini" if shares == 100 else "std",
+            "change": change, "lots": round(change * shares / 1000, 1) if shares else None, "amount": round(amount, 2) if amount is not None else None,
+            "net": net, "prevNet": prev_net, "buy10": int(r["buy10"]), "sell10": int(r["sell10"]), "instNet": inst, "oi": r["oi_market"],
+            "last": price, "chg": f["near_change_pct"],
+        })
+    key = lambda x: x["amount"] if x["amount"] is not None else 0.0   # noqa: E731  沒有價格的排在有金額的後面
+    buy = sorted((x for x in rows if x["change"] > 0), key=lambda x: (-key(x), -x["change"], x["contract"]))[:top]
+    sell = sorted((x for x in rows if x["change"] < 0), key=lambda x: (key(x), x["change"], x["contract"]))[:top]
+    for side in (buy, sell):
+        for i, x in enumerate(side):
+            x["rank"] = i + 1
+    return {"flowDate": dates[0], "flowPrevDate": dates[1], "buy": buy, "sell": sell}
 
 
 def payload(top: int = TOP) -> dict[str, Any]:
@@ -194,11 +314,11 @@ def payload(top: int = TOP) -> dict[str, Any]:
         })
     total = sum(int(r["volume"]) for r in rows)
     return {"status": "ok", "date": dates[0], "prevDate": dates[1] if len(dates) > 1 else None, "top": top,
-            "contracts": len(rows), "totalVolume": total, "rows": out, **{k: _state.get(k) for k in ("lastRunAt",)}}
+            "contracts": len(rows), "totalVolume": total, "rows": out, **_flows(top), **{k: _state.get(k) for k in ("lastRunAt",)}}
 
 
 def collector_status() -> dict[str, Any]:
-    return {"pollSeconds": POLL_SECONDS, "stored": stored_dates(5), **_state}
+    return {"pollSeconds": POLL_SECONDS, "stored": stored_dates(5), "largeStored": large_dates(5), **_state}
 
 
 def run_collect() -> dict[str, Any]:
@@ -223,8 +343,8 @@ def _due(now: datetime, latest: str | None) -> bool:
 def _loop() -> None:
     while True:
         try:
-            dates = stored_dates(1)
-            if _due(datetime.now(TW_TZ), dates[0] if dates else None):
+            now, daily, large = datetime.now(TW_TZ), stored_dates(1), large_dates(1)
+            if _due(now, daily[0] if daily else None) or _due(now, large[0] if large else None):
                 run_collect()
         except Exception:  # noqa: BLE001
             logger.exception("股票期貨成交量收集迴圈")
