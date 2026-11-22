@@ -523,6 +523,116 @@ def inst_rank(trade_date: str | None = None) -> dict[str, Any]:
     return {**data, "dates": [{"date": d, "markets": sorted(markets_by_date[d])} for d in all_dates]}
 
 
+# ------------------------------------------------------------------ 大戶＋投信同買／同賣（首頁第一欄，2026-11-22 使用者）
+# 使用者：「大戶跟投信同時買超的個股前二十大」放首頁第一欄週轉率觀察下面，上面按鈕切換買超／賣超。
+# 大戶＝首頁大戶力同一套（老師算法：同秒同方向併單 ≥7 張、開盤第一筆算賣）那天的淨額，main_force_bars 的 big_*，
+#   只有收集器追蹤的股票才有；那天有一根 5 分K 沒老師版資料（舊資料、只存半天）就不算。
+# 投信＝三大法人買賣超（上市 T86、上櫃鏡像）。同買＝兩邊都 > 0，照合計金額（大戶淨額＋投信買超張數 × 收盤價）由大到小排；同賣反過來。
+TRUST_BIG_TOP = 20
+TRUST_BIG_LOOKBACK = 5        # 最新的法人日期還沒有大戶資料時，往前找幾個有法人資料的交易日
+_trust_big_cache: dict[str, Any] = {}
+
+
+def big_net_daily(trade_date: str, codes: list[str]) -> dict[str, float]:
+    """{代號: 那天老師版大戶淨額（元，正＝買超）}；沒追蹤到、或那天老師版資料不完整的不在裡面。"""
+    if not codes:
+        return {}
+    initialize_database()
+    out: dict[str, float] = {}
+    with get_connection() as connection:
+        if not connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'main_force_bars'").fetchone():
+            return {}
+        if "big_available" not in {str(r["name"]) for r in connection.execute("PRAGMA table_info(main_force_bars)").fetchall()}:
+            return {}
+        for start in range(0, len(codes), 400):
+            batch = codes[start:start + 400]
+            rows = connection.execute(
+                f"""SELECT stock_code, SUM(big_buy_amount) AS b, SUM(big_sell_amount) AS s, MIN(big_available) AS ok
+                    FROM main_force_bars WHERE stock_code IN ({','.join('?' for _ in batch)}) AND interval = '5m' AND trade_date = ?
+                    GROUP BY stock_code""",
+                (*batch, trade_date),
+            ).fetchall()
+            for row in rows:
+                if int(row["ok"] or 0) == 1:
+                    out[str(row["stock_code"]).upper()] = float(row["b"] or 0) - float(row["s"] or 0)
+    return out
+
+
+def _trust_by_code(trade_date: str) -> dict[str, tuple[int, str, str]]:
+    """{代號: (投信買賣超股數, 市場, 名稱)}：那天投信有買賣的一般股票（4 碼數字）。"""
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT stock_code, market, stock_name, trust_net FROM institutional_daily WHERE trade_date = ? AND trust_net != 0", (trade_date,)
+        ).fetchall()
+    out = {}
+    for row in rows:
+        code = str(row["stock_code"]).strip().upper()
+        if _COMMON_STOCK.match(code):
+            out[code] = (int(row["trust_net"]), str(row["market"]), str(row["stock_name"] or ""))
+    return out
+
+
+def trust_big_rank(trade_date: str | None = None, top: int = TRUST_BIG_TOP) -> dict[str, Any]:
+    """大戶跟投信同買、同賣的前 top 名（buy／sell 一次都給，前端按鈕切換不用再抓）。
+    date 沒給就用最新一個有法人資料、而且有大戶資料的交易日（上櫃法人比上市晚進來，markets 說那天有哪幾個市場）。"""
+    top = max(1, min(50, int(top)))
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        cover = connection.execute("SELECT trade_date, market FROM institutional_daily GROUP BY trade_date, market ORDER BY trade_date DESC").fetchall()
+    markets_by_date: dict[str, list[str]] = {}
+    for row in cover:
+        markets_by_date.setdefault(str(row["trade_date"]), []).append(str(row["market"]))
+    if not markets_by_date:
+        return {"status": "empty", "message": "還沒有法人買賣超資料", "date": None, "buy": [], "sell": []}
+    dates = list(markets_by_date)
+    candidates = ([trade_date] if trade_date in markets_by_date else []) if trade_date else dates[:TRUST_BIG_LOOKBACK]
+    if not candidates:
+        return {"status": "empty", "message": "這天沒有法人買賣超資料", "date": trade_date, "buy": [], "sell": []}
+    key = f"{trade_date}|{top}|{candidates[0]}|{sorted(markets_by_date[candidates[0]])}"
+    hit = _trust_big_cache.get("entry")
+    if hit and hit["key"] == key and time.time() - hit["at"] < RANK_CACHE_SECONDS:
+        return hit["data"]
+    day, trust, big = None, {}, {}
+    for candidate in candidates:
+        trust = _trust_by_code(candidate)
+        big = big_net_daily(candidate, sorted(trust))
+        if big:
+            day = candidate
+            break
+    if not day:
+        data = {"status": "empty", "message": "這幾天沒有大戶資料可以對", "date": candidates[0], "buy": [], "sell": []}
+        _trust_big_cache["entry"] = {"key": key, "at": time.time(), "data": data}
+        return data
+    both = [code for code, (shares, _m, _n) in trust.items() if code in big and _lots(shares) != 0 and big[code] != 0 and (shares > 0) == (big[code] > 0)]
+    quotes = daily_quotes(day, both)
+    grouped = industry_group_codes()
+    from brew_launch_history import group_and_name
+    rows = []
+    for code in both:
+        shares, market, name = trust[code]
+        quote = quotes.get(code) or {}
+        close = quote.get("close")
+        trust_amount = shares * close / 1e8 if close else None          # 億（買賣超股數 × 收盤估的）
+        big_amount = big[code] / 1e8
+        rows.append({
+            "code": code, "name": name, "mkt": market,
+            "trust": _lots(shares), "trustAmt": round(trust_amount, 2) if trust_amount is not None else None,
+            "big": round(big_amount, 2), "total": round(big_amount + (trust_amount or 0), 2),
+            "close": close, "chg": quote.get("changePct"),
+            "group": group_and_name(code)[0] if code in grouped else "",
+        })
+    buy = sorted((r for r in rows if r["trust"] > 0), key=lambda r: (-r["total"], r["code"]))
+    sell = sorted((r for r in rows if r["trust"] < 0), key=lambda r: (r["total"], r["code"]))
+    data = {
+        "status": "ok", "date": day, "markets": sorted(markets_by_date[day]), "top": top,
+        "counts": {"buy": len(buy), "sell": len(sell)}, "trustStocks": len(trust), "bigStocks": len(big),
+        "buy": buy[:top], "sell": sell[:top], "generatedAt": datetime.now(TW_TZ).isoformat(timespec="seconds"),
+    }
+    _trust_big_cache["entry"] = {"key": key, "at": time.time(), "data": data}
+    return data
+
+
 # ------------------------------------------------------------------ 收集
 
 def _recent_trading_days(now: datetime, count: int) -> list[str]:
