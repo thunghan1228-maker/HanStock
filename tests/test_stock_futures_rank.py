@@ -44,6 +44,23 @@ DAILY = [
 ]
 
 
+LARGE_CSV = "\n".join([
+    "日期,商品(契約),商品名稱(契約名稱),到期月份(週別),交易人類別,前五大交易人買方,前五大交易人賣方,前十大交易人買方,前十大交易人賣方,全市場未沖銷部位數",
+    "2026/11/19,CD     ,台積電期貨,202612  ,0,1,1,1,1,1",                     # 近月那列不算，只看全部月份
+    "2026/11/19,CD     ,台積電期貨,999999  ,0,15584,10108,17237,16383,27830",
+    "2026/11/19,CD     ,台積電期貨,999999  ,1,15584,10108,16428,16383,27830",
+    "2026/11/19,QF     ,小型台積電期貨,999999  ,0,6237,66764,7865,72358,80961",
+    "2026/11/19,SR     ,小型元大台灣50ETF期貨,999999  ,0,10,10,500,100,900",
+    "2026/11/19,TX     ,臺股期貨,999999  ,0,1,1,1,1,1",                       # 不是股期
+    "2026/11/20,CD     ,台積電期貨,999999  ,0,16076,9872,17549,16041,26559",
+    "2026/11/20,CD     ,台積電期貨,999999  ,1,16076,9872,16843,16041,26559",
+    "2026/11/20,QF     ,小型台積電期貨,999999  ,0,10313,68674,12039,74966,82652",
+    "2026/11/20,SR     ,小型元大台灣50ETF期貨,999999  ,0,10,10,400,300,900",
+    "2026/11/20,CC     ,聯電期貨,999999  ,0,1,1,5,5,10",                      # 前一天沒有：不算
+    "交易人類別格式： 0 為部位排序前五大或前十大交易人",
+])
+
+
 class StockFuturesRankTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -51,9 +68,12 @@ class StockFuturesRankTests(unittest.TestCase):
         self.db_patch.start()
         database.initialize_database()
         module._contracts.update({"at": 0.0, "map": None})
+        self.csv_patch = patch.object(module, "_fetch_csv", side_effect=OSError("測試不連網"))
+        self.csv_patch.start()
 
     def tearDown(self) -> None:
         module._contracts.update({"at": 0.0, "map": None})
+        self.csv_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
 
@@ -77,7 +97,7 @@ class StockFuturesRankTests(unittest.TestCase):
     def test_collect_and_payload_with_previous_day(self) -> None:
         texts = []
         result = module.collect_once(fetcher=lambda url: DAILY, text_fetcher=lambda url: texts.append(url) or lists_page())
-        self.assertEqual(result, {"date": "2026-11-20", "saved": 3})
+        self.assertEqual((result["date"], result["saved"]), ("2026-11-20", 3))
         module.collect_once(fetcher=lambda url: DAILY, text_fetcher=lambda url: texts.append(url) or lists_page())
         self.assertEqual(len(texts), 1)                 # 標的清單半天抓一次
         module.save("2026-11-19", [{"contract": "CDF", "code": "2330", "name": "台積電", "shares": 2000, "volume": 30000, "night": 0, "oi": 1, "near": None},
@@ -89,6 +109,39 @@ class StockFuturesRankTests(unittest.TestCase):
         self.assertEqual((top["volume"], top["night"], top["oi"], top["month"], top["last"], top["chg"]), (94797, 26611, 71454, "202612", 1997.0, -5.4))
         self.assertEqual((top["prevVolume"], top["prevRank"], data["rows"][1]["prevRank"], data["rows"][2]["prevRank"]), (10000, 2, 1, None))
         self.assertEqual(len(module.payload(top=1)["rows"]), 1)
+
+    def test_parse_large(self) -> None:
+        by_day = module.parse_large(LARGE_CSV, module.parse_contracts(lists_page()))
+        self.assertEqual(sorted(by_day), ["2026-11-19", "2026-11-20"])
+        cd = next(r for r in by_day["2026-11-20"] if r["contract"] == "CDF")
+        self.assertEqual((cd["buy10"], cd["sell10"], cd["instBuy10"], cd["instSell10"], cd["oi"]), (17549, 16041, 16843, 16041, 26559))
+        self.assertEqual(sorted(r["contract"] for r in by_day["2026-11-19"]), ["CDF", "QFF", "SRF"])
+
+    def test_buy_sell_flows(self) -> None:
+        urls = []
+        result = module.collect_once(fetcher=lambda url: DAILY, text_fetcher=lambda url: lists_page(),
+                                     csv_fetcher=lambda url: urls.append(url) or LARGE_CSV, now=datetime(2026, 11, 22, 15, 0, tzinfo=TW))
+        self.assertEqual(result["large"]["saved"], {"2026-11-19": 3, "2026-11-20": 4})
+        self.assertIn("queryStartDate=2026%2F11%2F08&queryEndDate=2026%2F11%2F22", urls[0])
+        data = module.payload()
+        self.assertEqual((data["flowDate"], data["flowPrevDate"]), ("2026-11-20", "2026-11-19"))
+        # 台積電：淨部位 854 → 1,508，+654 口 × 2,000 股 × 1,997 元＝26.12 億；小型台積電 −64,493 → −62,927，+1,566 口 × 100 股＝3.13 億
+        self.assertEqual([(r["contract"], r["change"], r["amount"], r["rank"]) for r in data["buy"]], [("CDF", 654, 26.12, 1), ("QFF", 1566, 3.13, 2)])
+        tsmc = data["buy"][0]
+        self.assertEqual((tsmc["lots"], tsmc["net"], tsmc["prevNet"], tsmc["instNet"], tsmc["kind"]), (1308.0, 1508, 854, 802, "std"))
+        self.assertEqual([(r["contract"], r["change"], r["kind"]) for r in data["sell"]], [("SRF", -300, "etf")])   # 400 → 100
+        again = module.collect_once(fetcher=lambda url: DAILY, text_fetcher=lambda url: lists_page(), csv_fetcher=lambda url: LARGE_CSV,
+                                    now=datetime(2026, 11, 22, 15, 20, tzinfo=TW))
+        self.assertEqual(again["large"]["saved"], {"2026-11-20": 4})         # 舊的日子存過就不再寫，最新一天照樣更新
+
+    def test_large_download_failure_keeps_daily(self) -> None:
+        def broken(url):
+            raise OSError("blocked")
+        result = module.collect_once(fetcher=lambda url: DAILY, text_fetcher=lambda url: lists_page(), csv_fetcher=broken)
+        self.assertEqual(result["saved"], 3)
+        self.assertIn("OSError", result["large"]["error"])
+        data = module.payload()
+        self.assertEqual((data["status"], data["buy"], data["sell"], data["flowPrevDate"]), ("ok", [], [], None))
 
     def test_due(self) -> None:
         fri = lambda h, m: datetime(2026, 11, 20, h, m, tzinfo=TW)   # noqa: E731
