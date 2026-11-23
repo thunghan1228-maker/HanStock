@@ -614,10 +614,13 @@ def _default_fetcher(url: str) -> Any:
         return json.load(response)
 
 
-def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Callable[[str], Any] | None = None) -> dict[str, dict[str, Any]]:
+def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Callable[[str], Any] | None = None,
+                     now: datetime | None = None) -> dict[str, dict[str, Any]]:
     """{代號: {price, prevClose, volume(張), quoteDate, quoteTime}}；市場別不確定的上市、上櫃都問。
-    沒成交的那盤 z 是 "-"：漲停鎖死只剩委買、跌停只剩委賣，用委買／委賣推算（跟首頁一樣）。"""
+    沒成交的那盤 z 是 "-"：漲停鎖死只剩委買、跌停只剩委賣，用委買／委賣推算（跟首頁一樣）。
+    盤前試撮（交易日 08:30～09:00）還沒有成交量，委買委賣就是試撮的價，照用、標 priceSource＝preopen（2026-11-23 使用者）。"""
     call = fetcher or _default_fetcher
+    preopen = _preopen_window(now)
     out: dict[str, dict[str, Any]] = {}
     for start in range(0, len(codes), MIS_CHUNK):
         channels: list[str] = []
@@ -639,7 +642,11 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 # 證交所價格最多 4 位小數，平均價四捨五入到 4 位
                 price = bid if bid and not ask else ask if ask and not bid else round((bid + ask) / 2, 4) if bid and ask else None
                 source = "mid" if bid and ask else "book"      # mid＝委買委賣兩邊都有、取中間（推估的，不是成交價）
-                if source == "mid" and not int(_num(item.get("v")) or 0):
+                if preopen and price is not None and not int(_num(item.get("v")) or 0):
+                    # 2026-11-23 使用者：盤前 08:30 開始撮合，首頁卻停在昨收到 08:45。下面那條「一整天沒成交＝平盤」把試撮的委買委賣
+                    # 也換回昨收了（永豐試撮逐筆那天只有 2 檔，蓋不回來）。試撮時段委買委賣就是試撮價，照用
+                    source = "preopen"
+                elif source == "mid" and not int(_num(item.get("v")) or 0):
                     # 2026-11-18 使用者對老師 177：全譜整天沒成交，老師算 0.00%，我們拿委買 19.00／委賣 19.05 的中間價 19.025 算成 −2.19%，
                     # 電腦周邊的族群平均被拉低、名次差 13 名。今天一張都沒成交＝平盤（昨收）；只剩委買或委賣（漲停／跌停鎖死）的照舊
                     price, source = prev_close, "notrade"
@@ -671,8 +678,15 @@ def fetch_mis_quotes(codes: list[str], markets: dict[str, str], *, fetcher: Call
                 "limitUp": limit_up_price is not None and price >= limit_up_price - 1e-6,
                 "limitDown": limit_down_price is not None and price <= limit_down_price + 1e-6,
                 "priceSource": source,
+                **({"preopen": True, "volume": None} if source == "preopen" else {}),
             }
     return out
+
+
+def count_mis_preopen(quotes: dict[str, Any] | None, now: datetime | None = None) -> int:
+    """證交所報價裡今天的盤前試撮價有幾檔（session-close 判斷能不能提前解除「暫留昨收」用，永豐試撮逐筆不夠時看這個）。"""
+    today = (now or datetime.now(TW_TZ)).strftime("%Y-%m-%d")
+    return sum(1 for q in (quotes or {}).values() if q and q.get("priceSource") == "preopen" and q.get("quoteDate") == today)
 
 
 # 2026-10-12（週一盤中實測）：tw-groups 首頁每 15 秒要一次 499 檔報價。證交所好幾台主機，有的回落後 40～100 秒的舊資料，
@@ -933,9 +947,11 @@ def _overlay_preopen_ticks(payload: dict[str, Any], ticks: dict[str, Any], now: 
         clock = stamp[11:19]
         if clock > latest_clock:
             latest_clock = clock
-    if not merged:
+    mis_preopen = sum(1 for code, q in quotes.items() if code not in merged and q.get("priceSource") == "preopen" and q.get("quoteDate") == today)
+    if not merged and not mis_preopen:
         return payload
-    return {**payload, "quotes": {**quotes, **merged}, "preopen": True, "preopenTicks": len(merged), "quoteDate": today,
+    # 永豐試撮逐筆沒蓋到的，證交所的試撮價（委買委賣）照用（2026-11-23）；整份標盤前
+    return {**payload, "quotes": {**quotes, **merged}, "preopen": True, "preopenTicks": len(merged), "preopenMis": mis_preopen, "quoteDate": today,
             "quoteTime": latest_clock or payload.get("quoteTime")}
 
 
@@ -980,10 +996,10 @@ def overlay_realtime_ticks(payload: dict[str, Any], ticks: dict[str, Any] | None
     試撮、盤中零股、暫停交易的逐筆不算；收盤後不蓋（報價不會動）。
     盤前 08:30～09:00 例外：改蓋上試撮價（_overlay_preopen_ticks），讓用即時價選股的功能從盤前撮合就開始算（2026-10-22 使用者）。
     """
+    if _preopen_window(now):   # 盤前：永豐試撮逐筆一筆都沒有時，證交所的試撮價（委買委賣）也要標盤前（2026-11-23）
+        return _overlay_preopen_ticks(payload, ticks or {}, now or datetime.now(TW_TZ))
     if not ticks:
         return payload
-    if _preopen_window(now):
-        return _overlay_preopen_ticks(payload, ticks, now or datetime.now(TW_TZ))
     # 2026-11-18 使用者對老師 177：安鈦克收盤 12.75（+8.51%），證交所那份這一盤沒成交、只給委買委賣，我們拿中間價 12.55（+6.81%）一整晚。
     # 證交所的價格是推估的（mid＝委買委賣中間、fallback＝只剩開盤價）時，同一天的逐筆成交（真的最後成交價）一律蓋上去，
     # 不管量有沒有比較多、收盤後也蓋；證交所有成交價的，照舊只在盤中、量比較多時才蓋

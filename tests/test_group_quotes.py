@@ -52,8 +52,14 @@ class GroupQuotesTests(unittest.TestCase):
         module._reset_group_quotes()
         self.open_patch = patch.object(module, "_market_open", return_value=True)   # 測盤中的 5 秒／30 秒
         self.open_patch.start()
+        # 2026-11-23：main 的 CI 剛好在交易日 08:41 跑，沒給時間的 overlay_realtime_ticks 用「現在」判斷落在盤前試撮時段，
+        # 走了試撮那條路，4 個測試失敗。沒給時間的一律當作不在盤前時段；有給時間的（測盤前那幾個）照舊用真的判斷。
+        real_window = module._preopen_window
+        self.preopen_patch = patch.object(module, "_preopen_window", side_effect=lambda now=None: real_window(now) if now is not None else False)
+        self.preopen_patch.start()
 
     def tearDown(self) -> None:
+        self.preopen_patch.stop()
         self.open_patch.stop()
         module._reset_group_quotes()
         self.db_patch.stop()
@@ -314,7 +320,8 @@ class GroupQuotesTests(unittest.TestCase):
         released = persistent_app.release_hold_for_preopen(held, now, ticks_for(35))
         self.assertEqual((released["held"], released["preopen"]), (False, True))
         self.assertTrue(held["held"])                                          # 原本那份不能被改（快取共用）
-        self.assertIs(persistent_app.release_hold_for_preopen(held, now, ticks_for(5)), held)      # 試撮不夠多：維持暫留
+        no_mis = lambda codes: {"quotes": {}}   # noqa: E731  證交所也沒有試撮價
+        self.assertIs(persistent_app.release_hold_for_preopen(held, now, ticks_for(5), no_mis), held)      # 試撮不夠多：維持暫留
         self.assertIs(persistent_app.release_hold_for_preopen(held, self._at(8, 29), ticks_for(35)), held)   # 08:30 以前
         not_held = {**held, "held": False}
         self.assertIs(persistent_app.release_hold_for_preopen(not_held, now, ticks_for(35)), not_held)   # 本來就沒暫留：不動
@@ -322,10 +329,50 @@ class GroupQuotesTests(unittest.TestCase):
         def boom(codes):
             raise RuntimeError("Shioaji 沒登入")
 
-        self.assertIs(persistent_app.release_hold_for_preopen(held, now, boom), held)
+        self.assertIs(persistent_app.release_hold_for_preopen(held, now, boom, no_mis), held)
         closed = {**held, "tradingDay": False}
         self.assertIs(persistent_app.release_hold_for_preopen(closed, now, ticks_for(35)), closed)
 
+
+    # ---- 2026-11-23 使用者：08:30 開始撮合首頁卻停在昨收到 08:45（那天永豐試撮逐筆只有 2 檔）——證交所的試撮價（委買委賣）也要用 ----
+    @staticmethod
+    def _book_fetcher(item: dict):
+        def fetch(url: str):
+            return {"msgArray": [{"c": "1802", "n": "台玻", "y": "52.9", "u": "58.1", "w": "47.65", "d": "20261006", "t": "08:41:00", "v": "0", "z": "-", **item}]}
+        return fetch
+
+    def test_mis_book_is_trial_price_in_preopen(self) -> None:
+        f = self._book_fetcher({"b": "48.00_47.95_", "a": "48.10_48.15_"})
+        q = module.fetch_mis_quotes(["1802"], {"1802": "TSE"}, fetcher=f, now=self._at(8, 41))["1802"]
+        self.assertEqual((q["price"], q["priceSource"], q["preopen"], q["volume"], q["quoteDate"]), (48.05, "preopen", True, None, "2026-10-06"))
+        locked = module.fetch_mis_quotes(["1802"], {"1802": "TSE"}, fetcher=self._book_fetcher({"b": "-", "a": "47.65_47.70_"}), now=self._at(8, 41))["1802"]
+        self.assertEqual((locked["price"], locked["priceSource"], locked["limitDown"]), (47.65, "preopen", True))   # 跌停試撮
+        after = module.fetch_mis_quotes(["1802"], {"1802": "TSE"}, fetcher=f, now=self._at(9, 5))["1802"]
+        self.assertEqual((after["price"], after["priceSource"]), (52.9, "notrade"))   # 09:00 以後整天沒成交照舊＝平盤
+        self.assertNotIn("preopen", after)
+        self.assertEqual(module.count_mis_preopen({"1802": q, "x": after}, self._at(8, 41)), 1)
+
+    def test_overlay_marks_mis_preopen_without_ticks(self) -> None:
+        q = {"price": 48.05, "prevClose": 52.9, "priceSource": "preopen", "quoteDate": "2026-10-06", "preopen": True, "volume": None}
+        payload = {"status": "ok", "quotes": {"1802": q, "2330": {"price": 100.0, "priceSource": "notrade", "quoteDate": "2026-10-06"}}, "quoteDate": "2026-10-06"}
+        got = module.overlay_realtime_ticks(payload, {}, now=self._at(8, 45))
+        self.assertEqual((got["preopen"], got["preopenMis"], got["preopenTicks"], got["quotes"]["1802"]["price"]), (True, 1, 0, 48.05))
+        self.assertIs(module.overlay_realtime_ticks(payload, {}, now=self._at(9, 5)), payload)   # 盤中照舊
+
+    def test_session_close_released_by_mis_trial_prices(self) -> None:
+        stocks = {f"{1000 + i}": {"close": 100.0} for i in range(40)}
+        held = {"status": "ok", "held": True, "tradingDay": True, "today": "2026-10-06", "session": "2026-10-05", "stocks": stocks}
+        few_ticks = lambda codes: {c: self._sim(c, 101.0, 1.0) for c in list(stocks)[:2]}   # noqa: E731  永豐只有 2 檔
+        def mis_for(n: int):
+            return lambda codes: {"quotes": {c: {"priceSource": "preopen", "quoteDate": "2026-10-06"} for c in codes[:n]}}
+        released = persistent_app.release_hold_for_preopen(held, self._at(8, 31), few_ticks, mis_for(35))
+        self.assertEqual((released["held"], released["preopen"], released["preopenSource"]), (False, True, "mis"))
+        self.assertIs(persistent_app.release_hold_for_preopen(held, self._at(8, 31), few_ticks, mis_for(10)), held)
+        def mis_boom(codes):
+            raise RuntimeError("證交所掛了")
+        self.assertIs(persistent_app.release_hold_for_preopen(held, self._at(8, 31), few_ticks, mis_boom), held)
+        enough = persistent_app.release_hold_for_preopen(held, self._at(8, 31), lambda codes: {c: self._sim(c, 101.0, 1.0) for c in stocks}, mis_boom)
+        self.assertEqual(enough["preopenSource"], "shioaji")                    # 永豐夠就不用問證交所
 
     # ---- 證交所整批抓不到時改用逐筆成交（2026-10-21 12:10 後端被證交所切連線，首頁／機器人代碼讀不到）----
     def _provider(self, ticks):
