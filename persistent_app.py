@@ -1916,6 +1916,15 @@ def get_revenue_status() -> dict[str, Any]:
     return {"status": "ok", **revenue_status()}
 
 
+@app.get("/api/hub/revenue-chart")
+def get_revenue_chart(code: str = Query(..., min_length=4, max_length=6, pattern=r"^[0-9A-Za-z]+$")) -> dict[str, Any]:
+    """個股月營收圖（2026-11-23 使用者：做出這種個股的營收圖）：近 34 個月營收、月增、年增、月底收盤（FinMind，點開才抓、存 6 小時），
+    單季毛利率／營益率／淨利率（季報彙總表），基本面（年增、月增、利益率的全市場百分位）、技術面（基期＋均線分數）各 100 分。"""
+    from revenue_chart import chart as revenue_chart_payload
+
+    return revenue_chart_payload(code)
+
+
 @app.get("/api/hub/revenue-tech")
 def get_revenue_tech(top: int = Query(20, ge=5, le=50)) -> dict[str, Any]:
     """首頁「營收＋技術面」（2026-11-22 使用者：營收面跟技術面綜合評分比較好的個股抓 20 檔，每天更新）：
