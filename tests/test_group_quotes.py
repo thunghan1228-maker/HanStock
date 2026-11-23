@@ -52,8 +52,14 @@ class GroupQuotesTests(unittest.TestCase):
         module._reset_group_quotes()
         self.open_patch = patch.object(module, "_market_open", return_value=True)   # 測盤中的 5 秒／30 秒
         self.open_patch.start()
+        # 2026-11-23：main 的 CI 剛好在交易日 08:41 跑，沒給時間的 overlay_realtime_ticks 用「現在」判斷落在盤前試撮時段，
+        # 走了試撮那條路，4 個測試失敗。沒給時間的一律當作不在盤前時段；有給時間的（測盤前那幾個）照舊用真的判斷。
+        real_window = module._preopen_window
+        self.preopen_patch = patch.object(module, "_preopen_window", side_effect=lambda now=None: real_window(now) if now is not None else False)
+        self.preopen_patch.start()
 
     def tearDown(self) -> None:
+        self.preopen_patch.stop()
         self.open_patch.stop()
         module._reset_group_quotes()
         self.db_patch.stop()
