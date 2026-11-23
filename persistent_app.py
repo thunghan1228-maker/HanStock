@@ -30,6 +30,7 @@ from brew_launch_history import (
     PREOPEN_FROM_MINUTE,
     _preopen_window,
     backfill_holder_force as brew_launch_backfill_holder_force,
+    count_mis_preopen,
     count_preopen_ticks,
     group_quotes_payload,
     history as brew_launch_history,
@@ -1075,7 +1076,8 @@ def get_group_quotes_endpoint(codes: str = Query("", description="代號，逗�
 PREOPEN_MIN_TICKS = 30  # 盤前試撮逐筆至少要有這麼多檔，才提前解除「暫留昨收」（Shioaji 沒連上、還沒有試撮就維持原樣到 08:45）
 
 
-def release_hold_for_preopen(result: dict[str, Any], now: datetime | None = None, ticks_fn: Callable[[list[str]], Any] | None = None) -> dict[str, Any]:
+def release_hold_for_preopen(result: dict[str, Any], now: datetime | None = None, ticks_fn: Callable[[list[str]], Any] | None = None,
+                             mis_fn: Callable[[list[str]], Any] | None = None) -> dict[str, Any]:
     """盤前撮合（2026-10-22 使用者）：交易日 08:30～09:00、試撮逐筆已經有一批時，把 held 改成 False（並標 preopen=True），
     tw-groups 首頁就不再用昨收取代報價，改用 group-quotes 蓋上去的試撮價，各名單從盤前撮合就開始算；
     試撮資料不夠（沒登入／還沒開始）就維持 held（08:45 前照舊顯示昨收）。"""
@@ -1088,10 +1090,19 @@ def release_hold_for_preopen(result: dict[str, Any], now: datetime | None = None
     try:
         ticks = (ticks_fn or (lambda c: get_quote_service().get_stock_quotes(c)))(codes)
     except Exception:  # noqa: BLE001
-        return result
+        ticks = None
+    source = "shioaji"
     if count_preopen_ticks(ticks, now) < PREOPEN_MIN_TICKS:
-        return result
-    return {**result, "held": False, "preopen": True, "preopenFrom": f"{PREOPEN_FROM_MINUTE // 60:02d}:{PREOPEN_FROM_MINUTE % 60:02d}"}
+        # 2026-11-23 使用者：08:30 開始撮合首頁卻停在昨收到 08:45——那天永豐試撮逐筆只有 2 檔。改看證交所的試撮價（委買委賣）夠不夠
+        try:
+            mis = (mis_fn or (lambda c: group_quotes_payload(",".join(c))))(codes)
+        except Exception:  # noqa: BLE001
+            return result
+        if count_mis_preopen((mis or {}).get("quotes"), now) < PREOPEN_MIN_TICKS:
+            return result
+        source = "mis"
+    return {**result, "held": False, "preopen": True, "preopenSource": source,
+            "preopenFrom": f"{PREOPEN_FROM_MINUTE // 60:02d}:{PREOPEN_FROM_MINUTE % 60:02d}"}
 
 
 @app.get("/api/hub/session-close")
@@ -1252,6 +1263,14 @@ def get_stock_futures_rank(top: int = Query(30, ge=5, le=100)) -> dict[str, Any]
     """股票期貨成交量排行（2026-11-22 使用者：股票期貨成交量大的前 30 名）：期交所每日行情，契約為單位（一般、小型分開），
     成交量＝全部月份、前一晚盤後＋當天一般時段；附未平倉、近月收盤與漲跌幅、前一個交易日的量與名次。"""
     return stock_futures_payload(top)
+
+
+@app.get("/api/hub/stock-futures-live")
+def get_stock_futures_live() -> dict[str, Any]:
+    """股期近月即時報價（2026-11-23 使用者：盤前撮合了，期貨那欄也沒動）：期交所 MIS 一次抓全部股期，15 秒快取。"""
+    from stock_futures_rank import live_payload
+
+    return live_payload()
 
 
 @app.get("/api/hub/stock-futures-rank/status")

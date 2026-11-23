@@ -143,6 +143,40 @@ class StockFuturesRankTests(unittest.TestCase):
         data = module.payload()
         self.assertEqual((data["status"], data["buy"], data["sell"], data["flowPrevDate"]), ("ok", [], [], None))
 
+    def test_parse_live_takes_near_month(self) -> None:
+        rows = {"RtData": {"QuoteList": [
+            {"SymbolID": "CDF-S", "CLastPrice": "2000"},                                                      # 現貨那列不算
+            {"SymbolID": "CDFA7-F", "CLastPrice": "1990", "CDiffRate": "-0.5", "CTime": "090000"},             # 2027/01
+            {"SymbolID": "CDFL6-F", "CLastPrice": "1981.00", "CRefPrice": "1996", "CDiff": "-15.00", "CDiffRate": "-0.75", "CTotalVolume": "1417", "CTime": "090133"},
+            {"SymbolID": "QFFL6-F", "CLastPrice": "", "CRefPrice": "1996", "CDiffRate": "0.00", "CTotalVolume": "", "CTime": ""},   # 還沒成交
+            {"SymbolID": "ZZFA0-F", "CLastPrice": "10", "CTime": "090000"}, {"SymbolID": "ZZFL9-F", "CLastPrice": "9", "CTime": "090000"},   # 跨十年
+            {"SymbolID": "CDFL6/A7-F", "CLastPrice": "9"},                                                     # 價差不算
+        ]}}
+        got = module.parse_live(rows, now=datetime(2029, 11, 23, 9, 0, tzinfo=TW))
+        self.assertEqual(got["CDF"], {"last": 1981.0, "ref": 1996.0, "diff": -15.0, "pct": -0.75, "volume": 1417, "time": "09:01:33", "symbol": "CDFL6-F"})
+        self.assertEqual((got["QFF"]["last"], got["QFF"]["time"]), (None, None))
+        self.assertEqual(got["ZZF"]["symbol"], "ZZFL9-F")                       # 2029/12 比 2030/01 近
+        self.assertEqual(module.parse_live({"oops": 1}), {})
+
+    def test_live_payload_merges_kinds_and_caches(self) -> None:
+        module._live_cache.update({"at": 0.0, "data": None})
+        calls = []
+        def fetch(url, body):
+            calls.append(body["KindID"])
+            if body["KindID"] == "9":
+                raise OSError("timeout")
+            sym = {"4": "CDFL6-F", "5": "NYFL6-F", "8": "QFFL6-F"}[body["KindID"]]
+            return {"RtData": {"QuoteList": [{"SymbolID": sym, "CLastPrice": "100", "CDiffRate": "1.5", "CTime": "091500"}]}}
+        data = module.live_payload(fetch)
+        self.assertEqual((data["status"], sorted(data["quotes"]), data["asOf"], data["errors"]), ("ok", ["CDF", "NYF", "QFF"], "09:15:00", ["9: OSError"]))
+        self.assertIs(module.live_payload(fetch), data)                             # 15 秒內不重抓
+        self.assertEqual(calls, ["4", "5", "8", "9"])
+        module._live_cache.update({"at": 0.0, "data": None})
+        def down(url, body):
+            raise OSError("down")
+        self.assertEqual(module.live_payload(down)["status"], "error")
+        module._live_cache.update({"at": 0.0, "data": None})
+
     def test_due(self) -> None:
         fri = lambda h, m: datetime(2026, 11, 20, h, m, tzinfo=TW)   # noqa: E731
         self.assertTrue(module._due(fri(9, 0), None))

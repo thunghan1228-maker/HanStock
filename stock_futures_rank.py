@@ -317,6 +317,75 @@ def payload(top: int = TOP) -> dict[str, Any]:
             "contracts": len(rows), "totalVolume": total, "rows": out, **_flows(top), **{k: _state.get(k) for k in ("lastRunAt",)}}
 
 
+# ------------------------------------------------------------------ 即時（2026-11-23 使用者：盤前撮合了，期貨那欄也沒動）
+# 期交所 MIS getQuoteList（KindID 4＝股票期貨、5＝ETF 期貨、8＝小型股票期貨、9＝小型 ETF 期貨，每類一次回全部月份＋現貨），每個股期取最近的月份（近月）：
+# SymbolID 像 DFFL6-F＝股期代號 DFF＋月份代號 L6（L＝12 月、6＝2026）。日盤 08:45 起有成交，15 秒抓一次。
+LIVE_URL = "https://mis.taifex.com.tw/futures/api/getQuoteList"
+LIVE_CACHE_SECONDS = 15
+MONTH_LETTERS = "ABCDEFGHIJKL"
+LIVE_KINDS = ("4", "5", "8", "9")
+_live_lock = threading.Lock()
+_live_cache: dict[str, Any] = {"at": 0.0, "data": None}
+
+
+def _post_json(url: str, body: dict[str, Any], timeout: int = 10) -> Any:
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST", headers={
+        "content-type": "application/json", "origin": "https://mis.taifex.com.tw", "referer": "https://mis.taifex.com.tw/futures/", "user-agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+def parse_live(payload: Any, now: datetime | None = None) -> dict[str, dict[str, Any]]:
+    """{股期代號: 近月即時 {last, ref, diff, pct, volume, time, symbol}}；還沒成交的 last 是 None。"""
+    year_digit = (now or datetime.now(TW_TZ)).year % 10
+    best: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    for r in ((payload or {}).get("RtData") or {}).get("QuoteList") or [] if isinstance(payload, dict) else []:
+        symbol = str(r.get("SymbolID") or "").strip()
+        if not re.fullmatch(r"[A-Z0-9]{3}[A-L]\d-F", symbol):
+            continue
+        y = int(symbol[4])
+        key = (y + 10 if y < year_digit - 1 else y, MONTH_LETTERS.index(symbol[3]) + 1)   # 跨十年（9 → 0）也排得對
+        contract = symbol[:3]
+        if contract not in best or key < best[contract][0]:
+            best[contract] = (key, r)
+    out = {}
+    for contract, (_key, r) in best.items():
+        clock = str(r.get("CTime") or "").strip()
+        out[contract] = {
+            "last": _float(r.get("CLastPrice")), "ref": _float(r.get("CRefPrice")), "diff": _float(r.get("CDiff")),
+            "pct": _float(r.get("CDiffRate")), "volume": _int(r.get("CTotalVolume")),
+            "time": f"{clock[:2]}:{clock[2:4]}:{clock[4:6]}" if re.fullmatch(r"\d{6}", clock) else None,
+            "symbol": str(r.get("SymbolID")),
+        }
+    return out
+
+
+def live_payload(fetcher: Callable[[str, dict[str, Any]], Any] | None = None) -> dict[str, Any]:
+    with _live_lock:
+        if _live_cache["data"] is not None and time.monotonic() - _live_cache["at"] < LIVE_CACHE_SECONDS:
+            return _live_cache["data"]
+    quotes: dict[str, dict[str, Any]] = {}
+    errors = []
+    for kind in LIVE_KINDS:
+        body = {"MarketType": "0", "SymbolType": "F", "KindID": kind, "CID": "", "ExpireMonth": "", "RowSize": "全部", "PageNo": "", "SortColumn": "", "AscDesc": "A"}
+        try:
+            quotes.update(parse_live((fetcher or _post_json)(LIVE_URL, body)))
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"{kind}: {type(error).__name__}")
+    if not quotes:
+        logger.info("股期即時報價抓不到：%s", errors)
+        return {"status": "error", "message": "期交所即時報價暫時抓不到", "quotes": {}}
+    traded = [q["time"] for q in quotes.values() if q["last"] is not None and q["time"]]
+    data = {"status": "ok", "quotes": quotes, "count": len(quotes), "asOf": max(traded) if traded else None, "errors": errors,
+            "fetchedAt": datetime.now(TW_TZ).isoformat(timespec="seconds")}
+    with _live_lock:
+        _live_cache.update({"at": time.monotonic(), "data": data})
+    return data
+
+
 def collector_status() -> dict[str, Any]:
     return {"pollSeconds": POLL_SECONDS, "stored": stored_dates(5), "largeStored": large_dates(5), **_state}
 
