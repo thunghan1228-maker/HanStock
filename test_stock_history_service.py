@@ -242,7 +242,9 @@ class StockHistoryServiceTests(unittest.TestCase):
         self.assertFalse(first["bootstrap"]["history_ok"])
         self.assertEqual(first["bars"][-1]["close"], 111)           # 今天仍是即時 Hub
         self.assertTrue(second["bootstrap"]["history_ok"])          # 背景補到了
-        self.assertEqual(second["bootstrap"]["db_history_5m"], 0)   # 有 kbars 就不讀資料庫
+        self.assertEqual(second["bootstrap"]["db_history_5m"], 1)   # 有 kbars 也照樣讀資料庫（補 kbars 缺的那幾根）
+        closes2 = {bar["ts"]: bar["close"] for bar in second["bars"]}
+        self.assertEqual(closes2[ts(2026, 8, 6, 13, 25)], 84.5)     # 同一根 kbars 為準
         self.assertGreaterEqual(len(self.service.api.calls), 1)
 
     def test_today_bars_saved_before_restart_fill_the_gap_without_kbars(self):
@@ -272,9 +274,26 @@ class StockHistoryServiceTests(unittest.TestCase):
         saved = [{"ts": ts(2026, 8, 6, 13, 25), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
         with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved) as loader:
             result = get_stock_history_bars_5m("2344", service=self.service, hub=self.hub, now_ms=self.now_ms)
-        loader.assert_not_called()                                  # kbars 補到了就不讀資料庫
+        loader.assert_called_once()
         self.assertTrue(result["bootstrap"]["history_ok"])
-        self.assertEqual(result["bootstrap"]["db_history_5m"], 0)
+        self.assertEqual(result["bootstrap"]["db_history_5m"], 1)
+        closes = {bar["ts"]: bar["close"] for bar in result["bars"]}
+        self.assertEqual(closes[ts(2026, 8, 6, 13, 25)], 84.5)      # 兩邊都有的那根，kbars 為準（不是資料庫的 1）
+        self.assertEqual(result["bootstrap"]["source"], "shioaji_kbars_range+db_bars_5m+realtime_hub")
+
+    def test_db_fills_closing_auction_bar_missing_from_kbars(self):
+        """2026-11-24：永豐多日 kbars 過去每天少收盤撮合那根（13:25～13:30），資料庫有就用資料庫的補上。"""
+        saved = [
+            {"ts": ts(2026, 8, 5, 13, 20), "open": 60, "high": 61, "low": 59, "close": 60.5, "volume": 300},
+            {"ts": ts(2026, 8, 5, 13, 25), "open": 60.5, "high": 62, "low": 60.5, "close": 61.8, "volume": 900},   # kbars 沒有這根
+        ]
+        with patch("stock_history_service.load_stock_bars_5m_before", return_value=saved):
+            result = get_stock_history_bars_5m("2344", calendar_days=3, service=self.service, hub=self.hub, now_ms=self.now_ms)
+        closes = {bar["ts"]: bar["close"] for bar in result["bars"]}
+        self.assertEqual(closes[ts(2026, 8, 5, 13, 25)], 61.8)      # 收盤撮合那根補回來了
+        self.assertEqual(closes[ts(2026, 8, 6, 13, 25)], 84.5)      # kbars 有的照舊用 kbars
+        stamps = [bar["ts"] for bar in result["bars"]]
+        self.assertEqual(stamps, sorted(stamps))
 
     def test_duplicate_request_does_not_wait_for_running_history(self):
         code_lock = _code_lock("2344")
