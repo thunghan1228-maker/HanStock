@@ -622,7 +622,10 @@ def get_stock_history_bars_5m(
             fetch_gap = False
         gap = _today_gap_bars(code, trade_date, live_first, service=service, now_ms=now_value, monotonic_fn=monotonic_fn, fetch=fetch_gap, priority=priority)
     gap_bars = [bar for bar in gap.bars_5m if live_first is None or int(bar["ts"]) < live_first] if gap is not None else []
-    db_bars = _db_history_5m(code, trade_date) if not entry.bars_5m else []   # kbars 還沒補好（或被快取擠掉）：先用資料庫那份
+    # 前幾天：資料庫那份先放、kbars 蓋過去（同一根以 kbars 為準）。原本 kbars 補到了就完全不讀資料庫，
+    # 2026-11-24 查到永豐「一次抓好幾天」的 kbars 過去每天都少收盤撮合那根（13:25～13:30，只剩 53 根、最後一根 13:20），
+    # 資料庫裡收盤後校正存的那根是對的（54 根）——不讀資料庫的話 K 線圖、隔天 20MA 的種子、收盤後校正重算訊號都少算收盤價。
+    db_bars = _db_history_5m(code, trade_date)
     merged: dict[int, dict[str, Any]] = {}
     for source in (db_bars, db_today, entry.bars_5m, gap_bars, live):
         for raw in source:
@@ -652,7 +655,7 @@ def get_stock_history_bars_5m(
             "error": entry.error,
             "today_gap": _gap_info(gap, len(gap_bars), live_first),
             "subscription": subscription,
-            "source": "shioaji_kbars_range+realtime_hub" if not db_bars else "db_bars_5m+realtime_hub",
+            "source": ("shioaji_kbars_range+" if entry.bars_5m else "") + ("db_bars_5m+" if db_bars else "") + "realtime_hub",
             "max_history_5m": MAX_HISTORY_5M,
         },
     }
