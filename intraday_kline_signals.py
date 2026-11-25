@@ -135,7 +135,9 @@ def _moving_average(closes: list[float], length: int) -> float | None:
 # 「昨日」日K最多能比今天舊幾個日曆天（連假最多也就這麼長）；再舊就是資料沒跟上，不能當昨高。
 MAX_PREV_BAR_AGE_DAYS = 12
 # 跨日接續 5 分 K MA20 用的種子：MA20 要 20 根、斜率再多 1 根。
-SEED_BARS = 21
+# 2026-11-24 使用者：20MA 轉上彎／轉下彎改照老師角度機器人——20MA 跟 3 根前比（角度由負轉正／由正轉負），不是跟前一根比
+MA20_TURN_LAG = 3
+SEED_BARS = 20 + MA20_TURN_LAG   # 昨天最後 23 根：今天第一根就算得出 20MA 跟 3 根前比（原本 21 根只夠跟前一根比）
 # 1️⃣2️⃣空（機器人 123，2026-10-18 第一版照老師 10/14～10/16 名單反推；2026-10-20 使用者給了老師教學
 # 那一頁「12空:2 不過 1高 + 破惡均下彎」，改成照三個條件到齊才列）：
 #   ① 1高 ＝ 破惡前的最高（通常不是當日最高，開盤衝的那根高點不算）：取破惡那根往前 K12_PRE_BREAK_BARS 根
@@ -243,8 +245,9 @@ def _sync_ma_state(state: _KlineState) -> None:
     ma20 = _moving_average(state.closes, 20)
     if ma20 is None:
         return
-    if state.prev_ma20 is not None and ma20 != state.prev_ma20:
-        state.ma20_slope = "up" if ma20 > state.prev_ma20 else "down"
+    ma20_lag = _moving_average(state.closes[:-MA20_TURN_LAG], 20)   # 3 根前的 20MA（轉彎照老師角度：跟 3 根前比）
+    if ma20_lag is not None and ma20 != ma20_lag:
+        state.ma20_slope = "up" if ma20 > ma20_lag else "down"
     state.prev_ma20 = ma20
     state.above_20ma = close > ma20
     if ma5 is not None:
@@ -758,12 +761,15 @@ class IntradayKlineSignalMonitor:
         state.in_520_short = is_short
 
     def _detect_20ma_turn(self, state: _KlineState, ma20: float | None, emit) -> None:
+        """20MA 轉上彎／轉下彎：照老師角度機器人，20MA 跟 3 根前比（MA20_TURN_LAG）——比 3 根前高＝上彎、低＝下彎、一樣照舊；
+        方向換邊才發（角度由負轉正＝轉上彎、由正轉負＝轉下彎）。原本跟前一根比，走平時一直來回轉，一天轉很多次。"""
         if ma20 is None:
             return
-        if state.prev_ma20 is not None:
-            if ma20 > state.prev_ma20:
+        ma20_lag = _moving_average(state.closes[:-MA20_TURN_LAG], 20)
+        if ma20_lag is not None:
+            if ma20 > ma20_lag:
                 new_slope = "up"
-            elif ma20 < state.prev_ma20:
+            elif ma20 < ma20_lag:
                 new_slope = "down"
             else:
                 new_slope = state.ma20_slope
