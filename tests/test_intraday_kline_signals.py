@@ -648,17 +648,17 @@ def _yesterday_seed_bars(closes: list[float], lows: list[float] | None = None) -
 
 def test_seeded_previous_day_bars_give_ma20_and_slope_from_first_bar(monkeypatch):
     monitor = new_monitor(monkeypatch)
-    # 昨天最後21根一路走低：MA20 下彎、昨收在 20MA 下方。
-    seeds = _yesterday_seed_bars([110.0 - i * 0.5 for i in range(21)])
+    # 昨天最後23根一路走低：MA20 下彎（跟 3 根前比）、昨收在 20MA 下方。
+    seeds = _yesterday_seed_bars([111.0 - i * 0.5 for i in range(23)])
     monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
 
     result = monitor.on_bar_completed("2330", bar(9, 0, 100, 102, 99, 100.5))
 
     assert result == []  # 第一根照舊只建立基準、不發訊號
     state = monitor._states["2330"]
-    assert state.seed_count == 21
+    assert state.seed_count == 23
     assert state.bar_count == 1
-    assert len(state.closes) == 22  # 21根種子＋今天第一根
+    assert len(state.closes) == 24  # 23根種子＋今天第一根
     assert state.ma20_slope == "down"
     assert state.prev_ma20 == pytest.approx(module._moving_average(state.closes, 20))
     assert state.above_20ma is False  # 最後20根（109…100 加今天的100.5）MA20 約 104.3，100.5 在下方
@@ -716,12 +716,12 @@ def test_seed_loader_failure_falls_back_to_today_only(monkeypatch):
     assert monitor._states["2330"].bar_count == 1
 
 
-def test_seeds_keep_only_last_21_bars_before_trade_date(monkeypatch):
+def test_seeds_keep_only_last_23_bars_before_trade_date(monkeypatch):
     seeds = _yesterday_seed_bars([100.0 + i for i in range(30)])
     todays = [bar(9, 0, 1, 1, 1, 1)]  # 今天的 K 不能混進種子
     result = module.previous_day_bars_5m("2330", "2026-09-18", seeds + todays)
-    assert len(result) == module.SEED_BARS == 21
-    assert [b["close"] for b in result] == [109.0 + i for i in range(21)]
+    assert len(result) == module.SEED_BARS == 23   # 20MA＋跟 3 根前比（MA20_TURN_LAG）
+    assert [b["close"] for b in result] == [107.0 + i for i in range(23)]
 
 
 def test_live_bars_are_queued_and_flushed_in_one_batch(monkeypatch):
@@ -1226,3 +1226,28 @@ def test_k12_backup_not_rewritten_when_unchanged(monkeypatch, k12_db):
 
 def test_k12_backup_ignores_empty_engine(monkeypatch, k12_db):
     assert module.k12_snapshot_with_backup(IntradayKlineSignalMonitor())["tracked"] == 0     # 沒備份也沒狀態：照舊回空的
+
+
+def test_ma20_turn_compares_with_three_bars_ago(monkeypatch):
+    """2026-11-24 使用者：20MA 轉上彎／轉下彎照老師角度機器人——跟 3 根前的 20MA 比，不是跟前一根比。
+    20MA 一路往上，中間只有一根比前一根低（還是比 3 根前高）：不算轉下彎；之後連著往下、比 3 根前低了才發一次轉下彎。"""
+    monitor = new_monitor(monkeypatch)
+    seeds = _yesterday_seed_bars([100.0 + i * 0.2 for i in range(23)])   # 昨天一路往上：20MA 上彎
+    monkeypatch.setattr(module, "load_stock_bars_5m_before", lambda code, trade_date, limit: seeds)
+    kinds = []
+    minute = 0
+    def feed(close):
+        nonlocal minute
+        h, m = 9 + minute // 60, minute % 60
+        kinds.extend(s["kind"] for s in monitor.on_bar_completed("2330", bar(h, m, close, close + 0.3, close - 0.3, close)))
+        minute += 5
+    for c in (104.8, 105.0, 105.2):
+        feed(c)
+    assert monitor._states["2330"].ma20_slope == "up"
+    feed(98.0)        # 20MA 比前一根低，但還比 3 根前高
+    assert "ma20turnDown" not in kinds
+    assert monitor._states["2330"].ma20_slope == "up"
+    for c in (97.0, 96.0, 95.0, 94.0):
+        feed(c)       # 連著往下：20MA 比 3 根前低了
+    assert kinds.count("ma20turnDown") == 1
+    assert monitor._states["2330"].ma20_slope == "down"
