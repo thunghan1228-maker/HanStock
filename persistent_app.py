@@ -143,6 +143,9 @@ async def _persistent_lifespan(fastapi_app):
             start_group_history_backfill()
             start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
             start_chips_collector()  # 盤後籌碼：三大法人（上市直抓、上櫃鏡像）＋主力大單每日
+            from stock_models import start_stock_models_collector
+
+            start_stock_models_collector()  # 選股模型十個＋一年回測（FinMind 回補法人、融資、當沖、營收；2026-11-26 使用者）
             start_daytrade_collector()  # 現股當沖排行：上市證交所直抓、上櫃鏡像（首頁「週轉率高／現股當沖」，2026-11-19 使用者）
             start_fundamentals_collector()  # 本益比、月營收、股本、集保週籌碼（波段日報第二階段）
             start_etf_collector()  # 主動式 ETF 五檔每日持股（下午報第三階段）
@@ -1304,6 +1307,33 @@ def get_daytrade_status() -> dict[str, Any]:
 def post_daytrade_collect() -> dict[str, Any]:
     """立刻抓一次（tw-groups 的排程工作流程把上櫃現股當沖推到鏡像後會戳這裡）。"""
     return {"status": "ok", "result": run_daytrade_collect()}
+
+
+@app.get("/api/hub/stock-models")
+def get_stock_models() -> dict[str, Any]:
+    """選股模型（十個）：今天入選的股票＋近一年回測（2026-11-26 使用者）。收盤後背景算好存起來，這裡只讀快取。"""
+    from stock_models import cached as stock_models_cached
+
+    payload = stock_models_cached()
+    return payload or {"status": "pending", "reason": "第一次計算中（要先回補一年的法人、融資、當沖、營收），約半小時後再看"}
+
+
+@app.get("/api/hub/stock-models/status")
+def get_stock_models_status() -> dict[str, Any]:
+    from stock_models import status as stock_models_status
+
+    return stock_models_status()
+
+
+@app.post("/api/hub/stock-models/run")
+def post_stock_models_run(force: bool = Query(False)) -> dict[str, Any]:
+    """背景重跑一次（回補＋重算）。"""
+    import threading as _threading
+
+    from stock_models import run_once as stock_models_run
+
+    _threading.Thread(target=lambda: stock_models_run(force=force), name="stock-models-run", daemon=True).start()
+    return {"status": "started"}
 
 
 @app.get("/api/hub/chips/status")
