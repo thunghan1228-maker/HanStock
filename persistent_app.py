@@ -143,6 +143,9 @@ async def _persistent_lifespan(fastapi_app):
             start_group_history_backfill()
             start_brew_launch_scan()  # 醞釀快照＋盤中發動紀錄（每日保存）
             start_chips_collector()  # 盤後籌碼：三大法人（上市直抓、上櫃鏡像）＋主力大單每日
+            from stock_models import start_stock_models_collector
+
+            start_stock_models_collector()  # 選股模型十個＋一年回測（FinMind 回補法人、融資、當沖、營收；2026-11-26 使用者）
             start_daytrade_collector()  # 現股當沖排行：上市證交所直抓、上櫃鏡像（首頁「週轉率高／現股當沖」，2026-11-19 使用者）
             start_fundamentals_collector()  # 本益比、月營收、股本、集保週籌碼（波段日報第二階段）
             start_etf_collector()  # 主動式 ETF 五檔每日持股（下午報第三階段）
@@ -1306,6 +1309,33 @@ def post_daytrade_collect() -> dict[str, Any]:
     return {"status": "ok", "result": run_daytrade_collect()}
 
 
+@app.get("/api/hub/stock-models")
+def get_stock_models() -> dict[str, Any]:
+    """選股模型（十個）：今天入選的股票＋近一年回測（2026-11-26 使用者）。收盤後背景算好存起來，這裡只讀快取。"""
+    from stock_models import cached as stock_models_cached
+
+    payload = stock_models_cached()
+    return payload or {"status": "pending", "reason": "第一次計算中（要先回補一年的法人、融資、當沖、營收），約半小時後再看"}
+
+
+@app.get("/api/hub/stock-models/status")
+def get_stock_models_status() -> dict[str, Any]:
+    from stock_models import status as stock_models_status
+
+    return stock_models_status()
+
+
+@app.post("/api/hub/stock-models/run")
+def post_stock_models_run(force: bool = Query(False)) -> dict[str, Any]:
+    """背景重跑一次（回補＋重算）。"""
+    import threading as _threading
+
+    from stock_models import run_once as stock_models_run
+
+    _threading.Thread(target=lambda: stock_models_run(force=force), name="stock-models-run", daemon=True).start()
+    return {"status": "started"}
+
+
 @app.get("/api/hub/chips/status")
 def get_chips_status() -> dict[str, Any]:
     return {"status": "ok", **chips_collector_status()}
@@ -2188,8 +2218,17 @@ def get_daily_bars(
     bars = load_daily_bars(code, limit=limit)
     daily_net = load_daily_main_force_net(code)
     big = load_daily_big_amounts(code)   # 老師版大戶（2026-10-23 使用者：日線副圖切「老師版」也要有統計）
+    try:
+        from stock_models import daily_extras
+
+        extras = daily_extras(code)   # 外資＋投信淨買、融資餘額（個股頁主力成本線、散戶副圖，2026-11-26 使用者）
+    except Exception:  # noqa: BLE001
+        extras = {}
     for bar in bars:
         day = str(bar["ts"])[:10]
+        ex = extras.get(day) or {}
+        bar["instNet"] = ex.get("instNet")
+        bar["marginBal"] = ex.get("marginBal")
         bar["mainNet"] = daily_net.get(day)
         amounts, close = big.get(day), bar.get("close")
         bar["bigNet"] = round((amounts[0] - amounts[1]) / (float(close) * 1000), 1) if amounts and close else None   # 張：金額 ÷（收盤價 × 1000），跟前端分K 的換算一樣
