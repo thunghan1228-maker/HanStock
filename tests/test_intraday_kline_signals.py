@@ -47,13 +47,13 @@ def _isolated_bars_5m_store(monkeypatch):
 
 def new_monitor(
     monkeypatch, prev_close: float | None = 100.0, prev_high: float | None = 101.0,
-    ma_alignment_score: int | None = None,
+    ma_alignment_score: int | None = None, prev_low: float | None = None,
 ):
     monkeypatch.setattr(module, "save_intraday_signals", lambda rows: rows)
     previous = []
     if prev_close is not None:
         previous = [{"ts": "2026-09-17", "open": prev_close, "high": prev_high,
-                     "low": prev_close, "close": prev_close, "volume": 1000}]
+                     "low": prev_close if prev_low is None else prev_low, "close": prev_close, "volume": 1000}]
     monkeypatch.setattr(module, "load_daily_bars", lambda code, limit=1: previous)
     monkeypatch.setattr(module, "latest_daily_trade_date_before", lambda trade_date: None)
     module._market_prev_cache.clear()
@@ -178,6 +178,32 @@ def test_combo12_bull_not_fired_when_only_prev_high_broken(monkeypatch):
     monitor.on_bar_completed("2330", bar(9, 0, 100, 105, 99, 100.5))  # 905高=105
     result = monitor.on_bar_completed("2330", bar(9, 5, 100.5, 103, 100.5, 102))
     assert "combo12Bull" not in kinds(result)
+
+
+def test_combo12_bear_fires_once_when_both_905_low_and_prev_low_broken(monkeypatch):
+    # 1+2空＝1+2多倒過來：條件1=905低(98)，條件2=昨日低(95)。prev_close=100 讓跌停價=90，
+    # 後面收盤都在合法範圍內。
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0, prev_low=95.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 101, 98, 99))  # 905低=98
+    # 只破905低(97)，還沒破昨日低(95)：不該觸發。
+    result1 = monitor.on_bar_completed("2330", bar(9, 5, 99, 99, 96.5, 97))
+    assert "combo12Bear" not in kinds(result1)
+    # 同時破905低(98)跟昨日低(95)：觸發。
+    result2 = monitor.on_bar_completed("2330", bar(9, 10, 97, 97, 93.5, 94))
+    assert "combo12Bear" in kinds(result2)
+    assert "combo12Bull" not in kinds(result2)
+    # 站回再跌破，不會重複觸發（一天一次）。
+    monitor.on_bar_completed("2330", bar(9, 15, 94, 99, 94, 98.5))
+    result3 = monitor.on_bar_completed("2330", bar(9, 20, 98.5, 98.5, 93, 93.5))
+    assert "combo12Bear" not in kinds(result3)
+
+
+def test_combo12_bear_not_fired_when_only_prev_low_broken(monkeypatch):
+    # 破昨日低(99)但還沒破905低(96)：不該觸發。
+    monitor = new_monitor(monkeypatch, prev_close=100.0, prev_high=101.0, prev_low=99.0)
+    monitor.on_bar_completed("2330", bar(9, 0, 100, 101, 96, 99.5))  # 905低=96
+    result = monitor.on_bar_completed("2330", bar(9, 5, 99.5, 99.5, 97, 97.5))
+    assert "combo12Bear" not in kinds(result)
 
 
 def test_20ma_cross_needs_20_bars_and_fires_first_flag_once(monkeypatch):

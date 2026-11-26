@@ -81,6 +81,7 @@ class _KlineState:
     lows: list[float] = field(default_factory=list)
     prev_close: float | None = None
     prev_high: float | None = None
+    prev_low: float | None = None
     limit_up: float | None = None
     limit_down: float | None = None
     limit_hit: bool = False
@@ -103,6 +104,7 @@ class _KlineState:
     fired_first_20up: bool = False
     fired_first_20down: bool = False
     fired_combo12_bull: bool = False
+    fired_combo12_bear: bool = False
     fired_a8short: bool = False
     fired_break905d: bool = False
     today_open: float | None = None
@@ -384,6 +386,8 @@ class IntradayKlineSignalMonitor:
         if prior:
             state.prev_close = float(prior[-1]["close"])
             state.prev_high = float(prior[-1]["high"])
+            if prior[-1].get("low") is not None:
+                state.prev_low = float(prior[-1]["low"])
             state.limit_up = limit_up_price(state.prev_close)
             state.limit_down = limit_down_price(state.prev_close)
         if len(prior) >= 5:
@@ -555,6 +559,7 @@ class IntradayKlineSignalMonitor:
         self._detect_905_cross(state, close, emit)
         self._detect_prev_high_cross(state, close, emit)
         self._detect_combo12_bull(state, close, emit)
+        self._detect_combo12_bear(state, close, emit)
         self._detect_20ma_cross(state, close, ma20, emit)
         self._detect_520(state, close, ma5, ma20, emit)
         self._detect_20ma_turn(state, ma20, emit)
@@ -725,6 +730,15 @@ class IntradayKlineSignalMonitor:
         if close > state.bar905_high and close > state.prev_high:
             state.fired_combo12_bull = True
             emit("combo12Bull", "1+2多")
+
+    def _detect_combo12_bear(self, state: _KlineState, close: float, emit) -> None:
+        # 「1+2空」＝1+2多倒過來（2026-11-26 使用者：1+2 跌破廣播）：5分K收盤同時跌破905低
+        # （開盤第一根5分K的最低）跟昨日低，一天只發一次；跟1+2多一樣不受長多前置條件、沒有時間限制。
+        if state.fired_combo12_bear or state.bar905_low is None or state.prev_low is None:
+            return
+        if close < state.bar905_low and close < state.prev_low:
+            state.fired_combo12_bear = True
+            emit("combo12Bear", "1+2空")
 
     def _detect_20ma_cross(self, state: _KlineState, close: float, ma20: float | None, emit) -> None:
         if ma20 is None:
