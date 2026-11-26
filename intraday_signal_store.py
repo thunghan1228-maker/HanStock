@@ -15,6 +15,7 @@ ONCE_PER_DAY_KINDS = {
     "firstCrossUp20ma",
     "firstCrossDown20ma",
     "combo12Bull",
+    "combo12Bear",   # 1+2空（2026-11-26 使用者：1+2 跌破廣播）
     "blackDragon",
     "triangleNearBreakout",
     "triangleBreakoutPendingVolume",
@@ -413,7 +414,7 @@ def purge_early_signals(trade_date: str, kind: str, cutoff_ts: int) -> int:
         return max(0, int(cursor.rowcount or 0))
 
 
-# 5分鐘K線訊號家族的kind清單（intraday_kline_signals.py emit()的完整15種），
+# 5分鐘K線訊號家族的kind清單（intraday_kline_signals.py emit()的完整16種），
 # 獨立在這裡列一份而不是從那邊import，避免跟這個模組的循環依賴
 # （intraday_kline_signals.py本身就是import這個模組）。
 KLINE_SIGNAL_KINDS = {
@@ -421,6 +422,7 @@ KLINE_SIGNAL_KINDS = {
     "blackDragon",
     "break905d",
     "combo12Bull",
+    "combo12Bear",
     "crossDown20ma",
     "crossUp20ma",
     "crossUp905",
@@ -435,7 +437,7 @@ KLINE_SIGNAL_KINDS = {
 }
 # 訊號中心有專屬分頁的 5 分 K 訊號；其餘 K 線訊號只在 K 線圖上疊符號（走 /stock/{code} 端點），
 # 當日總表預設不回，免得幾千筆圖表用訊號把早盤的其他訊號擠出 limit。
-SIGNAL_CENTER_KLINE_KINDS = {"combo12Bull", "blackDragon"}
+SIGNAL_CENTER_KLINE_KINDS = {"combo12Bull", "combo12Bear", "blackDragon"}
 CHART_ONLY_KLINE_KINDS = KLINE_SIGNAL_KINDS - SIGNAL_CENTER_KLINE_KINDS
 
 
@@ -486,7 +488,7 @@ def purge_out_of_session_kline_signals(trade_date: str) -> int:
 
 
 def delete_kline_signals_for_ticker(trade_date: str, ticker: str) -> int:
-    """刪除單一股票在trade_date當天、K線訊號家族(15種kind)的所有已保存
+    """刪除單一股票在trade_date當天、K線訊號家族(16種kind)的所有已保存
     紀錄，只影響這個家族，不會動到同一張表裡其他訊號家族(大單/四項精選/
     三角收斂等)的資料。
 
