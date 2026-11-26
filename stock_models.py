@@ -897,6 +897,32 @@ def summarize(trades: list[dict[str, Any]], series: dict[str, StockSeries], days
     }
 
 
+# ------------------------------------------------------------------ 個股日K附加（個股頁主力成本線、散戶副圖用）
+
+def daily_extras(code: str) -> dict[str, dict[str, int]]:
+    """{日期: {"instNet": 外資＋投信淨買（張）, "marginBal": 融資餘額（張）}}。2026-11-26 使用者：個股頁加主力成本線（估）、散戶副圖（近似）。
+    法人／融資先用官方表，沒有的日子用 FinMind 回補的（一年）。"""
+    from chips_daily import _schema as chips_schema
+    from margin_balance import _schema as margin_schema
+
+    code = str(code).strip().upper()
+    out: dict[str, dict[str, int]] = {}
+    initialize_database()
+    with get_connection() as connection:
+        _schema(connection)
+        chips_schema(connection)
+        margin_schema(connection)
+        for row in connection.execute("SELECT trade_date, foreign_net, trust_net FROM model_inst_daily WHERE stock_code = ?", (code,)):
+            out.setdefault(str(row["trade_date"]), {})["instNet"] = round((int(row["foreign_net"]) + int(row["trust_net"])) / 1000)
+        for row in connection.execute("SELECT trade_date, foreign_net, trust_net FROM institutional_daily WHERE stock_code = ?", (code,)):
+            out.setdefault(str(row["trade_date"]), {})["instNet"] = round((int(row["foreign_net"]) + int(row["trust_net"])) / 1000)
+        for row in connection.execute("SELECT trade_date, balance FROM model_margin_daily WHERE stock_code = ?", (code,)):
+            out.setdefault(str(row["trade_date"]), {})["marginBal"] = int(row["balance"])
+        for row in connection.execute("SELECT trade_date, margin_balance FROM margin_daily WHERE stock_code = ?", (code,)):
+            out.setdefault(str(row["trade_date"]), {})["marginBal"] = int(row["margin_balance"])
+    return out
+
+
 # ------------------------------------------------------------------ 計算
 
 def compute(now: datetime | None = None) -> dict[str, Any]:

@@ -221,3 +221,33 @@ class ComputeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DailyExtrasTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+
+    def tearDown(self) -> None:
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_official_overrides_finmind(self) -> None:
+        import chips_daily
+        import margin_balance
+
+        with database.get_connection() as connection:
+            module._schema(connection)
+            chips_daily._schema(connection)
+            margin_balance._schema(connection)
+            connection.executemany("INSERT INTO model_inst_daily VALUES (?, '2344', ?, ?, 0)", [("2026-11-25", 1_000_000, 500_000), ("2026-11-26", 1, 1)])
+            connection.executemany("INSERT INTO model_margin_daily VALUES (?, '2344', ?)", [("2026-11-25", 30000), ("2026-11-26", 1)])
+        chips_daily.save_institutional("2026-11-26", "TSE", [{"code": "2344", "name": "華邦電", "foreign": 2_000_000, "trust": -400_000, "dealer": 0, "total": 1_600_000}], "test")
+        with database.get_connection() as connection:
+            connection.execute("INSERT INTO margin_daily (trade_date, stock_code, market, margin_buy, margin_sell, margin_repay, margin_prev, margin_balance, margin_limit, short_balance, source, updated_at) "
+                               "VALUES ('2026-11-26', '2344', 'TSE', 0, 0, 0, 0, 31000, 0, 0, 'test', 'x')")
+        got = module.daily_extras("2344")
+        self.assertEqual(got["2026-11-25"], {"instNet": 1500, "marginBal": 30000})
+        self.assertEqual(got["2026-11-26"], {"instNet": 1600, "marginBal": 31000})

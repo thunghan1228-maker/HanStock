@@ -2218,8 +2218,17 @@ def get_daily_bars(
     bars = load_daily_bars(code, limit=limit)
     daily_net = load_daily_main_force_net(code)
     big = load_daily_big_amounts(code)   # 老師版大戶（2026-10-23 使用者：日線副圖切「老師版」也要有統計）
+    try:
+        from stock_models import daily_extras
+
+        extras = daily_extras(code)   # 外資＋投信淨買、融資餘額（個股頁主力成本線、散戶副圖，2026-11-26 使用者）
+    except Exception:  # noqa: BLE001
+        extras = {}
     for bar in bars:
         day = str(bar["ts"])[:10]
+        ex = extras.get(day) or {}
+        bar["instNet"] = ex.get("instNet")
+        bar["marginBal"] = ex.get("marginBal")
         bar["mainNet"] = daily_net.get(day)
         amounts, close = big.get(day), bar.get("close")
         bar["bigNet"] = round((amounts[0] - amounts[1]) / (float(close) * 1000), 1) if amounts and close else None   # 張：金額 ÷（收盤價 × 1000），跟前端分K 的換算一樣
