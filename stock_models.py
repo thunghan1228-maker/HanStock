@@ -60,6 +60,7 @@ MODELS: list[dict[str, Any]] = [
             "集保 400 張以上大戶持股比，這週比上週多 ≥ 0.5 個百分點",
             "近 5 個交易日外資＋投信合計買超，至少 3 天是買超",
             "收盤站上月線（20 日均線）",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -70,6 +71,7 @@ MODELS: list[dict[str, Any]] = [
             "5 日均量 ≥ 20 日均量 1.3 倍",
             "收盤 > 5 日 > 20 日 > 60 日均線，20 日均線比 5 天前高",
             "收盤創 20 日新高",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -80,6 +82,7 @@ MODELS: list[dict[str, Any]] = [
             "集保總股東人數這週比上週少 ≥ 1%",
             "最新公布的月營收年增 > 0，而且比上個月的年增高",
             "收盤站上月線",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -89,6 +92,7 @@ MODELS: list[dict[str, Any]] = [
             "集保 1000 張以上大戶持股比這週比上週多 ≥ 0.5 個百分點",
             "近 5 個交易日平均當沖比（現股當沖量 ÷ 成交量）≥ 30%",
             "收盤站上月線",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -109,6 +113,7 @@ MODELS: list[dict[str, Any]] = [
             "當天外資、投信同時買超",
             "當天漲幅 ≥ 2%，成交量 ≥ 20 日均量 1.5 倍",
             "收盤站上月線",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -763,6 +768,11 @@ class StockSeries:
         self.margin, self.margin_days = margin or {}, margin_days or set()
         self.daytrade, self.daytrade_days = daytrade or {}, daytrade_days or set()
         self.hits: dict[str, set[int]] = {}    # 其他模型發訊號的那幾天（多模型共振用）
+        self.market_up: dict[str, bool] | None = None   # 加權指數那天收盤在月線之上（prepare_inputs 給；None＝不判斷）
+
+    def market_ok(self, i: int) -> bool:
+        """大盤濾網（2026-11-27 使用者看完調整比較後選的）：加權指數那天收盤在月線之上。沒給大盤資料（單元測試）就不判斷。"""
+        return True if self.market_up is None else self.market_up.get(self.dates[i], False)
 
     def dt_ratio(self, i: int, n: int) -> float | None:
         """近 n 天平均當沖比（%）；那幾天有一天整個市場沒有當沖資料就不判斷。"""
@@ -822,7 +832,7 @@ class StockSeries:
 
 
 def cond_big_inst(s: StockSeries, i: int) -> dict[str, Any] | None:
-    if not s.basic_ok(i) or s.close[i] <= s.ma20[i]:
+    if not s.basic_ok(i) or s.close[i] <= s.ma20[i] or not s.market_ok(i):
         return None
     weeks = s.weeks_before(i, 2)
     if not weeks:
@@ -840,7 +850,7 @@ def cond_big_inst(s: StockSeries, i: int) -> dict[str, Any] | None:
 
 
 def cond_kilo_bull(s: StockSeries, i: int) -> dict[str, Any] | None:
-    if not s.basic_ok(i) or i < 25:
+    if not s.basic_ok(i) or i < 25 or not s.market_ok(i):
         return None
     ma5, ma20, ma60 = s.ma5[i], s.ma20[i], s.ma60[i]
     if ma60 is None or not (s.close[i] > ma5 > ma20 > ma60) or s.ma20[i - 5] is None or ma20 <= s.ma20[i - 5]:
@@ -878,7 +888,7 @@ def cond_trust_growth(s: StockSeries, i: int) -> dict[str, Any] | None:
 
 
 def cond_main_vs_retail(s: StockSeries, i: int) -> dict[str, Any] | None:
-    if not s.basic_ok(i) or s.close[i] <= s.ma20[i]:
+    if not s.basic_ok(i) or s.close[i] <= s.ma20[i] or not s.market_ok(i):
         return None
     weeks = s.weeks_before(i, 2)
     if not weeks or weeks[0][3] <= 0 or weeks[1][3] <= 0:
@@ -893,9 +903,8 @@ def cond_main_vs_retail(s: StockSeries, i: int) -> dict[str, Any] | None:
     return {"bigUp": round(big_up, 2), "holdersChg": round(holders, 2), "week": weeks[1][0], "revMonth": rev[0], "yoy": round(rev[1], 1)}
 
 
-def cond_whale_hot(s: StockSeries, i: int, *, low_dt: float | None = None) -> dict[str, Any] | None:
-    """low_dt：反過來要當沖比「低於」這個數（調整比較用，見 stock_models_tuning）。"""
-    if not s.basic_ok(i) or s.close[i] <= s.ma20[i]:
+def cond_whale_hot(s: StockSeries, i: int) -> dict[str, Any] | None:
+    if not s.basic_ok(i) or s.close[i] <= s.ma20[i] or not s.market_ok(i):
         return None
     weeks = s.weeks_before(i, 2)
     if not weeks:
@@ -904,13 +913,13 @@ def cond_whale_hot(s: StockSeries, i: int, *, low_dt: float | None = None) -> di
     if kilo_up < 0.5:
         return None
     dt = s.dt_ratio(i, 5)
-    if dt is None or (dt >= low_dt if low_dt is not None else dt < 30):
+    if dt is None or dt < 30:
         return None
     return {"kiloUp": round(kilo_up, 2), "week": weeks[1][0], "dayTrade": round(dt, 1)}
 
 
 def cond_big_inst_fire(s: StockSeries, i: int) -> dict[str, Any] | None:
-    if not s.basic_ok(i) or s.close[i] <= s.ma20[i] or i < 1:
+    if not s.basic_ok(i) or s.close[i] <= s.ma20[i] or i < 1 or not s.market_ok(i):
         return None
     pct = (s.close[i] / s.close[i - 1] - 1) * 100 if s.close[i - 1] else 0
     if pct < 2 or s.v20[i] is None or s.v20[i] <= 0 or s.vol[i] < 1.5 * s.v20[i]:
@@ -1003,8 +1012,10 @@ def signals_for(s: StockSeries, cond: Callable[[StockSeries, int], dict[str, Any
     return out
 
 
-def simulate(s: StockSeries, signals: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
-    """照回測規則把訊號變成交易。還沒到出場日的是持有中（open=True、照最新收盤算）。"""
+def simulate(s: StockSeries, signals: list[tuple[int, dict[str, Any]]], *, hold_days: int = HOLD_DAYS,
+             ma20_exit: bool = True, stop_pct: float | None = None) -> list[dict[str, Any]]:
+    """照回測規則把訊號變成交易。還沒到出場日的是持有中（open=True、照最新收盤算）。
+    hold_days／ma20_exit／stop_pct 是出場規則比較用的（stock_models_tuning）：stop_pct＝收盤比買進價跌這麼多 % 就當天收盤賣。"""
     trades = []
     busy_until = -1
     n = len(s.dates)
@@ -1015,13 +1026,16 @@ def simulate(s: StockSeries, signals: list[tuple[int, dict[str, Any]]]) -> list[
         entry = s.open[e]
         if entry <= 0 or entry >= s.close[i] * (1 + LIMIT_UP_GAP_PCT / 100):
             continue
-        last = min(e + HOLD_DAYS - 1, n - 1)
+        last = min(e + hold_days - 1, n - 1)
         x, reason = last, "hold"
         for j in range(e, last + 1):
-            if s.ma20[j] is not None and s.close[j] < s.ma20[j]:
+            if stop_pct is not None and s.close[j] <= entry * (1 - stop_pct / 100):
+                x, reason = j, "stop"
+                break
+            if ma20_exit and s.ma20[j] is not None and s.close[j] < s.ma20[j]:
                 x, reason = j, "ma20"
                 break
-        is_open = reason == "hold" and e + HOLD_DAYS - 1 > n - 1
+        is_open = reason == "hold" and e + hold_days - 1 > n - 1
         exit_px = s.close[x]
         ret = (exit_px / entry - 1) * 100 - COST_PCT
         trades.append({"code": s.code, "signal": s.dates[i], "entryDate": s.dates[e], "entry": round(entry, 2), "exitDate": s.dates[x], "exit": round(exit_px, 2),
@@ -1125,6 +1139,15 @@ def daily_extras(code: str) -> dict[str, dict[str, int]]:
 
 # ------------------------------------------------------------------ 計算
 
+def market_up_map(index: dict[str, list[tuple[str, float]]], name: str = "TAIEX") -> dict[str, bool] | None:
+    """{日期: 加權指數收盤在自己的 20 日均線之上}。前面不到 20 天的日子是 False；完全沒有指數資料回 None（不判斷）。"""
+    rows = index.get(name) or []
+    if not rows:
+        return None
+    ma = _ma([c for _, c in rows], 20)
+    return {d: m is not None and c > m for (d, c), m in zip(rows, ma)}
+
+
 def prepare_inputs() -> dict[str, Any]:
     """讀一次回測要的全部資料（日K、法人、集保、營收、融資、當沖、指數），compute 和調整比較（stock_models_tuning）共用。"""
     from heilong_backtest import _load_bars, _market_codes
@@ -1152,6 +1175,9 @@ def prepare_inputs() -> dict[str, Any]:
             continue
         series[code] = StockSeries(code, b, inst.get(code, {}), inst_days, tdcc.get(code, []), revenue.get(code, {}),
                                    margin.get(code, {}), margin_days, daytrade.get(code, {}), daytrade_days)
+    market = market_up_map(index)
+    for s in series.values():
+        s.market_up = market
     return {"status": "ok", "since": since, "until": until, "bt_days": bt_days, "series": series, "index": index,
             "inst_days": inst_days, "tdcc": tdcc, "revenue": revenue, "margin_days": margin_days, "daytrade_days": daytrade_days,
             "names": _names()}
