@@ -8,6 +8,13 @@
    試試「停損 7%（不看月線）」「抱 20 天」。
 2. 籌碼當加分條件：在一年回測最好的「營收起飛爆量」上，再加大戶／法人的籌碼條件，看會不會更好。
 
+第二輪結果：出場規則沒有一致變好（抱 20 天只是放大好壞），維持原樣；營收起飛爆量＋籌碼裡「大盤在月線上」改善最大，
+使用者選 1、2：營收起飛爆量正式加上大盤濾網；另外四個不靠集保的模型先比「加／不加大盤濾網」（整年），有效再加。
+
+第三輪（現在）比：
+1. 大盤濾網：營收起飛爆量（已加）、投信卡位營收成長、法人先買散戶跟進、法人首次進場、多模型共振，各自「不加／加」大盤濾網，比整年。
+2. 出場規則（同第二輪，留著觀察）。
+
 為了不要調出「回測好看、實際沒用」的規則，每個比較都切成前後兩半，兩半都變好的才值得採用。
 集保（大戶持股）只有最近約半年：用到集保的（五個籌碼模型、營收起飛爆量＋集保）只比有集保的那段，其他比整年。
 """
@@ -32,42 +39,20 @@ EXIT_RULES: list[dict[str, Any]] = [
      "hold": 20, "ma20": False, "stop": STOP_PCT},
 ]
 
-REV_CHIP: list[dict[str, Any]] = [
-    {"key": "base", "label": "營收起飛爆量（原版）", "desc": "原本的條件"},
-    {"key": "bigUp", "label": "＋400 張大戶增加", "desc": "集保 400 張以上大戶持股比，最近一週比前一週多"},
-    {"key": "kiloUp", "label": "＋千張大戶增加", "desc": "集保 1000 張以上大戶持股比，最近一週比前一週多"},
-    {"key": "holdersDown", "label": "＋股東人數減少", "desc": "集保總股東人數，最近一週比前一週少（籌碼集中）"},
-    {"key": "inst5", "label": "＋法人近 5 天買超", "desc": "近 5 個交易日外資＋投信合計買超"},
-    {"key": "market", "label": "＋大盤在月線上", "desc": "加權指數收盤在月線之上"},
-]
+MARKET_KEYS = ["revBoom", "trustGrowth", "instThenRetail", "instFirst", "multiCombo"]   # 不靠集保的五個（營收起飛爆量已經加了）
+MARKET_VARIANTS = [("off", "不加大盤濾網"), ("on", "加大盤濾網（加權指數在月線上）")]
 
 STAT_KEYS = ("trades", "open", "winRate", "avgRet", "avgWin", "avgLoss", "profitFactor", "maxConcurrent", "retOnCapital", "mdd")
 
 
-def rev_chip_condition(extra: str) -> Callable[[sm.StockSeries, int], dict[str, Any] | None]:
-    """營收起飛爆量＋一個籌碼條件。"""
+def market_condition(key: str, with_market: bool) -> Callable[[sm.StockSeries, int], dict[str, Any] | None]:
+    """這個模型加／不加大盤濾網。營收起飛爆量正式版已經有濾網：不加＝只用 rev_boom_core。"""
+    base = sm.rev_boom_core if key == "revBoom" else sm.CONDITIONS[key]
+    if not with_market:
+        return base
+
     def cond(s: sm.StockSeries, i: int) -> dict[str, Any] | None:
-        why = sm.cond_rev_boom(s, i)
-        if not why or extra == "base":
-            return why
-        if extra in ("bigUp", "kiloUp", "holdersDown"):
-            weeks = s.weeks_before(i, 2)
-            if not weeks:
-                return None
-            if extra == "bigUp":
-                ok = weeks[1][1] > weeks[0][1]
-            elif extra == "kiloUp":
-                ok = weeks[1][2] > weeks[0][2]
-            else:
-                ok = 0 < weeks[1][3] < weeks[0][3]
-        elif extra == "inst5":
-            win = s.inst_window(i, 5)
-            ok = bool(win) and sum(f + t for f, t in win) > 0
-        elif extra == "market":
-            ok = s.market_ok(i)
-        else:
-            raise ValueError(extra)
-        return why if ok else None
+        return base(s, i) if s.market_ok(i) else None
 
     return cond
 
@@ -148,25 +133,26 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
             variants.append({"key": rule["key"], "label": rule["label"], **_halves(trades, series, window)})
         exit_models.append({"key": key, "name": spec["name"], "window": _window_info(window), "variants": variants})
 
-    # 2. 營收起飛爆量＋籌碼（用到集保，只比有集保的那段）
-    rev_chip = None
-    if len(chip_win) >= 20:
+    # 2. 大盤濾網：不靠集保的五個，整年
+    market = []
+    for key in MARKET_KEYS:
+        spec = next(m for m in sm.MODELS if m["key"] == key)
         variants = []
-        for v in REV_CHIP:
-            trades = select_trades(series, _signals(series, rev_chip_condition(v["key"]), chip_win))
-            variants.append({"key": v["key"], "label": v["label"], **_halves(trades, series, chip_win)})
-        rev_chip = {"window": _window_info(chip_win), "variants": variants}
+        for vkey, label in MARKET_VARIANTS:
+            trades = select_trades(series, _signals(series, market_condition(key, vkey == "on"), full))
+            variants.append({"key": vkey, "label": label, **_halves(trades, series, full)})
+        market.append({"key": key, "name": spec["name"], "current": "on" if key == "revBoom" else "off",
+                       "window": _window_info(full), "variants": variants})
 
     return {
         "status": "ok", "asOf": ctx["until"], "generatedAt": sm._now().isoformat(timespec="seconds"),
         "exitRules": [{k: r[k] for k in ("key", "label", "desc")} for r in EXIT_RULES],
         "exits": exit_models,
-        "revChipRules": [{k: r[k] for k in ("key", "label", "desc")} for r in REV_CHIP],
-        "revChip": rev_chip,
+        "market": market,
         "notes": [
             "進場規則跟原本一樣（訊號隔天開盤買，開盤就漲停買不到的跳過）；每筆 10 萬，已扣手續費和稅",
             "用到集保的模型只比有集保的那段（約半年），其他比整年；都切成前後兩半，兩半都變好的才值得採用",
-            "五個籌碼模型已經加上大盤濾網（加權指數在月線上）",
+            "五個籌碼模型和營收起飛爆量已經加上大盤濾網（加權指數在月線上）；current＝正式版現在用哪一個",
         ],
         "computeSeconds": round(time.monotonic() - started, 1),
     }
