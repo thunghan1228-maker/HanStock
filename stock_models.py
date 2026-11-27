@@ -142,6 +142,7 @@ MODELS: list[dict[str, Any]] = [
             "最新公布的月營收年增 ≥ 20%，而且是近 12 個月最高",
             "當天成交量 ≥ 20 日均量 2 倍，漲幅 ≥ 3%",
             "收盤創 20 日新高",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -972,7 +973,8 @@ def cond_inst_first(s: StockSeries, i: int) -> dict[str, Any] | None:
     return {"who": who[1], "lots": round(today[who[0]] / 1000), "pctOfVol": round(today[who[0]] / 1000 / s.vol[i] * 100, 1), "dayTrade": round(dt, 1)}
 
 
-def cond_rev_boom(s: StockSeries, i: int) -> dict[str, Any] | None:
+def rev_boom_core(s: StockSeries, i: int) -> dict[str, Any] | None:
+    """營收起飛爆量不含大盤濾網的部分（回測比較用，見 stock_models_tuning）。"""
     if not s.basic_ok(i) or i < 21:
         return None
     pct = (s.close[i] / s.close[i - 1] - 1) * 100 if s.close[i - 1] else 0
@@ -982,6 +984,13 @@ def cond_rev_boom(s: StockSeries, i: int) -> dict[str, Any] | None:
     if not rev or rev[1] < 20 or not s.revenue_high12(rev[0]):
         return None
     return {"revMonth": rev[0], "yoy": round(rev[1], 1), "pct": round(pct, 2), "volX": round(s.vol[i] / s.v20[i], 2)}
+
+
+def cond_rev_boom(s: StockSeries, i: int) -> dict[str, Any] | None:
+    """2026-11-27 使用者看完「營收起飛爆量＋籌碼」比較後選的：加上大盤濾網（每筆 −1.93% → −0.07%，前後兩半都變好）。"""
+    if not s.market_ok(i):
+        return None
+    return rev_boom_core(s, i)
 
 
 def cond_multi_combo(s: StockSeries, i: int) -> dict[str, Any] | None:

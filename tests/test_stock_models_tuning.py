@@ -56,7 +56,7 @@ class MarketFilterTests(unittest.TestCase):
         self.assertIsNone(sm.cond_big_inst(s, i))
         rules = next(m for m in sm.MODELS if m["key"] == "kiloBull")["rules"]
         self.assertTrue(any("加權指數" in r for r in rules))
-        self.assertFalse(any("加權指數" in r for r in next(m for m in sm.MODELS if m["key"] == "revBoom")["rules"]))
+        self.assertFalse(any("加權指數" in r for r in next(m for m in sm.MODELS if m["key"] == "trustGrowth")["rules"]))   # 還沒比完的不加
 
 
 class ExitRuleTests(unittest.TestCase):
@@ -78,8 +78,8 @@ class ExitRuleTests(unittest.TestCase):
         self.assertTrue(near_end["open"])                     # 還沒抱滿 20 天：持有中
 
 
-class RevChipTests(unittest.TestCase):
-    def test_rev_chip_conditions(self) -> None:
+class MarketComparisonTests(unittest.TestCase):
+    def test_rev_boom_has_market_filter_and_comparison_toggles_it(self) -> None:
         n = 40
         closes = [100.0] * (n - 1) + [104.0]
         vols = [1000.0] * (n - 1) + [3000.0]
@@ -88,22 +88,33 @@ class RevChipTests(unittest.TestCase):
         days = weekdays(date(2026, 1, 5), n)
         s = make("1111", closes, vols=vols, revenue=rev)
         i = n - 1
-        self.assertIsNotNone(sm.cond_rev_boom(s, i))
-        self.assertIsNotNone(tuning.rev_chip_condition("base")(s, i))
-        self.assertIsNotNone(tuning.rev_chip_condition("bigUp")(s, i))          # 40.0 → 40.6
-        self.assertIsNotNone(tuning.rev_chip_condition("kiloUp")(s, i))
-        self.assertIsNotNone(tuning.rev_chip_condition("holdersDown")(s, i))    # 5000 → 4900
-        self.assertIsNotNone(tuning.rev_chip_condition("inst5")(s, i))
-        s.tdcc = [("2026-02-13", 40.0, 20.6, 4900), ("2026-02-20", 39.0, 20.0, 5000)]
-        s.tdcc_dates = [w[0] for w in s.tdcc]
-        self.assertIsNone(tuning.rev_chip_condition("bigUp")(s, i))
-        self.assertIsNone(tuning.rev_chip_condition("kiloUp")(s, i))
-        self.assertIsNone(tuning.rev_chip_condition("holdersDown")(s, i))
-        s.inst = {d: (-100_000, 0) for d in days}
-        self.assertIsNone(tuning.rev_chip_condition("inst5")(s, i))
+        self.assertIsNotNone(sm.cond_rev_boom(s, i))           # 沒給大盤資料：不判斷
         s.market_up = {d: False for d in days}
-        self.assertIsNone(tuning.rev_chip_condition("market")(s, i))
-        self.assertIsNotNone(tuning.rev_chip_condition("base")(s, i))           # 原版不看大盤
+        self.assertIsNone(sm.cond_rev_boom(s, i))              # 正式版：大盤在月線下不進場
+        self.assertIsNotNone(sm.rev_boom_core(s, i))
+        self.assertIsNotNone(tuning.market_condition("revBoom", False)(s, i))
+        self.assertIsNone(tuning.market_condition("revBoom", True)(s, i))
+        s.market_up = {d: True for d in days}
+        self.assertIsNotNone(tuning.market_condition("revBoom", True)(s, i))
+        self.assertTrue(any("加權指數" in r for r in next(m for m in sm.MODELS if m["key"] == "revBoom")["rules"]))
+
+    def test_other_models_toggle(self) -> None:
+        calls = []
+
+        def fake(s, i):
+            calls.append(i)
+            return {"x": 1}
+
+        n = 30
+        days = weekdays(date(2026, 1, 5), n)
+        s = make("1111", [100.0] * n)
+        s.market_up = {d: k % 2 == 0 for k, d in enumerate(days)}
+        with patch.dict(sm.CONDITIONS, {"trustGrowth": fake}):
+            off = tuning.market_condition("trustGrowth", False)
+            on = tuning.market_condition("trustGrowth", True)
+            self.assertIsNotNone(off(s, 1))
+            self.assertIsNone(on(s, 1))                        # 那天大盤在月線下
+            self.assertIsNotNone(on(s, 2))
 
 
 class ComputeTuningTests(unittest.TestCase):
@@ -166,8 +177,15 @@ class ComputeTuningTests(unittest.TestCase):
         self.assertEqual(base["a"]["trades"] + base["b"]["trades"], base["all"]["trades"])
         self.assertEqual(set(base), {"key", "label", "all", "a", "b"})
         self.assertIn("avgDays", base["all"])
-        self.assertEqual([v["key"] for v in out["revChip"]["variants"]], [r["key"] for r in tuning.REV_CHIP])
-        self.assertEqual(out["revChip"]["window"]["from"], big["window"]["from"])
+        self.assertEqual([m["key"] for m in out["market"]], tuning.MARKET_KEYS)
+        rev = out["market"][0]
+        self.assertEqual(rev["current"], "on")
+        self.assertEqual([v["key"] for v in rev["variants"]], ["off", "on"])
+        self.assertEqual(rev["window"]["from"], ctx["bt_days"][0])    # 整年
+        for m in out["market"]:
+            off, on = m["variants"]
+            self.assertGreaterEqual(off["all"]["trades"] + off["all"]["open"], 0)
+            self.assertEqual(off["a"]["trades"] + off["b"]["trades"], off["all"]["trades"])
 
     def test_run_once_saves_tuning(self) -> None:
         self.seed()
