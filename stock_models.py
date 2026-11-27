@@ -103,6 +103,7 @@ MODELS: list[dict[str, Any]] = [
             "5 日均量 ≥ 20 日均量 1.2 倍",
             "最新公布的月營收年增 ≥ 10%，而且比上個月的年增高",
             "收盤站上月線（20 日均線）",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -123,6 +124,7 @@ MODELS: list[dict[str, Any]] = [
             "10～6 個交易日前這 5 天，外資＋投信至少 4 天買超",
             "近 5 個交易日融資餘額增加 ≥ 5%（5 天前融資 ≥ 100 張）",
             "近 5 個交易日股價上漲，收盤站上月線",
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
         ],
     },
     {
@@ -869,7 +871,8 @@ def cond_kilo_bull(s: StockSeries, i: int) -> dict[str, Any] | None:
     return {"kiloUp": round(d1 + d2, 2), "week": weeks[2][0], "volX": round(s.v5[i] / s.v20[i], 2)}
 
 
-def cond_trust_growth(s: StockSeries, i: int) -> dict[str, Any] | None:
+def trust_growth_core(s: StockSeries, i: int) -> dict[str, Any] | None:
+    """投信卡位營收成長不含大盤濾網的部分（回測比較用）。"""
     if not s.basic_ok(i) or s.close[i] <= s.ma20[i]:
         return None
     if s.v5[i] is None or s.v20[i] is None or s.v20[i] <= 0 or s.v5[i] < 1.2 * s.v20[i]:
@@ -937,7 +940,8 @@ def cond_big_inst_fire(s: StockSeries, i: int) -> dict[str, Any] | None:
     return {"bigUp": round(big_up, 2), "week": weeks[1][0], "foreign": round(win[0][0] / 1000), "trust": round(win[0][1] / 1000), "volX": round(s.vol[i] / s.v20[i], 2)}
 
 
-def cond_inst_then_retail(s: StockSeries, i: int) -> dict[str, Any] | None:
+def inst_then_retail_core(s: StockSeries, i: int) -> dict[str, Any] | None:
+    """法人先買散戶跟進不含大盤濾網的部分（回測比較用）。"""
     if not s.basic_ok(i) or s.close[i] <= s.ma20[i] or i < 10:
         return None
     if s.close[i] <= s.close[i - 5]:
@@ -987,10 +991,31 @@ def rev_boom_core(s: StockSeries, i: int) -> dict[str, Any] | None:
 
 
 def cond_rev_boom(s: StockSeries, i: int) -> dict[str, Any] | None:
-    """2026-11-27 使用者看完「營收起飛爆量＋籌碼」比較後選的：加上大盤濾網（每筆 −1.93% → −0.07%，前後兩半都變好）。"""
+    """2026-11-27 使用者看完「營收起飛爆量＋籌碼」比較後選的：加上大盤濾網（每筆 −1.93% → −0.07%，前後兩半都變好）。
+    整年再比一次：每筆 +1.33% → +2.27%、整年報酬 16.9% → 24.2%、最大回檔 8.6% → 5.4%。"""
     if not s.market_ok(i):
         return None
     return rev_boom_core(s, i)
+
+
+def cond_trust_growth(s: StockSeries, i: int) -> dict[str, Any] | None:
+    """2026-11-27 使用者選的：加上大盤濾網（整年比較每筆 +0.38% → +1.22%，前後兩半都變好；整年報酬 5.4% → 14.1%）。"""
+    if not s.market_ok(i):
+        return None
+    return trust_growth_core(s, i)
+
+
+def cond_inst_then_retail(s: StockSeries, i: int) -> dict[str, Any] | None:
+    """2026-11-27 使用者選的：加上大盤濾網（整年比較每筆 +0.40% → +0.75%，前半幾乎一樣、後半少賠；整年報酬 6.5% → 9.9%）。"""
+    if not s.market_ok(i):
+        return None
+    return inst_then_retail_core(s, i)
+
+
+# 加了大盤濾網的模型，加之前的原條件（回測比較用，見 stock_models_tuning）
+CORE_CONDITIONS: dict[str, Callable[[StockSeries, int], dict[str, Any] | None]] = {
+    "revBoom": rev_boom_core, "trustGrowth": trust_growth_core, "instThenRetail": inst_then_retail_core,
+}
 
 
 def cond_multi_combo(s: StockSeries, i: int) -> dict[str, Any] | None:

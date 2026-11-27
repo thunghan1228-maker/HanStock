@@ -56,7 +56,7 @@ class MarketFilterTests(unittest.TestCase):
         self.assertIsNone(sm.cond_big_inst(s, i))
         rules = next(m for m in sm.MODELS if m["key"] == "kiloBull")["rules"]
         self.assertTrue(any("加權指數" in r for r in rules))
-        self.assertFalse(any("加權指數" in r for r in next(m for m in sm.MODELS if m["key"] == "trustGrowth")["rules"]))   # 還沒比完的不加
+        self.assertFalse(any("加權指數" in r for r in next(m for m in sm.MODELS if m["key"] == "instFirst")["rules"]))   # 比完沒效果的不加
 
 
 class ExitRuleTests(unittest.TestCase):
@@ -109,12 +109,26 @@ class MarketComparisonTests(unittest.TestCase):
         days = weekdays(date(2026, 1, 5), n)
         s = make("1111", [100.0] * n)
         s.market_up = {d: k % 2 == 0 for k, d in enumerate(days)}
-        with patch.dict(sm.CONDITIONS, {"trustGrowth": fake}):
-            off = tuning.market_condition("trustGrowth", False)
-            on = tuning.market_condition("trustGrowth", True)
+        with patch.dict(sm.CONDITIONS, {"instFirst": fake}):
+            off = tuning.market_condition("instFirst", False)
+            on = tuning.market_condition("instFirst", True)
             self.assertIsNotNone(off(s, 1))
             self.assertIsNone(on(s, 1))                        # 那天大盤在月線下
             self.assertIsNotNone(on(s, 2))
+
+    def test_trust_growth_and_inst_then_retail_filtered(self) -> None:
+        self.assertEqual(set(sm.CORE_CONDITIONS), {"revBoom", "trustGrowth", "instThenRetail"})
+        n = 30
+        days = weekdays(date(2026, 1, 5), n)
+        s = make("1111", [100.0] * n)
+        for key, core in (("trustGrowth", "trust_growth_core"), ("instThenRetail", "inst_then_retail_core")):
+            with patch.object(sm, core, lambda ss, i: {"x": 1}):
+                s.market_up = {d: True for d in days}
+                self.assertIsNotNone(sm.CONDITIONS[key](s, 5))
+                s.market_up = {d: False for d in days}
+                self.assertIsNone(sm.CONDITIONS[key](s, 5))     # 正式版：大盤在月線下不進場
+            rules = next(m for m in sm.MODELS if m["key"] == key)["rules"]
+            self.assertTrue(any("加權指數" in r for r in rules))
 
 
 class ComputeTuningTests(unittest.TestCase):
@@ -179,7 +193,8 @@ class ComputeTuningTests(unittest.TestCase):
         self.assertIn("avgDays", base["all"])
         self.assertEqual([m["key"] for m in out["market"]], tuning.MARKET_KEYS)
         rev = out["market"][0]
-        self.assertEqual(rev["current"], "on")
+        self.assertEqual({m["key"]: m["current"] for m in out["market"]},
+                         {"revBoom": "on", "trustGrowth": "on", "instThenRetail": "on", "instFirst": "off", "multiCombo": "off"})
         self.assertEqual([v["key"] for v in rev["variants"]], ["off", "on"])
         self.assertEqual(rev["window"]["from"], ctx["bt_days"][0])    # 整年
         for m in out["market"]:
