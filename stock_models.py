@@ -893,7 +893,8 @@ def cond_main_vs_retail(s: StockSeries, i: int) -> dict[str, Any] | None:
     return {"bigUp": round(big_up, 2), "holdersChg": round(holders, 2), "week": weeks[1][0], "revMonth": rev[0], "yoy": round(rev[1], 1)}
 
 
-def cond_whale_hot(s: StockSeries, i: int) -> dict[str, Any] | None:
+def cond_whale_hot(s: StockSeries, i: int, *, low_dt: float | None = None) -> dict[str, Any] | None:
+    """low_dt：反過來要當沖比「低於」這個數（調整比較用，見 stock_models_tuning）。"""
     if not s.basic_ok(i) or s.close[i] <= s.ma20[i]:
         return None
     weeks = s.weeks_before(i, 2)
@@ -903,7 +904,7 @@ def cond_whale_hot(s: StockSeries, i: int) -> dict[str, Any] | None:
     if kilo_up < 0.5:
         return None
     dt = s.dt_ratio(i, 5)
-    if dt is None or dt < 30:
+    if dt is None or (dt >= low_dt if low_dt is not None else dt < 30):
         return None
     return {"kiloUp": round(kilo_up, 2), "week": weeks[1][0], "dayTrade": round(dt, 1)}
 
@@ -1124,10 +1125,10 @@ def daily_extras(code: str) -> dict[str, dict[str, int]]:
 
 # ------------------------------------------------------------------ 計算
 
-def compute(now: datetime | None = None) -> dict[str, Any]:
+def prepare_inputs() -> dict[str, Any]:
+    """讀一次回測要的全部資料（日K、法人、集保、營收、融資、當沖、指數），compute 和調整比較（stock_models_tuning）共用。"""
     from heilong_backtest import _load_bars, _market_codes
 
-    started = time.monotonic()
     initialize_database()
     days_all = _trade_dates(BACKTEST_DAYS + WARMUP_DAYS + 5)   # 新到舊
     if len(days_all) < WARMUP_DAYS + 20:
@@ -1141,10 +1142,9 @@ def compute(now: datetime | None = None) -> dict[str, Any]:
     inst_days = _inst_dates(since, until)
     tdcc = _load_tdcc(codes)
     revenue = _load_revenue()
-    index = _load_index(bt_days[0])
+    index = _load_index(since)   # 從暖身期開始讀：大盤月線（調整比較的大盤濾網）要前 20 天；報酬照樣從回測第一天算
     margin, margin_days = _load_daily_map("model_margin_daily", "balance", since, until, ("margin_daily", "margin_balance", 1.0))
     daytrade, daytrade_days = _load_daily_map("model_daytrade_daily", "lots", since, until, ("daytrade_daily", "dt_shares", 0.001))
-    names = _names()
     series: dict[str, StockSeries] = {}
     for code in codes:
         b = bars.get(code)
@@ -1152,6 +1152,18 @@ def compute(now: datetime | None = None) -> dict[str, Any]:
             continue
         series[code] = StockSeries(code, b, inst.get(code, {}), inst_days, tdcc.get(code, []), revenue.get(code, {}),
                                    margin.get(code, {}), margin_days, daytrade.get(code, {}), daytrade_days)
+    return {"status": "ok", "since": since, "until": until, "bt_days": bt_days, "series": series, "index": index,
+            "inst_days": inst_days, "tdcc": tdcc, "revenue": revenue, "margin_days": margin_days, "daytrade_days": daytrade_days,
+            "names": _names()}
+
+
+def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> dict[str, Any]:
+    started = time.monotonic()
+    ctx = ctx or prepare_inputs()
+    if ctx.get("status") != "ok":
+        return ctx
+    until, bt_days, series, index, names = ctx["until"], ctx["bt_days"], ctx["series"], ctx["index"], ctx["names"]
+    inst_days, tdcc, revenue, margin_days, daytrade_days = ctx["inst_days"], ctx["tdcc"], ctx["revenue"], ctx["margin_days"], ctx["daytrade_days"]
     # 先算前九個（多模型共振要看它們發訊號的日子），最後算共振；輸出照 MODELS 的順序
     order = [m for m in MODELS if m["key"] != "multiCombo"] + [m for m in MODELS if m["key"] == "multiCombo"]
     by_key: dict[str, dict[str, Any]] = {}
@@ -1200,7 +1212,7 @@ def compute(now: datetime | None = None) -> dict[str, Any]:
                      "tdccWeeks": len({w[0] for v in tdcc.values() for w in v}), "revenueStocks": len(revenue),
                      "perStock": per_stock_progress(),
                      "marginDays": len([d for d in margin_days if d >= bt_days[0]]), "daytradeDays": len([d for d in daytrade_days if d >= bt_days[0]]),
-                     "indexDays": {k: len(v) for k, v in index.items()}},
+                     "indexDays": {k: len([x for x in v if x[0] >= bt_days[0]]) for k, v in index.items()}},
         "computeSeconds": round(time.monotonic() - started, 1),
     }
 
@@ -1217,12 +1229,34 @@ def _input_key() -> str:
     return "|".join(str(x) for x in (days[0] if days else "", inst["d"], inst["n"], rev["n"], tdcc["d"], idx["d"]))
 
 
-def cached() -> dict[str, Any] | None:
+def cached(key: str = "latest") -> dict[str, Any] | None:
     initialize_database()
     with get_connection() as connection:
         _schema(connection)
-        row = connection.execute("SELECT payload FROM stock_models_cache WHERE key = 'latest'").fetchone()
+        row = connection.execute("SELECT payload FROM stock_models_cache WHERE key = ?", (key,)).fetchone()
     return json.loads(row["payload"]) if row else None
+
+
+def _save_cache(key: str, input_key: str, payload: dict[str, Any]) -> None:
+    with get_connection() as connection:
+        _schema(connection)
+        connection.execute("INSERT OR REPLACE INTO stock_models_cache (key, input_key, payload, at) VALUES (?, ?, ?, ?)",
+                           (key, input_key, json.dumps(payload, ensure_ascii=False), _now().isoformat(timespec="seconds")))
+
+
+def _run_tuning(ctx: dict[str, Any], input_key: str) -> None:
+    """只看籌碼那五個模型的調整比較（stock_models_tuning）。出錯不影響主要的模型結果。"""
+    from stock_models_tuning import compute_tuning
+
+    try:
+        tuning = compute_tuning(ctx)
+        if tuning.get("status") == "ok":
+            _save_cache("tuning", input_key, tuning)
+        _state["tuningError"] = None
+        _state["tuningSeconds"] = tuning.get("computeSeconds")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("選股模型調整比較失敗")
+        _state["tuningError"] = f"{type(exc).__name__}: {exc}"[:300]
 
 
 def run_once(*, force: bool = False) -> dict[str, Any]:
@@ -1236,14 +1270,13 @@ def run_once(*, force: bool = False) -> dict[str, Any]:
         key = _input_key()
         if not force and key == _state.get("computedKey") and cached():
             return {"status": "unchanged", "key": key}
-        payload = compute()
+        ctx = prepare_inputs()
+        payload = compute(ctx=ctx)
         if payload.get("status") == "ok":
-            with get_connection() as connection:
-                _schema(connection)
-                connection.execute("INSERT OR REPLACE INTO stock_models_cache (key, input_key, payload, at) VALUES ('latest', ?, ?, ?)",
-                                   (key, json.dumps(payload, ensure_ascii=False), _now().isoformat(timespec="seconds")))
+            _save_cache("latest", key, payload)
             _state["computedKey"] = key
             _state["computeSeconds"] = payload.get("computeSeconds")
+            _run_tuning(ctx, key)
         _state["lastError"] = None
         return {"status": payload.get("status"), "key": key}
     except Exception as exc:  # noqa: BLE001
