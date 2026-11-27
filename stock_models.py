@@ -355,6 +355,119 @@ def _retry_ok(entry: tuple[int, str] | None, recent: bool) -> bool:
     return age >= (INST_RETRY_RECENT_SECONDS if recent else 86400)
 
 
+# 2026-11-27：正式站的 FinMind 是免費註冊帳號（"Your level is register"），「整個市場一天」只有付費會員能用。使用者選「免費帳號慢慢補」：
+# 改成一檔一檔抓（帶 data_id，一次拿那檔一年多），只抓成交值夠大的（才可能入選），每輪最多 PER_STOCK_CALLS 次（免費每小時約 600 次，每 30 分鐘一輪）。
+# 回補完以後每天的新資料用我們自己收的官方表（法人 institutional_daily、融資 margin_daily、當沖 daytrade_daily、月營收 revenue_month）。
+PER_STOCK_CALLS = max(0, int(os.getenv("HANSTOCK_STOCK_MODELS_PER_STOCK_CALLS", "280")))
+PER_STOCK_KINDS: list[tuple[str, str, int]] = [   # (種類, FinMind dataset, 往回抓幾天)
+    ("inst", "TaiwanStockInstitutionalInvestorsBuySell", 400),
+    ("margin", "TaiwanStockMarginPurchaseShortSale", 400),
+    ("daytrade", "TaiwanStockDayTrading", 400),
+    ("revenue", "TaiwanStockMonthRevenue", 840),
+]
+PER_STOCK_MIN_AVG_VALUE = 15_000_000   # 近一年平均每天成交值（元）至少這麼多才補
+
+
+def _is_level_error(exc: Exception) -> bool:
+    return "level is" in str(exc)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return "upper limit" in msg or "HTTP 402" in msg or "HTTP 429" in msg
+
+
+def _level_blocked() -> bool:
+    """這一天內 FinMind 說過等級不夠（整個市場一天的查法不能用）。"""
+    with get_connection() as connection:
+        _schema(connection)
+        row = connection.execute("SELECT at FROM model_fetch_log WHERE kind = 'meta' AND key = 'level'").fetchone()
+    if not row:
+        return False
+    try:
+        return (_now() - datetime.fromisoformat(str(row["at"]))).total_seconds() < 86400
+    except ValueError:
+        return False
+
+
+def _liquid_codes(days: int = 260) -> list[str]:
+    """近一年平均成交值夠大的一般股票，成交值大的在前（先補）。"""
+    from daily_bars_store import recent_bar_dates
+
+    dates = recent_bar_dates(days)
+    if not dates:
+        return []
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT stock_code, AVG(close * volume) AS v FROM bars_1d WHERE bar_time >= ? GROUP BY stock_code HAVING v * 1000 >= ? ORDER BY v DESC",
+            (dates[-1], PER_STOCK_MIN_AVG_VALUE),
+        ).fetchall()
+    out = []
+    for row in rows:
+        code = str(row["stock_code"]).strip().upper()
+        if len(code) == 4 and code.isdigit() and not code.startswith("00"):
+            out.append(code)
+    return out
+
+
+def per_stock_progress(codes: list[str] | None = None) -> dict[str, int]:
+    codes = codes if codes is not None else _liquid_codes()
+    with get_connection() as connection:
+        _schema(connection)
+        logs = {kind: _logged(connection, "stk:" + kind) for kind, _, _ in PER_STOCK_KINDS}
+    done = sum(1 for c in codes if all(c in logs[k] for k, _, _ in PER_STOCK_KINDS))
+    return {"codes": len(codes), "done": done}
+
+
+def backfill_per_stock(fetch: Callable[[dict[str, str]], Any], budget: int) -> dict[str, Any]:
+    """一檔一檔補一年（免費帳號）。每檔四種都抓完才換下一檔；抓到的不再抓，空的隔一天再試；額度用完就停，下一輪接著補。"""
+    codes = _liquid_codes()
+    with get_connection() as connection:
+        _schema(connection)
+        logs = {kind: _logged(connection, "stk:" + kind) for kind, _, _ in PER_STOCK_KINDS}
+    calls = 0
+    out: dict[str, Any] = {"codes": len(codes), "calls": 0, "saved": 0, "errors": []}
+    now = _now()
+    for code in codes:
+        if calls >= budget:
+            break
+        for kind, dataset, back in PER_STOCK_KINDS:
+            entry = logs[kind].get(code)
+            if entry and not _retry_ok(entry, recent=False):
+                continue
+            if calls >= budget:
+                break
+            params = {"dataset": dataset, "data_id": code, "start_date": (now - timedelta(days=back)).strftime("%Y-%m-%d")}
+            try:
+                calls += 1
+                payload = fetch(params)
+            except Exception as exc:  # noqa: BLE001
+                out["errors"].append(f"{kind} {code}: {exc}"[:200])
+                if _is_quota_error(exc):
+                    out["stopped"] = "quota"
+                    out["calls"] = calls
+                    out.update(per_stock_progress(codes))
+                    return out
+                continue
+            with get_connection() as connection:
+                _schema(connection)
+                if kind == "revenue":
+                    rows = parse_revenue(payload)
+                    connection.executemany("INSERT OR REPLACE INTO model_revenue (stock_code, ym, revenue, announced) VALUES (?, ?, ?, ?)", rows)
+                    n = len(rows)
+                else:
+                    parsed = {"inst": parse_institutional, "margin": parse_margin, "daytrade": parse_daytrade}[kind](payload)
+                    table, cols = {"inst": ("model_inst_daily", "foreign_net, trust_net, dealer_net"), "margin": ("model_margin_daily", "balance"), "daytrade": ("model_daytrade_daily", "lots")}[kind]
+                    values = [(day, c, *(v if isinstance(v, tuple) else (v,))) for day, m in parsed.items() for c, v in m.items() if c == code]
+                    connection.executemany(f"INSERT OR REPLACE INTO {table} (trade_date, stock_code, {cols}) VALUES (?, ?, {','.join('?' for _ in cols.split(','))})", values)
+                    n = len(values)
+                _log(connection, "stk:" + kind, code, n)
+            out["saved"] += n
+    out["calls"] = calls
+    out.update(per_stock_progress(codes))
+    return out
+
+
 DAILY_DATASETS: dict[str, tuple[str, Callable[[Any], dict[str, dict[str, Any]]], str, str]] = {
     "inst": ("TaiwanStockInstitutionalInvestorsBuySell", parse_institutional, "model_inst_daily", "foreign_net, trust_net, dealer_net"),
     "margin": ("TaiwanStockMarginPurchaseShortSale", parse_margin, "model_margin_daily", "balance"),
@@ -369,7 +482,18 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
     calls = 0
     result: dict[str, Any] = {"inst": 0, "margin": 0, "daytrade": 0, "revenue": 0, "index": 0, "errors": []}
     today = _now().strftime("%Y-%m-%d")
+    level_blocked = _level_blocked()
+
+    def mark_level() -> None:
+        nonlocal level_blocked
+        level_blocked = True
+        with get_connection() as connection:
+            _schema(connection)
+            _log(connection, "meta", "level", 0)
+
     for kind, (dataset, parse, table, cols) in DAILY_DATASETS.items():
+        if level_blocked:
+            break
         with get_connection() as connection:
             _schema(connection)
             done = _logged(connection, kind)
@@ -387,6 +511,9 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
             except Exception as exc:  # noqa: BLE001
                 fails += 1
                 result["errors"].append(f"{kind} {day}: {type(exc).__name__}: {exc}"[:200])
+                if _is_level_error(exc):
+                    mark_level()
+                    break
                 continue
             values = [(day, code, *(v if isinstance(v, tuple) else (v,))) for code, v in parsed.items()]
             with get_connection() as connection:
@@ -401,7 +528,7 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
         done_rev = _logged(connection, "revenue")
     y, m = now.year, now.month
     for back in range(REVENUE_MONTHS):
-        if calls >= max_calls:
+        if calls >= max_calls or level_blocked:
             break
         yy, mm = y, m - back
         while mm <= 0:
@@ -414,6 +541,8 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
             rows = parse_revenue(_fetch_day(fetch, "TaiwanStockMonthRevenue", key))
         except Exception as exc:  # noqa: BLE001
             result["errors"].append(f"revenue {key}: {type(exc).__name__}: {exc}"[:200])
+            if _is_level_error(exc):
+                mark_level()
             continue
         with get_connection() as connection:
             _schema(connection)
@@ -443,6 +572,10 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
             _schema(connection)
             _log(connection, "index", "all", total)
         result["index"] = total
+    if level_blocked:   # 免費帳號：一檔一檔補
+        result["levelBlocked"] = True
+        result["perStock"] = backfill_per_stock(fetch, PER_STOCK_CALLS)
+        calls += result["perStock"]["calls"]
     result["calls"] = calls
     return result
 
@@ -505,8 +638,8 @@ def _load_tdcc(codes: list[str]) -> dict[str, list[tuple[str, float, float, int]
     return {c: sorted((d, v[0], v[1], int(v[2])) for d, v in m.items()) for c, m in out.items()}
 
 
-def _load_daily_map(table: str, col: str, since: str, until: str) -> tuple[dict[str, dict[str, int]], set[str]]:
-    """融資／當沖：{代號: {日期: 值}}、有資料的日期。"""
+def _load_daily_map(table: str, col: str, since: str, until: str, official: tuple[str, str, float] | None = None) -> tuple[dict[str, dict[str, int]], set[str]]:
+    """融資／當沖：{代號: {日期: 值}}、有資料的日期。official＝(官方表, 欄位, 倍數)：有的日子用官方的（2026-11-27 免費帳號只補一年，之後靠官方表）。"""
     out: dict[str, dict[str, int]] = {}
     days: set[str] = set()
     with get_connection() as connection:
@@ -515,13 +648,38 @@ def _load_daily_map(table: str, col: str, since: str, until: str) -> tuple[dict[
             d = str(row["trade_date"])
             days.add(d)
             out.setdefault(str(row["stock_code"]).upper(), {})[d] = int(row["v"])
+        if official:
+            otable, ocol, scale = official
+            try:
+                rows = connection.execute(f"SELECT trade_date, stock_code, {ocol} AS v FROM {otable} WHERE trade_date >= ? AND trade_date <= ?", (since, until)).fetchall()
+            except Exception:  # noqa: BLE001
+                rows = []
+            for row in rows:
+                if row["v"] is None:
+                    continue
+                d = str(row["trade_date"])
+                days.add(d)
+                out.setdefault(str(row["stock_code"]).upper(), {})[d] = int(round(float(row["v"]) * scale))
     return out, days
 
 
 def _load_revenue() -> dict[str, dict[str, tuple[int, str | None]]]:
+    """{代號: {月份: (營收元, 公布日)}}。官方 revenue_month（千元，含去年同月）先放，FinMind 回補的蓋過去（單位一致：元）。"""
     out: dict[str, dict[str, tuple[int, str | None]]] = {}
     with get_connection() as connection:
         _schema(connection)
+        try:
+            off = connection.execute("SELECT code, ym, rev, last_year_rev, first_seen FROM revenue_month").fetchall()
+        except Exception:  # noqa: BLE001
+            off = []
+        for row in off:
+            code, ym = str(row["code"]).upper(), str(row["ym"])
+            m = out.setdefault(code, {})
+            if row["rev"] is not None and row["rev"] > 0:
+                m[ym] = (int(round(float(row["rev"]) * 1000)), (str(row["first_seen"])[:10] if row["first_seen"] else None))
+            prev = _ym_minus(ym, 12)
+            if row["last_year_rev"] is not None and row["last_year_rev"] > 0 and prev not in m:
+                m[prev] = (int(round(float(row["last_year_rev"]) * 1000)), None)
         for row in connection.execute("SELECT stock_code, ym, revenue, announced FROM model_revenue"):
             out.setdefault(str(row["stock_code"]).upper(), {})[str(row["ym"])] = (int(row["revenue"]), row["announced"])
     return out
@@ -984,8 +1142,8 @@ def compute(now: datetime | None = None) -> dict[str, Any]:
     tdcc = _load_tdcc(codes)
     revenue = _load_revenue()
     index = _load_index(bt_days[0])
-    margin, margin_days = _load_daily_map("model_margin_daily", "balance", since, until)
-    daytrade, daytrade_days = _load_daily_map("model_daytrade_daily", "lots", since, until)
+    margin, margin_days = _load_daily_map("model_margin_daily", "balance", since, until, ("margin_daily", "margin_balance", 1.0))
+    daytrade, daytrade_days = _load_daily_map("model_daytrade_daily", "lots", since, until, ("daytrade_daily", "dt_shares", 0.001))
     names = _names()
     series: dict[str, StockSeries] = {}
     for code in codes:
@@ -1040,6 +1198,7 @@ def compute(now: datetime | None = None) -> dict[str, Any]:
         "index": index_out,
         "coverage": {"stocks": len(series), "instDays": len(inst_cov), "instFrom": inst_cov[0] if inst_cov else None,
                      "tdccWeeks": len({w[0] for v in tdcc.values() for w in v}), "revenueStocks": len(revenue),
+                     "perStock": per_stock_progress(),
                      "marginDays": len([d for d in margin_days if d >= bt_days[0]]), "daytradeDays": len([d for d in daytrade_days if d >= bt_days[0]]),
                      "indexDays": {k: len(v) for k, v in index.items()}},
         "computeSeconds": round(time.monotonic() - started, 1),
@@ -1051,7 +1210,7 @@ def _input_key() -> str:
     with get_connection() as connection:
         _schema(connection)
         _fundamentals_schema(connection)
-        inst = connection.execute("SELECT MAX(key) AS d, COUNT(*) AS n FROM model_fetch_log WHERE kind IN ('inst', 'margin', 'daytrade') AND rows > 0").fetchone()
+        inst = connection.execute("SELECT MAX(at) AS d, COUNT(*) AS n FROM model_fetch_log WHERE kind <> 'meta' AND rows > 0").fetchone()
         rev = connection.execute("SELECT COUNT(*) AS n FROM model_revenue").fetchone()
         tdcc = connection.execute("SELECT MAX(data_date) AS d FROM tdcc_weekly").fetchone()
         idx = connection.execute("SELECT MAX(trade_date) AS d FROM model_index_daily").fetchone()

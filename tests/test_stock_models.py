@@ -301,3 +301,102 @@ class RunOnceTests(unittest.TestCase):
             return {"data": [1]}
 
         self.assertEqual(module._fetch_day(only_range, "X", "2026-11-26"), {"data": [1]})
+
+
+class PerStockBackfillTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+        days = weekdays(date(2026, 1, 5), 40)
+        with database.get_connection() as connection:
+            rows = []
+            for d in days:
+                rows.append(("2330", d + "T00:00:00", 1000, 1010, 990, 1000, 30000))   # 很大
+                rows.append(("1111", d + "T00:00:00", 50, 51, 49, 50, 1000))          # 5000 萬
+                rows.append(("2222", d + "T00:00:00", 10, 10, 10, 10, 10))            # 太小，不補
+                rows.append(("0050", d + "T00:00:00", 100, 100, 100, 100, 50000))     # ETF 不補
+            connection.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+
+    def tearDown(self) -> None:
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def fake(self, calls, quota_after=None):
+        def fetch(params):
+            calls.append(dict(params))
+            if quota_after is not None and len(calls) > quota_after:
+                raise RuntimeError('HTTP 402: {"msg":"Requests reach the upper limit"}')
+            if "data_id" not in params:
+                raise RuntimeError('HTTP 400: {"msg":"Your level is register. Please update your user level."}')
+            code, ds = params["data_id"], params["dataset"]
+            if ds == "TaiwanStockInstitutionalInvestorsBuySell":
+                return {"data": [{"date": "2026-02-02", "stock_id": code, "buy": 3000, "sell": 1000, "name": "Investment_Trust"}]}
+            if ds == "TaiwanStockMarginPurchaseShortSale":
+                return {"data": [{"date": "2026-02-02", "stock_id": code, "MarginPurchaseTodayBalance": 500}]}
+            if ds == "TaiwanStockDayTrading":
+                return {"data": [{"date": "2026-02-02", "stock_id": code, "Volume": 200000}]}
+            if ds == "TaiwanStockMonthRevenue":
+                return {"data": [{"stock_id": code, "revenue": 100, "revenue_month": 1, "revenue_year": 2026, "create_time": "2026-02-09"}]}
+            return {"data": [{"date": "2026-02-02", "close": 100}]}
+        return fetch
+
+    def test_level_error_switches_to_per_stock_and_is_remembered(self) -> None:
+        calls: list = []
+        now = module.datetime(2026, 2, 3, 20, 0, tzinfo=module.TW_TZ)
+        with patch.object(module, "_now", return_value=now):
+            r1 = module.backfill(["2026-02-02", "2026-01-30"], fetch=self.fake(calls))
+        self.assertTrue(r1["levelBlocked"])
+        self.assertEqual(r1["perStock"]["codes"], 2)                  # 2330、1111（2222 太小、0050 是 ETF）
+        self.assertEqual(r1["perStock"]["done"], 2)
+        by_date = [c for c in calls if "data_id" not in c and c["dataset"] != "TaiwanStockPrice"]
+        self.assertLessEqual(len(by_date), 2)                         # 第一次等級錯誤就停（_fetch_day 兩種寫法各一次）
+        with database.get_connection() as connection:
+            self.assertEqual(connection.execute("SELECT trust_net FROM model_inst_daily WHERE stock_code = '2330'").fetchone()["trust_net"], 2000)
+            self.assertEqual(connection.execute("SELECT lots FROM model_daytrade_daily WHERE stock_code = '1111'").fetchone()["lots"], 200)
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM model_revenue").fetchone()["n"], 2)
+        calls.clear()
+        with patch.object(module, "_now", return_value=now):
+            r2 = module.backfill(["2026-02-02", "2026-01-30"], fetch=self.fake(calls))
+        self.assertFalse([c for c in calls if "data_id" not in c and c["dataset"] != "TaiwanStockPrice"])   # 一天內不再試整個市場
+        self.assertEqual(r2["perStock"]["calls"], 0)                  # 都補過了
+
+    def test_quota_stops_and_resumes(self) -> None:
+        calls: list = []
+        now = module.datetime(2026, 2, 3, 20, 0, tzinfo=module.TW_TZ)
+        with patch.object(module, "_now", return_value=now):
+            with database.get_connection() as connection:
+                module._schema(connection)
+                module._log(connection, "meta", "level", 0)
+            out = module.backfill_per_stock(self.fake(calls, quota_after=5), 100)
+        self.assertEqual(out["stopped"], "quota")
+        self.assertEqual(out["done"], 1)                              # 2330 四種都補完，1111 只補了一種
+        calls.clear()
+        with patch.object(module, "_now", return_value=now):
+            out2 = module.backfill_per_stock(self.fake(calls), 100)
+        self.assertEqual(out2["done"], 2)
+        self.assertEqual(len(calls), 3)                               # 只補 1111 剩下的三種
+
+    def test_loaders_merge_official_tables(self) -> None:
+        import daytrade_rank
+        import margin_balance
+        import revenue_rank
+
+        with database.get_connection() as connection:
+            module._schema(connection)
+            margin_balance._schema(connection)
+            daytrade_rank._schema(connection)
+            revenue_rank._schema(connection)
+            connection.execute("INSERT INTO model_margin_daily VALUES ('2026-02-02', '2330', 500)")
+            connection.execute("INSERT INTO margin_daily (trade_date, stock_code, market, margin_buy, margin_sell, margin_repay, margin_prev, margin_balance, margin_limit, short_balance, source, updated_at) "
+                               "VALUES ('2026-02-03', '2330', 'TSE', 0, 0, 0, 0, 640, 0, 0, 't', 'x')")
+        got, days = module._load_daily_map("model_margin_daily", "balance", "2026-01-01", "2026-12-31", ("margin_daily", "margin_balance", 1.0))
+        self.assertEqual(got["2330"], {"2026-02-02": 500, "2026-02-03": 640})
+        self.assertEqual(days, {"2026-02-02", "2026-02-03"})
+        with database.get_connection() as connection:
+            connection.execute("INSERT INTO revenue_month (code, ym, market, name, rev, last_year_rev, first_seen) VALUES ('2330', '2026-10', 'TSE', '台積電', 586890319, 400000000, '2026-11-10')")
+        rev = module._load_revenue()
+        self.assertEqual(rev["2330"]["2026-10"], (586890319000, "2026-11-10"))
+        self.assertEqual(rev["2330"]["2025-10"], (400000000000, None))
+        self.assertAlmostEqual(module.revenue_yoy_at(rev["2330"], "2026-11-12")[1], 46.72, places=1)
