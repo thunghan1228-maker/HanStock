@@ -1318,6 +1318,15 @@ def get_stock_models() -> dict[str, Any]:
     return payload or {"status": "pending", "reason": "第一次計算中（要先回補一年的法人、融資、當沖、營收），約半小時後再看"}
 
 
+@app.get("/api/hub/stock-models/tuning")
+def get_stock_models_tuning() -> dict[str, Any]:
+    """只看籌碼的五個模型：各種調整前後的回測比較（2026-11-27 使用者：調只看籌碼那幾個模型的條件）。收盤後跟模型一起算好存起來。"""
+    from stock_models import cached as stock_models_cached
+
+    payload = stock_models_cached("tuning")
+    return payload or {"status": "pending", "reason": "還沒算好（收盤後跟選股模型一起算），晚點再看"}
+
+
 @app.get("/api/hub/stock-models/status")
 def get_stock_models_status() -> dict[str, Any]:
     from stock_models import status as stock_models_status
