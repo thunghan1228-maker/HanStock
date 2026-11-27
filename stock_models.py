@@ -286,10 +286,51 @@ def parse_index(payload: Any) -> dict[str, float]:
 
 # ------------------------------------------------------------------ 回補
 
-def _finmind(params: dict[str, str]) -> Any:
-    from finmind_broker_branch_collector import _request_json   # 共用 FinMind 每小時限流與 token
+FINMIND_MAX_BYTES = 30 * 1024 * 1024   # 一天整個市場約 1MB；超過就是 FinMind 回了一大段日期，不要把記憶體吃光
 
-    return _request_json(FINMIND_DATA_URL, params)
+
+def _finmind(params: dict[str, str]) -> Any:
+    """FinMind v4（共用券商分點收集器的每小時限流與 token）。失敗時把 FinMind 回的訊息帶出來（2026-11-27 第一次上線
+    整個市場依日期的查詢都回 400，看不到原因）。"""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    from finmind_broker_branch_collector import _hourly_limiter, _token
+
+    token = _token()
+    if not token:
+        raise RuntimeError("FINMIND_TOKEN 尚未設定")
+    _hourly_limiter.acquire()
+    request = urllib.request.Request(FINMIND_DATA_URL + "?" + urllib.parse.urlencode(params),
+                                     headers={"Accept": "application/json", "Authorization": f"Bearer {token}", "User-Agent": "HanStock-StockModels/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+            raw = response.read(FINMIND_MAX_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        try:
+            body = error.read(400).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        raise RuntimeError(f"HTTP {error.code}: {body}"[:300]) from None
+    if len(raw) > FINMIND_MAX_BYTES:
+        raise RuntimeError("回傳太大（可能是一段日期而不是一天），不收")
+    payload = json.loads(raw)
+    status = payload.get("status") if isinstance(payload, dict) else None
+    if status not in (None, 200, "200"):
+        raise RuntimeError(f"FinMind status={status}: {payload.get('msg')}"[:300])
+    return payload
+
+
+def _fetch_day(fetch: Callable[[dict[str, str]], Any], dataset: str, day: str) -> Any:
+    """整個市場某一天：FinMind 文件寫的是只給 start_date（給了 end_date 會回 400）；不行再試 start＝end。"""
+    try:
+        return fetch({"dataset": dataset, "start_date": day})
+    except Exception as first:  # noqa: BLE001
+        try:
+            return fetch({"dataset": dataset, "start_date": day, "end_date": day})
+        except Exception as second:  # noqa: BLE001
+            raise RuntimeError(f"{first} ／ {second}"[:400]) from None
 
 
 def _logged(connection: Any, kind: str) -> dict[str, tuple[int, str]]:
@@ -342,7 +383,7 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
                 continue
             try:
                 calls += 1
-                parsed = parse(fetch({"dataset": dataset, "start_date": day, "end_date": day})).get(day, {})
+                parsed = parse(_fetch_day(fetch, dataset, day)).get(day, {})
             except Exception as exc:  # noqa: BLE001
                 fails += 1
                 result["errors"].append(f"{kind} {day}: {type(exc).__name__}: {exc}"[:200])
@@ -370,7 +411,7 @@ def backfill(trade_dates: list[str], *, fetch: Callable[[dict[str, str]], Any] |
             continue
         try:
             calls += 1
-            rows = parse_revenue(fetch({"dataset": "TaiwanStockMonthRevenue", "start_date": key, "end_date": key}))
+            rows = parse_revenue(_fetch_day(fetch, "TaiwanStockMonthRevenue", key))
         except Exception as exc:  # noqa: BLE001
             result["errors"].append(f"revenue {key}: {type(exc).__name__}: {exc}"[:200])
             continue
@@ -1010,7 +1051,7 @@ def _input_key() -> str:
     with get_connection() as connection:
         _schema(connection)
         _fundamentals_schema(connection)
-        inst = connection.execute("SELECT MAX(trade_date) AS d, COUNT(*) AS n FROM model_fetch_log WHERE kind = 'inst' AND rows > 0").fetchone()
+        inst = connection.execute("SELECT MAX(key) AS d, COUNT(*) AS n FROM model_fetch_log WHERE kind IN ('inst', 'margin', 'daytrade') AND rows > 0").fetchone()
         rev = connection.execute("SELECT COUNT(*) AS n FROM model_revenue").fetchone()
         tdcc = connection.execute("SELECT MAX(data_date) AS d FROM tdcc_weekly").fetchone()
         idx = connection.execute("SELECT MAX(trade_date) AS d FROM model_index_daily").fetchone()

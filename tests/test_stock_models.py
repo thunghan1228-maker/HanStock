@@ -251,3 +251,53 @@ class DailyExtrasTests(unittest.TestCase):
         got = module.daily_extras("2344")
         self.assertEqual(got["2026-11-25"], {"instNet": 1500, "marginBal": 30000})
         self.assertEqual(got["2026-11-26"], {"instNet": 1600, "marginBal": 31000})
+
+
+class RunOnceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(database, "DATABASE_PATH", Path(self.temp_dir.name) / "test.db")
+        self.db_patch.start()
+        database.initialize_database()
+        module._state.update({"running": False, "computedKey": None})
+
+    def tearDown(self) -> None:
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_run_once_computes_and_caches_even_when_finmind_fails(self) -> None:
+        days = weekdays(date(2025, 8, 1), 330)
+        with database.get_connection() as connection:
+            connection.executemany("INSERT INTO bars_1d (stock_code, bar_time, open, high, low, close, volume) VALUES ('1111', ?, 50, 51, 49, 50, 5000)",
+                                   [(d + "T00:00:00",) for d in days])
+
+        def boom(params):
+            raise RuntimeError("HTTP 400: nope")
+
+        with patch.object(module, "_finmind", boom):
+            out = module.run_once()
+        self.assertEqual(out["status"], "ok")
+        self.assertIsNone(module._state["lastError"])
+        self.assertTrue(any("HTTP 400" in e for e in module._state["backfill"]["errors"]))
+        self.assertEqual(module.cached()["asOf"], days[-1])
+        with patch.object(module, "_finmind", boom):
+            self.assertEqual(module.run_once()["status"], "unchanged")
+
+    def test_fetch_day_tries_start_date_only_first(self) -> None:
+        seen = []
+
+        def fetch(params):
+            seen.append(dict(params))
+            if "end_date" in params:
+                raise RuntimeError("HTTP 400")
+            return {"data": []}
+
+        module._fetch_day(fetch, "TaiwanStockDayTrading", "2026-11-26")
+        self.assertEqual(seen, [{"dataset": "TaiwanStockDayTrading", "start_date": "2026-11-26"}])
+
+        def only_range(params):
+            if "end_date" not in params:
+                raise RuntimeError("HTTP 400: a")
+            return {"data": [1]}
+
+        self.assertEqual(module._fetch_day(only_range, "X", "2026-11-26"), {"data": [1]})
