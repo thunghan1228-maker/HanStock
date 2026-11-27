@@ -10,6 +10,8 @@
 
 第二輪結果：出場規則沒有一致變好（抱 20 天只是放大好壞），維持原樣；營收起飛爆量＋籌碼裡「大盤在月線上」改善最大，
 使用者選 1、2：營收起飛爆量正式加上大盤濾網；另外四個不靠集保的模型先比「加／不加大盤濾網」（整年），有效再加。
+整年比較後使用者同意：投信卡位營收成長（兩半都變好）、法人先買散戶跟進（前半幾乎一樣、後半少賠）也加；
+法人首次進場（一半好一半壞）、多模型共振（幾乎沒差）不加。
 
 第三輪（現在）比：
 1. 大盤濾網：營收起飛爆量（已加）、投信卡位營收成長、法人先買散戶跟進、法人首次進場、多模型共振，各自「不加／加」大盤濾網，比整年。
@@ -46,8 +48,8 @@ STAT_KEYS = ("trades", "open", "winRate", "avgRet", "avgWin", "avgLoss", "profit
 
 
 def market_condition(key: str, with_market: bool) -> Callable[[sm.StockSeries, int], dict[str, Any] | None]:
-    """這個模型加／不加大盤濾網。營收起飛爆量正式版已經有濾網：不加＝只用 rev_boom_core。"""
-    base = sm.rev_boom_core if key == "revBoom" else sm.CONDITIONS[key]
+    """這個模型加／不加大盤濾網。正式版已經有濾網的（sm.CORE_CONDITIONS）：不加＝只用加之前的原條件。"""
+    base = sm.CORE_CONDITIONS.get(key) or sm.CONDITIONS[key]
     if not with_market:
         return base
 
@@ -141,7 +143,7 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
         for vkey, label in MARKET_VARIANTS:
             trades = select_trades(series, _signals(series, market_condition(key, vkey == "on"), full))
             variants.append({"key": vkey, "label": label, **_halves(trades, series, full)})
-        market.append({"key": key, "name": spec["name"], "current": "on" if key == "revBoom" else "off",
+        market.append({"key": key, "name": spec["name"], "current": "on" if key in sm.CORE_CONDITIONS else "off",
                        "window": _window_info(full), "variants": variants})
 
     return {
@@ -152,7 +154,7 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
         "notes": [
             "進場規則跟原本一樣（訊號隔天開盤買，開盤就漲停買不到的跳過）；每筆 10 萬，已扣手續費和稅",
             "用到集保的模型只比有集保的那段（約半年），其他比整年；都切成前後兩半，兩半都變好的才值得採用",
-            "五個籌碼模型和營收起飛爆量已經加上大盤濾網（加權指數在月線上）；current＝正式版現在用哪一個",
+            "已經加上大盤濾網（加權指數在月線上）的：五個籌碼模型、營收起飛爆量、投信卡位營收成長、法人先買散戶跟進；current＝正式版現在用哪一個",
         ],
         "computeSeconds": round(time.monotonic() - started, 1),
     }
