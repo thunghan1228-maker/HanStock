@@ -101,6 +101,18 @@ def _state(bars: list[Bar], trigger: float) -> str | None:
     return "breakout" if since <= BREAKOUT_FRESH else None
 
 
+def _undercut_after(bars: list[Bar], i: int, price: float) -> bool:
+    """第 i 根之後有人跌破 price（最低價更低）。2026-11-27 使用者（事欣科 4916：低2 標在 11/02 的 96.5，之後跌到 79 又衝上 120，
+    圖上還寫 W 底等突破）：右邊那個低點之後只要再破低，它就不是第二個底／右肩，跟 11/15 C 不破 A 的 C 同一個規則。"""
+    return i + 1 < len(bars) and min(b[2] for b in bars[i + 1:]) < price
+
+
+def _broke_before(bars: list[Bar], after_i: int, trigger: float) -> bool:
+    """第 after_i 根之後、最近 BREAKOUT_FRESH 根以前，收盤站上過觸發價＝已經突破過（之後跌回來或早就跑掉），形態用掉了，不再列「等突破」。"""
+    end = len(bars) - BREAKOUT_FRESH
+    return any(bars[j][3] > trigger for j in range(after_i + 1, end))
+
+
 def _mk(name: str, state: str, trigger: float, stop: float, target: float, **extra: Any) -> dict[str, Any]:
     return {"name": name, "state": state, "trigger": round(trigger, 2), "stop": round(stop, 2), "target": round(target, 2), **extra}
 
@@ -139,6 +151,10 @@ def detect_w(bars: list[Bar]) -> dict[str, Any] | None:
             continue
         if bars[-1][3] < l2["price"] * 0.99:      # 已經跌破右底，形態失敗
             continue
+        if _undercut_after(bars, l2["i"], l2["price"]):   # 低2 之後又破低：不是第二個底
+            continue
+        if _broke_before(bars, l2["i"], h["price"]):      # 早就突破過頸線（後來跌回來或跑掉）：用掉了
+            continue
         st = _state(bars, h["price"])
         if st is None:
             continue
@@ -169,6 +185,10 @@ def detect_hs(bars: list[Bar]) -> dict[str, Any] | None:
         if neck < head * 1.10:
             continue
         if bars[-1][3] < rs * 0.99:
+            continue
+        if _undercut_after(bars, r["i"], rs):            # 右肩之後又破低：不是右肩
+            continue
+        if _broke_before(bars, r["i"], neck):            # 早就突破過頸線：用掉了
             continue
         st = _state(bars, neck)
         if st is None:
@@ -220,6 +240,8 @@ def detect_hl(bars: list[Bar]) -> dict[str, Any] | None:
             if (b["price"] - c["price"]) / b["price"] > 0.30:     # C 的回檔太深就不算強
                 continue
             if bars[-1][3] < c["price"] * 0.99:
+                continue
+            if _broke_before(bars, c["i"], b["price"]):   # 早就突破過前高 B：用掉了
                 continue
             st = _state(bars, b["price"])
             if st is None:
@@ -281,6 +303,8 @@ def detect_vcp(bars: list[Bar]) -> dict[str, Any] | None:
         return None
     last_h, last_l = segl[-1]
     if bars[-1][3] < last_l["price"] * 0.99:
+        return None
+    if _undercut_after(bars, last_l["i"], last_l["price"]) or _broke_before(bars, last_l["i"], last_h["price"]):
         return None
     trigger = last_h["price"]
     st = _state(bars, trigger)

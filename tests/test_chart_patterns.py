@@ -144,3 +144,30 @@ class PayloadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleTests(unittest.TestCase):
+    """2026-11-27 使用者（事欣科 4916）：W 底的低2 之後又破低、或早就突破過頸線又跌回來，不能再列「等突破」。"""
+    pre = [(100.0, 60)]
+
+    def test_w_dropped_when_second_low_is_broken_later(self) -> None:
+        ok = series(self.pre + [(80, 40), (92, 15), (80.8, 15), (88, 8)], 100.0)
+        self.assertIsNotNone(module.detect_w(ok))
+        # 低2 之後先彈到 88（低2 成為轉折點），再跌到 70（破低）又彈回 88：原本那個 W 不算了（事欣科：96.5 → 彈 → 79 → 120 → 回）
+        broken = series(self.pre + [(80, 40), (92, 15), (80.8, 15), (88, 4), (70, 5), (88, 8)], 100.0)
+        self.assertIsNone(module.detect_w(broken))
+
+    def test_w_dropped_when_already_broke_out_and_fell_back(self) -> None:
+        # 低2 之後先衝過頸線到 97，又跌回 89（頸線 92 之下）：已經突破過，用掉了
+        used = series(self.pre + [(80, 40), (92, 15), (80.8, 15), (97, 6), (89, 6)], 100.0)
+        self.assertIsNone(module.detect_w(used))
+        # 剛突破（最後幾根才站上）照舊算 breakout
+        fresh = series(self.pre + [(80, 40), (92, 15), (80.8, 15), (88, 8), (95, 3)], 100.0)
+        self.assertEqual(module.detect_w(fresh)["state"], "breakout")
+
+    def test_helpers(self) -> None:
+        bars = series([(90, 5), (95, 5)], 100.0)
+        self.assertTrue(module._undercut_after(bars, 2, 95.0))
+        self.assertFalse(module._undercut_after(bars, 5, 80.0))
+        self.assertFalse(module._broke_before(bars, 0, 200.0))
+        self.assertTrue(module._broke_before(bars, 0, 90.0))       # 前面就有收盤在 90 以上
