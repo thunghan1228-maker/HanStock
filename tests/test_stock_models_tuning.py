@@ -30,90 +30,80 @@ def make(code: str, closes: list[float], *, vols: list[float] | None = None, sta
     return sm.StockSeries(code, bars, kw.pop("inst"), set(days), kw.pop("tdcc"), kw.pop("revenue"), **kw)
 
 
-ALWAYS = lambda day: True   # noqa: E731
-NEVER = lambda day: False   # noqa: E731
+class MarketFilterTests(unittest.TestCase):
+    def test_market_up_map(self) -> None:
+        days = weekdays(date(2026, 1, 5), 30)
+        up = sm.market_up_map({"TAIEX": [(d, 100 + k) for k, d in enumerate(days)]})
+        down = sm.market_up_map({"TAIEX": [(d, 200 - k) for k, d in enumerate(days)]})
+        self.assertFalse(up[days[10]])    # 不到 20 天沒有月線
+        self.assertTrue(up[days[-1]])
+        self.assertFalse(down[days[-1]])
+        self.assertIsNone(sm.market_up_map({}))
 
-
-class VariantConditionTests(unittest.TestCase):
-    def test_gap_revenue_market(self) -> None:
-        n = 40
-        s = make("1111", [100 + k * 0.5 for k in range(n)])      # 離月線約 4%
-        i = n - 1
-        self.assertIsNotNone(sm.cond_big_inst(s, i))
-        self.assertIsNotNone(tuning.variant_condition("bigInst", {"gap"}, ALWAYS)(s, i))
-        slow = make("2222", [100 + k * 0.1 for k in range(n)])   # 站上月線但只高 1% → 貼著月線
-        self.assertIsNotNone(sm.cond_big_inst(slow, i))
-        self.assertIsNone(tuning.variant_condition("bigInst", {"gap"}, ALWAYS)(slow, i))
-
-        self.assertIsNone(tuning.variant_condition("bigInst", {"revenue"}, ALWAYS)(s, i))   # 沒有營收資料
-        s.revenue = {"2025-01": (100, "2025-02-10"), "2026-01": (120, "2026-02-10")}
-        self.assertIsNotNone(tuning.variant_condition("bigInst", {"revenue"}, ALWAYS)(s, i))
-        s.revenue = {"2025-01": (100, "2025-02-10"), "2026-01": (90, "2026-02-10")}
-        self.assertIsNone(tuning.variant_condition("bigInst", {"revenue"}, ALWAYS)(s, i))
-
-        self.assertIsNone(tuning.variant_condition("bigInst", {"market"}, NEVER)(s, i))
-        self.assertIsNotNone(tuning.variant_condition("bigInst", {"market"}, ALWAYS)(s, i))
-
-    def test_confirm_within_five_days(self) -> None:
-        n = 40
-        closes = [100.0] * n
-        vols = [1000.0] * n
-        closes[30] = 103.0     # 第 30 天：漲 3%、量 3 倍
-        vols[30] = 3000.0
-        s = make("1111", closes, vols=vols)
-        for base_day, expect in ((30, True), (26, True), (25, False), (31, False)):
-            fake = lambda ss, i, d=base_day: {"bigUp": 1.0, "week": "w"} if i == d else None   # noqa: E731
-            with patch.dict(sm.CONDITIONS, {"bigInst": fake}):
-                cond = tuning.variant_condition("bigInst", {"confirm"}, ALWAYS)
-                got = cond(s, 30)
-            self.assertEqual(bool(got), expect, base_day)
-            if got:
-                self.assertEqual(got["confirmPct"], 3.0)
-        with patch.dict(sm.CONDITIONS, {"bigInst": lambda ss, i: {"bigUp": 1.0}}):
-            self.assertIsNone(tuning.variant_condition("bigInst", {"confirm"}, ALWAYS)(s, 29))   # 沒漲沒量：不買
-
-    def test_whale_low_day_trade(self) -> None:
+    def test_chip_models_need_market_above_ma20(self) -> None:
         n = 40
         days = weekdays(date(2026, 1, 5), n)
-        s = make("1111", [100 + k * 0.5 for k in range(n)], daytrade={d: 2000 for d in days}, daytrade_days=set(days))   # 當沖比 10%
+        s = make("1111", [100 + k * 0.5 for k in range(n)], daytrade={d: 8000 for d in days}, daytrade_days=set(days))
         i = n - 1
-        self.assertIsNone(sm.cond_whale_hot(s, i))
-        self.assertIsNotNone(tuning.variant_condition("whaleHot", {"lowDt"}, ALWAYS)(s, i))
-        s.daytrade = {d: 8000 for d in days}     # 40%
+        self.assertIsNotNone(sm.cond_big_inst(s, i))          # 沒給大盤資料：不判斷
         self.assertIsNotNone(sm.cond_whale_hot(s, i))
-        self.assertIsNone(tuning.variant_condition("whaleHot", {"lowDt"}, ALWAYS)(s, i))
-        self.assertEqual([a["key"] for a in tuning.adjustments_for("bigInst")], ["top10", "confirm", "gap", "revenue", "market"])
-        self.assertIn("lowDt", [a["key"] for a in tuning.adjustments_for("whaleHot")])
-        self.assertNotIn("revenue", [a["key"] for a in tuning.adjustments_for("mainVsRetail")])   # 原條件就有
-        self.assertNotIn("confirm", [a["key"] for a in tuning.adjustments_for("bigInstFire")])
-
-    def test_market_filter(self) -> None:
-        days = weekdays(date(2026, 1, 5), 30)
-        up = tuning.market_filter({"TAIEX": [(d, 100 + k) for k, d in enumerate(days)]})
-        down = tuning.market_filter({"TAIEX": [(d, 200 - k) for k, d in enumerate(days)]})
-        self.assertFalse(up(days[10]))    # 不到 20 天沒有月線
-        self.assertTrue(up(days[-1]))
-        self.assertFalse(down(days[-1]))
-        self.assertFalse(up("2030-01-01"))
+        s.market_up = {d: True for d in days}
+        self.assertIsNotNone(sm.cond_big_inst(s, i))
+        s.market_up = {d: d != days[-1] for d in days}         # 最後一天大盤跌破月線
+        self.assertIsNone(sm.cond_big_inst(s, i))
+        self.assertIsNone(sm.cond_whale_hot(s, i))
+        s.market_up = {}                                       # 有給但那天沒有指數資料：不進場
+        self.assertIsNone(sm.cond_big_inst(s, i))
+        rules = next(m for m in sm.MODELS if m["key"] == "kiloBull")["rules"]
+        self.assertTrue(any("加權指數" in r for r in rules))
+        self.assertFalse(any("加權指數" in r for r in next(m for m in sm.MODELS if m["key"] == "revBoom")["rules"]))
 
 
-class SelectTradesTests(unittest.TestCase):
-    def test_weekly_top_picks_strongest_and_skips_held(self) -> None:
+class ExitRuleTests(unittest.TestCase):
+    def test_stop_loss_and_hold_days(self) -> None:
+        closes = [100.0] * 30 + [100, 95, 92, 97, 99, 101, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120]
+        s = make("1111", closes)
+        sig = [(29, {})]                                      # 第 30 根開盤 100 買
+        base = sm.simulate(s, sig)[0]
+        self.assertEqual(base["reason"], "ma20")              # 95 跌破月線
+        self.assertEqual(base["exit"], 95.0)
+        stop = sm.simulate(s, sig, ma20_exit=False, stop_pct=7.0)[0]
+        self.assertEqual((stop["reason"], stop["exit"]), ("stop", 92.0))   # 92 跌 8%：停損
+        loose = sm.simulate(s, sig, ma20_exit=False, stop_pct=10.0)[0]
+        self.assertEqual((loose["reason"], loose["exitIdx"] - loose["entryIdx"] + 1), ("hold", 10))
+        long = sm.simulate(s, sig, hold_days=20, ma20_exit=False, stop_pct=10.0)[0]
+        self.assertEqual(long["exitIdx"] - long["entryIdx"] + 1, 20)
+        self.assertEqual(long["exit"], 116.0)                  # 第 30 根買、第 49 根（第 20 天）收盤賣
+        near_end = sm.simulate(s, [(len(closes) - 5, {})], hold_days=20, ma20_exit=False)[0]
+        self.assertTrue(near_end["open"])                     # 還沒抱滿 20 天：持有中
+
+
+class RevChipTests(unittest.TestCase):
+    def test_rev_chip_conditions(self) -> None:
         n = 40
-        series = {c: make(c, [100.0] * n) for c in ("A", "B", "C", "D")}
-        signals = {
-            "A": [(20, {"bigUp": 0.9, "week": "w1"})],
-            "B": [(20, {"bigUp": 0.5, "week": "w1"})],
-            "C": [(20, {"bigUp": 0.7, "week": "w1"}), (22, {"bigUp": 2.0, "week": "w1"})],   # 22 還抱著：跳過、不佔名額
-            "D": [(23, {"bigUp": 0.1, "week": "w1"}), (27, {"bigUp": 0.1, "week": "w2"})],
-        }
-        picked = tuning.select_trades(series, signals, "bigUp", 2)
-        self.assertEqual(sorted((t["code"], t["signal"]) for t in picked),
-                         [("A", series["A"].dates[20]), ("C", series["C"].dates[20]), ("D", series["D"].dates[27])])
-        everything = tuning.select_trades(series, signals, "bigUp", None)
-        # 不限名額：A、B、C、D 第一個都買；C 第二個、D 第二個（23 買的抱到 33）都因為還抱著被跳過
-        self.assertEqual(sorted((t["code"], t["signal"]) for t in everything),
-                         [("A", series["A"].dates[20]), ("B", series["B"].dates[20]), ("C", series["C"].dates[20]), ("D", series["D"].dates[23])])
+        closes = [100.0] * (n - 1) + [104.0]
+        vols = [1000.0] * (n - 1) + [3000.0]
+        rev = {f"2025-{m:02d}": (100, f"2025-{m:02d}-10") for m in range(1, 13)}
+        rev["2026-01"] = (150, "2026-02-10")                   # 年增 50%、一年新高
+        days = weekdays(date(2026, 1, 5), n)
+        s = make("1111", closes, vols=vols, revenue=rev)
+        i = n - 1
+        self.assertIsNotNone(sm.cond_rev_boom(s, i))
+        self.assertIsNotNone(tuning.rev_chip_condition("base")(s, i))
+        self.assertIsNotNone(tuning.rev_chip_condition("bigUp")(s, i))          # 40.0 → 40.6
+        self.assertIsNotNone(tuning.rev_chip_condition("kiloUp")(s, i))
+        self.assertIsNotNone(tuning.rev_chip_condition("holdersDown")(s, i))    # 5000 → 4900
+        self.assertIsNotNone(tuning.rev_chip_condition("inst5")(s, i))
+        s.tdcc = [("2026-02-13", 40.0, 20.6, 4900), ("2026-02-20", 39.0, 20.0, 5000)]
+        s.tdcc_dates = [w[0] for w in s.tdcc]
+        self.assertIsNone(tuning.rev_chip_condition("bigUp")(s, i))
+        self.assertIsNone(tuning.rev_chip_condition("kiloUp")(s, i))
+        self.assertIsNone(tuning.rev_chip_condition("holdersDown")(s, i))
+        s.inst = {d: (-100_000, 0) for d in days}
+        self.assertIsNone(tuning.rev_chip_condition("inst5")(s, i))
+        s.market_up = {d: False for d in days}
+        self.assertIsNone(tuning.rev_chip_condition("market")(s, i))
+        self.assertIsNotNone(tuning.rev_chip_condition("base")(s, i))           # 原版不看大盤
 
 
 class ComputeTuningTests(unittest.TestCase):
@@ -152,25 +142,32 @@ class ComputeTuningTests(unittest.TestCase):
             connection.executemany("INSERT INTO tdcc_weekly (data_date, stock_code, level, holders, shares, pct) VALUES (?, ?, ?, ?, ?, ?)", tdcc)
         return days
 
-    def test_compute_tuning_end_to_end(self) -> None:
+    def test_prepare_inputs_attaches_market(self) -> None:
         days = self.seed()
         ctx = sm.prepare_inputs()
+        s = ctx["series"]["1111"]
+        self.assertTrue(s.market_up[days[-1]])
+        self.assertTrue(s.market_ok(len(s.dates) - 1))
+
+    def test_compute_tuning_end_to_end(self) -> None:
+        self.seed()
+        ctx = sm.prepare_inputs()
+        sm.compute(ctx=ctx)                        # 共振要先有其他模型的訊號
         out = tuning.compute_tuning(ctx)
         self.assertEqual(out["status"], "ok")
-        self.assertEqual([m["key"] for m in out["models"]], tuning.CHIP_KEYS)
-        self.assertGreater(out["window"]["from"], days[-140])     # 只比有集保的那段
-        self.assertLess(out["window"]["from"], out["window"]["mid"])
-        big = next(m for m in out["models"] if m["key"] == "bigInst")
-        self.assertEqual([v["key"] for v in big["variants"]], ["base", "top10", "confirm", "gap", "revenue", "market", "all"])
-        whale = next(m for m in out["models"] if m["key"] == "whaleHot")
-        self.assertIn("lowDt", [v["key"] for v in whale["variants"]])
+        self.assertEqual([m["key"] for m in out["exits"]], [m["key"] for m in sm.MODELS])
+        big = next(m for m in out["exits"] if m["key"] == "bigInst")
+        inst = next(m for m in out["exits"] if m["key"] == "instThenRetail")
+        self.assertGreater(big["window"]["from"], inst["window"]["from"])     # 用到集保的只比有集保的那段
+        self.assertEqual(inst["window"]["from"], ctx["bt_days"][0])
+        self.assertEqual([v["key"] for v in big["variants"]], [r["key"] for r in tuning.EXIT_RULES])
         base = big["variants"][0]
         self.assertGreater(base["all"]["trades"] + base["all"]["open"], 0)
-        self.assertEqual(set(base), {"key", "label", "all", "a", "b"})
-        # 前後兩段加起來就是整段（同一套交易，只是照發訊號的日子分）
         self.assertEqual(base["a"]["trades"] + base["b"]["trades"], base["all"]["trades"])
-        rev = next(v for v in big["variants"] if v["key"] == "revenue")
-        self.assertEqual(rev["all"]["trades"], 0)              # 沒有營收資料：多這個條件就一筆都沒有
+        self.assertEqual(set(base), {"key", "label", "all", "a", "b"})
+        self.assertIn("avgDays", base["all"])
+        self.assertEqual([v["key"] for v in out["revChip"]["variants"]], [r["key"] for r in tuning.REV_CHIP])
+        self.assertEqual(out["revChip"]["window"]["from"], big["window"]["from"])
 
     def test_run_once_saves_tuning(self) -> None:
         self.seed()
