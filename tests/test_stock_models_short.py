@@ -50,6 +50,7 @@ def down_series(next_day: tuple[float, float, float, float] | None = None) -> sm
         closes.append(c)
     s = build("1111", closes, opens=opens, highs=highs, lows=lows, revenue=dict(REVENUE))
     s.cold_group = {d: "太陽能" for d in s.dates}
+    s.cold_rank = {d: 0 for d in s.dates}
     return s
 
 
@@ -104,10 +105,13 @@ class ShortSignalTests(unittest.TestCase):
         self.assertIsNotNone(sm.short_signal(s, i, max_ratio=None))
         s.short = {d: 100}
         self.assertEqual(sm.cond_dt_short(s, i)["shortRatio"], 10.0)
-        s.cold_group = {}
+        s.cold_rank = {x: 5 for x in s.dates}                  # 第 6 弱：不在最弱 5 個
+        self.assertIsNone(sm.cond_dt_short(s, i))
+        s.cold_group, s.cold_rank = {}, {}
         self.assertIsNone(sm.cond_dt_short(s, i))
         self.assertIsNotNone(sm.short_signal(s, i, need_group=False))
         s.cold_group = {x: "太陽能" for x in s.dates}
+        s.cold_rank = {x: 0 for x in s.dates}
         s.revenue = {**REVENUE, "2026-02": (110, "2026-03-10")}
         self.assertIsNone(sm.cond_dt_short(s, i))              # 營收年增：不空
         s.revenue = dict(REVENUE)
@@ -115,6 +119,7 @@ class ShortSignalTests(unittest.TestCase):
         self.assertIsNone(sm.cond_dt_short(s, i))              # 法人在買：不空
         up = build("2222", [50 + 0.5 * k for k in range(70)], revenue=dict(REVENUE))
         up.cold_group = {x: "太陽能" for x in up.dates}
+        up.cold_rank = {x: 0 for x in up.dates}
         self.assertIsNone(sm.cond_dt_short(up, 69))            # 多頭排列：不空
 
     def test_level_signals_every_day(self) -> None:
@@ -127,23 +132,23 @@ class SimulateDtShortTests(unittest.TestCase):
     def test_breakdown_profit_and_stop(self) -> None:
         prev_low = (100 - 0.5 * 69) * 0.99
         s = down_series((65.6, 66.0, 62.0, 63.0))              # 開在昨低上面、盤中跌破、收 63
-        t = sm.simulate_dt_short(s, [(69, {})])[0]
+        t = sm.simulate_dt_short(s, [(69, {})], entry="breakdown")[0]
         self.assertEqual((t["entry"], t["exit"], t["reason"], t["side"]), (round(prev_low, 2), 63.0, "close", "short"))
         self.assertAlmostEqual(t["ret"], round((prev_low - 63.0) / prev_low * 100 - sm.DAYTRADE_COST_PCT, 2))
         self.assertEqual(t["entryIdx"], t["exitIdx"])
-        stopped = sm.simulate_dt_short(down_series((65.6, 68.0, 62.0, 63.0)), [(69, {})])[0]   # 盤中漲到空價 +4%
+        stopped = sm.simulate_dt_short(down_series((65.6, 68.0, 62.0, 63.0)), [(69, {})], entry="breakdown")[0]   # 盤中漲到空價 +4%
         self.assertEqual(stopped["reason"], "stop")
         self.assertAlmostEqual(stopped["ret"], round(-4.0 - sm.DAYTRADE_COST_PCT, 2))
-        loose = sm.simulate_dt_short(down_series((65.6, 68.0, 62.0, 63.0)), [(69, {})], stop_pct=8.0)[0]
+        loose = sm.simulate_dt_short(down_series((65.6, 68.0, 62.0, 63.0)), [(69, {})], entry="breakdown", stop_pct=8.0)[0]
         self.assertEqual(loose["reason"], "close")
 
     def test_entries(self) -> None:
         prev_close = 100 - 0.5 * 69
         no_break = down_series((65.6, 66.0, 65.0, 65.5))      # 沒跌破昨低 64.85
-        self.assertEqual(sm.simulate_dt_short(no_break, [(69, {})]), [])
+        self.assertEqual(sm.simulate_dt_short(no_break, [(69, {})], entry="breakdown"), [])
         opened = sm.simulate_dt_short(no_break, [(69, {})], entry="open")[0]
         self.assertEqual(opened["entry"], 65.6)
-        rebound = sm.simulate_dt_short(down_series((65.0, 65.6, 64.0, 64.2)), [(69, {})], entry="rebound")[0]
+        rebound = sm.simulate_dt_short(down_series((65.0, 65.6, 64.0, 64.2)), [(69, {})])[0]   # 正式版：反彈過不去再空
         self.assertEqual(rebound["entry"], round(prev_close, 2))   # 反彈到昨收（比 5 日線低）才空
         gap_up = down_series((66.0, 66.5, 64.0, 64.2))          # 開盤就在昨收上面：不空
         self.assertEqual(sm.simulate_dt_short(gap_up, [(69, {})], entry="rebound"), [])

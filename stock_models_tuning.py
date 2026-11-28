@@ -46,28 +46,31 @@ MARKET_VARIANTS = [("off", "不加大盤濾網"), ("on", "加大盤濾網（加�
 
 # 強勢族群拉回（第 11 個模型）：拉回買 vs 突破就追、停損方式、抱幾天、族群那一層有沒有用
 PULLBACK_VARIANTS: list[dict[str, Any]] = [
-    {"key": "base", "label": "拉回買（正式版）", "desc": "拉回到 5 日線附近、隔天突破高點才買；停損 8% 和拉回低點取近的；最多抱 5 天",
+    {"key": "base", "label": "拉回買（正式版）", "desc": "最強 8 個族群、股本 ≤ 100 億；拉回到 5 日線附近、隔天突破高點才買；停損 8% 和拉回低點取近的；最多抱 5 天",
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5},
+    {"key": "narrow", "label": "放寬前（5 族群・50 億）", "desc": "2026-11-28 放寬前的條件：最強 5 個族群、股本 ≤ 50 億",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 5, "shares": 500_000_000},
+    {"key": "groups8", "label": "只放寬族群（8 族群・50 億）", "desc": "最強 8 個族群、股本還是 ≤ 50 億",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 8, "shares": 500_000_000},
+    {"key": "cap100", "label": "只放寬股本（5 族群・100 億）", "desc": "最強 5 個族群、股本 ≤ 100 億",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 5, "shares": 1_000_000_000},
     {"key": "breakout", "label": "突破就追", "desc": "同樣的選股條件，帶量創 20 日新高（漲 ≥ 2%、量 ≥ 1.5 倍）隔天開盤就買",
      "setup": "breakout", "group": True, "entry": "open", "stop": "near", "hold": 5},
-    {"key": "fixed8", "label": "停損只看 8%", "desc": "不看拉回低點，只在跌 8% 時停損",
-     "setup": "pullback", "group": True, "entry": "trigger", "stop": "fixed", "hold": 5},
     {"key": "hold3", "label": "最多抱 3 天", "desc": "其他一樣，最多抱 3 個交易日",
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 3},
-    {"key": "noGroup", "label": "不篩族群", "desc": "其他一樣，不限最強 5 個族群（看族群這一層有沒有幫助）",
+    {"key": "noGroup", "label": "不篩族群", "desc": "其他一樣，不限最強族群（看族群這一層有沒有幫助）",
      "setup": "pullback", "group": False, "entry": "trigger", "stop": "near", "hold": 5},
 ]
 
 # 弱勢族群當沖空（第 12 個模型）：三種進場、停損 4% vs 8%、族群和券資比那兩層有沒有用
 DT_SHORT_VARIANTS: list[dict[str, Any]] = [
-    {"key": "breakdown", "label": "跌破昨低才空（正式版）", "desc": "隔天盤中跌破前一天最低價才空；停損 4%；收盤回補",
-     "entry": "breakdown", "stop": 4.0, "group": True, "ratio": True},
-    {"key": "open", "label": "開盤就空", "desc": "名單上的股票隔天開盤就空", "entry": "open", "stop": 4.0, "group": True, "ratio": True},
-    {"key": "rebound", "label": "反彈過不去再空", "desc": "盤中反彈到昨收或 5 日線（取低的）才空；開盤就在上面的不空",
+    {"key": "rebound", "label": "反彈過不去再空（正式版）", "desc": "盤中反彈到昨收或 5 日線（取低的）才空；開盤就在上面的不空；停損 4%；收盤回補",
      "entry": "rebound", "stop": 4.0, "group": True, "ratio": True},
-    {"key": "stop8", "label": "跌破昨低・停損 8%", "desc": "參考用：停損放寬到 8%", "entry": "breakdown", "stop": 8.0, "group": True, "ratio": True},
-    {"key": "noGroup", "label": "不篩族群", "desc": "其他一樣，不限最弱 5 個族群", "entry": "breakdown", "stop": 4.0, "group": False, "ratio": True},
-    {"key": "noRatio", "label": "不看券資比", "desc": "其他一樣，不限券資比 ≤ 30%", "entry": "breakdown", "stop": 4.0, "group": True, "ratio": False},
+    {"key": "breakdown", "label": "跌破昨低才空", "desc": "隔天盤中跌破前一天最低價才空", "entry": "breakdown", "stop": 4.0, "group": True, "ratio": True},
+    {"key": "open", "label": "開盤就空", "desc": "名單上的股票隔天開盤就空", "entry": "open", "stop": 4.0, "group": True, "ratio": True},
+    {"key": "stop8", "label": "反彈空・停損 8%", "desc": "參考用：停損放寬到 8%", "entry": "rebound", "stop": 8.0, "group": True, "ratio": True},
+    {"key": "noGroup", "label": "不篩族群", "desc": "其他一樣，不限最弱 5 個族群", "entry": "rebound", "stop": 4.0, "group": False, "ratio": True},
+    {"key": "noRatio", "label": "不看券資比", "desc": "其他一樣，不限券資比 ≤ 30%", "entry": "rebound", "stop": 4.0, "group": True, "ratio": False},
 ]
 
 STAT_KEYS = ("trades", "open", "winRate", "avgRet", "avgWin", "avgLoss", "profitFactor", "maxConcurrent", "retOnCapital", "mdd")
@@ -176,7 +179,8 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
     pullback = []
     for v in PULLBACK_VARIANTS:
         def cond(s: sm.StockSeries, i: int, v: dict[str, Any] = v) -> dict[str, Any] | None:
-            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"])
+            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"],
+                                            group_top=v.get("top", sm.HOT_GROUP_TOP), max_shares=v.get("shares", sm.SMALL_MID_MAX_SHARES))
 
         trades = []
         for code, sig in _signals(series, cond, full).items():
