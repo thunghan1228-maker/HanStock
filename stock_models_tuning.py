@@ -54,6 +54,8 @@ PULLBACK_VARIANTS: list[dict[str, Any]] = [
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 8, "shares": 500_000_000},
     {"key": "cap100", "label": "只放寬股本（5 族群・100 億）", "desc": "最強 5 個族群、股本 ≤ 100 億",
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 5, "shares": 1_000_000_000},
+    {"key": "noMarket", "label": "不看大盤", "desc": "2026-11-28 使用者問：拿掉「加權指數在月線上」這條，其他一樣",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "market": False},
     {"key": "breakout", "label": "突破就追", "desc": "同樣的選股條件，帶量創 20 日新高（漲 ≥ 2%、量 ≥ 1.5 倍）隔天開盤就買",
      "setup": "breakout", "group": True, "entry": "open", "stop": "near", "hold": 5},
     {"key": "hold3", "label": "最多抱 3 天", "desc": "其他一樣，最多抱 3 個交易日",
@@ -179,7 +181,7 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
     pullback = []
     for v in PULLBACK_VARIANTS:
         def cond(s: sm.StockSeries, i: int, v: dict[str, Any] = v) -> dict[str, Any] | None:
-            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"],
+            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"], market=v.get("market", True),
                                             group_top=v.get("top", sm.HOT_GROUP_TOP), max_shares=v.get("shares", sm.SMALL_MID_MAX_SHARES))
 
         trades = []
