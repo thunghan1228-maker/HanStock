@@ -1633,6 +1633,20 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
             watch.append({"code": code, "name": names.get(code, ""), "close": round(s.close[i], 2), "why": why,
                           "marketOk": s.market_ok(i)})
     by_key["groupPullback"]["watch"] = sorted(watch, key=lambda w: (w["why"]["group"], w["code"]))
+    # 等拉回名單（2026-11-28 使用者）：其他條件都符合、只差還沒拉回的，先放自選盯著；拉回到 5 日線附近、量縮，隔天突破當天高點才買
+    in_watch = {w["code"] for w in watch}
+    candidates = []
+    for code, s in series.items():
+        i = len(s.dates) - 1
+        if s.dates[i] != until or code in in_watch:
+            continue
+        base = pullback_base(s, i)
+        if not base or not s.ma5[i]:
+            continue
+        candidates.append({"code": code, "name": names.get(code, ""), "close": round(s.close[i], 2), "marketOk": s.market_ok(i),
+                           "why": {**base, "ma5": round(s.ma5[i], 2), "gapMa5": round((s.close[i] / s.ma5[i] - 1) * 100, 1),
+                                   "waitAt": round(s.ma5[i] * 1.02, 2)}})
+    by_key["groupPullback"]["candidates"] = sorted(candidates, key=lambda c: (c["why"]["group"], c["why"]["gapMa5"], c["code"]))
     for key in ("groupPullback", "dtShort"):
         spec = next(m for m in MODELS if m["key"] == key)
         by_key[key]["backtestRules"] = spec["backtestRules"]

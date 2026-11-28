@@ -185,6 +185,15 @@ class ComputeTests(unittest.TestCase):
                                    [(ix, d, 100 + k) for ix in ("TAIEX", "TPEx") for k, d in enumerate(days)])
             fundamentals_daily._schema(connection)
             connection.executemany("INSERT INTO stock_shares (stock_code, shares, market, updated_at) VALUES (?, 100000000, 'TSE', 'x')", [(c,) for c in codes])
+            connection.executemany("INSERT INTO model_inst_daily (trade_date, stock_code, foreign_net, trust_net, dealer_net) VALUES (?, ?, 200000, 0, 0)",
+                                   [(d, c) for c in codes for d in days])
+            revenue = []
+            for c in codes:                                       # 每個月營收年增 50%
+                for y in (2024, 2025, 2026):
+                    for m in range(1, 13):
+                        rev = 100 * (1.5 ** (y - 2024))
+                        revenue.append((c, f"{y}-{m:02d}", int(rev), f"{y + (m == 12)}-{m % 12 + 1:02d}-10"))
+            connection.executemany("INSERT INTO model_revenue (stock_code, ym, revenue, announced) VALUES (?, ?, ?, ?)", revenue)
         with patch.dict("stock_groups.STOCK_GROUPS", {"測試族群": [(c, c) for c in codes]}, clear=True):
             ctx = sm.prepare_inputs()
             out = sm.compute(ctx=ctx)
@@ -195,6 +204,11 @@ class ComputeTests(unittest.TestCase):
         model = next(m for m in out["models"] if m["key"] == "groupPullback")
         self.assertEqual(model["cat"], "short")
         self.assertIn("watch", model)
+        # 三檔一模一樣：今天剛好拉回到位就在觀察名單，不然就在等拉回名單
+        self.assertEqual(len(model["watch"]) + len(model["candidates"]), 3)
+        for c in model["candidates"]:
+            self.assertEqual(c["why"]["group"], "測試族群")
+            self.assertAlmostEqual(c["why"]["waitAt"], round(c["why"]["ma5"] * 1.02, 2))
         self.assertTrue(model["backtestRules"])
         self.assertNotIn("groupPullback", s.hits)                 # 不算進多模型共振
         self.assertEqual([v["key"] for v in tune["pullback"]["variants"]], [v["key"] for v in tuning.PULLBACK_VARIANTS])
