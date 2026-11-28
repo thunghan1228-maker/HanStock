@@ -212,6 +212,8 @@ class ComputeTests(unittest.TestCase):
         model = next(m for m in out["models"] if m["key"] == "groupPullback")
         self.assertEqual(model["cat"], "short")
         self.assertIn("watch", model)
+        self.assertEqual(len(model["trades"]), model["stats"]["trades"] + model["stats"]["open"])   # 整年每一筆都給
+        self.assertTrue(all(t["group"] == "測試族群" and t["name"] and "entryIdx" not in t for t in model["trades"]))
         # 三檔一模一樣：今天剛好拉回到位就在觀察名單，不然就在等拉回名單
         self.assertEqual(len(model["watch"]) + len(model["candidates"]), 3)
         for c in model["candidates"]:

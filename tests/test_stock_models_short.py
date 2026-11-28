@@ -193,6 +193,8 @@ class ComputeTests(unittest.TestCase):
         self.assertEqual((model["cat"], model["side"]), ("short", "short"))
         self.assertTrue(model["backtestRules"])
         self.assertNotIn("dtShort", s.hits)
+        self.assertIn("trades", model)
+        self.assertNotIn("trades", next(m for m in out["models"] if m["key"] == "bigInst"))   # 其他模型不給
         self.assertGreater(out["coverage"]["shortDays"], 0)
         self.assertEqual([v["key"] for v in tune["dtShort"]["variants"]], [v["key"] for v in tuning.DT_SHORT_VARIANTS])
 
