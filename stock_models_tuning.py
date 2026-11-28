@@ -44,6 +44,20 @@ EXIT_RULES: list[dict[str, Any]] = [
 MARKET_KEYS = ["revBoom", "trustGrowth", "instThenRetail", "instFirst", "multiCombo"]   # 不靠集保的五個（營收起飛爆量已經加了）
 MARKET_VARIANTS = [("off", "不加大盤濾網"), ("on", "加大盤濾網（加權指數在月線上）")]
 
+# 強勢族群拉回（第 11 個模型）：拉回買 vs 突破就追、停損方式、抱幾天、族群那一層有沒有用
+PULLBACK_VARIANTS: list[dict[str, Any]] = [
+    {"key": "base", "label": "拉回買（正式版）", "desc": "拉回到 5 日線附近、隔天突破高點才買；停損 8% 和拉回低點取近的；最多抱 5 天",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5},
+    {"key": "breakout", "label": "突破就追", "desc": "同樣的選股條件，帶量創 20 日新高（漲 ≥ 2%、量 ≥ 1.5 倍）隔天開盤就買",
+     "setup": "breakout", "group": True, "entry": "open", "stop": "near", "hold": 5},
+    {"key": "fixed8", "label": "停損只看 8%", "desc": "不看拉回低點，只在跌 8% 時停損",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "fixed", "hold": 5},
+    {"key": "hold3", "label": "最多抱 3 天", "desc": "其他一樣，最多抱 3 個交易日",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 3},
+    {"key": "noGroup", "label": "不篩族群", "desc": "其他一樣，不限最強 5 個族群（看族群這一層有沒有幫助）",
+     "setup": "pullback", "group": False, "entry": "trigger", "stop": "near", "hold": 5},
+]
+
 STAT_KEYS = ("trades", "open", "winRate", "avgRet", "avgWin", "avgLoss", "profitFactor", "maxConcurrent", "retOnCapital", "mdd")
 
 
@@ -146,11 +160,24 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
         market.append({"key": key, "name": spec["name"], "current": "on" if key in sm.CORE_CONDITIONS else "off",
                        "window": _window_info(full), "variants": variants})
 
+    # 3. 強勢族群拉回：整年
+    pullback = []
+    for v in PULLBACK_VARIANTS:
+        def cond(s: sm.StockSeries, i: int, v: dict[str, Any] = v) -> dict[str, Any] | None:
+            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"])
+
+        trades = []
+        for code, sig in _signals(series, cond, full).items():
+            trades.extend(sm.simulate_pullback(series[code], sig, entry=v["entry"], stop_mode=v["stop"], hold_days=v["hold"]))
+        pullback.append({"key": v["key"], "label": v["label"], **_halves(trades, series, full)})
+
     return {
         "status": "ok", "asOf": ctx["until"], "generatedAt": sm._now().isoformat(timespec="seconds"),
         "exitRules": [{k: r[k] for k in ("key", "label", "desc")} for r in EXIT_RULES],
         "exits": exit_models,
         "market": market,
+        "pullbackRules": [{k: v[k] for k in ("key", "label", "desc")} for v in PULLBACK_VARIANTS],
+        "pullback": {"window": _window_info(full), "variants": pullback},
         "notes": [
             "進場規則跟原本一樣（訊號隔天開盤買，開盤就漲停買不到的跳過）；每筆 10 萬，已扣手續費和稅",
             "用到集保的模型只比有集保的那段（約半年），其他比整年；都切成前後兩半，兩半都變好的才值得採用",

@@ -51,6 +51,7 @@ CATEGORIES = [
     {"key": "inst", "name": "法人"},
     {"key": "growth", "name": "營收成長"},
     {"key": "combo", "name": "綜合"},
+    {"key": "short", "name": "短線"},
 ]
 MODELS: list[dict[str, Any]] = [
     {
@@ -153,6 +154,27 @@ MODELS: list[dict[str, Any]] = [
         "rules": [
             "近 5 個交易日內，前面九個模型裡至少兩個發出訊號",
             "收盤 > 20 日 > 60 日均線",
+        ],
+    },
+    {
+        "key": "groupPullback", "cat": "short", "name": "強勢族群拉回", "ref": 11,
+        "idea": "2026-11-28 使用者的操作方式：短打幾天、停損 8～10%、中小型強勢股、等拉回再買、大盤弱就空手。"
+                "大盤站上月線時，挑最強族群裡營收成長、法人在買、多頭排列的中小型股，等它拉回到 5 日線附近、量縮，隔天突破拉回那天的高點才買。",
+        "rules": [
+            "加權指數收盤在月線（20 日均線）之上（大盤濾網）",
+            "屬於當天最強的 5 個族群（近 5 日、近 20 日平均漲幅都排前面）",
+            "中小型：股本 ≤ 50 億；20 日平均成交值 ≥ 5000 萬",
+            "最新公布的月營收年增 ≥ 20%，或創 12 個月新高",
+            "近 10 個交易日外資＋投信合計買超，至少 3 天在買",
+            "5 日 > 20 日 > 60 日均線，近 20 天內創過 60 日新高",
+            "拉回：比近 5 天最高價低 3% 以上，最低價碰到 5 日線上方 2% 以內，收盤沒跌破 10 日線 2% 以上，量比 5 日均量小，沒破近 10 天低點",
+        ],
+        "backtestRules": [
+            "隔天股價突破拉回那天的最高價才買（開盤就高過的照開盤價，開盤就漲停的跳過）；沒突破就不買",
+            "停損：跌 8% 或跌破拉回那天的最低價，取比較近的那個（盤中碰到就賣）",
+            "停利：漲 12% 先賣一半；剩下的從買進隔天起收盤跌破 5 日線就賣，最多抱 5 個交易日",
+            "買進當天只看收盤（盤中不知道先碰到停損還是先突破，用收盤判斷）；同一天先碰停損又碰停利，當作先停損",
+            "每筆 10 萬元，已扣手續費和證交稅；報酬率的本金＝最大資金需求",
         ],
     },
 ]
@@ -758,9 +780,11 @@ class StockSeries:
         self.code = code
         self.dates = [b[0] for b in bars]
         self.open = [float(b[1]) for b in bars]
+        self.high = [float(b[2]) for b in bars]
+        self.low = [float(b[3]) for b in bars]
         self.close = [float(b[4]) for b in bars]
         self.vol = [float(b[5]) for b in bars]   # 張
-        self.ma5, self.ma20, self.ma60 = _ma(self.close, 5), _ma(self.close, 20), _ma(self.close, 60)
+        self.ma5, self.ma10, self.ma20, self.ma60 = _ma(self.close, 5), _ma(self.close, 10), _ma(self.close, 20), _ma(self.close, 60)
         self.v5, self.v20 = _ma(self.vol, 5), _ma(self.vol, 20)
         self.value20 = _ma([c * v * 1000 for c, v in zip(self.close, self.vol)], 20)
         self.inst = inst
@@ -772,6 +796,8 @@ class StockSeries:
         self.daytrade, self.daytrade_days = daytrade or {}, daytrade_days or set()
         self.hits: dict[str, set[int]] = {}    # 其他模型發訊號的那幾天（多模型共振用）
         self.market_up: dict[str, bool] | None = None   # 加權指數那天收盤在月線之上（prepare_inputs 給；None＝不判斷）
+        self.shares: int | None = None                  # 已發行股數（強勢族群拉回看中小型用）
+        self.hot_group: dict[str, str] = {}             # {日期: 當天最強族群裡、這檔所屬排最前面的族群}（attach_hot_groups 給）
 
     def market_ok(self, i: int) -> bool:
         """大盤濾網（2026-11-27 使用者看完調整比較後選的）：加權指數那天收盤在月線之上。沒給大盤資料（單元測試）就不判斷。"""
@@ -1027,10 +1053,122 @@ def cond_multi_combo(s: StockSeries, i: int) -> dict[str, Any] | None:
     return {"models": which}
 
 
+# ------------------------------------------------------------------ 強勢族群拉回（第 11 個模型，2026-11-28 使用者）
+
+HOT_GROUP_TOP = 5
+SMALL_MID_MAX_SHARES = 500_000_000     # 股本 50 億（面額 10 元）
+PULLBACK_MIN_VALUE = 50_000_000        # 20 日平均成交值 5000 萬：短線進出得了
+PULLBACK_STOP_PCT = 8.0
+PULLBACK_TARGET_PCT = 12.0
+PULLBACK_HOLD_DAYS = 5
+
+
+def attach_hot_groups(series: dict[str, StockSeries], groups: dict[str, list[str]], top: int = HOT_GROUP_TOP) -> None:
+    """每天算各族群近 5 日、近 20 日平均漲幅（成員至少 3 檔有資料），兩個排名相加最小的前 top 名是「最強族群」；
+    每檔股票記下當天它所屬、排最前面的最強族群（s.hot_group）。"""
+    sums: dict[str, dict[str, list[float]]] = {}     # 日期 → 族群 → [5 日漲幅合計, 20 日漲幅合計, 檔數]
+    for name, codes in groups.items():
+        for code in codes:
+            s = series.get(code)
+            if not s:
+                continue
+            for i in range(20, len(s.dates)):
+                c5, c20 = s.close[i - 5], s.close[i - 20]
+                if c5 <= 0 or c20 <= 0:
+                    continue
+                acc = sums.setdefault(s.dates[i], {}).setdefault(name, [0.0, 0.0, 0])
+                acc[0] += s.close[i] / c5 - 1
+                acc[1] += s.close[i] / c20 - 1
+                acc[2] += 1
+    best: dict[str, dict[str, int]] = {}               # 日期 → 族群 → 名次（0 最強）
+    for day, by_group in sums.items():
+        rows = [(name, a[0] / a[2], a[1] / a[2]) for name, a in by_group.items() if a[2] >= 3]
+        r5 = {name: k for k, (name, _, _) in enumerate(sorted(rows, key=lambda r: -r[1]))}
+        r20 = {name: k for k, (name, _, _) in enumerate(sorted(rows, key=lambda r: -r[2]))}
+        ranked = sorted(rows, key=lambda r: (r5[r[0]] + r20[r[0]], r5[r[0]]))
+        best[day] = {name: k for k, (name, _, _) in enumerate(ranked[:top])}
+    member_of: dict[str, list[str]] = {}
+    for name, codes in groups.items():
+        for code in codes:
+            member_of.setdefault(code, []).append(name)
+    for code, s in series.items():
+        names = member_of.get(code)
+        s.hot_group = {}
+        if not names:
+            continue
+        for d in s.dates:
+            ranks = best.get(d)
+            if not ranks:
+                continue
+            hit = [(ranks[n], n) for n in names if n in ranks]
+            if hit:
+                s.hot_group[d] = min(hit)[1]
+
+
+def pullback_base(s: StockSeries, i: int, *, need_group: bool = True) -> dict[str, Any] | None:
+    """強勢族群拉回的選股條件（不含大盤濾網、不含拉回／突破那一天的型態）。"""
+    if not s.basic_ok(i) or i < 60:
+        return None
+    group = s.hot_group.get(s.dates[i])
+    if need_group and not group:
+        return None
+    if s.shares is None or s.shares > SMALL_MID_MAX_SHARES or s.value20[i] < PULLBACK_MIN_VALUE:
+        return None
+    ma5, ma20, ma60 = s.ma5[i], s.ma20[i], s.ma60[i]
+    if ma60 is None or not (ma5 > ma20 > ma60):
+        return None
+    if max(s.close[i - 19:i + 1]) < max(s.close[i - 59:i + 1]):
+        return None                       # 60 日最高收盤不在最近 20 天內
+    rev = revenue_yoy_at(s.revenue, s.dates[i])
+    if not rev or not (rev[1] >= 20 or s.revenue_high12(rev[0])):
+        return None
+    win = s.inst_window(i, 10)
+    if not win:
+        return None
+    nets = [f + t for f, t in win]
+    if sum(nets) <= 0 or sum(1 for x in nets if x > 0) < 3:
+        return None
+    return {"group": group or "", "yoy": round(rev[1], 1), "revMonth": rev[0], "inst10": round(sum(nets) / 1000),
+            "instDays": sum(1 for x in nets if x > 0), "capital": round(s.shares * 10 / 1e8, 1)}
+
+
+def pullback_setup(s: StockSeries, i: int) -> bool:
+    """拉回：比近 5 天最高價低 3% 以上；最低價碰到 5 日線上方 2% 以內；收盤沒跌破 10 日線 2% 以上；量縮；沒破近 10 天低點。"""
+    if i < 10 or s.ma5[i] is None or s.ma10[i] is None or s.v5[i] is None:
+        return False
+    return (s.close[i] <= max(s.high[i - 5:i]) * 0.97 and s.low[i] <= s.ma5[i] * 1.02
+            and s.close[i] >= s.ma10[i] * 0.98 and s.vol[i] < s.v5[i] and s.low[i] >= min(s.low[i - 10:i]))
+
+
+def breakout_setup(s: StockSeries, i: int) -> bool:
+    """突破（比較用）：收盤創 20 日新高、漲 ≥ 2%、量 ≥ 20 日均量 1.5 倍。"""
+    if i < 21 or s.v20[i] is None or s.v20[i] <= 0 or not s.close[i - 1]:
+        return False
+    return s.close[i] >= max(s.close[i - 20:i]) and s.close[i] / s.close[i - 1] >= 1.02 and s.vol[i] >= 1.5 * s.v20[i]
+
+
+def group_pullback_signal(s: StockSeries, i: int, *, setup: str = "pullback", need_group: bool = True,
+                          market: bool = True) -> dict[str, Any] | None:
+    if market and not s.market_ok(i):
+        return None
+    if not (pullback_setup(s, i) if setup == "pullback" else breakout_setup(s, i)):
+        return None
+    why = pullback_base(s, i, need_group=need_group)
+    if not why:
+        return None
+    stop = max(s.high[i] * (1 - PULLBACK_STOP_PCT / 100), s.low[i])
+    return {**why, "buyAbove": round(s.high[i], 2), "stopAt": round(stop, 2), "setup": setup}
+
+
+def cond_group_pullback(s: StockSeries, i: int) -> dict[str, Any] | None:
+    return group_pullback_signal(s, i)
+
+
 CONDITIONS: dict[str, Callable[[StockSeries, int], dict[str, Any] | None]] = {
     "bigInst": cond_big_inst, "kiloBull": cond_kilo_bull, "mainVsRetail": cond_main_vs_retail, "whaleHot": cond_whale_hot,
     "trustGrowth": cond_trust_growth, "bigInstFire": cond_big_inst_fire, "instThenRetail": cond_inst_then_retail,
     "instFirst": cond_inst_first, "revBoom": cond_rev_boom, "multiCombo": cond_multi_combo,
+    "groupPullback": cond_group_pullback,
 }
 
 
@@ -1076,6 +1214,67 @@ def simulate(s: StockSeries, signals: list[tuple[int, dict[str, Any]]], *, hold_
                        "ret": round(ret, 2), "reason": reason, "open": is_open, "entryIdx": e, "exitIdx": x})
         busy_until = x
     return trades
+
+
+def simulate_pullback(s: StockSeries, signals: list[tuple[int, dict[str, Any]]], *, entry: str = "trigger", stop_mode: str = "near",
+                      hold_days: int = PULLBACK_HOLD_DAYS) -> list[dict[str, Any]]:
+    """強勢族群拉回的回測（見 MODELS 裡的 backtestRules）。
+    entry："trigger"＝隔天突破設定日最高價才買（拉回）；"open"＝隔天開盤買（突破就追的比較用）。
+    stop_mode："near"＝跌 8% 和設定日最低價取比較近的；"fixed"＝只看跌 8%。
+    停利：漲 12% 先賣一半；剩下的從買進隔天起收盤跌破 5 日線就賣，最多抱 hold_days 天。"""
+    trades = []
+    busy_until = -1
+    n = len(s.dates)
+    for i, why in signals:
+        e = i + 1
+        if i <= busy_until or e >= n:
+            continue
+        if s.open[e] <= 0 or s.open[e] >= s.close[i] * (1 + LIMIT_UP_GAP_PCT / 100):
+            continue                                   # 開盤就漲停：買不到
+        if entry == "trigger":
+            if s.high[e] <= s.high[i]:
+                continue                               # 沒突破設定日高點：不買
+            price = max(s.open[e], s.high[i])
+        else:
+            price = s.open[e]
+        stop = price * (1 - PULLBACK_STOP_PCT / 100)
+        if stop_mode == "near":
+            stop = max(stop, s.low[i]) if s.low[i] < price else stop
+        target = price * (1 + PULLBACK_TARGET_PCT / 100)
+        half = None                                     # 先賣一半的價格
+        x, exit_px, reason = None, None, "hold"
+        last = e + hold_days - 1
+        for j in range(e, min(last, n - 1) + 1):
+            if j == e:
+                if s.close[j] <= stop:                  # 買進當天只看收盤
+                    x, exit_px, reason = j, s.close[j], "stop"
+                    break
+            elif s.open[j] <= stop:
+                x, exit_px, reason = j, s.open[j], "stop"
+                break
+            elif s.low[j] <= stop:
+                x, exit_px, reason = j, stop, "stop"
+                break
+            if half is None and s.high[j] >= target:
+                half = max(s.open[j], target) if j > e else target
+            if j > e and s.ma5[j] is not None and s.close[j] < s.ma5[j]:   # 拉回後買的那天常常還在 5 日線下，從隔天起才看
+                x, exit_px, reason = j, s.close[j], "ma5"
+                break
+            if j == last:
+                x, exit_px, reason = j, s.close[j], "hold"
+        is_open = x is None
+        if is_open:
+            x, exit_px = n - 1, s.close[n - 1]
+        rest = (exit_px / price - 1) * 100
+        ret = (rest if half is None else ((half / price - 1) * 100 + rest) / 2) - COST_PCT
+        trades.append({"code": s.code, "signal": s.dates[i], "entryDate": s.dates[e], "entry": round(price, 2), "exitDate": s.dates[x],
+                       "exit": round(exit_px, 2), "ret": round(ret, 2), "reason": reason + ("+half" if half is not None else ""), "open": is_open,
+                       "entryIdx": e, "exitIdx": x})
+        busy_until = x
+    return trades
+
+
+SIMULATORS: dict[str, Callable[..., list[dict[str, Any]]]] = {"groupPullback": simulate_pullback}
 
 
 def summarize(trades: list[dict[str, Any]], series: dict[str, StockSeries], days: list[str], index: dict[str, list[tuple[str, float]]]) -> dict[str, Any]:
@@ -1212,6 +1411,14 @@ def prepare_inputs() -> dict[str, Any]:
     market = market_up_map(index)
     for s in series.values():
         s.market_up = market
+    from fundamentals_daily import shares_map
+    from stock_groups import STOCK_GROUPS, UNRANKED_GROUP_NAMES
+
+    shares = shares_map(list(series))
+    for code, s in series.items():
+        s.shares = shares.get(code)
+    attach_hot_groups(series, {name: [str(c).strip().upper() for c, _ in members]
+                               for name, members in STOCK_GROUPS.items() if name not in UNRANKED_GROUP_NAMES})
     return {"status": "ok", "since": since, "until": until, "bt_days": bt_days, "series": series, "index": index,
             "inst_days": inst_days, "tdcc": tdcc, "revenue": revenue, "margin_days": margin_days, "daytrade_days": daytrade_days,
             "names": _names()}
@@ -1232,12 +1439,13 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
         trades: list[dict[str, Any]] = []
         picks = []
         recent = []
+        sim = SIMULATORS.get(spec["key"], simulate)
         for code, s in series.items():
             start = bisect_left(s.dates, bt_days[0])
             sig = signals_for(s, cond, max(1, start))
-            if spec["key"] != "multiCombo":
+            if spec["key"] not in ("multiCombo", "groupPullback"):   # 共振只看原本九個
                 s.hits[spec["key"]] = {i for i, _ in sig}
-            trades.extend(simulate(s, sig))
+            trades.extend(sim(s, sig))
             for i, why in sig:
                 if s.dates[i] == until:
                     picks.append({"code": code, "name": names.get(code, ""), "close": round(s.close[i], 2),
@@ -1259,6 +1467,18 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
             "lastTrades": [clean(t) for t in closed[:20]],
             "holding": [clean(t) for t in sorted(holding, key=lambda t: t["entryDate"], reverse=True)[:30]],
         })
+    # 強勢族群拉回：大盤在月線下時也列出今天已經拉回好的（觀察名單：大盤站回月線、隔天突破高點才買）
+    watch = []
+    for code, s in series.items():
+        i = len(s.dates) - 1
+        if s.dates[i] != until:
+            continue
+        why = group_pullback_signal(s, i, market=False)
+        if why:
+            watch.append({"code": code, "name": names.get(code, ""), "close": round(s.close[i], 2), "why": why,
+                          "marketOk": s.market_ok(i)})
+    by_key["groupPullback"]["watch"] = sorted(watch, key=lambda w: (w["why"]["group"], w["code"]))
+    by_key["groupPullback"]["backtestRules"] = next(m for m in MODELS if m["key"] == "groupPullback")["backtestRules"]
     models_out = [by_key[m["key"]] for m in MODELS]
     first_stats = by_key[order[0]["key"]]["stats"]
     index_out = {"taiex": first_stats.pop("taiex", []), "otc": first_stats.pop("otc", []), "taiexRet": first_stats.get("taiexRet"), "otcRet": first_stats.get("otcRet")}

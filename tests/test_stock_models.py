@@ -188,7 +188,7 @@ class ComputeTests(unittest.TestCase):
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["asOf"], days[-1])
         self.assertEqual([m["key"] for m in out["models"]], [m["key"] for m in module.MODELS])
-        self.assertEqual(len(out["models"]), 10)
+        self.assertEqual(len(out["models"]), 11)
         big = next(m for m in out["models"] if m["key"] == "bigInst")
         self.assertGreater(big["stats"]["trades"] + big["stats"]["open"], 0)
         self.assertTrue(all(t["code"] == "1111" for t in big["lastTrades"] + big["holding"]))
