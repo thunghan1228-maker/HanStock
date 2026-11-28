@@ -52,6 +52,7 @@ def setup_series(extra_after: list[tuple[float, float, float, float]] | None = N
     s = build("1111", closes, opens=opens, highs=highs, lows=lows, vols=vols, revenue=dict(REVENUE))
     s.shares = 100_000_000
     s.hot_group = {d: "記憶體" for d in s.dates}
+    s.hot_rank = {d: 0 for d in s.dates}
     return s
 
 
@@ -72,6 +73,8 @@ class HotGroupTests(unittest.TestCase):
         self.assertNotIn(last, series["0000"].hot_group)  # G0 最弱，第 6 名；「小」不排
         self.assertEqual(series["1000"].hot_group[last], "G1")
         self.assertNotIn(series["5000"].dates[10], series["5000"].hot_group)   # 前 20 天算不出來
+        self.assertEqual(series["5000"].hot_rank[last], 0)
+        self.assertEqual(series["1000"].hot_rank[last], 4)
 
 
 class SetupTests(unittest.TestCase):
@@ -95,15 +98,22 @@ class SetupTests(unittest.TestCase):
         self.assertIsNone(sm.cond_group_pullback(s, i))          # 大盤在月線下
         self.assertIsNotNone(sm.group_pullback_signal(s, i, market=False))
         s.market_up = None
-        s.shares = 600_000_000                                    # 股本 60 億：不是中小型
+        s.shares = 600_000_000                                    # 股本 60 億：放寬到 100 億以後算中小型
+        self.assertIsNotNone(sm.cond_group_pullback(s, i))
+        self.assertIsNone(sm.group_pullback_signal(s, i, max_shares=500_000_000))   # 放寬前（50 億）不算
+        s.shares = 1_200_000_000                                  # 股本 120 億：不是中小型
         self.assertIsNone(sm.cond_group_pullback(s, i))
         s.shares = None
         self.assertIsNone(sm.cond_group_pullback(s, i))
         s.shares = 100_000_000
-        s.hot_group = {}
+        s.hot_rank = {d: 6 for d in s.dates}                    # 第 7 名：在最強 8 個裡面
+        self.assertIsNotNone(sm.cond_group_pullback(s, i))
+        self.assertIsNone(sm.group_pullback_signal(s, i, group_top=5))   # 放寬前（5 個）不算
+        s.hot_group, s.hot_rank = {}, {}
         self.assertIsNone(sm.cond_group_pullback(s, i))          # 不在最強族群
         self.assertIsNotNone(sm.group_pullback_signal(s, i, need_group=False))
         s.hot_group = {d: "記憶體" for d in s.dates}
+        s.hot_rank = {d: 0 for d in s.dates}
         s.revenue = {**REVENUE, "2026-02": (110, "2026-03-10")}  # 年增 10%、也不是一年新高（1 月 100、去年都 100）
         self.assertIsNotNone(sm.cond_group_pullback(s, i))       # 110 > 前 11 個月 → 一年新高，照樣算
         s.revenue = {**REVENUE, "2026-02": (90, "2026-03-10")}
