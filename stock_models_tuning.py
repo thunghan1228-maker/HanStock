@@ -58,6 +58,18 @@ PULLBACK_VARIANTS: list[dict[str, Any]] = [
      "setup": "pullback", "group": False, "entry": "trigger", "stop": "near", "hold": 5},
 ]
 
+# 弱勢族群當沖空（第 12 個模型）：三種進場、停損 4% vs 8%、族群和券資比那兩層有沒有用
+DT_SHORT_VARIANTS: list[dict[str, Any]] = [
+    {"key": "breakdown", "label": "跌破昨低才空（正式版）", "desc": "隔天盤中跌破前一天最低價才空；停損 4%；收盤回補",
+     "entry": "breakdown", "stop": 4.0, "group": True, "ratio": True},
+    {"key": "open", "label": "開盤就空", "desc": "名單上的股票隔天開盤就空", "entry": "open", "stop": 4.0, "group": True, "ratio": True},
+    {"key": "rebound", "label": "反彈過不去再空", "desc": "盤中反彈到昨收或 5 日線（取低的）才空；開盤就在上面的不空",
+     "entry": "rebound", "stop": 4.0, "group": True, "ratio": True},
+    {"key": "stop8", "label": "跌破昨低・停損 8%", "desc": "參考用：停損放寬到 8%", "entry": "breakdown", "stop": 8.0, "group": True, "ratio": True},
+    {"key": "noGroup", "label": "不篩族群", "desc": "其他一樣，不限最弱 5 個族群", "entry": "breakdown", "stop": 4.0, "group": False, "ratio": True},
+    {"key": "noRatio", "label": "不看券資比", "desc": "其他一樣，不限券資比 ≤ 30%", "entry": "breakdown", "stop": 4.0, "group": True, "ratio": False},
+]
+
 STAT_KEYS = ("trades", "open", "winRate", "avgRet", "avgWin", "avgLoss", "profitFactor", "maxConcurrent", "retOnCapital", "mdd")
 
 
@@ -171,6 +183,28 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
             trades.extend(sm.simulate_pullback(series[code], sig, entry=v["entry"], stop_mode=v["stop"], hold_days=v["hold"]))
         pullback.append({"key": v["key"], "label": v["label"], **_halves(trades, series, full)})
 
+    # 4. 弱勢族群當沖空：整年（同樣的選股條件只算一次訊號）
+    dt_short = []
+    sig_cache: dict[tuple[bool, bool], dict[str, list[tuple[int, dict[str, Any]]]]] = {}
+    for v in DT_SHORT_VARIANTS:
+        key = (v["group"], v["ratio"])
+        if key not in sig_cache:
+            def cond(s: sm.StockSeries, i: int, g: bool = v["group"], r: bool = v["ratio"]) -> dict[str, Any] | None:
+                return sm.short_signal(s, i, need_group=g, max_ratio=sm.SHORT_MAX_RATIO if r else None)
+
+            out: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+            for code, s in series.items():
+                start = bisect_left(s.dates, full[0])
+                if start < len(s.dates):
+                    sig = sm.level_signals(s, cond, max(1, start))
+                    if sig:
+                        out[code] = sig
+            sig_cache[key] = out
+        trades = []
+        for code, sig in sig_cache[key].items():
+            trades.extend(sm.simulate_dt_short(series[code], sig, entry=v["entry"], stop_pct=v["stop"]))
+        dt_short.append({"key": v["key"], "label": v["label"], **_halves(trades, series, full)})
+
     return {
         "status": "ok", "asOf": ctx["until"], "generatedAt": sm._now().isoformat(timespec="seconds"),
         "exitRules": [{k: r[k] for k in ("key", "label", "desc")} for r in EXIT_RULES],
@@ -178,6 +212,8 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
         "market": market,
         "pullbackRules": [{k: v[k] for k in ("key", "label", "desc")} for v in PULLBACK_VARIANTS],
         "pullback": {"window": _window_info(full), "variants": pullback},
+        "dtShortRules": [{k: v[k] for k in ("key", "label", "desc")} for v in DT_SHORT_VARIANTS],
+        "dtShort": {"window": _window_info(full), "variants": dt_short},
         "notes": [
             "進場規則跟原本一樣（訊號隔天開盤買，開盤就漲停買不到的跳過）；每筆 10 萬，已扣手續費和稅",
             "用到集保的模型只比有集保的那段（約半年），其他比整年；都切成前後兩半，兩半都變好的才值得採用",
