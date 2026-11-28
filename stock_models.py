@@ -1395,7 +1395,7 @@ def simulate_pullback(s: StockSeries, signals: list[tuple[int, dict[str, Any]]],
         ret = (rest if half is None else ((half / price - 1) * 100 + rest) / 2) - COST_PCT
         trades.append({"code": s.code, "signal": s.dates[i], "entryDate": s.dates[e], "entry": round(price, 2), "exitDate": s.dates[x],
                        "exit": round(exit_px, 2), "ret": round(ret, 2), "reason": reason + ("+half" if half is not None else ""), "open": is_open,
-                       "entryIdx": e, "exitIdx": x})
+                       "entryIdx": e, "exitIdx": x, "group": why.get("group", "")})
         busy_until = x
     return trades
 
@@ -1431,11 +1431,13 @@ def simulate_dt_short(s: StockSeries, signals: list[tuple[int, dict[str, Any]]],
             cover, reason = s.close[e], "close"
         ret = (price - cover) / price * 100 - DAYTRADE_COST_PCT
         trades.append({"code": s.code, "signal": s.dates[i], "entryDate": s.dates[e], "entry": round(price, 2), "exitDate": s.dates[e],
-                       "exit": round(cover, 2), "ret": round(ret, 2), "reason": reason, "open": False, "entryIdx": e, "exitIdx": e, "side": "short"})
+                       "exit": round(cover, 2), "ret": round(ret, 2), "reason": reason, "open": False, "entryIdx": e, "exitIdx": e, "side": "short",
+                       "group": why.get("group", "")})
     return trades
 
 
 SIMULATORS: dict[str, Callable[..., list[dict[str, Any]]]] = {"groupPullback": simulate_pullback, "dtShort": simulate_dt_short}
+ALL_TRADES_KEYS = ("groupPullback", "dtShort")   # 輸出整年每一筆交易的模型（筆數少）
 SIGNALERS: dict[str, Callable[..., list[tuple[int, dict[str, Any]]]]] = {"dtShort": level_signals}
 
 
@@ -1632,6 +1634,9 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
             "lastTrades": [clean(t) for t in closed[:20]],
             "holding": [clean(t) for t in sorted(holding, key=lambda t: t["entryDate"], reverse=True)[:30]],
         })
+        if spec["key"] in ALL_TRADES_KEYS:
+            # 2026-11-28 使用者：「九月底往前算半年，那時候選到哪些股票？」短線模型一年才一兩百筆，整年的交易都給
+            by_key[spec["key"]]["trades"] = [clean(t) for t in sorted(trades, key=lambda t: (t["signal"], t["code"]))]
     # 強勢族群拉回：大盤在月線下時也列出今天已經拉回好的（觀察名單：大盤站回月線、隔天突破高點才買）
     watch = []
     for code, s in series.items():
