@@ -188,7 +188,7 @@ class ComputeTests(unittest.TestCase):
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["asOf"], days[-1])
         self.assertEqual([m["key"] for m in out["models"]], [m["key"] for m in module.MODELS])
-        self.assertEqual(len(out["models"]), 11)
+        self.assertEqual(len(out["models"]), 12)
         big = next(m for m in out["models"] if m["key"] == "bigInst")
         self.assertGreater(big["stats"]["trades"] + big["stats"]["open"], 0)
         self.assertTrue(all(t["code"] == "1111" for t in big["lastTrades"] + big["holding"]))
@@ -334,7 +334,7 @@ class PerStockBackfillTests(unittest.TestCase):
             if ds == "TaiwanStockInstitutionalInvestorsBuySell":
                 return {"data": [{"date": "2026-02-02", "stock_id": code, "buy": 3000, "sell": 1000, "name": "Investment_Trust"}]}
             if ds == "TaiwanStockMarginPurchaseShortSale":
-                return {"data": [{"date": "2026-02-02", "stock_id": code, "MarginPurchaseTodayBalance": 500}]}
+                return {"data": [{"date": "2026-02-02", "stock_id": code, "MarginPurchaseTodayBalance": 500, "ShortSaleTodayBalance": 40}]}
             if ds == "TaiwanStockDayTrading":
                 return {"data": [{"date": "2026-02-02", "stock_id": code, "Volume": 200000}]}
             if ds == "TaiwanStockMonthRevenue":
@@ -355,6 +355,8 @@ class PerStockBackfillTests(unittest.TestCase):
         with database.get_connection() as connection:
             self.assertEqual(connection.execute("SELECT trust_net FROM model_inst_daily WHERE stock_code = '2330'").fetchone()["trust_net"], 2000)
             self.assertEqual(connection.execute("SELECT lots FROM model_daytrade_daily WHERE stock_code = '1111'").fetchone()["lots"], 200)
+            self.assertEqual(connection.execute("SELECT balance FROM model_short_daily WHERE stock_code = '1111'").fetchone()["balance"], 40)   # 融券餘額（券資比）
+            self.assertEqual(connection.execute("SELECT balance FROM model_margin_daily WHERE stock_code = '1111'").fetchone()["balance"], 500)
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM model_revenue").fetchone()["n"], 2)
         calls.clear()
         with patch.object(module, "_now", return_value=now):
@@ -371,12 +373,12 @@ class PerStockBackfillTests(unittest.TestCase):
                 module._log(connection, "meta", "level", 0)
             out = module.backfill_per_stock(self.fake(calls, quota_after=5), 100)
         self.assertEqual(out["stopped"], "quota")
-        self.assertEqual(out["done"], 1)                              # 2330 四種都補完，1111 只補了一種
+        self.assertEqual(out["done"], 1)                              # 2330 五種都補完（第 6 次呼叫才用完額度），1111 還沒補
         calls.clear()
         with patch.object(module, "_now", return_value=now):
             out2 = module.backfill_per_stock(self.fake(calls), 100)
         self.assertEqual(out2["done"], 2)
-        self.assertEqual(len(calls), 3)                               # 只補 1111 剩下的三種
+        self.assertEqual(len(calls), len(module.PER_STOCK_KINDS))     # 只補 1111 的五種
 
     def test_loaders_merge_official_tables(self) -> None:
         import daytrade_rank

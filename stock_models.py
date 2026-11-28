@@ -4,7 +4,7 @@
 共同條件：一般股票（4 位數、不含 ETF）、收盤 ≥ 10 元、20 日均成交值 ≥ 3000 萬；條件「剛成立」那天才算訊號（前一天沒成立）。
 
 回測（近 BACKTEST_DAYS 個交易日）：訊號隔天開盤買（開盤就漲停 9.5% 以上買不到，跳過），持有 HOLD_DAYS 個交易日收盤賣，
-中途收盤跌破月線就當天收盤賣；同一檔持有中不重複買。每筆 10 萬元，扣手續費（買賣各 0.1425%）＋證交稅 0.3%。
+中途收盤跌破月線就當天收盤賣；同一檔持有中不重複買。每筆 10 萬元，扣手續費（買賣各 0.1425% × 2.8 折）＋證交稅 0.3%。
 報酬率用「最大資金需求」（同時持有最多幾檔 × 10 萬）當本金——別家的 321% 是用固定 1 億當本金算的，實際要 3.87 億，
 用實際需要的錢算才不會誇大。同期大盤用 FinMind 的加權指數（TAIEX）與櫃買指數（TPEx）收盤。
 
@@ -34,9 +34,12 @@ BACKTEST_DAYS = 250            # 回測一年
 WARMUP_DAYS = 70               # 60 日均線、20 日新高要先有的交易日
 HOLD_DAYS = 10
 POSITION_NTD = 100_000
-FEE_PCT = 0.1425
+FEE_DISCOUNT = 0.28            # 2026-11-28 使用者：手續費 0.1425% 打 2.8 折
+FEE_PCT = 0.1425 * FEE_DISCOUNT
 TAX_PCT = 0.3
 COST_PCT = FEE_PCT * 2 + TAX_PCT
+DAYTRADE_TAX_PCT = 0.15        # 現股當沖證交稅減半
+DAYTRADE_COST_PCT = FEE_PCT * 2 + DAYTRADE_TAX_PCT
 MIN_PRICE = 10.0
 MIN_VALUE_NTD = 30_000_000     # 20 日均成交值
 LIMIT_UP_GAP_PCT = 9.5
@@ -177,6 +180,28 @@ MODELS: list[dict[str, Any]] = [
             "每筆 10 萬元，已扣手續費和證交稅；報酬率的本金＝最大資金需求",
         ],
     },
+    {
+        "key": "dtShort", "cat": "short", "name": "弱勢族群當沖空", "ref": 12, "side": "short",
+        "idea": "2026-11-28 使用者：做空主要用現股當沖、停損 4%、券資比上限 30%、不看大盤、不限大小。"
+                "前一天盤後挑最弱族群裡營收轉差、法人在賣、空頭排列的股票，隔天盤中跌破昨天最低價才空，當天回補。",
+        "rules": [
+            "屬於當天最弱的 5 個族群（近 5 日、近 20 日平均漲幅都排最後面）",
+            "收盤 ≥ 10 元、20 日平均成交值 ≥ 5000 萬（當沖進出得了）",
+            "券資比（融券餘額 ÷ 融資餘額）≤ 30%（避免軋空；沒有融資融券資料的日子不看這條）",
+            "最新公布的月營收年減，或創 12 個月新低",
+            "近 10 個交易日外資＋投信合計賣超，至少 3 天在賣",
+            "5 日 < 20 日 < 60 日均線，近 20 天內創過 60 日新低",
+            "不看大盤；每天符合就列進隔天的名單（不是剛成立那天才算）",
+        ],
+        "backtestRules": [
+            "隔天盤中跌破前一天最低價才空（開盤就低於的照開盤價；開盤就跌停的跳過）；沒跌破就不空",
+            "停損：漲到空的價格 +4% 就回補；其他收盤回補",
+            "實際操作：盤中跌勢停了、站回 5 分 K 均線就回補；回測沒有一年的 5 分 K，用收盤回補代替",
+            "盤中先後順序不知道：當天碰到停損價就當作停損",
+            "每筆 10 萬元；成本：手續費買賣各 0.1425% × 2.8 折＋當沖證交稅減半 0.15%",
+            "不是每檔都能現股當沖先賣（要在可先賣後買的名單上），下單前要確認",
+        ],
+    },
 ]
 COMMON_RULES = [
     "一般股票（不含 ETF）、收盤 ≥ 10 元、20 日均成交值 ≥ 3000 萬",
@@ -184,7 +209,7 @@ COMMON_RULES = [
 ]
 BACKTEST_RULES = [
     "訊號隔天開盤買（開盤就漲停買不到的跳過），持有 10 個交易日收盤賣；中途收盤跌破月線就當天收盤賣",
-    "同一檔持有中不重複買；每筆 10 萬元，已扣手續費（買賣各 0.1425%）＋證交稅 0.3%",
+    "同一檔持有中不重複買；每筆 10 萬元，已扣手續費（買賣各 0.1425% × 2.8 折）＋證交稅 0.3%",
     "報酬率的本金＝最大資金需求（同時持有最多幾檔 × 10 萬），不是固定本金",
 ]
 
@@ -204,6 +229,10 @@ def _schema(connection: Any) -> None:
             PRIMARY KEY (trade_date, stock_code)
         );
         CREATE TABLE IF NOT EXISTS model_margin_daily (
+            trade_date TEXT NOT NULL, stock_code TEXT NOT NULL, balance INTEGER NOT NULL,
+            PRIMARY KEY (trade_date, stock_code)
+        );
+        CREATE TABLE IF NOT EXISTS model_short_daily (
             trade_date TEXT NOT NULL, stock_code TEXT NOT NULL, balance INTEGER NOT NULL,
             PRIMARY KEY (trade_date, stock_code)
         );
@@ -268,6 +297,17 @@ def parse_margin(payload: Any) -> dict[str, dict[str, int]]:
     for row in (payload.get("data") if isinstance(payload, dict) else None) or []:
         try:
             out.setdefault(str(row["date"])[:10], {})[str(row["stock_id"]).strip().upper()] = int(row.get("MarginPurchaseTodayBalance") or 0)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+    return out
+
+
+def parse_short(payload: Any) -> dict[str, dict[str, int]]:
+    """FinMind TaiwanStockMarginPurchaseShortSale → {日期: {代號: 融券餘額（張）}}（券資比用，2026-11-28 做空模型）。"""
+    out: dict[str, dict[str, int]] = {}
+    for row in (payload.get("data") if isinstance(payload, dict) else None) or []:
+        try:
+            out.setdefault(str(row["date"])[:10], {})[str(row["stock_id"]).strip().upper()] = int(row.get("ShortSaleTodayBalance") or 0)
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
     return out
@@ -394,6 +434,7 @@ PER_STOCK_KINDS: list[tuple[str, str, int]] = [   # (種類, FinMind dataset, �
     ("margin", "TaiwanStockMarginPurchaseShortSale", 400),
     ("daytrade", "TaiwanStockDayTrading", 400),
     ("revenue", "TaiwanStockMonthRevenue", 840),
+    ("short", "TaiwanStockMarginPurchaseShortSale", 400),   # 融券餘額（券資比，2026-11-28 做空模型）：融資那份當初只存了融資
 ]
 PER_STOCK_MIN_AVG_VALUE = 15_000_000   # 近一年平均每天成交值（元）至少這麼多才補
 
@@ -486,8 +527,9 @@ def backfill_per_stock(fetch: Callable[[dict[str, str]], Any], budget: int) -> d
                     connection.executemany("INSERT OR REPLACE INTO model_revenue (stock_code, ym, revenue, announced) VALUES (?, ?, ?, ?)", rows)
                     n = len(rows)
                 else:
-                    parsed = {"inst": parse_institutional, "margin": parse_margin, "daytrade": parse_daytrade}[kind](payload)
-                    table, cols = {"inst": ("model_inst_daily", "foreign_net, trust_net, dealer_net"), "margin": ("model_margin_daily", "balance"), "daytrade": ("model_daytrade_daily", "lots")}[kind]
+                    parsed = {"inst": parse_institutional, "margin": parse_margin, "daytrade": parse_daytrade, "short": parse_short}[kind](payload)
+                    table, cols = {"inst": ("model_inst_daily", "foreign_net, trust_net, dealer_net"), "margin": ("model_margin_daily", "balance"),
+                                   "daytrade": ("model_daytrade_daily", "lots"), "short": ("model_short_daily", "balance")}[kind]
                     values = [(day, c, *(v if isinstance(v, tuple) else (v,))) for day, m in parsed.items() for c, v in m.items() if c == code]
                     connection.executemany(f"INSERT OR REPLACE INTO {table} (trade_date, stock_code, {cols}) VALUES (?, ?, {','.join('?' for _ in cols.split(','))})", values)
                     n = len(values)
@@ -798,6 +840,19 @@ class StockSeries:
         self.market_up: dict[str, bool] | None = None   # 加權指數那天收盤在月線之上（prepare_inputs 給；None＝不判斷）
         self.shares: int | None = None                  # 已發行股數（強勢族群拉回看中小型用）
         self.hot_group: dict[str, str] = {}             # {日期: 當天最強族群裡、這檔所屬排最前面的族群}（attach_hot_groups 給）
+        self.cold_group: dict[str, str] = {}            # {日期: 當天最弱族群裡、這檔所屬最弱的族群}（做空模型）
+        self.short: dict[str, int] = {}                 # 融券餘額（張）
+        self.short_days: set[str] = set()
+
+    def short_ratio(self, i: int) -> float | None:
+        """券資比（%）＝融券餘額 ÷ 融資餘額。那天融資或融券沒有資料就回 None（不判斷）。"""
+        d = self.dates[i]
+        if d not in self.short_days or d not in self.margin_days:
+            return None
+        m, sh = self.margin.get(d, 0), self.short.get(d, 0)
+        if m <= 0:
+            return 0.0 if sh <= 0 else 999.0
+        return sh / m * 100
 
     def market_ok(self, i: int) -> bool:
         """大盤濾網（2026-11-27 使用者看完調整比較後選的）：加權指數那天收盤在月線之上。沒給大盤資料（單元測試）就不判斷。"""
@@ -826,6 +881,14 @@ class StockSeries:
         if base <= 0:
             return None
         return (self.margin.get(b, 0) / base - 1) * 100, base
+
+    def revenue_low12(self, ym: str) -> bool:
+        cur = self.revenue.get(ym)
+        if not cur:
+            return False
+        prev = [self.revenue.get(_ym_minus(ym, k)) for k in range(1, 12)]
+        prev = [p[0] for p in prev if p]
+        return len(prev) >= 9 and cur[0] < min(prev)
 
     def revenue_high12(self, ym: str) -> bool:
         cur = self.revenue.get(ym)
@@ -1081,28 +1144,31 @@ def attach_hot_groups(series: dict[str, StockSeries], groups: dict[str, list[str
                 acc[1] += s.close[i] / c20 - 1
                 acc[2] += 1
     best: dict[str, dict[str, int]] = {}               # 日期 → 族群 → 名次（0 最強）
+    worst: dict[str, dict[str, int]] = {}              # 日期 → 族群 → 名次（0 最弱；做空模型用）
     for day, by_group in sums.items():
         rows = [(name, a[0] / a[2], a[1] / a[2]) for name, a in by_group.items() if a[2] >= 3]
         r5 = {name: k for k, (name, _, _) in enumerate(sorted(rows, key=lambda r: -r[1]))}
         r20 = {name: k for k, (name, _, _) in enumerate(sorted(rows, key=lambda r: -r[2]))}
         ranked = sorted(rows, key=lambda r: (r5[r[0]] + r20[r[0]], r5[r[0]]))
         best[day] = {name: k for k, (name, _, _) in enumerate(ranked[:top])}
+        worst[day] = {name: k for k, (name, _, _) in enumerate(list(reversed(ranked))[:top])}
     member_of: dict[str, list[str]] = {}
     for name, codes in groups.items():
         for code in codes:
             member_of.setdefault(code, []).append(name)
     for code, s in series.items():
         names = member_of.get(code)
-        s.hot_group = {}
+        s.hot_group, s.cold_group = {}, {}
         if not names:
             continue
         for d in s.dates:
-            ranks = best.get(d)
-            if not ranks:
-                continue
-            hit = [(ranks[n], n) for n in names if n in ranks]
-            if hit:
-                s.hot_group[d] = min(hit)[1]
+            for ranks_by_day, target in ((best, s.hot_group), (worst, s.cold_group)):
+                ranks = ranks_by_day.get(d)
+                if not ranks:
+                    continue
+                hit = [(ranks[n], n) for n in names if n in ranks]
+                if hit:
+                    target[d] = min(hit)[1]
 
 
 def pullback_base(s: StockSeries, i: int, *, need_group: bool = True) -> dict[str, Any] | None:
@@ -1164,11 +1230,62 @@ def cond_group_pullback(s: StockSeries, i: int) -> dict[str, Any] | None:
     return group_pullback_signal(s, i)
 
 
+# ------------------------------------------------------------------ 弱勢族群當沖空（第 12 個模型，2026-11-28 使用者）
+
+SHORT_MIN_VALUE = 50_000_000
+SHORT_MAX_RATIO = 30.0
+SHORT_STOP_PCT = 4.0
+
+
+def short_signal(s: StockSeries, i: int, *, need_group: bool = True, max_ratio: float | None = SHORT_MAX_RATIO) -> dict[str, Any] | None:
+    """前一天盤後：最弱族群、營收轉差、法人在賣、空頭排列、券資比不高（隔天當沖空的名單）。"""
+    if not s.basic_ok(i) or i < 60 or s.value20[i] < SHORT_MIN_VALUE:
+        return None
+    group = s.cold_group.get(s.dates[i])
+    if need_group and not group:
+        return None
+    ma5, ma20, ma60 = s.ma5[i], s.ma20[i], s.ma60[i]
+    if ma60 is None or not (ma5 < ma20 < ma60):
+        return None
+    if min(s.close[i - 19:i + 1]) > min(s.close[i - 59:i + 1]):
+        return None                       # 60 日最低收盤不在最近 20 天內
+    rev = revenue_yoy_at(s.revenue, s.dates[i])
+    if not rev or not (rev[1] < 0 or s.revenue_low12(rev[0])):
+        return None
+    win = s.inst_window(i, 10)
+    if not win:
+        return None
+    nets = [f + t for f, t in win]
+    if sum(nets) >= 0 or sum(1 for x in nets if x < 0) < 3:
+        return None
+    ratio = s.short_ratio(i)
+    if max_ratio is not None and ratio is not None and ratio > max_ratio:
+        return None
+    rebound = min(s.close[i], ma5)
+    return {"group": group or "", "yoy": round(rev[1], 1), "revMonth": rev[0], "inst10": round(sum(nets) / 1000),
+            "sellDays": sum(1 for x in nets if x < 0), "shortRatio": None if ratio is None else round(ratio, 1),
+            "shortBelow": round(s.low[i], 2), "reboundAt": round(rebound, 2)}
+
+
+def cond_dt_short(s: StockSeries, i: int) -> dict[str, Any] | None:
+    return short_signal(s, i)
+
+
+def level_signals(s: StockSeries, cond: Callable[[StockSeries, int], dict[str, Any] | None], start: int) -> list[tuple[int, dict[str, Any]]]:
+    """每天符合就算（當沖：每天的名單都要做，不是剛成立那天才算）。"""
+    out = []
+    for i in range(start, len(s.dates)):
+        why = cond(s, i)
+        if why:
+            out.append((i, why))
+    return out
+
+
 CONDITIONS: dict[str, Callable[[StockSeries, int], dict[str, Any] | None]] = {
     "bigInst": cond_big_inst, "kiloBull": cond_kilo_bull, "mainVsRetail": cond_main_vs_retail, "whaleHot": cond_whale_hot,
     "trustGrowth": cond_trust_growth, "bigInstFire": cond_big_inst_fire, "instThenRetail": cond_inst_then_retail,
     "instFirst": cond_inst_first, "revBoom": cond_rev_boom, "multiCombo": cond_multi_combo,
-    "groupPullback": cond_group_pullback,
+    "groupPullback": cond_group_pullback, "dtShort": cond_dt_short,
 }
 
 
@@ -1274,7 +1391,42 @@ def simulate_pullback(s: StockSeries, signals: list[tuple[int, dict[str, Any]]],
     return trades
 
 
-SIMULATORS: dict[str, Callable[..., list[dict[str, Any]]]] = {"groupPullback": simulate_pullback}
+def simulate_dt_short(s: StockSeries, signals: list[tuple[int, dict[str, Any]]], *, entry: str = "breakdown",
+                      stop_pct: float = SHORT_STOP_PCT) -> list[dict[str, Any]]:
+    """弱勢族群當沖空的回測：訊號隔天當沖空、當天回補（見 MODELS 的 backtestRules）。
+    entry："breakdown"＝跌破前一天最低價才空；"open"＝開盤就空；"rebound"＝盤中反彈到昨收或 5 日線（取低的）才空，開盤就在上面的不空。"""
+    trades = []
+    n = len(s.dates)
+    for i, why in signals:
+        e = i + 1
+        if e >= n or s.open[e] <= 0:
+            continue
+        if s.open[e] <= s.close[i] * (1 - LIMIT_UP_GAP_PCT / 100):
+            continue                                   # 開盤就跌停：空不到
+        if entry == "open":
+            price = s.open[e]
+        elif entry == "rebound":
+            level = min(s.close[i], s.ma5[i]) if s.ma5[i] is not None else s.close[i]
+            if s.open[e] > level or s.high[e] < level:
+                continue
+            price = level
+        else:
+            if s.low[e] >= s.low[i]:
+                continue
+            price = min(s.open[e], s.low[i])
+        stop = price * (1 + stop_pct / 100)
+        if s.high[e] >= stop:
+            cover, reason = stop, "stop"
+        else:
+            cover, reason = s.close[e], "close"
+        ret = (price - cover) / price * 100 - DAYTRADE_COST_PCT
+        trades.append({"code": s.code, "signal": s.dates[i], "entryDate": s.dates[e], "entry": round(price, 2), "exitDate": s.dates[e],
+                       "exit": round(cover, 2), "ret": round(ret, 2), "reason": reason, "open": False, "entryIdx": e, "exitIdx": e, "side": "short"})
+    return trades
+
+
+SIMULATORS: dict[str, Callable[..., list[dict[str, Any]]]] = {"groupPullback": simulate_pullback, "dtShort": simulate_dt_short}
+SIGNALERS: dict[str, Callable[..., list[tuple[int, dict[str, Any]]]]] = {"dtShort": level_signals}
 
 
 def summarize(trades: list[dict[str, Any]], series: dict[str, StockSeries], days: list[str], index: dict[str, list[tuple[str, float]]]) -> dict[str, Any]:
@@ -1401,6 +1553,7 @@ def prepare_inputs() -> dict[str, Any]:
     index = _load_index(since)   # 從暖身期開始讀：大盤月線（調整比較的大盤濾網）要前 20 天；報酬照樣從回測第一天算
     margin, margin_days = _load_daily_map("model_margin_daily", "balance", since, until, ("margin_daily", "margin_balance", 1.0))
     daytrade, daytrade_days = _load_daily_map("model_daytrade_daily", "lots", since, until, ("daytrade_daily", "dt_shares", 0.001))
+    short, short_days = _load_daily_map("model_short_daily", "balance", since, until, ("margin_daily", "short_balance", 1.0))
     series: dict[str, StockSeries] = {}
     for code in codes:
         b = bars.get(code)
@@ -1409,8 +1562,9 @@ def prepare_inputs() -> dict[str, Any]:
         series[code] = StockSeries(code, b, inst.get(code, {}), inst_days, tdcc.get(code, []), revenue.get(code, {}),
                                    margin.get(code, {}), margin_days, daytrade.get(code, {}), daytrade_days)
     market = market_up_map(index)
-    for s in series.values():
+    for code, s in series.items():
         s.market_up = market
+        s.short, s.short_days = short.get(code, {}), short_days
     from fundamentals_daily import shares_map
     from stock_groups import STOCK_GROUPS, UNRANKED_GROUP_NAMES
 
@@ -1420,7 +1574,7 @@ def prepare_inputs() -> dict[str, Any]:
     attach_hot_groups(series, {name: [str(c).strip().upper() for c, _ in members]
                                for name, members in STOCK_GROUPS.items() if name not in UNRANKED_GROUP_NAMES})
     return {"status": "ok", "since": since, "until": until, "bt_days": bt_days, "series": series, "index": index,
-            "inst_days": inst_days, "tdcc": tdcc, "revenue": revenue, "margin_days": margin_days, "daytrade_days": daytrade_days,
+            "inst_days": inst_days, "tdcc": tdcc, "revenue": revenue, "margin_days": margin_days, "daytrade_days": daytrade_days, "short_days": short_days,
             "names": _names()}
 
 
@@ -1440,10 +1594,11 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
         picks = []
         recent = []
         sim = SIMULATORS.get(spec["key"], simulate)
+        signaler = SIGNALERS.get(spec["key"], signals_for)
         for code, s in series.items():
             start = bisect_left(s.dates, bt_days[0])
-            sig = signals_for(s, cond, max(1, start))
-            if spec["key"] not in ("multiCombo", "groupPullback"):   # 共振只看原本九個
+            sig = signaler(s, cond, max(1, start))
+            if spec["key"] not in ("multiCombo", "groupPullback", "dtShort"):   # 共振只看原本九個
                 s.hits[spec["key"]] = {i for i, _ in sig}
             trades.extend(sim(s, sig))
             for i, why in sig:
@@ -1478,7 +1633,11 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
             watch.append({"code": code, "name": names.get(code, ""), "close": round(s.close[i], 2), "why": why,
                           "marketOk": s.market_ok(i)})
     by_key["groupPullback"]["watch"] = sorted(watch, key=lambda w: (w["why"]["group"], w["code"]))
-    by_key["groupPullback"]["backtestRules"] = next(m for m in MODELS if m["key"] == "groupPullback")["backtestRules"]
+    for key in ("groupPullback", "dtShort"):
+        spec = next(m for m in MODELS if m["key"] == key)
+        by_key[key]["backtestRules"] = spec["backtestRules"]
+        if spec.get("side"):
+            by_key[key]["side"] = spec["side"]
     models_out = [by_key[m["key"]] for m in MODELS]
     first_stats = by_key[order[0]["key"]]["stats"]
     index_out = {"taiex": first_stats.pop("taiex", []), "otc": first_stats.pop("otc", []), "taiexRet": first_stats.get("taiexRet"), "otcRet": first_stats.get("otcRet")}
@@ -1491,6 +1650,7 @@ def compute(now: datetime | None = None, ctx: dict[str, Any] | None = None) -> d
         "coverage": {"stocks": len(series), "instDays": len(inst_cov), "instFrom": inst_cov[0] if inst_cov else None,
                      "tdccWeeks": len({w[0] for v in tdcc.values() for w in v}), "revenueStocks": len(revenue),
                      "perStock": per_stock_progress(),
+                     "shortDays": len([d for d in ctx.get("short_days", set()) if d >= bt_days[0]]),
                      "marginDays": len([d for d in margin_days if d >= bt_days[0]]), "daytradeDays": len([d for d in daytrade_days if d >= bt_days[0]]),
                      "indexDays": {k: len([x for x in v if x[0] >= bt_days[0]]) for k, v in index.items()}},
         "computeSeconds": round(time.monotonic() - started, 1),
