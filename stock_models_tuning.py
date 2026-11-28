@@ -46,14 +46,16 @@ MARKET_VARIANTS = [("off", "不加大盤濾網"), ("on", "加大盤濾網（加�
 
 # 強勢族群拉回（第 11 個模型）：拉回買 vs 突破就追、停損方式、抱幾天、族群那一層有沒有用
 PULLBACK_VARIANTS: list[dict[str, Any]] = [
-    {"key": "base", "label": "拉回買（正式版）", "desc": "最強 8 個族群、股本 ≤ 100 億；拉回到 5 日線附近、隔天突破高點才買；停損 8% 和拉回低點取近的；最多抱 5 天",
+    {"key": "base", "label": "拉回買（正式版）", "desc": "最強 5 個族群、股本 ≤ 50 億；拉回到 5 日線附近、隔天突破高點才買；停損 8% 和拉回低點取近的；最多抱 5 天",
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5},
-    {"key": "narrow", "label": "放寬前（5 族群・50 億）", "desc": "2026-11-28 放寬前的條件：最強 5 個族群、股本 ≤ 50 億",
-     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 5, "shares": 500_000_000},
+    {"key": "wide", "label": "放寬（8 族群・100 億）", "desc": "2026-11-28 試過又改回來的放寬：最強 8 個族群、股本 ≤ 100 億（留著觀察）",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 8, "shares": 1_000_000_000},
     {"key": "groups8", "label": "只放寬族群（8 族群・50 億）", "desc": "最強 8 個族群、股本還是 ≤ 50 億",
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 8, "shares": 500_000_000},
     {"key": "cap100", "label": "只放寬股本（5 族群・100 億）", "desc": "最強 5 個族群、股本 ≤ 100 億",
      "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "top": 5, "shares": 1_000_000_000},
+    {"key": "noMarket", "label": "不看大盤", "desc": "2026-11-28 使用者問：拿掉「加權指數在月線上」這條，其他一樣",
+     "setup": "pullback", "group": True, "entry": "trigger", "stop": "near", "hold": 5, "market": False},
     {"key": "breakout", "label": "突破就追", "desc": "同樣的選股條件，帶量創 20 日新高（漲 ≥ 2%、量 ≥ 1.5 倍）隔天開盤就買",
      "setup": "breakout", "group": True, "entry": "open", "stop": "near", "hold": 5},
     {"key": "hold3", "label": "最多抱 3 天", "desc": "其他一樣，最多抱 3 個交易日",
@@ -179,7 +181,7 @@ def compute_tuning(ctx: dict[str, Any]) -> dict[str, Any]:
     pullback = []
     for v in PULLBACK_VARIANTS:
         def cond(s: sm.StockSeries, i: int, v: dict[str, Any] = v) -> dict[str, Any] | None:
-            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"],
+            return sm.group_pullback_signal(s, i, setup=v["setup"], need_group=v["group"], market=v.get("market", True),
                                             group_top=v.get("top", sm.HOT_GROUP_TOP), max_shares=v.get("shares", sm.SMALL_MID_MAX_SHARES))
 
         trades = []
