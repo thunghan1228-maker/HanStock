@@ -98,17 +98,15 @@ class SetupTests(unittest.TestCase):
         self.assertIsNone(sm.cond_group_pullback(s, i))          # 大盤在月線下
         self.assertIsNotNone(sm.group_pullback_signal(s, i, market=False))
         s.market_up = None
-        s.shares = 600_000_000                                    # 股本 60 億：放寬到 100 億以後算中小型
-        self.assertIsNotNone(sm.cond_group_pullback(s, i))
-        self.assertIsNone(sm.group_pullback_signal(s, i, max_shares=500_000_000))   # 放寬前（50 億）不算
-        s.shares = 1_200_000_000                                  # 股本 120 億：不是中小型
+        s.shares = 600_000_000                                    # 股本 60 億：不是中小型（≤ 50 億）
         self.assertIsNone(sm.cond_group_pullback(s, i))
+        self.assertIsNotNone(sm.group_pullback_signal(s, i, max_shares=1_000_000_000))   # 比較用的放寬版（100 億）算
         s.shares = None
         self.assertIsNone(sm.cond_group_pullback(s, i))
         s.shares = 100_000_000
-        s.hot_rank = {d: 6 for d in s.dates}                    # 第 7 名：在最強 8 個裡面
-        self.assertIsNotNone(sm.cond_group_pullback(s, i))
-        self.assertIsNone(sm.group_pullback_signal(s, i, group_top=5))   # 放寬前（5 個）不算
+        s.hot_rank = {d: 6 for d in s.dates}                    # 第 7 名：不在最強 5 個
+        self.assertIsNone(sm.cond_group_pullback(s, i))
+        self.assertIsNotNone(sm.group_pullback_signal(s, i, group_top=8))   # 比較用的放寬版（8 個）算
         s.hot_group, s.hot_rank = {}, {}
         self.assertIsNone(sm.cond_group_pullback(s, i))          # 不在最強族群
         self.assertIsNotNone(sm.group_pullback_signal(s, i, need_group=False))
